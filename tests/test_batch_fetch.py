@@ -143,6 +143,45 @@ class BatchFetchTests(unittest.TestCase):
                 self.assertNotIn("document_id", result)
                 self.assertNotIn("markdown", result)
 
+    def test_global_limit_across_two_simultaneous_batches(self):
+        first_started, release = Event(), Event()
+        lock = Lock()
+        currently_running = [0]
+        maximum_running = [0]
+        started_count = [0]
+
+        def slow_fetch(url, mode, fresh):
+            with lock:
+                currently_running[0] += 1
+                started_count[0] += 1
+                maximum_running[0] = max(maximum_running[0], currently_running[0])
+                if started_count[0] == 3:
+                    first_started.set()
+            try:
+                self.assertTrue(release.wait(5))
+                return {"url": url, "success": True, "markdown": "safe"}
+            finally:
+                with lock:
+                    currently_running[0] -= 1
+
+        with ThreadPoolExecutor(max_workers=2) as caller:
+            first = caller.submit(fetch_many,
+                                  [f"https://example.com/a{i}" for i in range(5)],
+                                  "raw", False, slow_fetch)
+            second = caller.submit(fetch_many,
+                                   [f"https://example.com/b{i}" for i in range(5)],
+                                   "raw", False, slow_fetch)
+            try:
+                self.assertTrue(first_started.wait(5))
+                with lock:
+                    self.assertEqual(maximum_running[0], 3)
+            finally:
+                release.set()
+            self.assertEqual(first.result(timeout=5)["count"], 5)
+            self.assertEqual(second.result(timeout=5)["count"], 5)
+        self.assertEqual(started_count[0], 10)
+        self.assertEqual(maximum_running[0], 3)
+
     def test_cancellation_skips_pending_urls_without_starting_new_crawls(self):
         urls = [f"https://example.com/page-{i}" for i in range(8)]
         started, release, stopped = Event(), Event(), Event()

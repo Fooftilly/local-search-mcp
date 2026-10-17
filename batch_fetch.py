@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from copy import deepcopy
-from threading import Event
+from threading import BoundedSemaphore, Event
 from typing import Callable
 
 from history_log import logged_tool
@@ -19,6 +19,9 @@ MAX_URLS = 8
 MAX_WORKERS = 3
 MAX_URL_CHARS = 2048
 MAX_TOTAL_URL_CHARS = 8192
+
+# Limit active crawls across *all* client batch requests, not per executor.
+_ACTIVE_BATCH_FETCHES = BoundedSemaphore(MAX_WORKERS)
 
 
 @logged_tool("fetch")
@@ -81,13 +84,16 @@ def fetch_many(urls: list[str], mode: str, fresh: bool,
     unique = list(dict.fromkeys(urls))
     results: dict[str, dict] = {}
     def scheduled_fetch(url: str) -> dict:
-        # MCP task cancellation cannot safely kill an already-running browser
-        # fetch, but must prevent any *queued* URL from starting afterward.
-        if cancelled is not None and cancelled.is_set():
-            result = {"url": url, "success": False, "status": "cancelled",
-                      "reason": "Batch cancelled before this URL began fetching."}
-            return _audit_duplicate(url, result)
-        return fetch(url, mode, fresh)
+        # This permit is process-wide. Multiple simultaneous client batches
+        # may queue workers but cannot exceed 3 active underlying fetches.
+        with _ACTIVE_BATCH_FETCHES:
+            # MCP task cancellation cannot safely kill an already-running
+            # browser fetch, but must prevent *queued* URLs from starting.
+            if cancelled is not None and cancelled.is_set():
+                result = {"url": url, "success": False, "status": "cancelled",
+                          "reason": "Batch cancelled before this URL began fetching."}
+                return _audit_duplicate(url, result)
+            return fetch(url, mode, fresh)
 
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(unique)),
                             thread_name_prefix="local-search-batch") as pool:
