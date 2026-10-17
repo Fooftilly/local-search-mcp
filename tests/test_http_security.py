@@ -157,7 +157,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn(b"window.crypto.subtle.digest(\"SHA-256\"", script)
         self.assertIn(b"window.localStorage.setItem(pendingAlertKey", script)
         self.assertIn(b"window.localStorage.setItem(seenDomainIdsKey", script)
-        self.assertIn(b"window.localStorage.setItem(lastPollKey", script)
+        self.assertIn(b"window.localStorage.setItem(latestSnapshotKey", script)
         self.assertIn(b"owedIds.filter(id => current.has(id))", script)
         self.assertIn(b"snapshotUs <= latest", script)
         self.assertIn(b"activeTabKeys()", script)
