@@ -1,5 +1,6 @@
 """Regression tests for explicit exact-host and time-bounded domain decisions."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Barrier, Thread
@@ -99,6 +100,25 @@ class RuleModeTests(unittest.TestCase):
         rows = [r for r in policy.entries() if r["domain"] == "same.example.org"]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["request_count"], 6)
+
+    def test_expiry_is_checked_after_waiting_for_the_database(self):
+        with patch.object(policy, "utcnow", return_value="2026-10-17T12:00:00Z"):
+            policy.decide("example.org", "allow", expires_minutes=60)
+        clock = {"now": "2026-10-17T12:59:59Z"}
+        real_db = policy._db
+
+        @contextmanager
+        def db_after_wait():
+            # Simulate a SQLite lock wait crossing the expiration boundary.
+            # Previously request() captured utcnow() before entering _db().
+            clock["now"] = "2026-10-17T13:00:00Z"
+            with real_db() as conn:
+                yield conn
+
+        with patch.object(policy, "utcnow", side_effect=lambda: clock["now"]):
+            with patch.object(policy, "_db", db_after_wait):
+                self.assertEqual(policy.request("example.org", "https://example.org/")[0],
+                                 "pending")
 
     def test_invalid_scope_and_ttl_rejected(self):
         for scope in ("", "all", "subdomains; DROP TABLE domains"):
