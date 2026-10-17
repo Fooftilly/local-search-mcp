@@ -9,6 +9,8 @@ import json
 import os
 import secrets
 import sqlite3
+import threading
+import time
 from urllib.parse import parse_qs, urlsplit
 
 import domain_policy as policy
@@ -17,6 +19,8 @@ from dashboard_live_script import LIVE_SCRIPT
 HOST='127.0.0.1'
 PORT=int(os.environ.get('LOCAL_SEARCH_MCP_DASHBOARD_PORT','8791'))
 CSRF=secrets.token_urlsafe(32)
+_LIVE_SNAPSHOT_LOCK = threading.Lock()
+_LAST_LIVE_SNAPSHOT_US = 0
 
 CSS="""
 :root{color-scheme:dark;font-family:Inter,system-ui,-apple-system,sans-serif;background:#101318;color:#e9edf2;font-size:14px}
@@ -60,23 +64,32 @@ def recent_rows():
 
 
 def live_snapshot(query='', view='policy'):
-    """Bounded same-origin dashboard poll; never reveal full original URLs."""
+    """Order loopback snapshots across threads, including out-of-order delivery.
+
+    Each policy snapshot has a strictly increasing, safely representable
+    microsecond sequence number; browser tabs discard stale responses rather
+    than regressing a newer shared pending-queue baseline.
+    """
     if view == 'history':
         return {'history_html': history_items_html()}
-    pending_rows = policy.entries(query, limit=200, status='pending')
-    decisions = policy.entries(query, limit=2000, status='decided')
-    # Unfiltered bounded list is used ONLY to compare newly queued domains
-    # for optional notifications, never included in the notifications themselves.
-    domains = [row['domain'] for row in policy.entries(
-        limit=policy.MAX_PENDING_TOTAL, status='pending')]
-    return {
-        'counts': policy.counts(),
-        'pending_html': ''.join(row_html(r) for r in pending_rows)
-            or '<tr><td colspan="4">No pending requests.</td></tr>',
-        'decided_html': ''.join(row_html(r) for r in decisions)
-            or '<tr><td colspan="4">No matching domains.</td></tr>',
-        'pending_domains': domains,
-    }
+    global _LAST_LIVE_SNAPSHOT_US
+    with _LIVE_SNAPSHOT_LOCK:
+        pending_rows = policy.entries(query, limit=200, status='pending')
+        decisions = policy.entries(query, limit=2000, status='decided')
+        domains = [row['domain'] for row in policy.entries(
+            limit=policy.MAX_PENDING_TOTAL, status='pending')]
+        counts = policy.counts()
+        _LAST_LIVE_SNAPSHOT_US = max(
+            time.time_ns() // 1000, _LAST_LIVE_SNAPSHOT_US + 1)
+        return {
+            'snapshot_us': _LAST_LIVE_SNAPSHOT_US,
+            'counts': counts,
+            'pending_html': ''.join(row_html(r) for r in pending_rows)
+                or '<tr><td colspan="4">No pending requests.</td></tr>',
+            'decided_html': ''.join(row_html(r) for r in decisions)
+                or '<tr><td colspan="4">No matching domains.</td></tr>',
+            'pending_domains': domains,
+        }
 
 
 def row_html(r):

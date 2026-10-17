@@ -20,8 +20,11 @@ const locks = {
   }
 };
 let now = 100000;
+let serverSnapshot = 0;
 class Clock extends Date { static now() { return now; } }
 const localStorage = {
+  get length() { return storage.size; },
+  key(index) { return [...storage.keys()][index] ?? null; },
   getItem(key) { return storage.has(key) ? storage.get(key) : null; },
   setItem(key, value) { storage.set(key, String(value)); },
   removeItem(key) { storage.delete(key); }
@@ -33,7 +36,8 @@ Notification.permission = "granted";
 Notification.requestPermission = async () => "granted";
 
 function createTab(initialDomains) {
-  const state = { domains: [...initialDomains], timers: [], handlers: {} };
+  const state = { domains: [...initialDomains], timers: [], handlers: {},
+                  nextSnapshotUs: null };
   const targets = new Map();
   function element(id) {
     if (!targets.has(id)) {
@@ -64,9 +68,12 @@ function createTab(initialDomains) {
   };
   const fetch = async () => {
     const domains = [...state.domains];
+    const snapshot = state.nextSnapshotUs ?? ++serverSnapshot;
+    state.nextSnapshotUs = null;
     return {
       ok: true,
       json: async () => ({
+        snapshot_us: snapshot,
         pending_domains: domains,
         counts: { pending: domains.length, allowed: 0, denied: 0 },
         pending_html: "pending: " + domains.join(","),
@@ -153,6 +160,16 @@ async function main() {
   await poll(second, 240000);
   assert.equal(notifications.length, 3, "only one cross-tab popup per new domain");
 
+  // A delayed old HTTP response must not regress the shared queue state and
+  // rediscover an already notified domain as new on the next fresh poll.
+  second.state.domains = second.state.domains.filter(x => x !== "multi-tab.example");
+  second.state.nextSnapshotUs = 1; // Deliberately older than the last accepted poll.
+  await poll(second, 241000);
+  second.state.domains.push("multi-tab.example");
+  await poll(second, 242000);
+  assert.equal(JSON.parse(storage.get("local-search-mcp.notification-owed.v1")).length,
+               0, "stale cross-tab responses must not queue duplicate alerts");
+
   // Rename field state and focus survive a changed poll response.
   const decided = tab.element("live-decided");
   const editing = { value: "unfinished-rename" };
@@ -168,20 +185,39 @@ async function main() {
   await poll(tab, 260000);
   assert.notEqual(decided.innerHTML, original, "updates resume after blur");
 
-  // A still-open hidden tab can be throttled beyond the 45-second reopen
-  // threshold; delayed alerts must survive and fire after the cooldown.
+  // Opening a new tab during a >45-second background throttle must not erase
+  // the still-open first tab's owed alerts.
+  now = 325000;
+  const another = createTab(tab.state.domains);
+  await settle();
+  assert.equal(notifications.length, 4,
+               "new tabs must not reset still-active background tab alerts");
+  // A still-open hidden tab can be throttled beyond 45 seconds without
+  // resetting the session or re-alerting.
   await poll(tab, 330000);
   assert.equal(notifications.length, 4,
                "background-throttled existing tabs must retain owed alerts");
 
   tab.close();
   second.close();
+  another.close();
   now = 420000; // More than 45 seconds without a dashboard poll.
   const reopened = createTab(["existing.example", "closed-session.example"]);
   await settle();
   assert.equal(notifications.length, 4, "reopen must not alert old backlog");
   assert.deepEqual(JSON.parse(storage.get("local-search-mcp.notification-owed.v1")), []);
   reopened.close();
+
+  // The UI and persistent browser metadata must never contain input domains,
+  // URL tokens, or private request details; only salted hashes and counts.
+  const persisted = JSON.stringify([...storage.entries()]);
+  const popupText = JSON.stringify(notifications);
+  for (const secret of ["existing.example", "new.example", "later.example",
+                        "multi-tab.example", "approved.example",
+                        "closed-session.example", "PRIVATE_URL_TOKEN"]) {
+    assert.ok(!persisted.includes(secret), "private domain leaked to storage: " + secret);
+    assert.ok(!popupText.includes(secret), "private domain leaked to popup: " + secret);
+  }
   console.log("dashboard live browser state tests passed");
 }
 main().catch(error => {

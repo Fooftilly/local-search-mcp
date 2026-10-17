@@ -18,7 +18,8 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   const lastNotificationKey = "local-search-mcp.notification-time.v1";
   const pendingAlertKey = "local-search-mcp.notification-owed.v1";
   const seenDomainIdsKey = "local-search-mcp.notification-seen-ids.v1";
-  const lastPollKey = "local-search-mcp.notification-poll-time.v1";
+  const latestSnapshotKey = "local-search-mcp.notification-snapshot-us.v1";
+  const tabPresencePrefix = "local-search-mcp.notification-tab.v1.";
   const fingerprintSaltKey = "local-search-mcp.notification-salt.v1";
   const notificationLock = "local-search-mcp.notification-lock.v1";
   const lastTableHtml = new WeakMap();
@@ -35,7 +36,7 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   const minNotificationGap = 60000;
   let notifyEnabled = false;
   let stopped = false;
-  let firstNotificationPoll = true;
+  let tabPresenceKey = null;
 
   function say(value) {
     if (status) status.textContent = value;
@@ -66,6 +67,60 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
     } catch (_) { return false; }
   }
 
+  function activeTabKeys() {
+    const keys = [];
+    try {
+      for (let i = 0; i < window.localStorage.length; i++) {
+        const key = window.localStorage.key(i);
+        if (key && key.startsWith(tabPresencePrefix)) keys.push(key);
+      }
+    } catch (_) { /* Conservatively keep shared state on storage failure. */ }
+    return keys;
+  }
+
+  async function registerTab() {
+    if (!notifyEnabled || !available() || tabPresenceKey) return;
+    try {
+      // Register under the same lock as notification updates. Every live tab
+      // has a unique key until pagehide, even when its polling is throttled.
+      await navigator.locks.request(notificationLock, async () => {
+        if (!notifyEnabled || tabPresenceKey) return;
+        const peers = activeTabKeys();
+        const id = new Uint8Array(16);
+        window.crypto.getRandomValues(id);
+        tabPresenceKey = tabPresencePrefix + Array.from(id, byte =>
+          byte.toString(16).padStart(2, "0")).join("");
+        const newSessionBaseline = peers.length === 0;
+        window.localStorage.setItem(tabPresenceKey, "open");
+        if (newSessionBaseline) {
+          // All previous tabs closed normally; start from the new backlog.
+          window.localStorage.removeItem(seenDomainIdsKey);
+          window.localStorage.setItem(pendingAlertKey, "[]");
+          window.localStorage.removeItem(latestSnapshotKey);
+        }
+      });
+    } catch (_) {
+      notifyEnabled = false;
+      storageSet(false);
+      renderToggle();
+    }
+  }
+
+  function unregisterTab() {
+    if (!tabPresenceKey) return;
+    try {
+      window.localStorage.removeItem(tabPresenceKey);
+      tabPresenceKey = null;
+      if (!activeTabKeys().length) {
+        // Never erase another live tab's owed work. Only an orderly final
+        // close clears the shared baseline for a later fresh session.
+        window.localStorage.removeItem(seenDomainIdsKey);
+        window.localStorage.setItem(pendingAlertKey, "[]");
+        window.localStorage.removeItem(latestSnapshotKey);
+      }
+    } catch (_) { tabPresenceKey = null; }
+  }
+
   function renderToggle() {
     if (!notice) return;
     if (!available()) {
@@ -84,15 +139,13 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   if (notice) {
     notifyEnabled = storageGet() && available() &&
       Notification.permission === "granted";
+    if (notifyEnabled) void registerTab();
     renderToggle();
     notice.addEventListener("click", async () => {
       if (notifyEnabled) {
         notifyEnabled = false;
         storageSet(false);
-        try {
-          window.localStorage.setItem(pendingAlertKey, "[]");
-          window.localStorage.removeItem(seenDomainIdsKey);
-        } catch (_) { /* Refuse silently if private storage is unavailable. */ }
+        unregisterTab();
       } else if (available()) {
         // Permission is requested ONLY in direct response to an operator click.
         let permission = Notification.permission;
@@ -102,11 +155,7 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
         }
         notifyEnabled = permission === "granted";
         storageSet(notifyEnabled);
-        if (notifyEnabled) {
-          // A new opt-in starts with a clean baseline, not old backlog.
-          window.localStorage.setItem(pendingAlertKey, "[]");
-          window.localStorage.removeItem(seenDomainIdsKey);
-        }
+        if (notifyEnabled) await registerTab();
       }
       renderToggle();
     });
@@ -125,14 +174,23 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
     } catch (_) { return null; }
   }
 
-  async function processNotifications(domains) {
+  async function processNotifications(domains, snapshotUs) {
     if (!notifyEnabled || !available() ||
         Notification.permission !== "granted") return;
     try {
+      if (!tabPresenceKey) await registerTab();
+      if (!tabPresenceKey || !notifyEnabled) return;
       // A single Web Lock serializes state across tabs. Only salted SHA-256
       // identifiers (not domain names, URLs or query text) enter storage.
       await navigator.locks.request(notificationLock, async () => {
         if (!notifyEnabled || Notification.permission !== "granted") return;
+        // An earlier HTTP response can arrive after a newer tab's snapshot.
+        // Compare server-issued microsecond sequence under the same Web Lock
+        // before changing any shared queue or owed-alert state.
+        const latest = Number(window.localStorage.getItem(latestSnapshotKey) || "0");
+        if (!Number.isSafeInteger(snapshotUs) || snapshotUs <= 0 ||
+            (Number.isFinite(latest) && snapshotUs <= latest)) return;
+        window.localStorage.setItem(latestSnapshotKey, String(snapshotUs));
         let salt = window.localStorage.getItem(fingerprintSaltKey);
         if (!salt) {
           const random = new Uint8Array(16);
@@ -150,20 +208,10 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
         }));
         const current = new Set(domainIds);
         const previousIds = readHashedIds(seenDomainIdsKey);
-        const lastPoll = Number(window.localStorage.getItem(lastPollKey) || "0");
         const now = Date.now();
-        // Only a *new tab's first poll* detects a closed dashboard session.
-        // A live hidden tab may be throttled to 60s+ intervals by the browser;
-        // that must not destroy its pending delayed notifications.
-        const stale = firstNotificationPoll &&
-          Number.isFinite(lastPoll) && lastPoll > 0 &&
-          (now - lastPoll > 45000 || now < lastPoll - 1000);
-        firstNotificationPoll = false;
-        window.localStorage.setItem(lastPollKey, String(now));
-
-        if (previousIds === null || stale) {
-          // Start or resume after a long gap with a clean baseline; never
-          // notify for an old backlog from a closed browser session.
+        if (previousIds === null) {
+          // A newly opted-in tab or a new browser session starts with the
+          // current queue as baseline, without alerting for old backlog.
           window.localStorage.setItem(seenDomainIdsKey, JSON.stringify(domainIds));
           window.localStorage.setItem(pendingAlertKey, "[]");
           return;
@@ -203,16 +251,19 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
     }
   }
 
-  function maybeNotify(domains) {
+  function maybeNotify(domains, snapshotUs) {
     // Run every poll, even without fresh arrivals, to flush a previously
     // queued cross-tab alert after the one-minute cooldown.
-    if (Array.isArray(domains)) void processNotifications(domains);
+    if (Array.isArray(domains)) void processNotifications(domains, snapshotUs);
   }
 
   window.addEventListener("storage", (event) => {
     if (event.key === storageKey) {
-      notifyEnabled = storageGet() && available() &&
+      const enabled = storageGet() && available() &&
         Notification.permission === "granted";
+      if (!enabled) unregisterTab();
+      notifyEnabled = enabled;
+      if (enabled) void registerTab();
       renderToggle();
     }
   });
@@ -251,7 +302,9 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
           const count = document.getElementById("live-count-" + type);
           if (count) count.textContent = String(data.counts[type]);
         }
-        if (Array.isArray(data.pending_domains)) maybeNotify(data.pending_domains);
+        if (Array.isArray(data.pending_domains)) {
+          maybeNotify(data.pending_domains, data.snapshot_us);
+        }
       }
       say("Live updates on · every 10 seconds");
     } catch (_) {
@@ -261,7 +314,17 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
     }
   }
 
-  window.addEventListener("pagehide", () => { stopped = true; });
+  window.addEventListener("pagehide", () => {
+    stopped = true;
+    unregisterTab();
+  });
+  window.addEventListener("pageshow", event => {
+    if (event.persisted) {
+      stopped = false;
+      if (notifyEnabled) void registerTab();
+      void refresh();
+    }
+  });
   void refresh();
 })();
 """

@@ -159,8 +159,9 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn(b"window.localStorage.setItem(seenDomainIdsKey", script)
         self.assertIn(b"window.localStorage.setItem(lastPollKey", script)
         self.assertIn(b"owedIds.filter(id => current.has(id))", script)
-        self.assertIn(b"firstNotificationPoll &&", script)
-        self.assertIn(b"now - lastPoll > 45000", script)
+        self.assertIn(b"snapshotUs <= latest", script)
+        self.assertIn(b"activeTabKeys()", script)
+        self.assertIn(b"window.localStorage.removeItem(tabPresenceKey)", script)
         self.assertIn(b"window.localStorage.setItem(lastNotificationKey", script)
         self.assertIn(b"Keep only still-pending alerts owed", script)
         self.assertIn(b"window.addEventListener(\"storage\"", script)
@@ -176,6 +177,8 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertEqual(headers["Cache-Control"], "no-store")
         result = json.loads(data)
         self.assertEqual(result["counts"]["pending"], 2)
+        self.assertIsInstance(result["snapshot_us"], int)
+        self.assertGreater(result["snapshot_us"], 0)
         self.assertIn("new.example.org", result["pending_html"])
         self.assertEqual(set(result["pending_domains"]),
                          {"new.example.org", "other.example.org"})
@@ -196,6 +199,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertEqual(self.post("new.example.org", "allow"), 200)
         after = json.loads(self.exchange("GET", "/live?view=policy")[1])
         self.assertEqual(after["counts"]["pending"], 1)
+        self.assertGreater(after["snapshot_us"], result["snapshot_us"])
         self.assertIn("new.example.org", after["decided_html"])
         self.assertNotIn("new.example.org", after["pending_domains"])
 
