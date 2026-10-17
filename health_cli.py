@@ -6,7 +6,7 @@ import argparse
 import json
 import socket
 import sys
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from crawler_security import verify_health
 
@@ -14,12 +14,36 @@ HOST = "127.0.0.1"
 TIMEOUT = 3
 
 
+class NoRedirect(HTTPRedirectHandler):
+    """Reject unexpected redirects from loopback services."""
+
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        """Do not follow redirects, including to non-loopback addresses."""
+        return None
+
+
+def local_request(url: str):
+    """Use only fixed loopback URLs without proxying or following redirects."""
+    if not url.startswith(f"http://{HOST}:"):
+        raise ValueError("Health request target is not loopback")
+    opener = build_opener(ProxyHandler({}), NoRedirect())
+    return opener.open(Request(url, headers={"User-Agent": "local-search-mcp-health/1"}), timeout=TIMEOUT)
+
+
+def searxng_ok() -> bool:
+    """Use SearXNG /healthz, avoiding real upstream search requests and rate limits."""
+    try:
+        with local_request(f"http://{HOST}:8888/healthz") as response:  # NOSONAR (loopback-only HTTP API)
+            return response.status == 200 and response.read(50).strip() == b"OK"
+    except (OSError, ValueError):
+        return False
+
+
 def get_json(url: str) -> object:
     """Get JSON from a fixed loopback endpoint, with a strict response limit."""
     # These local upstreams expose HTTP over loopback only, without TLS.
     # Never honor proxy environment variables for local health traffic.
-    opener = build_opener(ProxyHandler({}))
-    with opener.open(Request(url, headers={"User-Agent": "local-search-mcp-health/1"}), timeout=TIMEOUT) as response:
+    with local_request(url) as response:
         if response.status != 200:
             raise ValueError("Unexpected health HTTP status")
         return json.loads(response.read(200_000))
@@ -37,8 +61,7 @@ def listening(port: int) -> bool:
 def dashboard_ok() -> bool:
     """Require the loopback management dashboard to return HTTP 200."""
     try:
-        opener = build_opener(ProxyHandler({}))
-        with opener.open(Request(f"http://{HOST}:8791/", headers={"User-Agent": "local-search-mcp-health/1"}), timeout=TIMEOUT) as response:  # NOSONAR (loopback-only HTTP API)
+        with local_request(f"http://{HOST}:8791/") as response:  # NOSONAR (loopback-only HTTP API)
             return response.status == 200
     except (OSError, ValueError):
         return False
@@ -47,11 +70,7 @@ def dashboard_ok() -> bool:
 def snapshot() -> dict:
     """Report each dependency independently, distinguishing degraded from offline."""
     states = {}
-    try:
-        response = get_json(f"http://{HOST}:8888/search?q=local-search-mcp-health&format=json")  # NOSONAR (loopback-only SearXNG)
-        states["searxng"] = isinstance(response, dict) and isinstance(response.get("results"), list)
-    except (OSError, ValueError, TypeError):
-        states["searxng"] = False
+    states["searxng"] = searxng_ok()
     try:
         states["crawl4ai"] = verify_health(get_json(f"http://{HOST}:11235/health")) is None  # NOSONAR (loopback-only Crawl4AI)
     except (OSError, ValueError, TypeError):
