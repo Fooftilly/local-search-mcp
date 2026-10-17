@@ -15,6 +15,8 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   const status = document.getElementById("live-status");
   const notice = document.getElementById("notification-toggle");
   const storageKey = "local-search-mcp.desktop-notifications.v1";
+  const lastNotificationKey = "local-search-mcp.notification-time.v1";
+  const notificationLock = "local-search-mcp.notification-lock.v1";
   const lastTableHtml = new WeakMap();
 
   function updateTable(body, html) {
@@ -29,7 +31,6 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   const minNotificationGap = 60000;
   let previousDomains = null;
   let notifyEnabled = false;
-  let lastNotified = 0;
   let groupedNewRequests = 0;
   let stopped = false;
 
@@ -47,7 +48,17 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   }
 
   function available() {
-    return window.isSecureContext && "Notification" in window;
+    // Web Locks provide atomic cross-tab throttling on the same origin.
+    // Disable desktop alerts if atomic coordination or local storage is
+    // unavailable; never risk a multi-tab notification flood.
+    if (!window.isSecureContext || !("Notification" in window) ||
+        !navigator.locks || typeof navigator.locks.request !== "function") return false;
+    try {
+      const probe = "local-search-mcp.notification-storage-test";
+      window.localStorage.setItem(probe, "1");
+      window.localStorage.removeItem(probe);
+      return true;
+    } catch (_) { return false; }
   }
 
   function renderToggle() {
@@ -87,6 +98,32 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
     });
   }
 
+  async function sendCoordinatedNotification(total) {
+    try {
+      await navigator.locks.request(notificationLock, async () => {
+        if (!notifyEnabled || Notification.permission !== "granted") return;
+        const now = Date.now();
+        const previous = Number(window.localStorage.getItem(lastNotificationKey) || "0");
+        if (!Number.isFinite(previous) || now - previous < minNotificationGap) return;
+        // Write under the shared cross-tab lock *before* notifying, so all
+        // other tabs see the one-minute cooldown even if a popup fails.
+        window.localStorage.setItem(lastNotificationKey, String(now));
+        new Notification("Local Search MCP", {
+          body: total === 1 ?
+            "One new domain request awaits local review." :
+            `${total} new domain requests await local review.`,
+          tag: "local-search-mcp-pending"
+        });
+      });
+    } catch (_) {
+      // Browser privacy restrictions or notification API failures must never
+      // throw from a detached asynchronous task.
+      notifyEnabled = false;
+      storageSet(false);
+      renderToggle();
+    }
+  }
+
   function maybeNotify(domains) {
     const current = new Set(domains);
     if (previousDomains === null) {
@@ -104,25 +141,21 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
       return;
     }
     groupedNewRequests += newlyPending;
-    const now = Date.now();
-    if (!groupedNewRequests || now - lastNotified < minNotificationGap) return;
+    if (!groupedNewRequests) return;
     const total = groupedNewRequests;
     groupedNewRequests = 0;
-    lastNotified = now;
-    try {
-      // No domains, URL paths, search queries, tokens or page content in popups.
-      new Notification("Local Search MCP", {
-        body: total === 1 ?
-          "One new domain request awaits local review." :
-          `${total} new domain requests await local review.`,
-        tag: "local-search-mcp-pending"
-      });
-    } catch (_) {
-      notifyEnabled = false;
-      storageSet(false);
+    // Only generic counts cross this boundary: never notify or persist URLs,
+    // private query strings, domain names, or page content.
+    void sendCoordinatedNotification(total);
+  }
+
+  window.addEventListener("storage", (event) => {
+    if (event.key === storageKey) {
+      notifyEnabled = storageGet() && available() &&
+        Notification.permission === "granted";
       renderToggle();
     }
-  }
+  });
 
   async function refresh() {
     if (stopped) return;
@@ -133,20 +166,22 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
       const controller = new AbortController();
       // Abort local requests after 5 seconds; no overlapping polls.
       const abort = window.setTimeout(() => controller.abort(), 5000);
-      let response;
+      let data;
       try {
-        response = await fetch(endpoint, {
+        const response = await fetch(endpoint, {
           credentials: "same-origin",
           cache: "no-store",
           referrerPolicy: "no-referrer",
           headers: { "Accept": "application/json" },
           signal: controller.signal
         });
+        if (!response.ok) throw new Error("Live endpoint rejected request");
+        // Retain the abort deadline while parsing the entire response body.
+        // A stalled JSON body must not halt all future dashboard polling.
+        data = await response.json();
       } finally {
         window.clearTimeout(abort);
       }
-      if (!response.ok) throw new Error("Live endpoint rejected request");
-      const data = await response.json();
       if (isHistory) {
         updateTable(historyBody, data.history_html);
       } else {

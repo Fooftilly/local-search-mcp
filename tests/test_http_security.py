@@ -151,6 +151,13 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn("javascript", script_headers["Content-Type"])
         self.assertIn(b"Notification.requestPermission()", script)
         self.assertIn(b"minNotificationGap = 60000", script)
+        self.assertIn(b"body.contains(document.activeElement)", script)
+        self.assertIn(b"lastTableHtml.get(body) === html", script)
+        self.assertIn(b"navigator.locks.request(notificationLock", script)
+        self.assertIn(b"window.localStorage.setItem(lastNotificationKey", script)
+        self.assertIn(b"window.addEventListener(\"storage\"", script)
+        self.assertIn(b"void refresh();", script)
+        self.assertIn(b"data = await response.json();\n      } finally {\n        window.clearTimeout(abort);", script)
         self.assertNotIn(b"document.write(", script)
 
         policy.request("new.example.org", "https://new.example.org/private?secret=DO_NOT_LEAK")
