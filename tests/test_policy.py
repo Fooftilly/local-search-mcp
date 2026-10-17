@@ -214,6 +214,36 @@ class DomainPolicyTests(unittest.TestCase):
         self.assertEqual(policy.request("explicit.example.org", "https://explicit.example.org/"),
                          ("denied", "explicit.example.org"))
 
+    def test_legacy_renamed_denial_is_not_dropped_under_allowed_parent(self):
+        """Old rename audit names only the source; preserve destination deny."""
+        with policy._db() as db:
+            now = policy.utcnow()
+            before = "2026-01-01T00:00:00Z"
+            db.execute("INSERT INTO domains(domain,status,created_at,updated_at) VALUES(?,?,?,?)",
+                       ("example.org", "allowed", before, now))
+            db.execute("""INSERT INTO domains(domain,status,created_at,updated_at,
+                        request_count,last_requested_at)
+                        VALUES(?,?,?,?,?,?)""",
+                       ("renamed.example.org", "denied", before, now, 1, before))
+            db.execute("""INSERT INTO domains(domain,status,created_at,updated_at,
+                        request_count,last_requested_at)
+                        VALUES(?,?,?,?,?,?)""",
+                       ("inherited.example.org", "denied", before, before, 3, before))
+            db.execute("INSERT INTO metadata(key,value) VALUES('domain_seed_v1','1')")
+            db.execute("INSERT INTO decisions(at,domain,action) VALUES(?,?,'deny')",
+                       (before, "old.example.org"))
+            db.execute("INSERT INTO decisions(at,domain,action) VALUES(?,?,'rename')",
+                       (now, "old.example.org"))
+            db.commit()
+        policy.initialize()
+        rows = {r["domain"]: r for r in policy.entries()}
+        self.assertEqual(rows["renamed.example.org"]["explicit_rule"], 1)
+        self.assertNotIn("inherited.example.org", rows)
+        self.assertEqual(policy.request("renamed.example.org", "https://renamed.example.org/"),
+                         ("denied", "renamed.example.org"))
+        self.assertEqual(policy.request("inherited.example.org", "https://inherited.example.org/"),
+                         ("allowed", "example.org"))
+
     def test_legacy_pending_child_under_allowed_parent_is_removed_on_upgrade(self):
         """A stale pending row does not keep asking for approval on a grant."""
         with policy._db() as db:
