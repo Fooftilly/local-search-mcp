@@ -87,9 +87,9 @@ class ServiceTests(unittest.TestCase):
                 with patch.object(health_cli, "local_get", side_effect=failure):
                     self.assertFalse(health_cli.dashboard_ok())
                     self.assertFalse(health_cli.searxng_ok())
-                with patch.object(health_cli, "searxng_ok", return_value=True), \\
-                     patch.object(health_cli, "get_json", side_effect=failure), \\
-                     patch.object(health_cli, "listening", side_effect=[True, True]), \\
+                with patch.object(health_cli, "searxng_ok", return_value=True), \
+                     patch.object(health_cli, "get_json", side_effect=failure), \
+                     patch.object(health_cli, "listening", side_effect=[True, True]), \
                      patch.object(health_cli, "dashboard_ok", return_value=True):
                     status = health_cli.snapshot()
                 self.assertEqual(status["status"], "degraded")
