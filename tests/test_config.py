@@ -180,6 +180,36 @@ class PrivateConfigTests(unittest.TestCase):
             with patch.dict(os.environ, {"CONTROL_PLANE_API_KEY": "explicit-override"}):
                 self.assertEqual(bootstrap.collect_settings(old)["CONTROL_PLANE_API_KEY"], "explicit-override")
 
+    def test_sqlite_seed_state_is_read_only_and_detects_links(self):
+        """Authority is based on the seed marker, not merely database existence."""
+        database = Path(self.tmp.name) / "local-search-mcp" / "domains.sqlite3"
+        self.assertIn("initial seed", config_diagnostics._database_authority(database))
+        database.parent.mkdir(mode=0o700)
+        with sqlite3.connect(database) as connection:
+            connection.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT)")
+        stamp = database.stat().st_mtime_ns
+        self.assertIn("seed pending", config_diagnostics._database_authority(database))
+        self.assertEqual(database.stat().st_mtime_ns, stamp)
+        with sqlite3.connect(database) as connection:
+            connection.execute("INSERT INTO metadata VALUES ('domain_seed_v1', '1')")
+        stamp = database.stat().st_mtime_ns
+        self.assertIn("persisted SQLite rules", config_diagnostics._database_authority(database))
+        self.assertEqual(database.stat().st_mtime_ns, stamp)
+        self.assertFalse(Path(str(database) + "-shm").exists())
+        self.assertFalse(Path(str(database) + "-wal").exists())
+
+        target = Path(self.tmp.name) / "separate"
+        target.mkdir()
+        (target / "domains.sqlite3").write_bytes(database.read_bytes())
+        linked = Path(self.tmp.name) / "linked"
+        linked.symlink_to(target, target_is_directory=True)
+        self.assertIn("unsafe SQLite symlink", config_diagnostics._database_authority(linked / "domains.sqlite3"))
+        with patch.dict(os.environ, {"ALLOWED_CRAWL_DOMAINS": "python.org"}):
+            report = config_diagnostics.collect_report(
+                {"ALLOWED_CRAWL_DOMAINS": "example.com"}, Path(self.tmp.name), self.directory, lambda p: {})
+        self.assertEqual(report["domain_policy"]["interactive_setup_seed_source"], "environment")
+        self.assertEqual(report["domain_policy"]["systemd_service_seed_source"], "private JSON")
+
     def test_diagnostic_endpoint_and_dashboard_port_validation(self):
         report = config_diagnostics.collect_report({}, Path(self.tmp.name), self.directory, lambda path: {})
         self.assertEqual(report["endpoints"]["searxng"]["value"], "127.0.0.1:8888")
@@ -190,6 +220,10 @@ class PrivateConfigTests(unittest.TestCase):
             report = config_diagnostics.collect_report({}, Path(self.tmp.name), self.directory, lambda path: {})
             self.assertEqual(report["endpoints"]["dashboard_port"]["value"], "<invalid>")
             self.assertFalse(report["endpoints"]["crawl4ai"]["valid_loopback"])
+        for url in ("http://127.0.0.1:8888?", "http://127.0.0.1:8888#"):
+            with self.subTest(url=url), patch.dict(os.environ, {"SEARXNG_URL": url}):
+                result = config_diagnostics.collect_report({}, Path(self.tmp.name), self.directory, lambda p: {})
+                self.assertFalse(result["endpoints"]["searxng"]["valid_loopback"])
 
 
 if __name__ == "__main__":
