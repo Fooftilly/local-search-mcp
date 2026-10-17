@@ -132,6 +132,16 @@ def _seed(conn):
             # The only remaining denials are auto-inherited bookkeeping rows.
             # Keep their requests pending until a local decision is made.
             conn.execute("UPDATE domains SET status='pending' WHERE status='denied' AND explicit_rule=0")
+            # Old releases also left pending child requests behind after the
+            # operator changed a parent rule. Those are not actionable anymore.
+            conn.execute("""DELETE FROM domains WHERE explicit_rule=0
+                AND EXISTS (
+                    SELECT 1 FROM domains parent
+                    WHERE parent.explicit_rule=1
+                      AND parent.status IN ('allowed','denied')
+                      AND domains.domain != parent.domain
+                      AND domains.domain LIKE '%.' || parent.domain
+                )""")
             conn.execute("INSERT INTO metadata(key,value) VALUES('explicit_rules_v1','1')")
         # Existing databases may contain insecure broad grants from older versions.
         # Remove unsafe rules once and preserve a decision audit trail.
