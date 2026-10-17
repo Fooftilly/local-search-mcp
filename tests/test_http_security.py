@@ -159,6 +159,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn(b"window.localStorage.setItem(seenDomainIdsKey", script)
         self.assertIn(b"window.localStorage.setItem(lastPollKey", script)
         self.assertIn(b"owedIds.filter(id => current.has(id))", script)
+        self.assertIn(b"firstNotificationPoll &&", script)
         self.assertIn(b"now - lastPoll > 45000", script)
         self.assertIn(b"window.localStorage.setItem(lastNotificationKey", script)
         self.assertIn(b"Keep only still-pending alerts owed", script)

@@ -160,12 +160,18 @@ async function main() {
   await poll(tab, 260000);
   assert.notEqual(decided.innerHTML, original, "updates resume after blur");
 
+  // A still-open hidden tab can be throttled beyond the 45-second reopen
+  // threshold; delayed alerts must survive and fire after the cooldown.
+  await poll(tab, 330000);
+  assert.equal(notifications.length, 4,
+               "background-throttled existing tabs must retain owed alerts");
+
   tab.close();
   second.close();
-  now = 340000; // More than 45 seconds without a dashboard poll.
+  now = 420000; // More than 45 seconds without a dashboard poll.
   const reopened = createTab(["existing.example", "closed-session.example"]);
   await settle();
-  assert.equal(notifications.length, 3, "reopen must not alert old backlog");
+  assert.equal(notifications.length, 4, "reopen must not alert old backlog");
   assert.deepEqual(JSON.parse(storage.get("local-search-mcp.notification-owed.v1")), []);
   reopened.close();
   console.log("dashboard live browser state tests passed");

@@ -35,6 +35,7 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   const minNotificationGap = 60000;
   let notifyEnabled = false;
   let stopped = false;
+  let firstNotificationPoll = true;
 
   function say(value) {
     if (status) status.textContent = value;
@@ -151,8 +152,13 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
         const previousIds = readHashedIds(seenDomainIdsKey);
         const lastPoll = Number(window.localStorage.getItem(lastPollKey) || "0");
         const now = Date.now();
-        const stale = Number.isFinite(lastPoll) && lastPoll > 0 &&
+        // Only a *new tab's first poll* detects a closed dashboard session.
+        // A live hidden tab may be throttled to 60s+ intervals by the browser;
+        // that must not destroy its pending delayed notifications.
+        const stale = firstNotificationPoll &&
+          Number.isFinite(lastPoll) && lastPoll > 0 &&
           (now - lastPoll > 45000 || now < lastPoll - 1000);
+        firstNotificationPoll = false;
         window.localStorage.setItem(lastPollKey, String(now));
 
         if (previousIds === null || stale) {
