@@ -1,0 +1,27 @@
+# Conservative Mergify merge protections for local-search-mcp.
+# This configuration does not enable automatic merges or queueing.
+# Keep Merge Queue and Workflow Automation disabled in Mergify's dashboard;
+# YAML preferences do not disable products or prevent manual queue commands.
+# Require a maintainer's explicit authorization before merging each PR.
+
+merge_protections_settings:
+  reporting_method: check-runs
+  post_comment: false
+
+# Hides queue-control prompts, but does not disable the Merge Queue product.
+merge_queue:
+  queue_controls_comment: false
+
+# A failing rule blocks manual merges and merge API calls once the product
+# is enabled and "Mergify Merge Protections" is required by the GitHub master
+# ruleset, subject to GitHub ruleset bypass permissions.
+# Built-in Depends-On / Merge-After also apply.
+merge_protections:
+  - name: local-search-mcp / No unfinished pull request titles
+    description: >-
+      Pull requests with WIP, DNM, or DO NOT MERGE in their titles are
+      not ready to merge even when their GitHub draft flag is cleared.
+    if:
+      - base = master
+    success_conditions:
+      - '-title ~= (?i)(^|[^a-z])(wip|dnm|do[\s_-]+not[\s_-]+merge)([^a-z]|$)'
