@@ -331,8 +331,7 @@ def request(domain: str, safe_url: str):
                         # previously active authorization. Do not bump the
                         # process-wide fetch-cache epoch from an agent request.
                         conn.execute("""UPDATE domains
-                            SET status='pending',explicit_rule=0,expires_at='',
-                                updated_at=?
+                            SET status='pending',explicit_rule=0,updated_at=?
                             WHERE domain=?""", (now, domain))
                     conn.execute("""INSERT INTO pending_admissions(site,admitted_at)
                         VALUES (?,?)""", (site, now))
@@ -348,6 +347,35 @@ def request(domain: str, safe_url: str):
         except BaseException:
             conn.rollback()
             raise
+
+
+
+def expired_grant_without_active_fallback(domain: str) -> bool:
+    """Read-only post-fetch safeguard for in-flight finite permissions.
+
+    Authorization is checked at admission by evaluate_fetch_url(). A slow
+    crawler may finish after a timed rule expires. Recheck under SQLite without
+    changing the pending queue or globally invalidating unrelated fetches.
+    Pending rows retain their old expiry timestamp after requeue so concurrent
+    requests cannot erase evidence of the deadline.
+    """
+    domain = normalize_domain(domain)
+    with _db() as conn:
+        _seed(conn)
+        now = utcnow()
+        if _match(conn, domain, now) is not None:
+            return False
+        labels = domain.split('.')
+        for i in range(len(labels) - 1):
+            candidate = '.'.join(labels[i:])
+            row = conn.execute(
+                "SELECT explicit_rule,match_scope,expires_at,status FROM domains "
+                "WHERE domain=?", (candidate,)
+            ).fetchone()
+            if (row and row['expires_at'] and row['expires_at'] <= now
+                    and (row['match_scope'] == 'subdomains' or candidate == domain)):
+                return True
+        return False
 
 
 def decide(domain: str, action: str, new_domain: str = "",
