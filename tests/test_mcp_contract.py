@@ -122,6 +122,42 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("safe text", audit)
         self.assertEqual(sum(x["url"] == "https://example.com/article" for x in events), 2)
 
+    async def test_search_dedupe_and_source_count_rank_over_real_mcp(self):
+        urls = []
+        original = httpx.Client
+        def handler(request):
+            urls.append(request.url)
+            return httpx.Response(200, json={"results": [
+                {"title": "Low", "url": "https://low.example/a",
+                 "engine": "qwant", "content": "low text"},
+                {"title": "High", "url": "https://high.example/post#one",
+                 "engine": "bing", "content": "first source"},
+                {"title": "Other", "url": "https://other.example/", "engine": "yahoo"},
+                {"title": "High again", "url": "https://HIGH.example:443/post",
+                 "engine": "brave", "content": "second source"},
+            ]})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with patch.object(bridge.httpx, "Client", side_effect=client):
+            async with Client(bridge.mcp) as client:
+                standard = await client.call_tool("web_search", {
+                    "query": "dedupe mcp", "max_results": 2,
+                })
+                enhanced = await client.call_tool("web_search", {
+                    "query": "dedupe mcp", "max_results": 2,
+                    "deduplicate": True, "ranking": "source_count",
+                })
+        self.assertFalse(standard.is_error)
+        self.assertFalse(enhanced.is_error)
+        self.assertEqual([r["title"] for r in standard.data], ["Low", "High"])
+        self.assertEqual([r["title"] for r in enhanced.data], ["High", "Low"])
+        self.assertEqual(enhanced.data[0]["source_count"], 2)
+        self.assertEqual(enhanced.data[0]["source_engines"], ["bing", "brave"])
+        self.assertEqual(enhanced.data[0]["source_matches"][1]["title"], "High again")
+        self.assertEqual(len(urls), 2)
+        self.assertTrue(all("deduplicate" not in dict(url.params)
+                            and "ranking" not in dict(url.params) for url in urls))
+
     async def test_optional_search_filters_are_exposed_over_real_mcp(self):
         seen = []
         def handler(request: httpx.Request):
