@@ -10,7 +10,7 @@ The bridge requires a healthy **Crawl4AI 0.9.4+** HTTP server. Version 0.9.4 is 
 
 Operator validation should include inspecting the running Crawl4AI Docker configuration, reviewing current upstream security advisories, and verifying that redirects to private/network-local targets are refused **from inside the isolated crawler environment**. Never turn on unsafe flags to pass a test.
 
-## Domain approval
+### Optional operator-managed host firewall\n\n[EGRESS-ISOLATION.md](EGRESS-ISOLATION.md) documents a Linux/nftables profile that restricts new crawler-to-host connections and non-global IPv4 destinations for a single dedicated Docker bridge, and blocks IPv6 forwarding. It is opt-in, not a complete browser sandbox: it does not block the crawler's own container loopback, is not persistent across reboot, and requires a live verification on the operator's host. Do **not** treat the script's presence in the repository or a passing unit test as proof of runtime containment.\n\n## Domain approval
 
 The dashboard uses a Public Suffix List through `libpsl`, including privately operated suffixes (e.g., `github.io`). Rules applying to entire public suffixes are not permitted; prior broad rules are removed during migration. Parent-domain rules apply to all subdomains beneath that registrable parent. Approve only necessary hosts; use explicit denials for exceptions. Agents cannot approve their own requests. CSRF, Origin/Referer/Fetch Metadata and Host checks mitigate browser-based attacks on the local dashboard.
 
