@@ -1,6 +1,7 @@
 """Isolated process-only cache, single-flight, freshness and policy tests."""
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event
+from threading import Barrier, Event
+import time
 import unittest
 from unittest.mock import patch
 
@@ -41,10 +42,14 @@ class CacheTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=8) as pool:
             first = pool.submit(cache.run, "fetch", ("fetch", "page"), load, ttl=90)
             self.assertTrue(started.wait(5))
-            followers = [
-                pool.submit(cache.run, "fetch", ("fetch", "page"), load, ttl=90)
-                for _ in range(7)
-            ]
+            entered = Barrier(8)
+            def follow():
+                entered.wait(timeout=5)
+                return cache.run("fetch", ("fetch", "page"), load, ttl=90)
+            followers = [pool.submit(follow) for _ in range(7)]
+            entered.wait(timeout=5)  # All seven followers start while loader waits.
+            time.sleep(0.04)  # Give the coalescing calls time to join the Future.
+            self.assertEqual(len(count), 1)
             finish.set()
             results = [job.result(timeout=5) for job in [first, *followers]]
         self.assertEqual(len(count), 1)
@@ -70,6 +75,50 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(fresh, [{"title": "new"}])
         self.assertEqual(cache.run("search", key, lambda: [{"title": "unexpected"}], ttl=90),
                          [{"title": "new"}])
+
+    def test_fresh_does_not_interrupt_unrelated_inflight_cache(self):
+        started, release = Event(), Event()
+        calls = []
+        def load_other():
+            started.set()
+            self.assertTrue(release.wait(5))
+            calls.append("other")
+            return [{"title": "other"}]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            future = pool.submit(cache.run, "search", ("search", "other"),
+                                 load_other, ttl=90)
+            self.assertTrue(started.wait(5))
+            cache.run("search", ("search", "refreshed"),
+                      lambda: [{"title": "fresh"}], ttl=90, fresh=True)
+            release.set()
+            future.result(timeout=5)
+        self.assertIn(("search", "other"), cache._CACHE)
+        self.assertEqual(calls, ["other"])
+
+    def test_fresh_preserves_old_cache_during_load_and_evicts_on_failure(self):
+        key = ("search", "one")
+        cache.run("search", key, lambda: [{"title": "before"}], ttl=90)
+        started, release = Event(), Event()
+        def fresh_loader():
+            started.set()
+            self.assertTrue(release.wait(5))
+            return [{"title": "after"}]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            refreshing = pool.submit(cache.run, "search", key, fresh_loader,
+                                     ttl=90, fresh=True)
+            self.assertTrue(started.wait(5))
+            # A default request during refresh must not open another upstream call.
+            existing = cache.run("search", key, lambda: self.fail("extra fetch"), ttl=90)
+            self.assertEqual(existing, [{"title": "before"}])
+            release.set()
+            refreshing.result(timeout=5)
+        self.assertEqual(cache.run("search", key, lambda: self.fail("extra fetch"),
+                                   ttl=90), [{"title": "after"}])
+        with self.assertRaises(RuntimeError):
+            cache.run("search", key, lambda: (_ for _ in ()).throw(
+                RuntimeError("offline")), ttl=90, fresh=True)
+        self.assertNotIn(key, cache._CACHE)
+        self.assertFalse(cache._REFRESHING)
 
     def test_failure_does_not_poison_key(self):
         attempts = []

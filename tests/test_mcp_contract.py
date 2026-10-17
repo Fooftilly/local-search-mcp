@@ -135,10 +135,13 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(bridge.httpx, "Client", side_effect=factory):
             async with Client(bridge.mcp) as client:
                 first = await client.call_tool("web_search", {"query": "mcp cache test"})
+                self.assertEqual(len(seen), 1)
                 second = await client.call_tool("web_search", {"query": "mcp cache test"})
+                self.assertEqual(len(seen), 1)
                 fresh = await client.call_tool("web_search", {
                     "query": "mcp cache test", "fresh": True
                 })
+                self.assertEqual(len(seen), 2)
         self.assertFalse(first.is_error)
         self.assertFalse(second.is_error)
         self.assertFalse(fresh.is_error)

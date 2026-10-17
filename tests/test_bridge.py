@@ -52,9 +52,11 @@ class BridgeTests(unittest.TestCase):
             self.module.web_search("cache probe", page=2)
             self.assertEqual(len(seen), 5)
             # Never retain obviously secret-bearing search queries.
+            keys_before = set(self.module.request_cache._CACHE)
             self.module.web_search("password=secret", fresh=False)
             self.module.web_search("password=secret", fresh=False)
             self.assertEqual(len(seen), 7)
+            self.assertEqual(set(self.module.request_cache._CACHE), keys_before)
 
     def test_fetch_cache_requires_policy_and_skips_sensitive_urls(self):
         counts = []
