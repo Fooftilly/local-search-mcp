@@ -6,7 +6,9 @@ It does NOT exercise a real Chromium browser or certify network isolation.
 """
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 import socket
 import tempfile
 import unittest
@@ -25,6 +27,7 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.tmp.cleanup)
         env = patch.dict(os.environ, {
             "XDG_STATE_HOME": self.tmp.name,
+            "LOCAL_SEARCH_MCP_HISTORY_FILE": str(Path(self.tmp.name) / "history.jsonl"),
             "ALLOWED_CRAWL_DOMAINS": "example.com",
         })
         env.start()
@@ -44,10 +47,12 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.is_error)
         self.assertEqual(result.data["status"], "approval_required")
         self.assertIn("approval_dashboard", result.data)
-        self.assertEqual(domain_policy.request(
-            "docs.python.org", "https://docs.python.org/safe"
-        )[0], "pending")
-        self.assertNotIn("hidden", str(domain_policy.entries()))
+        saved = {entry["domain"]: entry for entry in domain_policy.entries()}
+        self.assertIn("docs.python.org", saved)
+        self.assertEqual(saved["docs.python.org"]["status"], "pending")
+        self.assertEqual(saved["docs.python.org"]["request_count"], 1)
+        self.assertEqual(saved["docs.python.org"]["last_requested_url"], "https://docs.python.org/safe")
+        self.assertNotIn("hidden", str(saved))
 
     async def test_invalid_public_targets_are_blocked_without_backend(self):
         """MCP cannot fetch local, special-use, credentialed or nonstandard URLs."""
@@ -84,6 +89,7 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
                 return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
             if request.url.path == "/crawl":
                 self.assertEqual(request.method, "POST")
+                self.assertEqual(json.loads(request.content)["urls"], ["https://example.com/page"])
                 return httpx.Response(200, json={
                     "results": [{"url": "https://example.com/page",
                                  "success": True, "markdown": "Page content"}]
