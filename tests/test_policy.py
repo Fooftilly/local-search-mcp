@@ -137,6 +137,47 @@ class DomainPolicyTests(unittest.TestCase):
                 "SELECT count(*) FROM metadata WHERE key='explicit_rules_v1'"
             ).fetchone()[0], 1)
 
+    def test_upgrade_adds_explicit_rule_column_to_original_sqlite_schema(self):
+        """Verify the actual pre-upgrade domains table migrates in place."""
+        database = policy.database_path()
+        database.parent.mkdir(parents=True, mode=0o700)
+        with sqlite3.connect(database) as conn:
+            conn.executescript("""
+                CREATE TABLE domains(
+                    domain TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    request_count INTEGER NOT NULL DEFAULT 0,
+                    last_requested_at TEXT NOT NULL DEFAULT '',
+                    last_requested_url TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE decisions(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    at TEXT NOT NULL, domain TEXT NOT NULL, action TEXT NOT NULL
+                );
+                INSERT INTO domains(domain,status,created_at,updated_at)
+                    VALUES('example.org','denied','2026-01-01','2026-01-01');
+                INSERT INTO domains(domain,status,created_at,updated_at,request_count)
+                    VALUES('sub.example.org','denied','2026-01-01','2026-01-01',1);
+                INSERT INTO metadata(key,value) VALUES('domain_seed_v1','1');
+                INSERT INTO decisions(at,domain,action)
+                    VALUES('2026-01-01','example.org','deny');
+            """)
+        policy.initialize()
+        with policy._db() as conn:
+            columns = {r["name"] for r in conn.execute("PRAGMA table_info(domains)")}
+            self.assertIn("explicit_rule", columns)
+            self.assertEqual(conn.execute(
+                "SELECT explicit_rule FROM domains WHERE domain='example.org'"
+            ).fetchone()[0], 1)
+        self.assertEqual(policy.request("sub.example.org", "https://sub.example.org/"),
+                         ("denied", "example.org"))
+        policy.decide("example.org", "allow")
+        self.assertEqual(policy.request("sub.example.org", "https://sub.example.org/"),
+                         ("allowed", "example.org"))
+
     def test_legacy_pending_child_under_allowed_parent_is_removed_on_upgrade(self):
         """A stale pending row does not keep asking for approval on a grant."""
         with policy._db() as db:
