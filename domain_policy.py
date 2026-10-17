@@ -363,8 +363,11 @@ def expired_grant_without_active_fallback(domain: str) -> bool:
     with _db() as conn:
         _seed(conn)
         now = utcnow()
-        if _match(conn, domain, now) is not None:
-            return False
+        active_rule = _match(conn, domain, now)
+        if active_rule is not None:
+            # A still-valid deny fallback must never release content that
+            # started under a now-expired, more-specific allow rule.
+            return active_rule['status'] != 'allowed'
         labels = domain.split('.')
         for i in range(len(labels) - 1):
             candidate = '.'.join(labels[i:])
