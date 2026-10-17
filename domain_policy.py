@@ -127,15 +127,18 @@ def _seed(conn):
         if conn.execute("SELECT 1 FROM metadata WHERE key='explicit_rules_v1'").fetchone() is None:
             # Parent status is NOT evidence of a child's own decision:
             # the old request() copied denials to children even if the parent
-            # was later allowed or deleted. The old rename audit stores only
-            # the source name, not the destination. Preserve renamed rules via
-            # their updated timestamp (conservatively retaining ties), while
-            # classifying unreviewed, request-derived denials as pending.
+            # was later allowed or deleted. A deleted or renamed child rule
+            # could also be recreated by request() as an inherited denial.
+            # Thus only the latest audit action for the current name may
+            # prove an explicit deny; historical denies are not sufficient.
+            # Rename audits store the source but not the destination, so
+            # preserve destination rules by their updated timestamp
+            # (conservatively retaining ties).
             conn.execute("""UPDATE domains SET explicit_rule=1
                 WHERE status='allowed' OR
                 (status='denied' AND (
-                    EXISTS (SELECT 1 FROM decisions d WHERE d.domain=domains.domain
-                            AND d.action='deny')
+                    (SELECT d.action FROM decisions d
+                     WHERE d.domain=domains.domain ORDER BY d.id DESC LIMIT 1) = 'deny'
                     OR (request_count=0 AND last_requested_at='')
                     OR updated_at != created_at
                     OR EXISTS (SELECT 1 FROM decisions d

@@ -257,6 +257,84 @@ class DomainPolicyTests(unittest.TestCase):
         self.assertEqual(policy.request("explicit.example.org", "https://explicit.example.org/"),
                          ("denied", "explicit.example.org"))
 
+    def test_v1_deleted_or_renamed_denial_audit_does_not_revive_inherited_child(self):
+        """A stale deny audit must not turn a re-created v1 child clone into a rule."""
+        database = policy.database_path()
+        database.parent.mkdir(parents=True, mode=0o700)
+        # Create the real original v1 schema, without explicit_rule.
+        with sqlite3.connect(database) as db:
+            db.executescript("""
+                CREATE TABLE domains(
+                    domain TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    request_count INTEGER NOT NULL DEFAULT 0,
+                    last_requested_at TEXT NOT NULL DEFAULT '',
+                    last_requested_url TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE decisions(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    at TEXT NOT NULL, domain TEXT NOT NULL,
+                    action TEXT NOT NULL CHECK(action IN ('allow','deny','delete','rename'))
+                );
+                INSERT INTO metadata(key,value) VALUES('domain_seed_v1','1');
+            """)
+            # Original v1 semantics:
+            # deny child -> delete child -> request under denied parent
+            # creates a *new*, automatically inherited denied child row.
+            for domain, created, updated, count, requested in (
+                ("example.org", "01:00", "01:00", 0, ""),
+                ("deleted.example.org", "01:17", "01:17", 2, "01:17"),
+                # Same-second explicit re-deny of an inherited clone must stay.
+                ("redenied.example.org", "01:14", "01:14", 2, "01:14"),
+                # The renamed destination is a genuine explicit child rule.
+                ("new.example.org", "01:15", "01:16", 2, "01:15"),
+                # Rename away -> request at old name also creates a clone.
+                ("renamed.example.org", "01:18", "01:18", 2, "01:18"),
+                # With no parent, a deleted rule's new clone is pending.
+                ("orphan.example.net", "01:19", "01:19", 2, "01:19"),
+            ):
+                stamp = lambda t: "2026-01-01T" + t + ":00Z" if t else ""
+                db.execute("""INSERT INTO domains
+                    (domain,status,created_at,updated_at,request_count,last_requested_at)
+                    VALUES(?,?,?,?,?,?)""",
+                    (domain, "denied",
+                     stamp(created), stamp(updated), count, stamp(requested)))
+            for action, domain, at in (
+                ("deny", "example.org", "01:00"),
+                ("deny", "deleted.example.org", "01:10"),
+                ("delete", "deleted.example.org", "01:11"),
+                ("deny", "redenied.example.org", "01:12"),
+                ("delete", "redenied.example.org", "01:13"),
+                ("deny", "redenied.example.org", "01:14"),
+                ("deny", "renamed.example.org", "01:15"),
+                ("rename", "renamed.example.org", "01:16"),
+                ("deny", "orphan.example.net", "01:10"),
+                ("delete", "orphan.example.net", "01:11"),
+            ):
+                db.execute("INSERT INTO decisions(at,domain,action) VALUES(?,?,?)",
+                           ("2026-01-01T" + at + ":00Z", domain, action))
+        policy.initialize()
+        rows = {r["domain"]: r for r in policy.entries()}
+        self.assertNotIn("deleted.example.org", rows)
+        self.assertNotIn("renamed.example.org", rows)
+        self.assertEqual(rows["orphan.example.net"]["status"], "pending")
+        self.assertEqual(rows["orphan.example.net"]["explicit_rule"], 0)
+        for domain in ("redenied.example.org", "new.example.org"):
+            self.assertEqual(rows[domain]["explicit_rule"], 1)
+
+        policy.decide("example.org", "allow")
+        for domain in ("deleted.example.org", "renamed.example.org"):
+            self.assertEqual(policy.request(domain, "https://" + domain + "/"),
+                             ("allowed", "example.org"))
+        for domain in ("redenied.example.org", "new.example.org"):
+            self.assertEqual(policy.request(domain, "https://" + domain + "/"),
+                             ("denied", domain))
+        self.assertEqual(policy.request("orphan.example.net",
+                                        "https://orphan.example.net/")[0], "pending")
+
     def test_legacy_renamed_denial_is_not_dropped_under_allowed_parent(self):
         """Old rename audit names only the source; preserve destination deny."""
         with policy._db() as db:
