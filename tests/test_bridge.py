@@ -7,6 +7,8 @@ import unittest
 import os
 import socket
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from unittest.mock import patch
 
 import httpx
@@ -174,6 +176,49 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(policy.request(
                 "child.example.org", "https://child.example.org/page")[0],
                 "denied")
+
+    def test_clearing_expired_pending_blocks_inflight_fetch(self):
+        """Clear pending must not erase the expiry evidence for an old crawl."""
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        crawled = Event()
+        release = Event()
+
+        def slow_crawler(_url, _mode):
+            crawled.set()
+            self.assertTrue(release.wait(timeout=5))
+            return {"url": "https://example.org/page", "success": True,
+                    "markdown": "EXPIRED_PENDING_SECRET", "truncated": False}
+
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns),
+              patch.object(self.module, "_run_fetch", side_effect=slow_crawler)):
+            policy.decide("example.org", "allow",
+                          scope="exact", expires_minutes=60)
+            clock[0] = "2026-10-17T12:59:59Z"
+            before = self.module.request_cache.policy_epoch()
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                waiting_fetch = executor.submit(
+                    self.module.web_fetch, "https://example.org/page")
+                try:
+                    self.assertTrue(crawled.wait(timeout=5))
+                    clock[0] = "2026-10-17T13:00:00Z"
+                    self.assertEqual(policy.request(
+                        "example.org", "https://example.org/page")[0], "pending")
+                    self.assertEqual(self.module.request_cache.policy_epoch(), before)
+                    self.assertEqual(policy.clear_pending_requests(), 1)
+                    self.assertEqual(self.module.request_cache.policy_epoch(), before + 1)
+                    self.assertNotIn(
+                        "example.org", {row["domain"] for row in policy.entries()})
+                finally:
+                    release.set()
+                result = waiting_fetch.result(timeout=5)
+
+            self.assertFalse(result["success"])
+            self.assertEqual(result["status"], "blocked")
+            self.assertNotIn("EXPIRED_PENDING_SECRET", str(result))
 
     def test_cross_host_redirect_result_is_not_cached(self):
         final = {"url": "https://redirect.example.org/landing",
