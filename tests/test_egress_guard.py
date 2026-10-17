@@ -131,7 +131,7 @@ class GuardTests(unittest.TestCase):
             with self.subTest(subnet=subnet):
                 network = ipaddress.ip_network(subnet)
                 targets = guard.probe_targets(network)
-                self.assertEqual(len(targets), len(guard.PROBE_CANDIDATES))
+                self.assertEqual(len(targets), len(guard.PROBE_RANGES))
                 self.assertTrue(all(ipaddress.ip_address(target) not in network for target in targets))
         with self.assertRaises(guard.GuardError):
             guard.probe_targets(ipaddress.ip_network('10.0.0.0/8'))

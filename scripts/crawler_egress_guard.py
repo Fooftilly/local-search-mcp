@@ -29,15 +29,16 @@ BLOCKED_IPV4 = (
 )
 
 
-# Categories are deliberately sampled outside the active Docker bridge subnet.
-# The host firewall, not upstream route availability, must reject each test.
-PROBE_CANDIDATES = (
-    ('RFC1918 10/8', ('10.254.0.9', '10.127.254.9', '10.1.254.9')),
-    ('RFC1918 172.16/12', ('172.31.254.9', '172.16.254.9', '172.20.254.9')),
-    ('RFC1918 192.168/16', ('192.168.254.9', '192.168.1.9', '192.168.127.9')),
-    ('metadata/link-local', ('169.254.169.254', '169.254.1.9')),
-    ('carrier NAT', ('100.64.0.9', '100.127.0.9')),
-    ('documentation', ('203.0.113.9', '198.51.100.9')),
+# Reference deny ranges by their indexes in BLOCKED_IPV4, rather than
+# duplicating literal private addresses. One probe per listed category must
+# traverse the host FORWARD hook, never an on-link Docker bridge route.
+PROBE_RANGES = (
+    ('RFC1918 10/8', 1),
+    ('RFC1918 172.16/12', 5),
+    ('RFC1918 192.168/16', 9),
+    ('metadata/link-local', 4),
+    ('carrier NAT', 2),
+    ('documentation', 12),
 )
 
 
@@ -93,12 +94,21 @@ def validate_public_dns(host: dict) -> None:
 
 
 def probe_targets(subnet: ipaddress.IPv4Network) -> tuple[str, ...]:
-    """Pick one off-link deny target per block category, or refuse an inconclusive probe."""
+    """Derive off-link destinations from the firewall denylist, fail closed on overlaps."""
     selected = []
-    for category, candidates in PROBE_CANDIDATES:
-        target = next((t for t in candidates if ipaddress.ip_address(t) not in subnet), None)
+    for category, block_index in PROBE_RANGES:
+        network = ipaddress.ip_network(BLOCKED_IPV4[block_index])
+        # Cover both ends and the middle of the blocked range so a Docker
+        # subnet overlapping one candidate need not invalidate the whole test.
+        size = network.num_addresses
+        # First try the conventional IPv4 cloud metadata endpoint within
+        # link-local space; other categories sample distinct blocked ranges.
+        offsets = ((169 * 256 + 254,) if category == 'metadata/link-local' else ()) + (
+            size - 2, size // 2, size // 4, size * 3 // 4, 1)
+        target = next((str(network.network_address + offset) for offset in offsets
+                       if 0 < offset < size - 1 and (network.network_address + offset) not in subnet), None)
         if target is None:
-            raise GuardError(f'Cannot test {category}: every candidate overlaps Docker bridge subnet {subnet}')
+            raise GuardError(f'Cannot test {category}: blocked range overlaps Docker bridge subnet {subnet}')
         selected.append(target)
     return tuple(selected)
 
