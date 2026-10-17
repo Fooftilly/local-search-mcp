@@ -229,7 +229,10 @@ class DomainPolicyTests(unittest.TestCase):
             db.execute("""INSERT INTO domains(domain,status,created_at,updated_at,
                         request_count,last_requested_at)
                         VALUES(?,?,?,?,?,?)""",
-                       ("renamed.example.org", "denied", before, now, 1, before))
+                       # Creation and rename happened in the same UTC second.
+                       # With equal timestamps, only the rename audit protects
+                       # this explicit denial from migration cleanup.
+                       ("renamed.example.org", "denied", now, now, 1, before))
             db.execute("""INSERT INTO domains(domain,status,created_at,updated_at,
                         request_count,last_requested_at)
                         VALUES(?,?,?,?,?,?)""",
