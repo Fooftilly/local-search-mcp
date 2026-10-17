@@ -54,6 +54,29 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["docs.python.org"]["last_requested_url"], "https://docs.python.org/safe")
         self.assertNotIn("hidden", str(saved))
 
+    async def test_optional_search_filters_are_exposed_over_real_mcp(self):
+        seen = []
+        def handler(request: httpx.Request):
+            seen.append(dict(request.url.params))
+            return httpx.Response(200, json={"results": [
+                {"title": "One", "url": "https://example.org", "content": "ok", "engine": "qwant"}
+            ]})
+        original = httpx.Client
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with patch.object(bridge.httpx, "Client", side_effect=factory):
+            async with Client(bridge.mcp) as client:
+                response = await client.call_tool("web_search", {
+                    "query": "local query", "max_results": 2, "language": "en",
+                    "categories": "news", "engines": "qwant", "time_range": "day", "page": 2,
+                })
+        self.assertFalse(response.is_error)
+        self.assertEqual(response.data[0]["engine"], "qwant")
+        self.assertEqual(seen, [{
+            "q": "local query", "format": "json", "language": "en",
+            "categories": "news", "time_range": "day", "engines": "qwant", "pageno": "2",
+        }])
+
     async def test_invalid_public_targets_are_blocked_without_backend(self):
         """MCP cannot fetch local, special-use, credentialed or nonstandard URLs."""
         invalid = (

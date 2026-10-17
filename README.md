@@ -4,7 +4,7 @@ A **local, read-only MCP bridge** for [SearXNG](https://docs.searxng.org/) searc
 
 ## What it provides
 
-- MCP `web_search(query, max_results=8)` — SearXNG-backed public web search.
+- MCP `web_search(query, max_results=8)` — SearXNG-backed public web search, with optional language, category, time range, engine and page filters. See [SEARCH.md](SEARCH.md).
 - MCP `web_fetch(url)` — Crawl4AI-backed extraction of an approved public page. Unknown domains enter the dashboard approval queue. Agents cannot approve domains.
 - Local approvals, deny rules, domain history and search/fetch audit trail.
 - A launcher which checks services, sets up a Python venv, discovers a local Crawl4AI token where permitted, and starts the bridge plus tunnel.
@@ -51,6 +51,8 @@ Use a Streamable HTTP MCP client to inspect and test `web_search` and `web_fetch
 fastmcp list http://127.0.0.1:8790/mcp --auth none
 fastmcp call http://127.0.0.1:8790/mcp web_search query='Arch Linux news' max_results=3 --auth none
 ```
+
+For optional search filters, page limits, SearXNG engine support, and examples, see [SEARCH.md](SEARCH.md).
 
 ## Domains and approvals
 

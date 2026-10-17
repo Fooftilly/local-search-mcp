@@ -24,6 +24,94 @@ class BridgeTests(unittest.TestCase):
         with patch.dict(sys.modules,{'fastmcp':fake}),patch('crawler_security.local_container_warning',return_value=None):
             spec.loader.exec_module(cls.module)
 
+    def test_search_old_signature_preserves_default_request_and_shape(self):
+        calls = []
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(200, json={"results": [
+                {"title": "A", "url": "https://example.com", "content": "Snippet", "engine": "bing"},
+                {"title": "B", "url": "https://example.net", "content": "Text", "engine": "qwant"},
+            ]})
+        original = httpx.Client
+        def client(**kwargs):
+            self.assertFalse(kwargs["trust_env"])
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            results = self.module.web_search("  query  ", 1)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0], {"title": "A", "url": "https://example.com",
+                                      "snippet": "Snippet", "engine": "bing"})
+        self.assertEqual(calls[0].url.path, "/search")
+        self.assertEqual(dict(calls[0].url.params), {"q": "query", "format": "json"})
+
+    def test_search_options_map_to_local_searxng_with_bounded_results(self):
+        calls = []
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(200, json={"results": [
+                {"title": f"Result {i}", "url": f"https://example.org/{i}",
+                 "content": "S" * 1500, "engine": "qwant"} for i in range(20)
+            ]})
+        original = httpx.Client
+        def client(**kwargs): return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            results = self.module.web_search(
+                "sample", 20, language="en-US", categories="news, science",
+                time_range="month", engines="qwant, yahoo", page=3,
+            )
+        self.assertEqual(len(results), 12)
+        self.assertEqual(len(results[0]["snippet"]), 1100)
+        self.assertEqual(dict(calls[0].url.params), {
+            "q": "sample", "format": "json", "language": "en-US",
+            "categories": "news,science", "time_range": "month",
+            "engines": "qwant,yahoo", "pageno": "3",
+        })
+        self.assertEqual(str(calls[0].url.host), "127.0.0.1")
+
+    def test_invalid_search_options_do_not_contact_upstream(self):
+        cases = (
+            {"language": "en&format=html"},
+            {"categories": "news,,images"},
+            {"categories": "news,news"},
+            {"categories": "malicious;url"},
+            {"engines": "qwant,google!"},
+            {"engines": "e" * 41},
+            {"time_range": "forever"},
+            {"page": 0},
+            {"page": 11},
+            {"page": True},
+            {"page": "2"},
+            {"max_results": "12"},
+            {"query": ""},
+        )
+        for kwargs in cases:
+            with self.subTest(kwargs=kwargs), \
+                 patch.object(self.module.httpx, "Client") as client:
+                with self.assertRaises(ValueError):
+                    self.module.web_search(**({"query": "hello"} | kwargs))
+                client.assert_not_called()
+
+    def test_search_backend_bad_filter_response_is_explicit(self):
+        original = httpx.Client
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(
+                lambda request: httpx.Response(422, json={"detail": "Unsupported filter"})
+            ))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            with self.assertRaisesRegex(ValueError, "rejected the requested filters"):
+                self.module.web_search("test", categories="custom")
+
+    def test_search_handles_malformed_result_rows_without_crashing(self):
+        original = httpx.Client
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json={"results": [
+                    None, {"title": "Valid", "url": "https://example.com", "content": "ok"}
+                ]})
+            ))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            self.assertEqual(len(self.module.web_search("test")), 1)
+
     def test_no_crawl_when_backend_old(self):
         calls=[]
         def handler(request):
