@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Bounded, read-only local health snapshots. Never reads private credentials."""
+"""Read-only local health checks; fixed loopback ports, no proxies or redirects."""
 from __future__ import annotations
 
 import argparse
+from http.client import HTTPConnection
 import json
 import socket
 import sys
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from crawler_security import verify_health
 
@@ -14,43 +14,32 @@ HOST = "127.0.0.1"
 TIMEOUT = 3
 
 
-class NoRedirect(HTTPRedirectHandler):
-    """Reject unexpected redirects from loopback services."""
-
-    def redirect_request(self, request, fp, code, msg, headers, newurl):
-        """Do not follow redirects, including to non-loopback addresses."""
-        return None
-
-
-def local_request(url: str):
-    """Use only fixed loopback URLs without proxying or following redirects."""
-    if not url.startswith(f"http://{HOST}:"):
-        raise ValueError("Health request target is not loopback")
-    opener = build_opener(ProxyHandler({}), NoRedirect())
-    return opener.open(Request(url, headers={"User-Agent": "local-search-mcp-health/1"}), timeout=TIMEOUT)
-
-
-def searxng_ok() -> bool:
-    """Use SearXNG /healthz, avoiding real upstream search requests and rate limits."""
+def local_get(port: int, path: str, max_bytes: int = 200_000) -> tuple[int, bytes]:
+    """Query a fixed local HTTP server directly without proxy or redirect handling."""
+    if port not in (8888, 11235, 8791) or not path.startswith("/") or path.startswith("//"):
+        raise ValueError("Unknown health destination")
+    connection = HTTPConnection(HOST, port, timeout=TIMEOUT)
     try:
-        with local_request(f"http://{HOST}:8888/healthz") as response:  # NOSONAR (loopback-only HTTP API)
-            return response.status == 200 and response.read(50).strip() == b"OK"
-    except (OSError, ValueError):
-        return False
+        connection.request("GET", path, headers={"User-Agent": "local-search-mcp-health/1"})
+        response = connection.getresponse()
+        body = response.read(max_bytes + 1)
+        if len(body) > max_bytes:
+            raise ValueError("Health response exceeded limit")
+        return response.status, body
+    finally:
+        connection.close()
 
 
-def get_json(url: str) -> object:
-    """Get JSON from a fixed loopback endpoint, with a strict response limit."""
-    # These local upstreams expose HTTP over loopback only, without TLS.
-    # Never honor proxy environment variables for local health traffic.
-    with local_request(url) as response:
-        if response.status != 200:
-            raise ValueError("Unexpected health HTTP status")
-        return json.loads(response.read(200_000))
+def get_json(port: int, path: str) -> object:
+    """Parse a bounded JSON response from an approved loopback endpoint."""
+    status, body = local_get(port, path)
+    if status != 200:
+        raise ValueError("Unexpected health HTTP status")
+    return json.loads(body)
 
 
 def listening(port: int) -> bool:
-    """Test a local TCP listener without executing tools or accessing secrets."""
+    """Test a fixed local TCP listener without executing tools or reading secrets."""
     try:
         with socket.create_connection((HOST, port), timeout=TIMEOUT):
             return True
@@ -59,20 +48,28 @@ def listening(port: int) -> bool:
 
 
 def dashboard_ok() -> bool:
-    """Require the loopback management dashboard to return HTTP 200."""
+    """Verify the management UI responds with 200 without following redirects."""
     try:
-        with local_request(f"http://{HOST}:8791/") as response:  # NOSONAR (loopback-only HTTP API)
-            return response.status == 200
+        status, _ = local_get(8791, "/", max_bytes=1024)
+        return status == 200
+    except (OSError, ValueError):
+        return False
+
+
+def searxng_ok() -> bool:
+    """Use the SearXNG health endpoint instead of issuing recurring web searches."""
+    try:
+        status, body = local_get(8888, "/healthz", max_bytes=50)
+        return status == 200 and body.strip() == b"OK"
     except (OSError, ValueError):
         return False
 
 
 def snapshot() -> dict:
-    """Report each dependency independently, distinguishing degraded from offline."""
-    states = {}
-    states["searxng"] = searxng_ok()
+    """Distinguish an unavailable bridge from degraded upstream dependencies."""
+    states = {"searxng": searxng_ok()}
     try:
-        states["crawl4ai"] = verify_health(get_json(f"http://{HOST}:11235/health")) is None  # NOSONAR (loopback-only Crawl4AI)
+        states["crawl4ai"] = verify_health(get_json(11235, "/health")) is None
     except (OSError, ValueError, TypeError):
         states["crawl4ai"] = False
     states["mcp_listener"] = listening(8790)
@@ -82,12 +79,12 @@ def snapshot() -> dict:
     return {
         "status": status,
         "checks": states,
-        "note": "TCP listeners do not prove remote tunnel connectivity or MCP-tool correctness.",
+        "note": "TCP listener checks do not prove remote tunnel registration or MCP-tool correctness.",
     }
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Print a structured snapshot; failures are visible to systemd timers."""
+    """Print health as text or JSON and exit nonzero when a dependency is down."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
