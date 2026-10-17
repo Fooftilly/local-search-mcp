@@ -54,38 +54,58 @@ def run_command(args: list[str], *, env: dict[str, str] | None = None) -> None:
         raise SetupError(f"Command failed: {args[0]} {args[1] if len(args) > 1 else ''} ({exc})") from exc
 
 
+def _verify_private_location() -> None:
+    """Reject private-directory and config symlinks, including dangling links."""
+    if PRIVATE_DIR.is_symlink() or PRIVATE_CONFIG.is_symlink():
+        raise SetupError("Refusing symlinked private configuration directory or file")
+    if PRIVATE_DIR.exists():
+        directory = PRIVATE_DIR.stat()
+        if not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid():
+            raise SetupError("Private configuration directory is not an owned directory")
+    if PRIVATE_CONFIG.exists():
+        info = PRIVATE_CONFIG.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise SetupError("Private configuration is not an owned regular file")
+
+
 def read_config() -> dict[str, str]:
-    if not PRIVATE_CONFIG.is_file():
+    _verify_private_location()
+    if not PRIVATE_CONFIG.exists():
         return {}
-    if PRIVATE_CONFIG.is_symlink():
-        raise SetupError(f"Refusing symlink for secret file {PRIVATE_CONFIG}")
     if PRIVATE_CONFIG.stat().st_mode & 0o077:
         raise SetupError(f"Private config permissions are too broad: chmod 600 '{PRIVATE_CONFIG}'")
     try:
         data = json.loads(PRIVATE_CONFIG.read_text())
     except (ValueError, OSError) as exc:
-        raise SetupError(f"Cannot read {PRIVATE_CONFIG}: {exc}") from exc
+        raise SetupError(f"Cannot read {PRIVATE_CONFIG}: {type(exc).__name__}") from exc
     if not isinstance(data, dict):
         raise SetupError("Private configuration must be a JSON object")
-    return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+    if not all(isinstance(k, str) and isinstance(v, str) for k, v in data.items()):
+        raise SetupError("Private configuration values must be strings")
+    return data
 
 
 def save_config(config: dict[str, str]) -> None:
+    """Atomically store owner-only credentials without following symlinks."""
+    _verify_private_location()
+    if not all(isinstance(k, str) and isinstance(v, str) for k, v in config.items()):
+        raise SetupError("Private configuration values must be strings")
     PRIVATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _verify_private_location()
     os.chmod(PRIVATE_DIR, 0o700)
-    if PRIVATE_CONFIG.exists() and PRIVATE_CONFIG.is_symlink():
-        raise SetupError("Refusing to replace symlink for private config")
     fd, tmp = tempfile.mkstemp(prefix=".config-", dir=PRIVATE_DIR)
     try:
         os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(config, f, indent=2)
-            f.write("\n")
+        with os.fdopen(fd, "w") as output:
+            json.dump(config, output, indent=2)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        _verify_private_location()
         os.replace(tmp, PRIVATE_CONFIG)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
-    os.chmod(PRIVATE_CONFIG, 0o600)
 
 
 def read_legacy_env(path: Path) -> dict[str, str]:
@@ -431,12 +451,19 @@ def run_unattended_service(component: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Configure and run local SearXNG/Crawl4AI MCP and OpenAI tunnel")
     parser.add_argument("--setup-only", action="store_true", help="Configure dependencies/credentials but do not start processes")
+    parser.add_argument("--show-config", action="store_true", help="Show redacted configuration sources without starting services")
     parser.add_argument("--service", choices=("bridge", "tunnel"), help=argparse.SUPPRESS)
     parser.add_argument("--refresh-runtime-key", action="store_true", help="Prompt for a new OpenAI runtime key and replace the saved one")
     parser.add_argument("--refresh-crawl-token", action="store_true", help="Prompt for a replacement Crawl4AI token instead of detecting Docker token")
     parser.add_argument("--domains", help="Replace the allowed public crawl domains, comma-separated")
     args = parser.parse_args()
     try:
+        if args.show_config:
+            if args.service or args.setup_only or args.refresh_runtime_key or args.refresh_crawl_token or args.domains:
+                raise SetupError("--show-config cannot be combined with setup/service options")
+            from config_diagnostics import collect_report
+            print(json.dumps(collect_report(read_config(), ROOT, PRIVATE_DIR), indent=2))
+            return 0
         if args.service:
             if args.setup_only or args.refresh_runtime_key or args.refresh_crawl_token or args.domains:
                 raise SetupError("--service cannot be combined with interactive setup options")
