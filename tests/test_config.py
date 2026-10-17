@@ -90,6 +90,54 @@ class PrivateConfigTests(unittest.TestCase):
         for folder in (nested, nested.parent, nested.parent.parent):
             self.assertEqual(folder.stat().st_mode & 0o777, 0o700)
 
+    def test_first_run_with_symlinked_xdg_config_home(self):
+        """Only the private directory, not the chosen XDG ancestor, must be real."""
+        target = Path(self.tmp.name) / "real-config"
+        target.mkdir(mode=0o700)
+        alias = Path(self.tmp.name) / "xdg-config"
+        alias.symlink_to(target, target_is_directory=True)
+        config_dir = alias / "local-search-mcp"
+        with (patch.object(bootstrap, "PRIVATE_DIR", config_dir),
+              patch.object(bootstrap, "PRIVATE_CONFIG", config_dir / "config.json")):
+            bootstrap.save_config({"CRAWL4AI_API_TOKEN": "from-symlinked-xdg"})
+            self.assertFalse(config_dir.is_symlink())
+            self.assertEqual(bootstrap.read_config()["CRAWL4AI_API_TOKEN"], "from-symlinked-xdg")
+            self.assertEqual(config_dir.stat().st_mode & 0o777, 0o700)
+
+    def test_concurrent_directory_creation_is_accepted_only_for_real_directories(self):
+        """Another launcher's mkdir may win without making this save fail."""
+        original_mkdir = Path.mkdir
+        appeared = {"done": False}
+
+        def race_mkdir(folder, mode=0o777, parents=False, exist_ok=False):
+            if folder == self.directory and not appeared["done"]:
+                appeared["done"] = True
+                original_mkdir(folder, mode=mode)
+                raise FileExistsError("racing launcher created directory")
+            return original_mkdir(folder, mode=mode, parents=parents, exist_ok=exist_ok)
+
+        with patch.object(Path, "mkdir", race_mkdir):
+            bootstrap.save_config({"CRAWL4AI_API_TOKEN": "safe"})
+        self.assertTrue(appeared["done"])
+        self.assertEqual(bootstrap.read_config()["CRAWL4AI_API_TOKEN"], "safe")
+
+    def test_racing_symlink_is_rejected_before_write(self):
+        """An attacker-created path cannot be accepted as the other mkdir winner."""
+        target = Path(self.tmp.name) / "other-config"
+        target.mkdir(mode=0o700)
+        original_mkdir = Path.mkdir
+
+        def race_symlink(folder, mode=0o777, parents=False, exist_ok=False):
+            if folder == self.directory:
+                folder.symlink_to(target, target_is_directory=True)
+                raise FileExistsError("replaced by symlink")
+            return original_mkdir(folder, mode=mode, parents=parents, exist_ok=exist_ok)
+
+        with patch.object(Path, "mkdir", race_symlink):
+            with self.assertRaisesRegex(bootstrap.SetupError, "symlinked"):
+                bootstrap.save_config({"CRAWL4AI_API_TOKEN": "unsafe"})
+        self.assertFalse((target / "config.json").exists())
+
     def test_atomic_file_and_directory_sync_and_failed_rename(self):
         """A durable update syncs its temp file before rename and its directory after."""
         bootstrap.save_config({"CRAWL4AI_API_TOKEN": "original"})

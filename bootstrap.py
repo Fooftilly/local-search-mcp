@@ -99,10 +99,20 @@ def _ensure_private_dir_durable() -> None:
             raise SetupError("Cannot create private configuration directory")
         directory = directory.parent
     for new_dir in reversed(missing):
-        new_dir.mkdir(mode=0o700)
-        # Persist each directory entry in the parent before writing secrets.
-        # The private directory itself is synced after the config-file rename.
-        parent_fd = os.open(new_dir.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            new_dir.mkdir(mode=0o700)
+        except FileExistsError:
+            # A concurrent first-run launcher may already have created it.
+            # Never treat a symlink or non-directory as a successful mkdir.
+            if new_dir.is_symlink() or not new_dir.is_dir():
+                raise SetupError("Refusing symlinked or non-directory private configuration path") from None
+        if new_dir.is_symlink() or not new_dir.is_dir():
+            raise SetupError("Refusing symlinked or non-directory private configuration path")
+        # Persist each new directory entry in its actual parent. Existing XDG
+        # config roots may themselves be symlinks (common in dotfiles setups).
+        # Resolve those ancestors, but do not allow the private dir as a link.
+        parent_fd = os.open(new_dir.parent.resolve(strict=True),
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             os.fsync(parent_fd)
         finally:
