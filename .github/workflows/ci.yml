@@ -39,3 +39,23 @@ jobs:
         run: |
           python3 -c "from scripts.crawler_egress_guard import rules; print(rules('br-localcheck'))" > /tmp/local-search-mcp-guard.nft
           sudo nft --check --file /tmp/local-search-mcp-guard.nft
+  systemd-unit-syntax:
+    name: systemd user unit syntax
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify generated user units
+        run: |
+          UNIT_DIR="$(mktemp -d)"
+          export UNIT_DIR
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from scripts.install_user_services import unit_files
+          folder = Path(os.environ['UNIT_DIR'])
+          for name, contents in unit_files('/usr/bin/python3', Path.cwd()).items():
+              (folder / name).write_text(contents)
+          PY
+          SYSTEMD_UNIT_PATH="$UNIT_DIR:/usr/lib/systemd/system:/lib/systemd/system" systemd-analyze verify "$UNIT_DIR"/*.service
