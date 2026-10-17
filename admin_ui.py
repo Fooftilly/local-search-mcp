@@ -66,9 +66,9 @@ def row_html(r):
 
 def render(query='', message='', kind='success'):
     c=policy.counts()
-    rows=policy.entries(query,limit=2000)
-    pending=''.join(row_html(r) for r in rows if r['status']=='pending')
-    other=''.join(row_html(r) for r in rows if r['status']!='pending')
+    # Separate independent limits: pending floods cannot hide stored decisions.
+    pending=''.join(row_html(r) for r in policy.entries(query,limit=200,status='pending'))
+    other=''.join(row_html(r) for r in policy.entries(query,limit=2000,status='decided'))
     alert=f'<p class="alert {"error" if kind=="error" else "success"}">{esc(message)}</p>' if message else ''
     table_head='<div class="scroll"><table><thead><tr><th>Domain (includes subdomains)</th><th>Decision</th><th>Requests / latest</th><th>Manage</th></tr></thead><tbody>'
     query_escaped=esc(query)
@@ -77,7 +77,12 @@ def render(query='', message='', kind='success'):
 <section class="stats"><div class="stat"><span>Awaiting approval</span><b>{c['pending']}</b></div><div class="stat"><span>Allowed</span><b>{c['allowed']}</b></div><div class="stat"><span>Denied</span><b>{c['denied']}</b></div><div class="stat"><span>Dashboard</span><b style="font-size:14px">127.0.0.1:{PORT}</b></div></section>
 <div class="panel"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="{esc(CSRF)}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Rules include subdomains unless overridden by a more specific rule. Never approve private-network addresses.</p></div>
 <div class="row" style="justify-content:space-between"><h2>Requests awaiting review</h2><div><a href="/">Refresh requests</a></div></div>
+<p class="subtle">Showing at most 200 pending entries (filter to find specific hosts). Agent-created queue entries are limited to {policy.MAX_PENDING_TOTAL} total, {policy.MAX_NEW_PENDING_GLOBAL_PER_HOUR} globally per hour, {policy.MAX_PENDING_PER_SITE} per registrable domain and {policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR} new hosts per site per hour. Manual allow/deny remains available even when the queue is full. Existing entries are never silently removed.</p>
 {table_head}{pending or '<tr><td colspan="4">No pending requests.</td></tr>'}</tbody></table></div>
+<div class="panel"><h2 style="margin-top:0">Clear pending requests</h2>
+<p>Removes <strong>all pending requests</strong>, including rows not currently shown or matching the filter. Existing allow/deny rules and the rolling-hour admission limits are not affected. Agents may need to retry after the rate limit expires.</p>
+<form method="post" action="/pending/clear"><input type="hidden" name="csrf" value="{esc(CSRF)}"><label for="clear-confirm">Type CLEAR to confirm</label><input id="clear-confirm" name="confirm" placeholder="CLEAR" pattern="CLEAR" maxlength="5" required><button type="submit" class="delete">Clear all pending</button></form>
+</div>
 <div class="row" style="justify-content:space-between"><h2>Allowed and denied domains</h2><form method="get" action="/"><input name="q" value="{query_escaped}" placeholder="Filter by domain"><button type="submit">Filter</button></form></div>
 {table_head}{other or '<tr><td colspan="4">No matching domains.</td></tr>'}</tbody></table></div>
 <div class="panel"><h2 style="margin-top:0">Configuration and safety</h2><p>Search endpoint: <code>127.0.0.1:8888</code> · Crawl endpoint: <code>127.0.0.1:11235</code> · MCP: <code>127.0.0.1:8790/mcp</code> · Dashboard: <code>127.0.0.1:{PORT}</code>.</p><p>Domains are stored in <code>{esc(policy.database_path())}</code>. Your existing credentials stay in the launcher’s private configuration and are not displayed here.</p><p class="small">Unknown domains generate a pending request rather than a Python traceback. Only the user can approve them here; agents cannot invoke a tool to grant access. A domain's DNS is also checked for public addresses before an allowed fetch. Crawl4AI should still be isolated from your local network to guard against redirects and DNS rebinding.</p></div></main></body></html>'''
@@ -144,7 +149,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_valid():return self._respond(403,'Forbidden')
         if not self._post_origin_valid():
             return self._respond(403,'Invalid origin')
-        if self.path!='/domain':return self._respond(404,'Not found')
+        if self.path not in ('/domain', '/pending/clear'):return self._respond(404,'Not found')
         try:
             length=int(self.headers.get('Content-Length','-1'))
         except ValueError:return self._respond(400,'Invalid size')
@@ -152,6 +157,11 @@ class Handler(BaseHTTPRequestHandler):
         vals=parse_qs(self.rfile.read(length).decode('utf-8'),keep_blank_values=True)
         def val(key):return vals.get(key,[''])[0]
         if not secrets.compare_digest(val('csrf'),CSRF):return self._respond(403,'Invalid CSRF token')
+        if self.path == '/pending/clear':
+            if val('confirm') != 'CLEAR':
+                return self._respond(400, render(message='Type CLEAR to confirm removal.', kind='error'))
+            removed = policy.clear_pending_requests()
+            return self._respond(200,render(message=f"Cleared {removed} pending requests."))
         try:
             policy.decide(val('domain'),val('action'),val('new_domain'))
             msg=f"Decision updated for {val('domain')[:253]}"

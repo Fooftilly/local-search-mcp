@@ -46,6 +46,55 @@ class DashboardTests(unittest.TestCase):
     def test_reject_cross_site_metadata(self):
         self.assertEqual(self.post({'Sec-Fetch-Site':'cross-site'}),403)
 
+    def test_pending_flood_never_hides_saved_allow_and_deny(self):
+        policy.decide("trusted.example.net", "allow")
+        policy.decide("blocked.example.org", "deny")
+        # Simulate an existing legacy queue, larger than the previous shared
+        # 2000-row display limit. Avoid thousands of unnecessary HTTP calls.
+        with policy._db() as db:
+            now = policy.utcnow()
+            db.executemany("""INSERT INTO domains
+                (domain,status,created_at,updated_at)
+                VALUES (?,'pending',?,?)""",
+                [(f"r{i}.flood-example.org", now, now) for i in range(2105)])
+            db.commit()
+        self.assertEqual(policy.counts()["pending"], 2105)
+        self.assertEqual(
+            {r["domain"] for r in policy.entries(limit=2000, status="decided")},
+            {"example.com", "trusted.example.net", "blocked.example.org"},
+        )
+        page = admin_ui.render()
+        self.assertIn("trusted.example.net", page)
+        self.assertIn("blocked.example.org", page)
+        self.assertIn("Showing at most 200 pending entries", page)
+        self.assertEqual(page.count('<tr><td class="domain">r'), 200)
+        filtered = admin_ui.render("trusted.example.net")
+        self.assertIn('name="q" value="trusted.example.net"', filtered)
+        self.assertIn('<td class="domain">trusted.example.net</td>', filtered)
+        self.assertNotIn('<td class="domain">blocked.example.org</td>', filtered)
+        self.assertNotIn('<td class="domain">r0.flood-example.org</td>', filtered)
+
+    def test_clear_pending_requires_confirmation_and_preserves_decisions(self):
+        policy.decide("trusted.example.net", "allow")
+        policy.request("queued.example.net", "https://queued.example.net/")
+        endpoint = f"http://127.0.0.1:{self.server_port}/pending/clear"
+        def clear(confirm, csrf=admin_ui.CSRF, headers=None):
+            data = urlencode({"confirm": confirm, "csrf": csrf}).encode()
+            request = Request(endpoint, data=data, method="POST", headers=headers or {})
+            try:
+                with urlopen(request, timeout=3) as response:
+                    return response.status
+            except HTTPError as exc:
+                return exc.code
+        self.assertEqual(clear("CLEAR", csrf="bad"), 403)
+        self.assertEqual(clear("CLEAR", headers={"Origin": "http://evil.example"}), 403)
+        self.assertEqual(clear("wrong"), 400)
+        self.assertEqual(policy.counts()["pending"], 1)
+        self.assertEqual(clear("CLEAR"), 200)
+        self.assertEqual(policy.counts()["pending"], 0)
+        self.assertEqual(policy.request("trusted.example.net",
+                                        "https://trusted.example.net/")[0], "allowed")
+
     def test_reject_csrf(self):
         self.assertEqual(self.post(csrf='bad'),403)
 

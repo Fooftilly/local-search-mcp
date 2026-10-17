@@ -400,6 +400,141 @@ class DomainPolicyTests(unittest.TestCase):
         self.assertEqual(policy.request("docs.python.org", "https://docs.python.org/"),
                          ("allowed", "python.org"))
 
+    def test_pending_caps_preserve_existing_requests_and_operator_rules(self):
+        with (patch.object(policy, "MAX_PENDING_TOTAL", 4),
+              patch.object(policy, "MAX_PENDING_PER_SITE", 2),
+              patch.object(policy, "MAX_NEW_PENDING_PER_SITE_PER_HOUR", 2)):
+            for host in ("a.queue-example.org", "b.queue-example.org"):
+                self.assertEqual(policy.request(host, "https://" + host), ("pending", host))
+            self.assertEqual(policy.request("c.queue-example.org", "https://c.queue-example.org"),
+                             ("queue_full", "c.queue-example.org"))
+            # Repeat requests consume no new queue slots and update statistics.
+            self.assertEqual(policy.request("a.queue-example.org", "https://a.queue-example.org"),
+                             ("pending", "a.queue-example.org"))
+            self.assertEqual(next(r for r in policy.entries() if
+                                  r["domain"] == "a.queue-example.org")["request_count"], 2)
+            for host in ("a.other-example.net", "b.other-example.net"):
+                self.assertEqual(policy.request(host, "https://" + host), ("pending", host))
+            self.assertEqual(policy.request("third-example.io", "https://third-example.io"),
+                             ("queue_full", "third-example.io"))
+            self.assertEqual(policy.counts()["pending"], 4)
+            self.assertEqual(policy.request("example.com", "https://example.com")[0], "allowed")
+            # A local user can approve a hostname despite queue saturation.
+            policy.decide("c.queue-example.org", "allow")
+            self.assertEqual(policy.request("c.queue-example.org", "https://c.queue-example.org"),
+                             ("allowed", "c.queue-example.org"))
+            policy.decide("queue-example.org", "allow")
+            self.assertEqual(policy.request("a.queue-example.org", "https://a.queue-example.org"),
+                             ("allowed", "queue-example.org"))
+            self.assertEqual(policy.counts()["pending"], 2)
+
+    def test_pending_creation_hourly_window_resets_without_eviction(self):
+        with (patch.object(policy, "MAX_PENDING_TOTAL", 50),
+              patch.object(policy, "MAX_PENDING_PER_SITE", 5),
+              patch.object(policy, "MAX_NEW_PENDING_PER_SITE_PER_HOUR", 2)):
+            for host in ("a.example.org", "b.example.org"):
+                self.assertEqual(policy.request(host, "https://" + host)[0], "pending")
+            self.assertEqual(policy.request("c.example.org", "https://c.example.org")[0],
+                             "queue_full")
+            with policy._db() as conn:
+                conn.execute("UPDATE pending_admissions SET admitted_at='2020-01-01T00:00:00Z'"
+                             " WHERE id=(SELECT MIN(id) FROM pending_admissions)")
+                conn.commit()
+            self.assertEqual(policy.request("c.example.org", "https://c.example.org")[0],
+                             "pending")
+            self.assertEqual(policy.counts()["pending"], 3)
+
+    def test_hourly_quota_survives_resolve_delete_and_restart(self):
+        with (patch.object(policy, "MAX_PENDING_TOTAL", 50),
+              patch.object(policy, "MAX_PENDING_PER_SITE", 50),
+              patch.object(policy, "MAX_NEW_PENDING_PER_SITE_PER_HOUR", 2)):
+            first = "a.quota-example.net"
+            second = "b.quota-example.net"
+            for domain in (first, second):
+                self.assertEqual(policy.request(domain, "https://" + domain)[0], "pending")
+            policy.decide(first, "allow")
+            policy.decide(second, "delete")
+            self.assertEqual(policy.counts()["pending"], 0)
+            policy.initialize()  # The admissions survive reopening SQLite.
+            blocked = "c.quota-example.net"
+            self.assertEqual(policy.request(blocked, "https://" + blocked),
+                             ("queue_full", blocked))
+            with policy._db() as conn:
+                self.assertEqual(conn.execute(
+                    "SELECT COUNT(*) FROM pending_admissions WHERE site='quota-example.net'"
+                ).fetchone()[0], 2)
+                conn.execute("""UPDATE pending_admissions SET admitted_at='2020-01-01T00:00:00Z'
+                    WHERE site='quota-example.net'""")
+                conn.commit()
+            self.assertEqual(policy.request(blocked, "https://" + blocked),
+                             ("pending", blocked))
+            with policy._db() as conn:
+                self.assertEqual(conn.execute(
+                    "SELECT COUNT(*) FROM pending_admissions WHERE site='quota-example.net'"
+                ).fetchone()[0], 1)
+
+    def test_global_hourly_admissions_bound_cross_site_bursts(self):
+        with (patch.object(policy, "MAX_PENDING_TOTAL", 512),
+              patch.object(policy, "MAX_NEW_PENDING_GLOBAL_PER_HOUR", 3),
+              patch.object(policy, "MAX_PENDING_PER_SITE", 32),
+              patch.object(policy, "MAX_NEW_PENDING_PER_SITE_PER_HOUR", 8)):
+            for i in range(3):
+                host = f"h.multi-site-{i}.org"
+                self.assertEqual(policy.request(host, "https://" + host)[0], "pending")
+            fourth = "new.unique-site.org"
+            self.assertEqual(policy.request(fourth, "https://" + fourth)[0], "queue_full")
+            self.assertEqual(policy.clear_pending_requests(), 3)
+            self.assertEqual(policy.counts()["pending"], 0)
+            # Bulk-clearing requests does not reset a rolling admission limit.
+            self.assertEqual(policy.request(fourth, "https://" + fourth)[0], "queue_full")
+            with policy._db() as conn:
+                conn.execute("UPDATE pending_admissions SET admitted_at='2020-01-01T00:00:00Z'")
+                conn.commit()
+            self.assertEqual(policy.request(fourth, "https://" + fourth)[0], "pending")
+
+    def test_clear_pending_preserves_explicit_rules_and_audits(self):
+        policy.decide("blocked.example.net", "deny")
+        self.assertEqual(policy.request("one.queue-example.net", "https://one.queue-example.net")[0],
+                         "pending")
+        self.assertEqual(policy.request("two.queue-example.net", "https://two.queue-example.net")[0],
+                         "pending")
+        self.assertEqual(policy.clear_pending_requests(), 2)
+        self.assertEqual(policy.clear_pending_requests(), 0)
+        self.assertEqual(policy.counts()["pending"], 0)
+        self.assertEqual(policy.request("blocked.example.net", "https://blocked.example.net")[0],
+                         "denied")
+        self.assertEqual(policy.request("example.com", "https://example.com")[0], "allowed")
+        with policy._db() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT count(*) FROM decisions WHERE action='delete' "
+                "AND domain IN ('one.queue-example.net','two.queue-example.net')"
+            ).fetchone()[0], 2)
+
+    def test_queue_limited_fetch_is_not_falsely_reported_pending(self):
+        with patch.object(policy, "MAX_PENDING_TOTAL", 0):
+            result = policy.evaluate_fetch_url("https://docs.python.org/3/")
+            self.assertEqual(result["status"], "approval_queue_full")
+            self.assertFalse(result["success"])
+            self.assertIn("not queued", result["reason"])
+            self.assertEqual(policy.counts()["pending"], 0)
+            policy.decide("python.org", "allow")
+            self.assertEqual(policy.request("docs.python.org", "https://docs.python.org/"),
+                             ("allowed", "python.org"))
+
+    def test_pending_site_limits_respect_private_psl_boundaries(self):
+        from public_suffix import registrable_domain
+        self.assertEqual(registrable_domain("docs.example.co.uk"), "example.co.uk")
+        self.assertEqual(registrable_domain("docs.team.github.io"), "team.github.io")
+        with (patch.object(policy, "MAX_PENDING_TOTAL", 10),
+              patch.object(policy, "MAX_PENDING_PER_SITE", 1),
+              patch.object(policy, "MAX_NEW_PENDING_PER_SITE_PER_HOUR", 5)):
+            self.assertEqual(policy.request("a.team.github.io", "https://a.team.github.io")[0],
+                             "pending")
+            self.assertEqual(policy.request("b.team.github.io", "https://b.team.github.io")[0],
+                             "queue_full")
+            self.assertEqual(policy.request("a.other.github.io", "https://a.other.github.io")[0],
+                             "pending")
+
     def test_nonstandard_port_is_blocked_before_approval(self):
         result=policy.evaluate_fetch_url("http://example.com:8080/")
         self.assertEqual(result["status"], "blocked")
