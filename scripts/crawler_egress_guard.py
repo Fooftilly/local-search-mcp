@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import ipaddress
 import json
 import os
 import re
@@ -25,6 +26,18 @@ BLOCKED_IPV4 = (
     '192.0.2.0/24', '192.88.99.0/24', '192.168.0.0/16',
     '198.18.0.0/15', '198.51.100.0/24', '203.0.113.0/24',
     '224.0.0.0/4', '240.0.0.0/4',
+)
+
+
+# Categories are deliberately sampled outside the active Docker bridge subnet.
+# The host firewall, not upstream route availability, must reject each test.
+PROBE_CANDIDATES = (
+    ('RFC1918 10/8', ('10.254.0.9', '10.127.254.9', '10.1.254.9')),
+    ('RFC1918 172.16/12', ('172.31.254.9', '172.16.254.9', '172.20.254.9')),
+    ('RFC1918 192.168/16', ('192.168.254.9', '192.168.1.9', '192.168.127.9')),
+    ('metadata/link-local', ('169.254.169.254', '169.254.1.9')),
+    ('carrier NAT', ('100.64.0.9', '100.127.0.9')),
+    ('documentation', ('203.0.113.9', '198.51.100.9')),
 )
 
 
@@ -64,6 +77,32 @@ def validate_api_bindings(host: dict) -> None:
                          'refusing wildcard/LAN/extra port bindings')
 
 
+def validate_public_dns(host: dict) -> None:
+    """Require explicit public IPv4 DNS so the LAN-blocking firewall cannot silently break lookups."""
+    configured = host.get('Dns')
+    if not isinstance(configured, list) or not configured:
+        raise GuardError('Crawl4AI must configure public IPv4 DNS explicitly (--dns 1.1.1.1 or Compose dns:); '
+                         'Docker host-derived LAN DNS is blocked by this guard')
+    for value in configured:
+        try:
+            addr = ipaddress.ip_address(value)
+        except (ValueError, TypeError) as exc:
+            raise GuardError('Crawl4AI DNS entries must be public IPv4 addresses') from exc
+        if not isinstance(addr, ipaddress.IPv4Address) or not addr.is_global:
+            raise GuardError('Crawl4AI DNS entries must be public IPv4 addresses; LAN, host and IPv6 DNS cannot work with this guard')
+
+
+def probe_targets(subnet: ipaddress.IPv4Network) -> tuple[str, ...]:
+    """Pick one off-link deny target per block category, or refuse an inconclusive probe."""
+    selected = []
+    for category, candidates in PROBE_CANDIDATES:
+        target = next((t for t in candidates if ipaddress.ip_address(t) not in subnet), None)
+        if target is None:
+            raise GuardError(f'Cannot test {category}: every candidate overlaps Docker bridge subnet {subnet}')
+        selected.append(target)
+    return tuple(selected)
+
+
 def network_for(container: str) -> tuple[str, str]:
     """Inspect the running crawler and require a dedicated locked-down bridge."""
     container = validated_container(container)
@@ -77,6 +116,7 @@ def network_for(container: str) -> tuple[str, str]:
     if host.get('Privileged') or any(cap.upper() in {'NET_ADMIN', 'SYS_ADMIN', 'SYS_MODULE', 'BPF'} for cap in (host.get('CapAdd') or [])):
         raise GuardError('Refusing privileged or elevated container: crawler could modify firewall or networking')
     validate_api_bindings(host)
+    validate_public_dns(host)
     names = c.get('NetworkSettings', {}).get('Networks', {})
     if len(names) != 1:
         raise GuardError('Crawler must be attached to exactly one dedicated Docker bridge network')
@@ -168,10 +208,17 @@ def probe(container: str, network: str) -> None:
     container = validated_container(container)
     network = validated_container(network)
     raw = json.loads(command(['docker', 'network', 'inspect', network]))
-    gateways = [x.get('Gateway') for x in raw[0].get('IPAM', {}).get('Config', []) if x.get('Gateway')]
-    if len(gateways) != 1 or ':' in gateways[0]:
-        raise GuardError('Expected exactly one Docker bridge IPv4 gateway for the probe')
-    gateway = gateways[0]
+    configs = raw[0].get('IPAM', {}).get('Config', [])
+    if len(configs) != 1 or not configs[0].get('Gateway') or not configs[0].get('Subnet'):
+        raise GuardError('Expected one Docker bridge IPv4 gateway and subnet for the probe')
+    gateway = configs[0]['Gateway']
+    try:
+        subnet = ipaddress.ip_network(configs[0]['Subnet'], strict=True)
+        gateway_addr = ipaddress.ip_address(gateway)
+    except ValueError as exc:
+        raise GuardError('Invalid Docker bridge gateway/subnet for the probe') from exc
+    if not isinstance(subnet, ipaddress.IPv4Network) or gateway_addr not in subnet:
+        raise GuardError('Docker bridge IPv4 gateway/subnet mismatch; refusing inconclusive probe')
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind((gateway, 0))
@@ -192,8 +239,7 @@ def probe(container: str, network: str) -> None:
         rejected_connection(code_text)
     # Verify representative packets hit the host FORWARD deny rule, not merely
     # some unrelated upstream timeout or missing route.
-    targets = ('10.254.0.9', '172.31.254.9', '192.168.254.9',
-               '169.254.169.254', '100.64.0.9', '203.0.113.9')
+    targets = probe_targets(subnet)
     for target in targets:
         before = counter_packets()
         result = subprocess.run(['docker', 'exec', container, 'python', '-c', code, target, '80'],
@@ -203,15 +249,20 @@ def probe(container: str, network: str) -> None:
         rejected_connection(result.stdout.strip().split('CONNECT_RESULT ')[-1].strip())
         if counter_packets() <= before:
             raise GuardError(f'No kernel firewall deny counter increase for {target}; test inconclusive')
-    # A separate positive probe avoids mistaking total network outage for
-    # isolation, but cannot validate all CDN DNS, redirects or future routes.
-    public = ("import socket,sys; "
-              "s=socket.create_connection(('1.1.1.1',443),timeout=8); s.close()")
+    # Require both DNS resolution and a real hostname HTTPS TCP connection.
+    # Connecting to an IP literal would report a false PASS when Docker's
+    # embedded resolver forwards to a blocked LAN router or Pi-hole.
+    public = ("import ipaddress,socket; "
+              "a=socket.getaddrinfo('example.com',443,socket.AF_INET,socket.SOCK_STREAM); "
+              "assert a and all(ipaddress.ip_address(x[4][0]).is_global for x in a); "
+              "s=socket.create_connection(a[0][4],timeout=8); s.close()")
     p = subprocess.run(['docker', 'exec', container, 'python', '-c', public],
                        capture_output=True, text=True, timeout=13, check=False)
     if p.returncode != 0:
-        raise GuardError('Public HTTPS connectivity failed; containment cannot be verified')
-    print('PASS: host-gateway rejected; six forwarded IPv4 destinations rejected by nft; public HTTPS TCP succeeded')
+        raise GuardError('Public hostname DNS or HTTPS failed; check Docker --dns with public IPv4 resolvers '
+                         '(LAN/host upstream DNS is blocked) and public network access')
+    print('PASS: host-gateway rejected; six forwarded IPv4 destinations rejected by nft; '
+          'public DNS and HTTPS-by-hostname succeeded')
 
 
 def require_root() -> None:
@@ -269,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
             raise GuardError('Installed guard does not match current Docker bridge or lacks a guard hook')
         print(f'Configured on {name} ({bridge}). Check actual rules and perform live negative probes:\n{live}')
         return 0
-    except (GuardError, ValueError, KeyError, IndexError, subprocess.TimeoutExpired) as exc:
+    except (GuardError, ValueError, KeyError, IndexError, OSError, subprocess.TimeoutExpired) as exc:
         print(f'Egress guard: {exc}', file=sys.stderr)
         return 1
 

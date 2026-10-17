@@ -3,6 +3,7 @@ import argparse
 import importlib.util
 import errno
 import json
+import ipaddress
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -16,7 +17,7 @@ spec.loader.exec_module(guard)
 def fixture(networks=None, cap=None, privileged=False, members=True, driver='bridge', bindings=None):
     """Build minimal safe Docker inspect responses for mock-based tests."""
     networkid='a'*64
-    container={'Id':'c'*64,'State':{'Running':True},'HostConfig':{'Privileged':privileged,'CapAdd':cap or [], 'PortBindings': bindings if bindings is not None else {'11235/tcp':[{'HostIp':'127.0.0.1','HostPort':'11235'}]}},
+    container={'Id':'c'*64,'State':{'Running':True},'HostConfig':{'Privileged':privileged,'CapAdd':cap or [], 'PortBindings': bindings if bindings is not None else {'11235/tcp':[{'HostIp':'127.0.0.1','HostPort':'11235'}]}, 'Dns':['1.1.1.1']},
                'NetworkSettings':{'Networks':networks if networks is not None else {'crawler-egress':{'NetworkID':networkid}}}}
     network={'Id':networkid, 'Driver':driver, 'Internal':False, 'EnableIPv6':False, 'Options':{},
              'Containers':{('c'*64):{}} if members else {}}
@@ -116,6 +117,29 @@ class GuardTests(unittest.TestCase):
             with self.subTest(invalid=invalid),patch.object(guard,'command',return_value=json.dumps(invalid)):
                 with self.assertRaises(guard.GuardError):
                     guard.counter_packets()
+
+    def test_requires_explicit_public_dns(self):
+        """Reject absent, host, LAN and IPv6-only upstream resolvers."""
+        for dns in ([], None, ['192.168.1.1'], ['127.0.0.53'], ['::1'], ['1.1.1.1', '10.0.0.1']):
+            with self.subTest(dns=dns), self.assertRaises(guard.GuardError):
+                guard.validate_public_dns({'Dns':dns})
+        guard.validate_public_dns({'Dns':['1.1.1.1','9.9.9.9']})
+
+    def test_probes_avoid_docker_on_link_addresses(self):
+        """An overlapping bridge subnet must not masquerade as a firewall rejection."""
+        for subnet in ('172.31.0.0/16', '192.168.240.0/20', '10.254.0.0/16'):
+            with self.subTest(subnet=subnet):
+                network = ipaddress.ip_network(subnet)
+                targets = guard.probe_targets(network)
+                self.assertEqual(len(targets), len(guard.PROBE_CANDIDATES))
+                self.assertTrue(all(ipaddress.ip_address(target) not in network for target in targets))
+        with self.assertRaises(guard.GuardError):
+            guard.probe_targets(ipaddress.ip_network('10.0.0.0/8'))
+
+    def test_missing_binary_is_reported_without_traceback(self):
+        """Missing Docker or nftables raises a controlled command-line failure."""
+        with patch.object(guard, 'network_for', side_effect=FileNotFoundError('docker')):
+            self.assertEqual(guard.main(['--print']), 1)
 
     def test_nft_table_discovery(self):
         """Recognize only the named inet firewall table."""
