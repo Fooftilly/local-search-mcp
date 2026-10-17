@@ -139,6 +139,9 @@ def _run_search(params: dict, max_results: int) -> list[dict] | dict:
     if not isinstance(payload, dict) or not isinstance(payload.get("results", []), list):
         return {"success": False, "status": "invalid_response", "backend": "searxng",
                 "reason": "Local SearXNG returned an invalid results structure."}
+    if not payload.get("results") and payload.get("unresponsive_engines"):
+        return {"success": False, "status": "upstream_unavailable", "backend": "searxng",
+                "reason": "SearXNG returned no results because one or more engines were unresponsive. Retry later or choose another engine."}
     return [
         {
             "title": str(r.get("title", ""))[:240],

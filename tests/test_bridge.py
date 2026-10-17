@@ -87,6 +87,24 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(self.module.web_fetch("https://example.com/page")["status"], "denied")
             backend.assert_not_called()
 
+    def test_searxng_empty_unresponsive_engines_are_not_cached(self):
+        hits = []
+        original = httpx.Client
+        def handler(request):
+            hits.append(True)
+            return httpx.Response(200, json={
+                "results": [],
+                "unresponsive_engines": [{"engine": "qwant", "error": "Timeout"}],
+            })
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            a = self.module.web_search("broken engines")
+            b = self.module.web_search("broken engines")
+        self.assertEqual(a["status"], "upstream_unavailable")
+        self.assertEqual(b["status"], "upstream_unavailable")
+        self.assertEqual(len(hits), 2)
+
     def test_upstream_transient_errors_are_structured_and_retry_bounded(self):
         seen = []
         def search_handler(request):

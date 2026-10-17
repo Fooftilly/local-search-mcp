@@ -25,7 +25,7 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(cache.run("search", ("search", "q"), load, ttl=15), [{"title": "1"}])
             self.assertEqual(cache.run("search", ("search", "q"), load, ttl=15, fresh=True),
                              [{"title": "2"}])
-            self.assertEqual(cache.run("search", ("search", "q"), load, ttl=15), [{"title": "1"}])
+            self.assertEqual(cache.run("search", ("search", "q"), load, ttl=15), [{"title": "2"}])
             now[0] = 1015.0
             self.assertEqual(cache.run("search", ("search", "q"), load, ttl=15), [{"title": "3"}])
         self.assertEqual(len(calls), 3)
@@ -52,6 +52,24 @@ class CacheTests(unittest.TestCase):
         results[0]["markdown"] = "mutated"
         self.assertEqual(cache.run("fetch", ("fetch", "page"), load, ttl=90)["markdown"],
                          "safe")
+
+    def test_fresh_request_replaces_stale_cache_and_prevents_late_overwrite(self):
+        key = ("search", "long")
+        started, finish = Event(), Event()
+        def old_loader():
+            started.set()
+            self.assertTrue(finish.wait(5))
+            return [{"title": "old"}]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            old = pool.submit(cache.run, "search", key, old_loader, ttl=90)
+            self.assertTrue(started.wait(5))
+            fresh = cache.run("search", key, lambda: [{"title": "new"}],
+                              ttl=90, fresh=True)
+            finish.set()
+            self.assertEqual(old.result(timeout=5), [{"title": "old"}])
+        self.assertEqual(fresh, [{"title": "new"}])
+        self.assertEqual(cache.run("search", key, lambda: [{"title": "unexpected"}], ttl=90),
+                         [{"title": "new"}])
 
     def test_failure_does_not_poison_key(self):
         attempts = []

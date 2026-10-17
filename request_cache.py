@@ -23,6 +23,7 @@ _LOCK = Lock()
 _CACHE: OrderedDict[tuple, tuple[float, int, object]] = OrderedDict()
 _INFLIGHT: dict[tuple, Future] = {}
 _POLICY_EPOCH = 0
+_FRESH_REVISION = 0
 
 
 def fetch_key(url: str, mode: str) -> tuple | None:
@@ -60,11 +61,12 @@ def invalidate_fetch() -> None:
 
 def reset_for_test() -> None:
     """Tests only: isolate process-local cache between independently mocked APIs."""
-    global _POLICY_EPOCH
+    global _POLICY_EPOCH, _FRESH_REVISION
     with _LOCK:
         _CACHE.clear()
         _INFLIGHT.clear()
         _POLICY_EPOCH = 0
+        _FRESH_REVISION = 0
 
 
 def _purge(now: float) -> None:
@@ -83,18 +85,50 @@ def _cacheable_size(result: object) -> int:
         return 0
 
 
+def _store(kind: str, key: tuple, result, ttl: float, generation: int,
+           revision: int, should_store) -> None:
+    if should_store is not None and not should_store(result):
+        return
+    size = _cacheable_size(result)
+    if not size:
+        return
+    with _LOCK:
+        # A concurrent forced refresh or domain-rule edit supersedes this
+        # request; late results must not overwrite newer cache content.
+        if revision != _FRESH_REVISION or (
+            kind == "fetch" and generation != _POLICY_EPOCH
+        ):
+            return
+        _purge(time.monotonic())
+        _CACHE[key] = (time.monotonic() + ttl, size, deepcopy(result))
+        _CACHE.move_to_end(key)
+        total = sum(entry[1] for entry in _CACHE.values())
+        while _CACHE and (len(_CACHE) > MAX_ITEMS or total > MAX_BYTES):
+            _, removed = _CACHE.popitem(last=False)
+            total -= removed[1]
+
+
 def run(kind: str, key: tuple | None, load, *, ttl: float, fresh: bool = False,
         should_store=None):
-    """Cache bounded valid results; one upstream call per simultaneous key.
+    """Cache bounded valid results; coalesce concurrent identical requests.
 
-    Fresh bypasses both cache and single-flight so it truly performs an
-    independent upstream request. Failed loaders wake all followers.
+    An explicit fresh call skips cache lookup and single-flight but refreshes
+    the cached value if successful. A failure evicts the old cached value.
     """
-    if fresh or key is None:
+    global _FRESH_REVISION
+    if key is None:
         return load()
+    if fresh:
+        with _LOCK:
+            _CACHE.pop(key, None)
+            _FRESH_REVISION += 1
+            revision = _FRESH_REVISION
+            generation = _POLICY_EPOCH
+        result = load()
+        _store(kind, key, result, ttl, generation, revision, should_store)
+        return result
     with _LOCK:
-        now = time.monotonic()
-        _purge(now)
+        _purge(time.monotonic())
         value = _CACHE.get(key)
         if value is not None:
             _CACHE.move_to_end(key)
@@ -105,27 +139,17 @@ def run(kind: str, key: tuple | None, load, *, ttl: float, fresh: bool = False,
             future = Future()
             _INFLIGHT[key] = future
             generation = _POLICY_EPOCH
+            revision = _FRESH_REVISION
     if not leader:
         return deepcopy(future.result())
     try:
         result = load()
-        if should_store is None or should_store(result):
-            size = _cacheable_size(result)
-            if size:
-                with _LOCK:
-                    if kind != "fetch" or generation == _POLICY_EPOCH:
-                        _purge(time.monotonic())
-                        _CACHE[key] = (time.monotonic() + ttl, size, deepcopy(result))
-                        _CACHE.move_to_end(key)
-                        total = sum(entry[1] for entry in _CACHE.values())
-                        while _CACHE and (len(_CACHE) > MAX_ITEMS or total > MAX_BYTES):
-                            _, removed = _CACHE.popitem(last=False)
-                            total -= removed[1]
+        _store(kind, key, result, ttl, generation, revision, should_store)
         future.set_result(result)
         return result
     except BaseException as exc:
         future.set_exception(exc)
-        # Prevent unobserved-future warnings if no follower consumed it.
+        # Prevent unobserved-future warnings when no follower consumes it.
         future.exception()
         raise
     finally:
