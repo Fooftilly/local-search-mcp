@@ -4,6 +4,9 @@ from pathlib import Path
 import sys
 import types
 import unittest
+import os
+import socket
+import tempfile
 from unittest.mock import patch
 
 import httpx
@@ -27,6 +30,16 @@ class BridgeTests(unittest.TestCase):
     def setUp(self):
         self.module.request_cache.reset_for_test()
         self.addCleanup(self.module.request_cache.reset_for_test)
+        # Never let a policy check performed by the bridge touch the
+        # developer's real ~/.local/state domain approval database.
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
+        env = patch.dict(os.environ, {
+            "XDG_STATE_HOME": state.name,
+            "ALLOWED_CRAWL_DOMAINS": "example.com",
+        })
+        env.start()
+        self.addCleanup(env.stop)
 
     def test_opt_in_search_dedupe_rank_and_cache_isolation(self):
         calls = []
@@ -113,6 +126,28 @@ class BridgeTests(unittest.TestCase):
             self.module.web_search("password=secret", fresh=False)
             self.assertEqual(len(seen), 10)
             self.assertEqual(set(self.module.request_cache._CACHE), keys_before)
+
+    def test_inflight_fetch_started_before_expiry_cannot_release_content_after(self):
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns)):
+            policy.decide("example.org", "allow", expires_minutes=60)
+            clock[0] = "2026-10-17T12:59:59Z"
+
+            def slow_crawler(_url, _mode):
+                clock[0] = "2026-10-17T13:00:00Z"
+                return {"url": "https://child.example.org/data", "success": True,
+                        "markdown": "EXPIRED_CONTENT_SENTINEL", "truncated": False}
+
+            old_epoch = self.module.request_cache.policy_epoch()
+            with patch.object(self.module, "_run_fetch", side_effect=slow_crawler):
+                response = self.module.web_fetch("https://child.example.org/data")
+            self.assertEqual(response["status"], "blocked")
+            self.assertNotIn("EXPIRED_CONTENT_SENTINEL", str(response))
+            self.assertEqual(self.module.request_cache.policy_epoch(), old_epoch)
 
     def test_cross_host_redirect_result_is_not_cached(self):
         final = {"url": "https://redirect.example.org/landing",
