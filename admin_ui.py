@@ -7,16 +7,23 @@ import html
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
-from pathlib import Path
 import secrets
 import sqlite3
+import threading
+import time
 from urllib.parse import parse_qs, urlsplit
 
 import domain_policy as policy
+from dashboard_live_script import LIVE_SCRIPT
 
 HOST='127.0.0.1'
 PORT=int(os.environ.get('LOCAL_SEARCH_MCP_DASHBOARD_PORT','8791'))
 CSRF=secrets.token_urlsafe(32)
+_LIVE_SNAPSHOT_LOCK = threading.Lock()
+_LAST_LIVE_SNAPSHOT_US = 0
+# Ephemeral ID distinguishes dashboard process restarts even if system time
+# moves backward. The browser rejects delayed responses from retired runs.
+_LIVE_SNAPSHOT_RUN = secrets.token_hex(16)
 
 CSS="""
 :root{color-scheme:dark;font-family:Inter,system-ui,-apple-system,sans-serif;background:#101318;color:#e9edf2;font-size:14px}
@@ -45,14 +52,48 @@ def recent_history(n=25):
     except (ImportError,OSError):return []
 
 
-def recent_rows():
-    items=recent_history()
-    if not items:return '<p>No MCP history yet. The history add-on records future calls.</p>'
-    out=['<div class="scroll"><table><thead><tr><th>UTC time</th><th>Operation</th><th>Status</th><th>Query or URL</th></tr></thead><tbody>']
+def history_items_html():
+    items = recent_history()
+    out = []
     for e in items:
-        term=e.get('query',e.get('url',''))
+        term = e.get('query', e.get('url', ''))
         out.append(f'<tr><td class="small">{esc(e.get("time_utc",""))}</td><td>{esc(e.get("kind",""))}</td><td>{esc(e.get("status",""))}</td><td class="domain">{esc(str(term)[:180])}</td></tr>')
-    return ''.join(out)+'</tbody></table></div>'
+    return ''.join(out) or '<tr><td colspan="4">No MCP history yet.</td></tr>'
+
+
+def recent_rows():
+    return ('<div class="scroll"><table><thead><tr><th>UTC time</th><th>Operation</th><th>Status</th><th>Query or URL</th></tr></thead>'
+            '<tbody id="live-history">' + history_items_html() + '</tbody></table></div>')
+
+
+def live_snapshot(query='', view='policy'):
+    """Order loopback snapshots across threads, including out-of-order delivery.
+
+    Each policy snapshot has a strictly increasing, safely representable
+    microsecond sequence number; browser tabs discard stale responses rather
+    than regressing a newer shared pending-queue baseline.
+    """
+    if view == 'history':
+        return {'history_html': history_items_html()}
+    global _LAST_LIVE_SNAPSHOT_US
+    with _LIVE_SNAPSHOT_LOCK:
+        pending_rows = policy.entries(query, limit=200, status='pending')
+        decisions = policy.entries(query, limit=2000, status='decided')
+        domains = [row['domain'] for row in policy.entries(
+            limit=policy.MAX_PENDING_TOTAL, status='pending')]
+        counts = policy.counts()
+        _LAST_LIVE_SNAPSHOT_US = max(
+            time.time_ns() // 1000, _LAST_LIVE_SNAPSHOT_US + 1)
+        return {
+            'snapshot_run': _LIVE_SNAPSHOT_RUN,
+            'snapshot_us': _LAST_LIVE_SNAPSHOT_US,
+            'counts': counts,
+            'pending_html': ''.join(row_html(r) for r in pending_rows)
+                or '<tr><td colspan="4">No pending requests.</td></tr>',
+            'decided_html': ''.join(row_html(r) for r in decisions)
+                or '<tr><td colspan="4">No matching domains.</td></tr>',
+            'pending_domains': domains,
+        }
 
 
 def row_html(r):
@@ -70,26 +111,27 @@ def render(query='', message='', kind='success'):
     pending=''.join(row_html(r) for r in policy.entries(query,limit=200,status='pending'))
     other=''.join(row_html(r) for r in policy.entries(query,limit=2000,status='decided'))
     alert=f'<p class="alert {"error" if kind=="error" else "success"}">{esc(message)}</p>' if message else ''
-    table_head='<div class="scroll"><table><thead><tr><th>Domain (includes subdomains)</th><th>Decision</th><th>Requests / latest</th><th>Manage</th></tr></thead><tbody>'
+    table_head='<div class="scroll"><table><thead><tr><th>Domain (includes subdomains)</th><th>Decision</th><th>Requests / latest</th><th>Manage</th></tr></thead>'
     query_escaped=esc(query)
-    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><style>{CSS}</style></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
+    return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
 <main><h1>Domain approvals</h1><p>Approve or deny domains requested by agents. Changes apply to the next fetch without restarting MCP. The dashboard is accessible only from this computer.</p>{alert}
-<section class="stats"><div class="stat"><span>Awaiting approval</span><b>{c['pending']}</b></div><div class="stat"><span>Allowed</span><b>{c['allowed']}</b></div><div class="stat"><span>Denied</span><b>{c['denied']}</b></div><div class="stat"><span>Dashboard</span><b style="font-size:14px">127.0.0.1:{PORT}</b></div></section>
+<section class="stats"><div class="stat"><span>Awaiting approval</span><b id="live-count-pending">{c['pending']}</b></div><div class="stat"><span>Allowed</span><b id="live-count-allowed">{c['allowed']}</b></div><div class="stat"><span>Denied</span><b id="live-count-denied">{c['denied']}</b></div><div class="stat"><span>Dashboard</span><b style="font-size:14px">127.0.0.1:{PORT}</b></div></section>
 <div class="panel"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="{esc(CSRF)}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Rules include subdomains unless overridden by a more specific rule. Never approve private-network addresses.</p></div>
-<div class="row" style="justify-content:space-between"><h2>Requests awaiting review</h2><div><a href="/">Refresh requests</a></div></div>
+<div class="row" style="justify-content:space-between"><h2>Requests awaiting review</h2><div><button type="button" id="notification-toggle">Enable desktop notifications</button> <a href="/">Refresh requests</a></div></div>
+<p class="subtle" role="status" id="live-status">Live updates starting · manual refresh works without JavaScript.</p>
 <p class="subtle">Showing at most 200 pending entries (filter to find specific hosts). Agent-created queue entries are limited to {policy.MAX_PENDING_TOTAL} total, {policy.MAX_NEW_PENDING_GLOBAL_PER_HOUR} globally per hour, {policy.MAX_PENDING_PER_SITE} per registrable domain and {policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR} new hosts per site per hour. Manual allow/deny remains available even when the queue is full. Existing entries are never silently removed.</p>
-{table_head}{pending or '<tr><td colspan="4">No pending requests.</td></tr>'}</tbody></table></div>
+{table_head}<tbody id="live-pending">{pending or '<tr><td colspan="4">No pending requests.</td></tr>'}</tbody></table></div>
 <div class="panel"><h2 style="margin-top:0">Clear pending requests</h2>
 <p>Removes <strong>all pending requests</strong>, including rows not currently shown or matching the filter. Existing allow/deny rules and the rolling-hour admission limits are not affected. Agents may need to retry after the rate limit expires.</p>
 <form method="post" action="/pending/clear"><input type="hidden" name="csrf" value="{esc(CSRF)}"><label for="clear-confirm">Type CLEAR to confirm</label><input id="clear-confirm" name="confirm" placeholder="CLEAR" pattern="CLEAR" maxlength="5" required><button type="submit" class="delete">Clear all pending</button></form>
 </div>
 <div class="row" style="justify-content:space-between"><h2>Allowed and denied domains</h2><form method="get" action="/"><input name="q" value="{query_escaped}" placeholder="Filter by domain"><button type="submit">Filter</button></form></div>
-{table_head}{other or '<tr><td colspan="4">No matching domains.</td></tr>'}</tbody></table></div>
+{table_head}<tbody id="live-decided">{other or '<tr><td colspan="4">No matching domains.</td></tr>'}</tbody></table></div>
 <div class="panel"><h2 style="margin-top:0">Configuration and safety</h2><p>Search endpoint: <code>127.0.0.1:8888</code> · Crawl endpoint: <code>127.0.0.1:11235</code> · MCP: <code>127.0.0.1:8790/mcp</code> · Dashboard: <code>127.0.0.1:{PORT}</code>.</p><p>Domains are stored in <code>{esc(policy.database_path())}</code>. Your existing credentials stay in the launcher’s private configuration and are not displayed here.</p><p class="small">Unknown domains generate a pending request rather than a Python traceback. Only the user can approve them here; agents cannot invoke a tool to grant access. A domain's DNS is also checked for public addresses before an allowed fetch. Crawl4AI should still be isolated from your local network to guard against redirects and DNS rebinding.</p></div></main></body></html>'''
 
 
 def history_page():
-    return f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — History</title><style>{CSS}</style></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a></nav></header><main><h1>Recent MCP requests</h1><p>The last 25 entries from your existing JSONL history. No API secrets or full fetched page contents are stored here.</p>{recent_rows()}<p><a href="/">Return to domain approvals</a></p></main></body></html>'
+    return f'<!doctype html><html lang="en" data-live-view="history"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — History</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a></nav></header><main><h1>Recent MCP requests</h1><p>The last 25 entries from your existing JSONL history. No API secrets or full fetched page contents are stored here.</p>{recent_rows()}<p class="subtle" role="status" id="live-status">Live updates starting · manually reload if needed.</p><p><a href="/">Return to domain approvals</a></p></main></body></html>'
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -107,12 +149,52 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options','nosniff')
         self.send_header('X-Frame-Options','DENY')
         self.send_header('Referrer-Policy','no-referrer')
-        self.send_header('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+        self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
         self.end_headers();self.wfile.write(data)
+    def _read_origin_valid(self):
+        """Refuse cross-site script/API GETs even on the loopback listener."""
+        fetch_site = self.headers.get('Sec-Fetch-Site', '').strip().lower()
+        if fetch_site and fetch_site not in ('same-origin', 'none'):
+            return False
+        host = self.headers.get('Host', '')
+        origin = self.headers.get('Origin')
+        if origin is not None:
+            try:
+                parsed = urlsplit(origin)
+                if (parsed.scheme != 'http' or parsed.netloc != host
+                        or parsed.username or parsed.password
+                        or parsed.path or parsed.query or parsed.fragment):
+                    return False
+            except ValueError:
+                return False
+        referer = self.headers.get('Referer')
+        if referer:
+            try:
+                parsed = urlsplit(referer)
+                if (parsed.scheme != 'http' or parsed.netloc != host
+                        or parsed.username or parsed.password):
+                    return False
+            except ValueError:
+                return False
+        return True
+
     def do_GET(self):
         if not self._host_valid():return self._respond(403,'Forbidden')
         path=urlsplit(self.path)
         if path.path=='/healthz':return self._respond(200,json.dumps({'status':'ok'}),'application/json')
+        if path.path=='/dashboard-live.js':
+            if not self._read_origin_valid():return self._respond(403,'Forbidden')
+            # Fixed in-repository program literal, never a path read from
+            # request input. Keep the existing restricted CSP and MIME type.
+            return self._respond(200, LIVE_SCRIPT, 'text/javascript; charset=utf-8')
+        if path.path=='/live':
+            if not self._read_origin_valid():return self._respond(403,'Forbidden')
+            query=parse_qs(path.query)
+            view=query.get('view',['policy'])[0]
+            if view not in ('policy','history'):return self._respond(400,'Invalid view')
+            q=query.get('q',[''])[0][:100]
+            return self._respond(200,json.dumps(live_snapshot(q,view)),
+                                 'application/json; charset=utf-8')
         if path.path=='/history':return self._respond(200,history_page())
         if path.path!='/':return self._respond(404,'Not found')
         q=parse_qs(path.query).get('q',[''])[0][:100]
