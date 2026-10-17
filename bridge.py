@@ -392,6 +392,10 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False) -> dict:
             and r.get("truncated") is False
             and "document_id" not in r
             and request_cache.fetch_key(r.get("url", ""), mode) is not None
+            # A cross-host redirect depends on the target host's approval.
+            # Never serve it later from the original host's cache key after
+            # the target's time-limited rule expires.
+            and urlsplit(r["url"]).hostname == urlsplit(url).hostname
         ),
     )
     if before != request_cache.policy_epoch():
