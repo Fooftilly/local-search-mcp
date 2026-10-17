@@ -12,8 +12,10 @@ The local approval dashboard at `http://127.0.0.1:8791/` now lets the
 - **Permanent** (the default), **1 hour**, **24 hours**, or **7 days**: expiration
   is saved in SQLite as a UTC timestamp and checked at every authorization,
   including after dashboard/MCP restarts. An expired rule never grants access.
-  A known expired exact-host rule becomes a pending row when the next request
-  for that host arrives, so it is actionable in the UI.
+  An expired exact-host rule becomes pending on the next request only if
+  no less-specific active rule matches **and** the bounded approval queue has
+  capacity. Otherwise a less-specific decision applies, or the request reports
+  `approval_queue_full`; the expired rule remains visible for manual review.
 
 The most-specific *currently active* rule wins. Expiration and scope are
 checked during authorization, not just when the dashboard page is rendered.
