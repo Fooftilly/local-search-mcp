@@ -114,6 +114,27 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(len(seen), 10)
             self.assertEqual(set(self.module.request_cache._CACHE), keys_before)
 
+    def test_cross_host_redirect_result_is_not_cached(self):
+        final = {"url": "https://redirect.example.org/landing",
+                 "success": True, "markdown": "public redirect content",
+                 "truncated": False}
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module, "_run_fetch", return_value=final) as crawl):
+            first = self.module.web_fetch("https://example.com/start")
+            second = self.module.web_fetch("https://example.com/start")
+            self.assertEqual(first, second)
+            self.assertEqual(crawl.call_count, 2)
+            self.assertFalse(self.module.request_cache._CACHE)
+
+        # Same-host redirects remain cacheable because the requested host's
+        # approval is rechecked before every cache hit.
+        same_host = dict(final, url="https://example.com/landing")
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module, "_run_fetch", return_value=same_host) as crawl):
+            self.module.web_fetch("https://example.com/start")
+            self.module.web_fetch("https://example.com/start")
+            self.assertEqual(crawl.call_count, 1)
+
     def test_fetch_cache_requires_policy_and_skips_sensitive_urls(self):
         counts = []
         def handler(request):
