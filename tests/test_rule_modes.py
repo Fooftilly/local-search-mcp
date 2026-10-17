@@ -87,7 +87,10 @@ class RuleModeTests(unittest.TestCase):
             row = next(r for r in policy.entries() if r["domain"] == "example.org")
             self.assertEqual(row["status"], "pending")
             self.assertFalse(row["explicit_rule"])
-            self.assertEqual(row["expires_at"], "")
+            # Keep the old deadline for a non-mutating in-flight expiry
+            # recheck even after an agent requeues the visible approval row.
+            self.assertEqual(row["expires_at"], "2026-10-17T13:00:00Z")
+            self.assertTrue(policy.expired_grant_without_active_fallback("example.org"))
 
     def test_concurrent_expired_rule_checks_do_not_reuse_authorization(self):
         with patch.object(policy, "utcnow", return_value="2026-10-17T12:00:00Z"):
@@ -103,6 +106,18 @@ class RuleModeTests(unittest.TestCase):
         rows = [r for r in policy.entries() if r["domain"] == "same.example.org"]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["request_count"], 6)
+
+    def test_expired_child_rule_falls_back_to_active_parent(self):
+        with patch.object(policy, "utcnow", return_value="2026-10-17T12:00:00Z"):
+            policy.decide("example.org", "allow")
+            policy.decide("child.example.org", "deny", scope="exact",
+                          expires_minutes=60)
+        with patch.object(policy, "utcnow", return_value="2026-10-17T13:00:00Z"):
+            self.assertEqual(
+                policy.request("child.example.org", "https://child.example.org/")[0],
+                "allowed")
+            self.assertFalse(
+                policy.expired_grant_without_active_fallback("child.example.org"))
 
     def test_expired_exact_rule_respects_full_queue_limit(self):
         with patch.object(policy, "utcnow", return_value="2026-10-17T12:00:00Z"):
