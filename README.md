@@ -8,6 +8,7 @@ A **local, read-only MCP bridge** for [SearXNG](https://docs.searxng.org/) searc
 - MCP `web_fetch(url, mode="raw")` — Crawl4AI-backed extraction of an approved public page, with optional fit Markdown and short metadata. Long approved pages expose `web_fetch_page(document_id, page=2)` for bounded in-memory continuation without recrawling. See [EXTRACTION.md](EXTRACTION.md). Unknown domains enter the dashboard approval queue. Agents cannot approve domains.
 - MCP `web_fetch_batch(urls, mode="raw", fresh=false)` — fetch up to eight public URLs in one call, with three concurrent workers, per-URL permission checks and ordered individual outcomes. See [BATCH.md](BATCH.md).
 - Local approvals, deny rules, domain history and search/fetch audit trail.
+- Same-origin dashboard live pending/history refresh every ten seconds, with optional browser-powered KDE desktop notifications for new domain requests. See [DASHBOARD-LIVE.md](DASHBOARD-LIVE.md).
 - Process-only, bounded search and public-page response cache with in-flight request deduplication; two-attempt upstream retry bounds and explicit structured error responses. Add `fresh=true` to bypass.
 - A launcher which checks services, sets up a Python venv, discovers a local Crawl4AI token where permitted, and starts the bridge plus tunnel.
 
@@ -59,6 +60,8 @@ For optional search filters, page limits, SearXNG engine support, and examples, 
 For long-document paging, temporary handle limits, extraction modes, and content safety, see [EXTRACTION.md](EXTRACTION.md).
 
 For bounded memory caching, `fresh` bypass, safe cache keys, retry caps and outage responses, see [CACHE.md](CACHE.md).
+
+For live dashboard polling and opt-in desktop notifications on KDE/Wayland, see [DASHBOARD-LIVE.md](DASHBOARD-LIVE.md).
 
 For batch limits, result format, duplicate URL handling, and per-item audit history, see [BATCH.md](BATCH.md).
 

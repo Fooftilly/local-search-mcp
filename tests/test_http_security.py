@@ -135,6 +135,90 @@ class DashboardHTTPTests(unittest.TestCase):
         bad, _, _ = self.exchange("GET", "/healthz", headers={"Host": "not-local.invalid"})
         self.assertEqual(bad, 403)
 
+    def test_live_endpoint_tracks_pending_decisions_and_history(self):
+        status, page, headers = self.exchange("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn(b'<tbody id="live-pending">', page)
+        self.assertIn(b'<tbody id="live-decided">', page)
+        self.assertIn(b'src="/dashboard-live.js"', page)
+        self.assertIn(b'Enable desktop notifications', page)
+        self.assertNotIn(b'<script>', page)
+        self.assertIn("script-src 'self'", headers["Content-Security-Policy"])
+        self.assertIn("connect-src 'self'", headers["Content-Security-Policy"])
+
+        status, script, script_headers = self.exchange("GET", "/dashboard-live.js")
+        self.assertEqual(status, 200)
+        self.assertIn("javascript", script_headers["Content-Type"])
+        self.assertIn(b"Notification.requestPermission()", script)
+        self.assertIn(b"minNotificationGap = 60000", script)
+        self.assertNotIn(b"document.write(", script)
+
+        policy.request("new.example.org", "https://new.example.org/private?secret=DO_NOT_LEAK")
+        policy.request("other.example.org", "https://other.example.org/")
+        code, data, headers = self.exchange("GET", "/live?view=policy")
+        self.assertEqual(code, 200)
+        self.assertEqual(headers["Content-Type"], "application/json; charset=utf-8")
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        result = json.loads(data)
+        self.assertEqual(result["counts"]["pending"], 2)
+        self.assertIn("new.example.org", result["pending_html"])
+        self.assertEqual(set(result["pending_domains"]),
+                         {"new.example.org", "other.example.org"})
+        self.assertNotIn("DO_NOT_LEAK", str(result))
+        self.assertNotIn("private", str(result))
+        self.assertIn("csrf", result["pending_html"])
+        self.assertNotIn("<script>", result["pending_html"])
+
+        filtered = json.loads(self.exchange("GET",
+                              "/live?view=policy&q=new.example.org")[1])
+        self.assertIn("new.example.org", filtered["pending_html"])
+        self.assertNotIn("other.example.org", filtered["pending_html"])
+        # Notification counters remain unfiltered to detect new domains
+        # even when the dashboard is showing a filtered pending queue.
+        self.assertEqual(set(filtered["pending_domains"]),
+                         {"new.example.org", "other.example.org"})
+
+        self.assertEqual(self.post("new.example.org", "allow"), 200)
+        after = json.loads(self.exchange("GET", "/live?view=policy")[1])
+        self.assertEqual(after["counts"]["pending"], 1)
+        self.assertIn("new.example.org", after["decided_html"])
+        self.assertNotIn("new.example.org", after["pending_domains"])
+
+        (Path(os.environ["LOCAL_SEARCH_MCP_HISTORY_FILE"])).write_text(
+            json.dumps({"time_utc": "2026-10-17T19:00:00Z",
+                        "kind": "search", "status": "<script>alert(1)</script>",
+                        "query": "<img src=x onerror=alert(1)>"}) + "\n",
+            encoding="utf-8")
+        history = json.loads(self.exchange("GET", "/live?view=history")[1])
+        self.assertIn("&lt;script&gt;", history["history_html"])
+        self.assertIn("&lt;img", history["history_html"])
+        self.assertNotIn("<script>", history["history_html"])
+        html_page = self.exchange("GET", "/history")[1]
+        self.assertIn(b'<tbody id="live-history">', html_page)
+        self.assertIn(b'&lt;script&gt;', html_page)
+
+    def test_live_endpoints_reject_cross_site_and_invalid_views(self):
+        baseline = len(policy.entries())
+        for endpoint in ("/live?view=policy", "/live?view=history",
+                         "/dashboard-live.js"):
+            for headers in (
+                {"Host": "attacker.example"},
+                {"Sec-Fetch-Site": "cross-site"},
+                {"Sec-Fetch-Site": "same-site"},
+                {"Origin": "http://attacker.example"},
+                {"Referer": "http://attacker.example/"},
+            ):
+                with self.subTest(endpoint=endpoint, headers=headers):
+                    code, _, _ = self.exchange("GET", endpoint, headers=headers)
+                    self.assertEqual(code, 403)
+        self.assertEqual(self.exchange("GET", "/live?view=unexpected")[0], 400)
+        self.assertEqual(self.exchange("GET", "/live?view=policy", headers={
+            "Sec-Fetch-Site": "same-origin",
+            "Origin": f"http://127.0.0.1:{self.port}",
+            "Referer": f"http://127.0.0.1:{self.port}/",
+        })[0], 200)
+        self.assertEqual(len(policy.entries()), baseline)
+
     def test_bad_domain_input_has_no_side_effect(self):
         for domain in ("co.uk", "localhost", "http://example.com", "127.0.0.1"):
             with self.subTest(domain=domain):
