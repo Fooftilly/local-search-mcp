@@ -13,6 +13,9 @@ import unittest
 
 import admin_ui
 import domain_policy as policy
+import request_cache
+from batch_fetch import fetch_many
+from urllib.parse import urlsplit
 
 
 class RuleModeTests(unittest.TestCase):
@@ -149,6 +152,29 @@ class RuleModeTests(unittest.TestCase):
                 self.assertEqual(conn.execute(
                     "SELECT count(*) FROM pending_admissions WHERE site=?",
                     ("example.org",)).fetchone()[0], count)
+
+    def test_expiry_does_not_invalidate_unrelated_batch_results(self):
+        request_cache.reset_for_test()
+        self.addCleanup(request_cache.reset_for_test)
+        with patch.object(policy, "utcnow", return_value="2026-10-17T12:00:00Z"):
+            policy.decide("example.org", "allow", scope="exact", expires_minutes=60)
+        with patch.object(policy, "utcnow", return_value="2026-10-17T13:00:00Z"):
+            before = request_cache.policy_epoch()
+
+            def local_fetch(url, _mode, _fresh):
+                status, _ = policy.request(urlsplit(url).hostname, url)
+                return {"url": url, "success": status == "allowed",
+                        "status": "approval_required" if status == "pending" else status}
+
+            result = fetch_many(["https://example.com/", "https://example.org/"],
+                                "raw", False, local_fetch)
+            self.assertEqual(request_cache.policy_epoch(), before)
+            self.assertTrue(result["results"][0]["result"]["success"])
+            self.assertEqual(result["results"][1]["result"]["status"],
+                             "approval_required")
+            row = next(r for r in policy.entries() if r["domain"] == "example.org")
+            self.assertEqual(row["match_scope"], "exact")
+            self.assertEqual(row["status"], "pending")
 
     def test_expiry_is_checked_after_waiting_for_the_database(self):
         with patch.object(policy, "utcnow", return_value="2026-10-17T12:00:00Z"):
