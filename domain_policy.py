@@ -44,31 +44,38 @@ def _db():
     if path.is_symlink():
         raise RuntimeError("Refusing symlinked domains database")
     conn = sqlite3.connect(path, timeout=10)
-    conn.row_factory = sqlite3.Row
-    os.chmod(path, 0o600)
-    conn.execute("PRAGMA busy_timeout = 10000")
-    conn.execute("""CREATE TABLE IF NOT EXISTS domains (
-        domain TEXT PRIMARY KEY,
-        status TEXT NOT NULL CHECK(status IN ('allowed', 'pending', 'denied')),
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        request_count INTEGER NOT NULL DEFAULT 0,
-        last_requested_at TEXT NOT NULL DEFAULT '',
-        last_requested_url TEXT NOT NULL DEFAULT '',
-        explicit_rule INTEGER NOT NULL DEFAULT 0 CHECK(explicit_rule IN (0,1))
-    )""")
-    # Older installs have domains but no separate marker for intentional
-    # dashboard decisions versus automatically created request rows.
-    if not any(col["name"] == "explicit_rule" for col in conn.execute("PRAGMA table_info(domains)")):
-        conn.execute("ALTER TABLE domains ADD COLUMN explicit_rule INTEGER NOT NULL DEFAULT 0 CHECK(explicit_rule IN (0,1))")
-    conn.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-    conn.execute("""CREATE TABLE IF NOT EXISTS decisions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        at TEXT NOT NULL, domain TEXT NOT NULL,
-        action TEXT NOT NULL CHECK(action IN ('allow', 'deny', 'delete', 'rename'))
-    )""")
-    conn.commit()
     try:
+        conn.row_factory = sqlite3.Row
+        os.chmod(path, 0o600)
+        conn.execute("PRAGMA busy_timeout = 10000")
+        # The dashboard and bridge can open the same v1 database at startup.
+        # Serialize schema discovery and ALTER so the second connection
+        # rechecks after the first commit instead of adding a duplicate column.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("""CREATE TABLE IF NOT EXISTS domains (
+                domain TEXT PRIMARY KEY,
+                status TEXT NOT NULL CHECK(status IN ('allowed', 'pending', 'denied')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                last_requested_at TEXT NOT NULL DEFAULT '',
+                last_requested_url TEXT NOT NULL DEFAULT '',
+                explicit_rule INTEGER NOT NULL DEFAULT 0 CHECK(explicit_rule IN (0,1))
+            )""")
+            if not any(col["name"] == "explicit_rule" for col in conn.execute("PRAGMA table_info(domains)")):
+                conn.execute("""ALTER TABLE domains ADD COLUMN explicit_rule INTEGER
+                    NOT NULL DEFAULT 0 CHECK(explicit_rule IN (0,1))""")
+            conn.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            conn.execute("""CREATE TABLE IF NOT EXISTS decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                at TEXT NOT NULL, domain TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('allow', 'deny', 'delete', 'rename'))
+            )""")
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
         yield conn
     finally:
         conn.close()
