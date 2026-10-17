@@ -1,0 +1,56 @@
+name: Flaky Test Detection
+
+on:
+  schedule:
+    - cron: '0 */12 * * 1-5'  # Every 12 hours, Monday-Friday (UTC)
+
+permissions:
+  contents: read
+
+jobs:
+  flaky-detection-unit:
+    name: Unit Tests Flaky Detection (Run ${{ matrix.run_number }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        run_number: [1, 2, 3, 4, 5]
+    env:
+      MERGIFY_TEST_JOB_NAME: python (3.13)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install libpsl
+        run: sudo apt-get update && sudo apt-get install -y libpsl5
+
+      # Match the tested Python 3.13 dependency versions; install wheels only.
+      # Keep these pins in sync with the supported ranges in requirements.txt.
+      - name: Install dependencies
+        run: python -m pip install --only-binary=:all: 'fastmcp==4.1.0' 'httpx==0.28.1' 'pytest==9.1.1'
+
+      - name: Run tests
+        id: tests
+        run: |
+          run_tests() {
+            local status=0
+            python -m pytest -q tests --junitxml=junit-unit-${{ matrix.run_number }}.xml || status=$?
+            if [ "$status" -eq 0 ]; then
+              echo "outcome=success" >> "$GITHUB_OUTPUT"
+            else
+              echo "outcome=failure" >> "$GITHUB_OUTPUT"
+            fi
+            return "$status"
+          }
+          run_tests || true
+
+      - name: Upload test results to Mergify
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@5e8176734bc525c7fd8b2e812f0fa47246f601b7 # v25
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          report_path: "junit-*.xml"
+          test_step_outcome: ${{ steps.tests.outputs.outcome }}
