@@ -123,7 +123,9 @@ def _crawl_metadata(page: dict, final_url: str) -> dict:
     raw = raw if isinstance(raw, dict) else {}
     result = {}
     for key in ("title", "description"):
-        value = raw.get(key, page.get(key))
+        value = raw.get(key)
+        if not isinstance(value, str) or not value.strip():
+            value = page.get(key)
         if isinstance(value, str) and value.strip():
             result[key] = value.strip()[:240 if key == "title" else 1000]
     canonical = raw.get("canonical_url") or raw.get("canonical")

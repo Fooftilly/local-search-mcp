@@ -16,3 +16,5 @@ fastmcp call http://127.0.0.1:8790/mcp web_fetch_page document_id='<handle-from-
 A document handle is an unpredictable **bearer capability**: anyone who obtains it while valid can read the corresponding pages. Avoid sharing handles or logging them; the bridge's request-history logger records page numbers and success/failure, but neither handles nor Markdown content. The MCP tool cannot open local files or select arbitrary cached data without a valid capability. Remote request authorizations, redirect checks, and Crawl4AI egress controls are unchanged. The bridge still requires correctly deployed network isolation to contain the crawler.
 
 This is process-local, temporary continuation storage, not a durable archive. It is designed for a single bridge worker, not independently replicated workers.
+
+To inspect continuation activity without exposing handles or page content, use `python history_cli.py --kind page --last 50` or `python history_cli.py --kind page --csv --last 500`. CSV includes page number and total page count when available.

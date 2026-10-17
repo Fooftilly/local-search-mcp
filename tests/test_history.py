@@ -32,6 +32,38 @@ class HistoryTests(unittest.TestCase):
         self.assertNotIn("engines", events[0])
         self.assertNotIn("token=secret", str(events))
 
+    def test_history_cli_filters_and_exports_continuation_pages(self):
+        import contextlib
+        import csv
+        import io
+        import json
+        import sys
+        import history_cli
+        with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {
+            "LOCAL_SEARCH_MCP_HISTORY_FILE": str(Path(d) / "events.jsonl"),
+        }):
+            append_history({"time_utc": "2026-10-17T12:00:00Z", "kind": "fetch",
+                            "status": "success", "url": "https://example.com/"})
+            append_history({"time_utc": "2026-10-17T12:01:00Z", "kind": "page",
+                            "status": "success", "page": 2, "page_count": 3})
+            append_history({"time_utc": "2026-10-17T12:02:00Z", "kind": "page",
+                            "status": "expired_or_unknown", "page": 3})
+            out = io.StringIO()
+            with patch.object(sys, "argv", ["history_cli.py", "--kind", "page", "--csv"]), \\
+                 contextlib.redirect_stdout(out):
+                self.assertEqual(history_cli.main(), 0)
+            rows = list(csv.DictReader(io.StringIO(out.getvalue())))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual([r["page"] for r in rows], ["2", "3"])
+            self.assertEqual(rows[0]["page_count"], "3")
+            self.assertNotIn("document_id", out.getvalue())
+            out = io.StringIO()
+            with patch.object(sys, "argv", ["history_cli.py", "--kind", "page"]), \\
+                 contextlib.redirect_stdout(out):
+                self.assertEqual(history_cli.main(), 0)
+            self.assertIn("page 2/3", out.getvalue())
+            self.assertNotIn("https://example.com/", out.getvalue())
+
     def test_private_history_file_and_rotation(self):
         with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {"XDG_STATE_HOME":d, "LOCAL_SEARCH_MCP_HISTORY_MAX_BYTES":"64000"}):
             for i in range(40):

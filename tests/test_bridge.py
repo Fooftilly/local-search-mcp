@@ -214,6 +214,15 @@ class BridgeTests(unittest.TestCase):
                 self.module.web_fetch("https://example.com", mode="not-real")
             target.assert_not_called()
 
+    def test_metadata_falls_back_when_nested_title_is_unusable(self):
+        metadata = self.module._crawl_metadata({
+            "metadata": {"title": "", "description": None},
+            "title": "Top level title",
+            "description": "Top level description",
+        }, "https://example.com/")
+        self.assertEqual(metadata["title"], "Top level title")
+        self.assertEqual(metadata["description"], "Top level description")
+
     def test_long_unapproved_redirect_is_never_cached(self):
         from collections import OrderedDict
         content = "private" * 6000

@@ -29,8 +29,8 @@ def events(path: Path):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Show/export web_search and web_fetch history")
     parser.add_argument("--last", type=int, default=30, help="Number of newest entries (default: 30)")
-    parser.add_argument("--kind", choices=["search", "fetch"], help="Only one kind of call")
-    parser.add_argument("--status", choices=["success", "error", "pending", "denied", "blocked"], help="Filter by outcome")
+    parser.add_argument("--kind", choices=["search", "fetch", "page"], help="Only one kind of call")
+    parser.add_argument("--status", choices=["success", "error", "pending", "denied", "blocked", "expired_or_unknown"], help="Filter by outcome")
     parser.add_argument("--since", type=date.fromisoformat, help="Include entries on or after YYYY-MM-DD (UTC)")
     parser.add_argument("--json", action="store_true", help="Print raw JSON lines")
     parser.add_argument("--csv", action="store_true", help="Print filtered events as CSV")
@@ -57,7 +57,7 @@ def main() -> int:
         return 0
     recent = list(deque(selected, maxlen=args.last))
     if args.csv:
-        writer = csv.DictWriter(sys.stdout, fieldnames=["time_utc", "kind", "status", "query", "url", "result_count", "http_status", "duration_ms"])
+        writer = csv.DictWriter(sys.stdout, fieldnames=["time_utc", "kind", "status", "query", "url", "result_count", "page", "page_count", "http_status", "duration_ms"])
         writer.writeheader()
         for e in recent:
             writer.writerow({name: e.get(name, "") for name in writer.fieldnames})
@@ -68,6 +68,8 @@ def main() -> int:
         print(f"History: {path}")
         for e in recent:
             term = e.get("query") if e.get("kind") == "search" else e.get("url", "")
+            if e.get("kind") == "page":
+                term = f"page {e.get('page', '?')}/{e.get('page_count') or '?'}"
             count = f" | {e['result_count']} results" if "result_count" in e else ""
             status = e.get("status", "?")
             http = f" | HTTP {e['http_status']}" if "http_status" in e else ""
