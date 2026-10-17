@@ -448,11 +448,26 @@ def clear_pending_requests() -> int:
         _seed(conn)
         conn.execute("BEGIN IMMEDIATE")
         try:
+            # A timed grant can expire while an earlier crawl is still in
+            # flight. Requeue preserves its expiry evidence on the pending row.
+            # Clearing that row otherwise erases the only evidence that the
+            # earlier crawl must not release its content after expiry.
+            #
+            # Unlike ordinary pending queue cleanup, dropping such evidence is
+            # a security-relevant policy change. Invalidate before publishing
+            # the deletion, so concurrent fetches see a changed epoch and fail
+            # closed without exposing results admitted under the old grant.
+            drops_expiry_evidence = conn.execute(
+                """SELECT 1 FROM domains WHERE status='pending'
+                   AND explicit_rule=0 AND expires_at != '' LIMIT 1"""
+            ).fetchone() is not None
             conn.execute("""INSERT INTO decisions(at,domain,action)
                 SELECT ?,domain,'delete' FROM domains
                 WHERE status='pending' AND explicit_rule=0""", (now,))
             result = conn.execute("""DELETE FROM domains
                 WHERE status='pending' AND explicit_rule=0""")
+            if drops_expiry_evidence:
+                invalidate_fetch()
             conn.commit()
             return result.rowcount
         except BaseException:
