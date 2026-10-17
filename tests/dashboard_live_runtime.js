@@ -198,6 +198,21 @@ async function main() {
   assert.equal(notifications.length, 4,
                "background-throttled existing tabs must retain owed alerts");
 
+  // bfcache restores must cancel the suspended old poll timer instead of
+  // creating a second ten-second loop on pageshow.
+  const activeTimers = () => tab.state.timers.filter(
+    timer => timer.ms === 10000 && !timer.cancelled);
+  assert.equal(activeTimers().length, 1);
+  tab.state.handlers.pagehide();
+  assert.equal(activeTimers().length, 0, "pagehide must cancel scheduled polls");
+  tab.state.handlers.pageshow({ persisted: true });
+  await settle();
+  assert.equal(activeTimers().length, 1,
+               "pageshow must create exactly one replacement poll timer");
+  await poll(tab, 335000);
+  assert.equal(activeTimers().length, 1,
+               "restored poll timer must not duplicate on subsequent polls");
+
   tab.close();
   second.close();
   another.close();

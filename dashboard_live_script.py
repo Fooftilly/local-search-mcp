@@ -37,6 +37,10 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   let notifyEnabled = false;
   let stopped = false;
   let tabPresenceKey = null;
+  let pendingTimer = null;
+  let activeController = null;
+  let refreshGeneration = 0;
+  let refreshQueue = Promise.resolve();
 
   function say(value) {
     if (status) status.textContent = value;
@@ -79,12 +83,12 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   }
 
   async function registerTab() {
-    if (!notifyEnabled || !available() || tabPresenceKey) return;
+    if (stopped || !notifyEnabled || !available() || tabPresenceKey) return;
     try {
       // Register under the same lock as notification updates. Every live tab
       // has a unique key until pagehide, even when its polling is throttled.
       await navigator.locks.request(notificationLock, async () => {
-        if (!notifyEnabled || tabPresenceKey) return;
+        if (stopped || !notifyEnabled || tabPresenceKey) return;
         const peers = activeTabKeys();
         const id = new Uint8Array(16);
         window.crypto.getRandomValues(id);
@@ -268,13 +272,24 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
     }
   });
 
-  async function refresh() {
-    if (stopped) return;
+  function startRefresh() {
+    // Serialize refresh attempts even across a pagehide/pageshow boundary;
+    // an old aborted request must finish before a restored tab starts another.
+    const generation = refreshGeneration;
+    const next = refreshQueue.then(async () => {
+      if (!stopped && generation === refreshGeneration) await refresh(generation);
+    });
+    refreshQueue = next.catch(() => {});
+  }
+
+  async function refresh(generation) {
+    if (stopped || generation !== refreshGeneration) return;
     const query = new URLSearchParams(window.location.search).get("q") || "";
     const endpoint = isHistory ?
       "/live?view=history" : "/live?view=policy&q=" + encodeURIComponent(query.slice(0, 100));
     try {
       const controller = new AbortController();
+      activeController = controller;
       // Abort local requests after 5 seconds; no overlapping polls.
       const abort = window.setTimeout(() => controller.abort(), 5000);
       let data;
@@ -293,6 +308,8 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
       } finally {
         window.clearTimeout(abort);
       }
+      // A response from before pagehide must not update a restored tab.
+      if (stopped || generation !== refreshGeneration) return;
       if (isHistory) {
         updateTable(historyBody, data.history_html);
       } else {
@@ -308,23 +325,38 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
       }
       say("Live updates on · every 10 seconds");
     } catch (_) {
-      say("Live updates paused · refresh manually if this persists");
+      if (!stopped && generation === refreshGeneration) {
+        say("Live updates paused · refresh manually if this persists");
+      }
     } finally {
-      if (!stopped) window.setTimeout(() => { void refresh(); }, interval);
+      activeController = null;
+      if (!stopped && generation === refreshGeneration) {
+        pendingTimer = window.setTimeout(() => {
+          pendingTimer = null;
+          startRefresh();
+        }, interval);
+      }
     }
   }
 
   window.addEventListener("pagehide", () => {
     stopped = true;
+    refreshGeneration += 1;
+    if (pendingTimer !== null) {
+      window.clearTimeout(pendingTimer);
+      pendingTimer = null;
+    }
+    if (activeController !== null) activeController.abort();
     unregisterTab();
   });
   window.addEventListener("pageshow", event => {
     if (event.persisted) {
       stopped = false;
+      refreshGeneration += 1;
       if (notifyEnabled) void registerTab();
-      void refresh();
+      startRefresh();
     }
   });
-  void refresh();
+  startRefresh();
 })();
 """
