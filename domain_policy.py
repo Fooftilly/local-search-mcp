@@ -277,32 +277,24 @@ def request(domain: str, safe_url: str):
             now = utcnow()
             rule = _match(conn, domain, now)
             exact = conn.execute('SELECT * FROM domains WHERE domain=?', (domain,)).fetchone()
-            if (rule is None and exact is not None and exact['explicit_rule']
-                    and exact['expires_at'] and exact['expires_at'] <= now):
-                # An expired exact entry must become an actionable pending row:
-                # otherwise the bridge asks for approval but the UI shows it as
-                # already allowed/denied. Keep its request counts and history.
-                conn.execute("""UPDATE domains
-                    SET status='pending',explicit_rule=0,expires_at='',
-                        match_scope='subdomains',updated_at=?
-                    WHERE domain=?""", (now, domain))
-                invalidate_fetch()
+            expired_exact = bool(
+                rule is None and exact is not None and exact['explicit_rule']
+                and exact['expires_at'] and exact['expires_at'] <= now)
             status = rule['status'] if rule else 'pending'
             matched = rule['domain'] if rule else domain
-            if exact is None and rule is None:
-                # Bound automatic queue growth by PSL registrable site, including
-                # private hosting boundaries. All checks share the write lock.
+            if rule is None and (exact is None or expired_exact):
+                # Both new hosts AND expired exact decisions consume the same
+                # bounded admission quota. Never let mass expiry inflate the
+                # pending table or bypass per-site/hourly limits.
                 site = registrable_domain(domain)
                 cutoff = (datetime.fromisoformat(now.replace("Z", "+00:00")) -
-                          timedelta(hours=1)).isoformat(timespec="seconds").replace("+00:00", "Z")
+                          timedelta(hours=1)).isoformat(
+                              timespec="seconds").replace("+00:00", "Z")
+                conn.execute("DELETE FROM pending_admissions WHERE admitted_at < ?",
+                             (cutoff,))
                 total = conn.execute(
                     "SELECT count(*) FROM domains WHERE status='pending'"
                 ).fetchone()[0]
-                # Prune old admission events in the same write transaction.
-                # Crucially, deciding/deleting a pending rule does not reset
-                # its hourly admission quota.
-                conn.execute("DELETE FROM pending_admissions WHERE admitted_at < ?",
-                             (cutoff,))
                 per_site = conn.execute(
                     """SELECT count(*) FROM domains WHERE status='pending'
                        AND (domain=? OR domain LIKE ?)""",
@@ -321,18 +313,28 @@ def request(domain: str, safe_url: str):
                         recent_global_admissions >= MAX_NEW_PENDING_GLOBAL_PER_HOUR or
                         per_site >= MAX_PENDING_PER_SITE or
                         recent_site_admissions >= MAX_NEW_PENDING_PER_SITE_PER_HOUR):
-                    # Never claim an approval request was queued if it was not.
-                    status = "queue_full"
+                    # Leave an expired explicit rule visible as expired instead
+                    # of silently exceeding admission limits or claiming it
+                    # was queued. The operator can decide it manually.
+                    status = 'queue_full'
                 else:
-                    conn.execute("""INSERT INTO domains
-                        (domain,status,created_at,updated_at,request_count,last_requested_at,last_requested_url)
-                        VALUES (?,'pending',?,?,1,?,?)""", (domain, now, now, now, safe_url[:512]))
+                    if exact is None:
+                        conn.execute("""INSERT INTO domains
+                            (domain,status,created_at,updated_at,request_count,
+                             last_requested_at,last_requested_url)
+                            VALUES (?,'pending',?,?,1,?,?)""",
+                            (domain, now, now, now, safe_url[:512]))
+                    else:
+                        conn.execute("""UPDATE domains
+                            SET status='pending',explicit_rule=0,expires_at='',
+                                match_scope='subdomains',updated_at=?
+                            WHERE domain=?""", (now, domain))
+                        invalidate_fetch()
                     conn.execute("""INSERT INTO pending_admissions(site,admitted_at)
                         VALUES (?,?)""", (site, now))
-            else:
-                # Keep per-host request counts when already present; otherwise
-                # count against the matching explicit parent without creating
-                # inherited allow/deny rows for every agent-requested host.
+            if exact is not None or rule is not None:
+                # Preserve existing request metadata on a known row even when
+                # the expired rule cannot be added to the bounded queue.
                 target = domain if exact else matched
                 conn.execute("""UPDATE domains SET request_count=request_count+1,
                     last_requested_at=?,last_requested_url=? WHERE domain=?""",
