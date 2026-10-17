@@ -1,0 +1,46 @@
+# Credentials
+.env
+.env.*
+!.env.example
+.tunnel-env
+*.pem
+*.key
+config.json
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Application state and history
+*.sqlite3
+*.sqlite3-*
+*.db
+*.jsonl
+*.log
+.history.lock
+*.jsonl.[0-9]*
+
+# Generated backups and archives
+*.bak
+*.zip
+
+# Downloaded tunnel executables
+/tunnel-client
+/cloudflared
+/cloudflared-manifest.json
+/tunnel-client-v*
+/SHA256SUMS.txt
+
+# Local runtime files
+data/
+logs/
+# Build and editor files
+*.egg-info/
+dist/
+build/
+.coverage
+.vscode/
+.idea/
