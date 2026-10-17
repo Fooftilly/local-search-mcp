@@ -400,6 +400,75 @@ class DomainPolicyTests(unittest.TestCase):
         self.assertEqual(policy.request("docs.python.org", "https://docs.python.org/"),
                          ("allowed", "python.org"))
 
+    def test_pending_caps_preserve_existing_requests_and_operator_rules(self):
+        with (patch.object(policy, "MAX_PENDING_TOTAL", 4),
+              patch.object(policy, "MAX_PENDING_PER_SITE", 2),
+              patch.object(policy, "MAX_NEW_PENDING_PER_SITE_PER_HOUR", 2)):
+            for host in ("a.queue-example.org", "b.queue-example.org"):
+                self.assertEqual(policy.request(host, "https://" + host), ("pending", host))
+            self.assertEqual(policy.request("c.queue-example.org", "https://c.queue-example.org"),
+                             ("queue_full", "c.queue-example.org"))
+            # Repeat requests consume no new queue slots and update statistics.
+            self.assertEqual(policy.request("a.queue-example.org", "https://a.queue-example.org"),
+                             ("pending", "a.queue-example.org"))
+            self.assertEqual(next(r for r in policy.entries() if
+                                  r["domain"] == "a.queue-example.org")["request_count"], 2)
+            for host in ("a.other-example.net", "b.other-example.net"):
+                self.assertEqual(policy.request(host, "https://" + host), ("pending", host))
+            self.assertEqual(policy.request("third-example.io", "https://third-example.io"),
+                             ("queue_full", "third-example.io"))
+            self.assertEqual(policy.counts()["pending"], 4)
+            self.assertEqual(policy.request("example.com", "https://example.com")[0], "allowed")
+            # A local user can approve a hostname despite queue saturation.
+            policy.decide("c.queue-example.org", "allow")
+            self.assertEqual(policy.request("c.queue-example.org", "https://c.queue-example.org"),
+                             ("allowed", "c.queue-example.org"))
+            policy.decide("queue-example.org", "allow")
+            self.assertEqual(policy.request("a.queue-example.org", "https://a.queue-example.org"),
+                             ("allowed", "queue-example.org"))
+            self.assertEqual(policy.counts()["pending"], 2)
+
+    def test_pending_creation_hourly_window_resets_without_eviction(self):
+        with (patch.object(policy, "MAX_PENDING_TOTAL", 50),
+              patch.object(policy, "MAX_PENDING_PER_SITE", 5),
+              patch.object(policy, "MAX_NEW_PENDING_PER_SITE_PER_HOUR", 2)):
+            for host in ("a.example.org", "b.example.org"):
+                self.assertEqual(policy.request(host, "https://" + host)[0], "pending")
+            self.assertEqual(policy.request("c.example.org", "https://c.example.org")[0],
+                             "queue_full")
+            with policy._db() as conn:
+                conn.execute("UPDATE domains SET created_at='2020-01-01T00:00:00Z'"
+                             " WHERE domain='a.example.org'")
+                conn.commit()
+            self.assertEqual(policy.request("c.example.org", "https://c.example.org")[0],
+                             "pending")
+            self.assertEqual(policy.counts()["pending"], 3)
+
+    def test_queue_limited_fetch_is_not_falsely_reported_pending(self):
+        with patch.object(policy, "MAX_PENDING_TOTAL", 0):
+            result = policy.evaluate_fetch_url("https://docs.python.org/3/")
+            self.assertEqual(result["status"], "approval_queue_full")
+            self.assertFalse(result["success"])
+            self.assertIn("not queued", result["reason"])
+            self.assertEqual(policy.counts()["pending"], 0)
+            policy.decide("python.org", "allow")
+            self.assertEqual(policy.request("docs.python.org", "https://docs.python.org/"),
+                             ("allowed", "python.org"))
+
+    def test_pending_site_limits_respect_private_psl_boundaries(self):
+        from public_suffix import registrable_domain
+        self.assertEqual(registrable_domain("docs.example.co.uk"), "example.co.uk")
+        self.assertEqual(registrable_domain("docs.team.github.io"), "team.github.io")
+        with (patch.object(policy, "MAX_PENDING_TOTAL", 10),
+              patch.object(policy, "MAX_PENDING_PER_SITE", 1),
+              patch.object(policy, "MAX_NEW_PENDING_PER_SITE_PER_HOUR", 1)):
+            self.assertEqual(policy.request("a.team.github.io", "https://a.team.github.io")[0],
+                             "pending")
+            self.assertEqual(policy.request("b.team.github.io", "https://b.team.github.io")[0],
+                             "queue_full")
+            self.assertEqual(policy.request("a.other.github.io", "https://a.other.github.io")[0],
+                             "pending")
+
     def test_nonstandard_port_is_blocked_before_approval(self):
         result=policy.evaluate_fetch_url("http://example.com:8080/")
         self.assertEqual(result["status"], "blocked")

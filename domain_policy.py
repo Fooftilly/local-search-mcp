@@ -5,7 +5,7 @@ create or refresh a *pending* request. Never accept approvals via MCP.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 import ipaddress
 import os
@@ -14,10 +14,14 @@ import re
 import socket
 import sqlite3
 from urllib.parse import urlsplit, urlunsplit
-from public_suffix import is_public_suffix
+from public_suffix import is_public_suffix, registrable_domain
 
 UI_URL = "http://127.0.0.1:8791/"
 SCHEMA_VERSION = 2
+# Fixed safeguards for agent-created pending requests (not explicit rules).
+MAX_PENDING_TOTAL = 512
+MAX_PENDING_PER_SITE = 32
+MAX_NEW_PENDING_PER_SITE_PER_HOUR = 8
 
 
 def storage_dir() -> Path:
@@ -179,16 +183,29 @@ def initialize():
         _seed(conn)
 
 
-def entries(search: str = "", limit: int = 1000):
+def entries(search: str = "", limit: int = 1000, status: str | None = None):
+    """Show pending requests and explicit decisions independently."""
+    if status not in (None, "pending", "decided"):
+        raise ValueError("Invalid domain entry filter")
     with _db() as conn:
         _seed(conn)
+        clauses = []
+        args = []
+        if status == "pending":
+            clauses.append("status='pending'")
+        elif status == "decided":
+            clauses.append("status IN ('allowed','denied')")
         if search:
-            s = '%' + search.lower().replace('%','\\%').replace('_','\\_') + '%'
-            rows=conn.execute("SELECT * FROM domains WHERE domain LIKE ? ESCAPE '\\' ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'allowed' THEN 1 ELSE 2 END, updated_at DESC LIMIT ?", (s, limit)).fetchall()
-        else:
-            rows=conn.execute("SELECT * FROM domains ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'allowed' THEN 1 ELSE 2 END, updated_at DESC LIMIT ?", (limit,)).fetchall()
+            s = "%" + search.lower().replace("%", "\\%").replace("_", "\\_") + "%"
+            clauses.append("domain LIKE ? ESCAPE '\\'")
+            args.append(s)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        rows = conn.execute(
+            "SELECT * FROM domains" + where +
+            " ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'allowed' THEN 1 ELSE 2 END, updated_at DESC LIMIT ?",
+            (*args, limit),
+        ).fetchall()
         return [dict(r) for r in rows]
-
 
 def counts():
     with _db() as conn:
@@ -224,9 +241,29 @@ def request(domain: str, safe_url: str):
             status = rule['status'] if rule else 'pending'
             matched = rule['domain'] if rule else domain
             if exact is None and rule is None:
-                conn.execute("""INSERT INTO domains
-                    (domain,status,created_at,updated_at,request_count,last_requested_at,last_requested_url)
-                    VALUES (?,'pending',?,?,1,?,?)""", (domain, now, now, now, safe_url[:512]))
+                # Bound automatic queue growth by PSL registrable site, including
+                # private hosting boundaries. All checks share the write lock.
+                site = registrable_domain(domain)
+                cutoff = (datetime.fromisoformat(now.replace("Z", "+00:00")) -
+                          timedelta(hours=1)).isoformat(timespec="seconds").replace("+00:00", "Z")
+                total = conn.execute(
+                    "SELECT count(*) FROM domains WHERE status='pending'"
+                ).fetchone()[0]
+                per_site = conn.execute(
+                    """SELECT count(*), count(CASE WHEN created_at >= ? THEN 1 END)
+                       FROM domains WHERE status='pending'
+                       AND (domain=? OR domain LIKE ?)""",
+                    (cutoff, site, "%." + site),
+                ).fetchone()
+                if (total >= MAX_PENDING_TOTAL or
+                        per_site[0] >= MAX_PENDING_PER_SITE or
+                        per_site[1] >= MAX_NEW_PENDING_PER_SITE_PER_HOUR):
+                    # Never claim an approval request was queued if it was not.
+                    status = "queue_full"
+                else:
+                    conn.execute("""INSERT INTO domains
+                        (domain,status,created_at,updated_at,request_count,last_requested_at,last_requested_url)
+                        VALUES (?,'pending',?,?,1,?,?)""", (domain, now, now, now, safe_url[:512]))
             else:
                 # Keep per-host request counts when already present; otherwise
                 # count against the matching explicit parent without creating
@@ -305,6 +342,8 @@ def evaluate_fetch_url(url: str) -> dict | None:
     status, matched=request(host, shown)
     if status == 'pending':
         return {'success':False,'status':'approval_required','url':shown,'domain':host,'rule':matched,'reason':'Domain approval required. A request is waiting in the local dashboard. Ask the user to approve it, then retry this tool call.','approval_dashboard':UI_URL}
+    if status == 'queue_full':
+        return {'success':False,'status':'approval_queue_full','url':shown,'domain':host,'reason':'Domain was not queued: automatic approval requests are capacity/rate limited. Ask the local user to approve the hostname manually in the dashboard.','approval_dashboard':UI_URL}
     if status == 'denied':
         return {'success':False,'status':'denied','url':shown,'domain':host,'rule':matched,'reason':'Domain denied in local dashboard. Only the local user can change this decision.','approval_dashboard':UI_URL}
     try:

@@ -66,9 +66,9 @@ def row_html(r):
 
 def render(query='', message='', kind='success'):
     c=policy.counts()
-    rows=policy.entries(query,limit=2000)
-    pending=''.join(row_html(r) for r in rows if r['status']=='pending')
-    other=''.join(row_html(r) for r in rows if r['status']!='pending')
+    # Separate independent limits: pending floods cannot hide stored decisions.
+    pending=''.join(row_html(r) for r in policy.entries(query,limit=200,status='pending'))
+    other=''.join(row_html(r) for r in policy.entries(query,limit=2000,status='decided'))
     alert=f'<p class="alert {"error" if kind=="error" else "success"}">{esc(message)}</p>' if message else ''
     table_head='<div class="scroll"><table><thead><tr><th>Domain (includes subdomains)</th><th>Decision</th><th>Requests / latest</th><th>Manage</th></tr></thead><tbody>'
     query_escaped=esc(query)
@@ -77,6 +77,7 @@ def render(query='', message='', kind='success'):
 <section class="stats"><div class="stat"><span>Awaiting approval</span><b>{c['pending']}</b></div><div class="stat"><span>Allowed</span><b>{c['allowed']}</b></div><div class="stat"><span>Denied</span><b>{c['denied']}</b></div><div class="stat"><span>Dashboard</span><b style="font-size:14px">127.0.0.1:{PORT}</b></div></section>
 <div class="panel"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="{esc(CSRF)}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Rules include subdomains unless overridden by a more specific rule. Never approve private-network addresses.</p></div>
 <div class="row" style="justify-content:space-between"><h2>Requests awaiting review</h2><div><a href="/">Refresh requests</a></div></div>
+<p class="subtle">Showing at most 200 pending entries (filter to find specific hosts). Agent-created queue entries are limited to {policy.MAX_PENDING_TOTAL} total, {policy.MAX_PENDING_PER_SITE} per registrable domain and {policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR} new hosts per site per hour. Manual allow/deny remains available even when the queue is full. Existing entries are never silently removed.</p>
 {table_head}{pending or '<tr><td colspan="4">No pending requests.</td></tr>'}</tbody></table></div>
 <div class="row" style="justify-content:space-between"><h2>Allowed and denied domains</h2><form method="get" action="/"><input name="q" value="{query_escaped}" placeholder="Filter by domain"><button type="submit">Filter</button></form></div>
 {table_head}{other or '<tr><td colspan="4">No matching domains.</td></tr>'}</tbody></table></div>
