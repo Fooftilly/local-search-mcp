@@ -175,9 +175,12 @@ class BridgeTests(unittest.TestCase):
     def test_extraction_modes_empty_fit_and_oversized_content(self):
         from collections import OrderedDict
         selected = ["raw"]
+        request_configs = []
         def handler(request):
             if request.url.path == "/health":
                 return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            import json
+            request_configs.append(json.loads(request.content)["crawler_config"]["params"])
             obj = {"raw_markdown": "Raw text", "fit_markdown": "Fit text"} if selected[0] == "raw" else {
                 "raw_markdown": "Z" * (self.module.document_pages.MAX_DOCUMENT_CHARS + 1)}
             return httpx.Response(200, json={"results": [{
@@ -195,6 +198,11 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(fitted["markdown"], "Fit text")
             self.assertEqual(fitted["metadata"]["title"], "<untrusted>")
             self.assertNotIn("canonical_url", fitted["metadata"])
+            self.assertEqual(request_configs[0], {"stream": False})
+            generator = request_configs[1]["markdown_generator"]
+            self.assertEqual(generator["type"], "DefaultMarkdownGenerator")
+            self.assertEqual(generator["params"]["content_filter"]["type"],
+                             "PruningContentFilterLXML")
             selected[0] = "huge"
             huge = self.module.web_fetch("https://example.com/test")
             self.assertEqual(huge["status"], "document_too_large")

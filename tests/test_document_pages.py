@@ -35,13 +35,13 @@ class DocumentPageTests(unittest.TestCase):
         for bad in ("../../etc/passwd", "", "!" * 32, None):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 pages.read(bad, 2)
-        with self.assertRaises(ValueError):
-            pages.read(handle, 1)
-        with self.assertRaises(ValueError):
-            pages.read(handle, True)
-        with self.assertRaises(ValueError):
-            pages.read(handle, 100)
         with patch.object(pages.time, "monotonic", return_value=101):
+            with self.assertRaises(ValueError):
+                pages.read(handle, 1)
+            with self.assertRaises(ValueError):
+                pages.read(handle, True)
+            with self.assertRaises(ValueError):
+                pages.read(handle, 100)
             self.assertEqual(pages.read(handle, 2)["markdown"], content[pages.PAGE_CHARS:])
         with patch.object(pages.time, "monotonic", return_value=100 + pages.TTL_SECONDS):
             expired = pages.read(handle, 2)

@@ -158,10 +158,20 @@ def web_fetch(url: str, mode: str = "raw") -> dict:
     if CRAWLER_SECURITY_WARNING:
         return {"url": url, "success": False, "status": "blocked", "reason": CRAWLER_SECURITY_WARNING}
     headers = {"Authorization": f"Bearer {CRAWL4AI_TOKEN}"} if CRAWL4AI_TOKEN else {}
+    crawler_params = {"stream": False}
+    if mode == "fit":
+        # Stock Crawl4AI only generates fit Markdown when a content filter
+        # is configured. These are upstream-allowlisted safe config classes.
+        crawler_params["markdown_generator"] = {
+            "type": "DefaultMarkdownGenerator",
+            "params": {"content_filter": {
+                "type": "PruningContentFilterLXML", "params": {}
+            }},
+        }
     payload = {
         "urls": [url],
         "browser_config": {"type": "BrowserConfig", "params": {"headless": True}},
-        "crawler_config": {"type": "CrawlerRunConfig", "params": {"stream": False}},
+        "crawler_config": {"type": "CrawlerRunConfig", "params": crawler_params},
     }
     with httpx.Client(timeout=75, trust_env=False) as client:
         try:
