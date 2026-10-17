@@ -61,6 +61,35 @@ class PrivateConfigTests(unittest.TestCase):
         self.directory.chmod(0o700)
         self.assertEqual(bootstrap.read_config()["CRAWL4AI_API_TOKEN"], "original")
 
+    def test_first_run_persists_new_config_directory_entries(self):
+        """Creating nested XDG paths syncs each parent before writing the file."""
+        nested = Path(self.tmp.name) / "new-config" / "nested" / "local-search-mcp"
+        new_file = nested / "config.json"
+        events = []
+        original_fsync = os.fsync
+        original_replace = os.replace
+
+        def record_fsync(fd):
+            events.append(("fsync", stat.S_ISDIR(os.fstat(fd).st_mode)))
+            return original_fsync(fd)
+
+        def record_replace(source, target):
+            events.append(("replace", None))
+            return original_replace(source, target)
+
+        with (patch.object(bootstrap, "PRIVATE_DIR", nested),
+              patch.object(bootstrap, "PRIVATE_CONFIG", new_file),
+              patch.object(bootstrap.os, "fsync", side_effect=record_fsync),
+              patch.object(bootstrap.os, "replace", side_effect=record_replace)):
+            bootstrap.save_config({"CRAWL4AI_API_TOKEN": "new"})
+            self.assertEqual(bootstrap.read_config()["CRAWL4AI_API_TOKEN"], "new")
+        self.assertEqual(events, [
+            ("fsync", True), ("fsync", True), ("fsync", True),
+            ("fsync", False), ("replace", None), ("fsync", True),
+        ])
+        for folder in (nested, nested.parent, nested.parent.parent):
+            self.assertEqual(folder.stat().st_mode & 0o777, 0o700)
+
     def test_atomic_file_and_directory_sync_and_failed_rename(self):
         """A durable update syncs its temp file before rename and its directory after."""
         bootstrap.save_config({"CRAWL4AI_API_TOKEN": "original"})
@@ -197,6 +226,18 @@ class PrivateConfigTests(unittest.TestCase):
         self.assertEqual(database.stat().st_mtime_ns, stamp)
         self.assertFalse(Path(str(database) + "-shm").exists())
         self.assertFalse(Path(str(database) + "-wal").exists())
+        # A hot rollback journal means the read-only status must be unknown.
+        journal = Path(str(database) + "-journal")
+        journal.touch()
+        self.assertIn("seed status unknown", config_diagnostics._database_authority(database))
+        journal.unlink()
+        self.assertIn("persisted SQLite rules", config_diagnostics._database_authority(database))
+        # A live exclusive transaction must not be bypassed as immutable data.
+        with sqlite3.connect(database, timeout=1) as writer:
+            writer.execute("BEGIN EXCLUSIVE")
+            self.assertIn("seed status unknown", config_diagnostics._database_authority(database))
+            writer.rollback()
+        self.assertIn("persisted SQLite rules", config_diagnostics._database_authority(database))
 
         target = Path(self.tmp.name) / "separate"
         target.mkdir()
@@ -220,7 +261,9 @@ class PrivateConfigTests(unittest.TestCase):
             report = config_diagnostics.collect_report({}, Path(self.tmp.name), self.directory, lambda path: {})
             self.assertEqual(report["endpoints"]["dashboard_port"]["value"], "<invalid>")
             self.assertFalse(report["endpoints"]["crawl4ai"]["valid_loopback"])
-        for url in ("http://127.0.0.1:8888?", "http://127.0.0.1:8888#"):
+        for url in ("http://127.0.0.1:8888?", "http://127.0.0.1:8888#",
+                    "http://127.0.0.1:8888\n", "http://127.0.0.1:8888\t",
+                    " http://127.0.0.1:8888", "http://127.0.0.1:8888\x00"):
             with self.subTest(url=url), patch.dict(os.environ, {"SEARXNG_URL": url}):
                 result = config_diagnostics.collect_report({}, Path(self.tmp.name), self.directory, lambda p: {})
                 self.assertFalse(result["endpoints"]["searxng"]["valid_loopback"])

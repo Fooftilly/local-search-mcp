@@ -33,6 +33,7 @@ def _endpoint(key: str, default: str) -> dict[str, object]:
                  and parsed.username is None and parsed.password is None
                  and not parsed.path.strip("/") and not parsed.query and not parsed.fragment
                  and "?" not in raw and "#" not in raw
+                 and not any(ord(character) <= 32 or ord(character) == 127 for character in raw)
                  and (parsed.port is None or 1 <= parsed.port <= 65535))
         if valid:
             return {"source": source, "valid_loopback": True,
@@ -62,14 +63,12 @@ def _database_authority(database: Path) -> str:
         return "unsafe SQLite symlink (inspect manually)"
     if not database.is_file():
         return "initial seed on next launch"
-    if (Path(str(database) + "-wal").exists() or
-            Path(str(database) + "-shm").exists()):
-        # Immutable mode skips WAL locking; do not misreport potentially newer
-        # metadata when SQLite sidecar files are present.
-        return "seed status unknown (SQLite WAL present; inspect manually)"
+    if any(Path(str(database) + suffix).exists() for suffix in ("-journal", "-wal", "-shm")):
+        return "seed status unknown (SQLite transaction sidecar present; inspect manually)"
     try:
-        # immutable=1 guarantees the diagnostic creates no SQLite state files.
-        with sqlite3.connect(database.absolute().as_uri() + "?mode=ro&immutable=1", uri=True) as conn:
+        # SQLite's normal read-only mode honors rollback-journal locks and hot
+        # journals. immutable=1 would bypass locking and can read stale data.
+        with sqlite3.connect(database.absolute().as_uri() + "?mode=ro", uri=True, timeout=0.25) as conn:
             row = conn.execute("SELECT value FROM metadata WHERE key='domain_seed_v1'").fetchone()
         if row is None:
             return "initial seed pending (metadata flag absent)"

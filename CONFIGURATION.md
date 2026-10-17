@@ -28,7 +28,7 @@ The read-only report describes candidate sources; it cannot guarantee the effect
 
 Legacy env files are parsed as literals, never executed as shell scripts. The launcher only seeds domain approvals from a configured list on **first** database initialization; subsequent changes in environment/JSON do not overwrite the local dashboard decisions.
 
-`--show-config` intentionally does **not** inspect Docker to determine whether a Crawl4AI token would be discovered. It reports the source after excluding this discovery step and makes the limitation explicit. Domain rule values are not shown or modified; the report reads the domain-seed metadata flag in read-only mode (or reports uncertainty if the database cannot safely be inspected). Setup seed-source diagnostics and systemd service seed-source diagnostics are reported separately.
+`--show-config` intentionally does **not** inspect Docker to determine whether a Crawl4AI token would be discovered. It reports the source after excluding this discovery step and makes the limitation explicit. Domain rule values are not shown or modified; the report reads the domain-seed metadata flag through a normally locked, read-only SQLite connection. A rollback journal, WAL sidecar, lock, or unreadable database produces an explicit uncertain status rather than a misleading answer. Setup seed-source diagnostics and systemd service seed-source diagnostics are reported separately.
 
 ## Diagnostics and compatibility
 

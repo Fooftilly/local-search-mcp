@@ -87,12 +87,34 @@ def read_config() -> dict[str, str]:
     return data
 
 
+def _ensure_private_dir_durable() -> None:
+    """Create missing configuration directories and persist each new entry."""
+    missing = []
+    directory = PRIVATE_DIR
+    while not directory.exists():
+        if directory.is_symlink():
+            raise SetupError("Refusing symlinked private configuration parent")
+        missing.append(directory)
+        if directory.parent == directory:
+            raise SetupError("Cannot create private configuration directory")
+        directory = directory.parent
+    for new_dir in reversed(missing):
+        new_dir.mkdir(mode=0o700)
+        # Persist each directory entry in the parent before writing secrets.
+        # The private directory itself is synced after the config-file rename.
+        parent_fd = os.open(new_dir.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+
+
 def save_config(config: dict[str, str]) -> None:
     """Atomically store owner-only credentials without following symlinks."""
     _verify_private_location()
     if not all(isinstance(k, str) and isinstance(v, str) for k, v in config.items()):
         raise SetupError("Private configuration values must be strings")
-    PRIVATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _ensure_private_dir_durable()
     _verify_private_location()
     os.chmod(PRIVATE_DIR, 0o700)
     fd, tmp = tempfile.mkstemp(prefix=".config-", dir=PRIVATE_DIR)
