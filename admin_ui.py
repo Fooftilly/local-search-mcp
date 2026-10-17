@@ -144,7 +144,7 @@ def render(query='', message='', kind='success'):
     pending=''.join(row_html(r) for r in policy.entries(query,limit=200,status='pending'))
     other=''.join(row_html(r) for r in policy.entries(query,limit=2000,status='decided'))
     alert=f'<p class="alert {"error" if kind=="error" else "success"}">{esc(message)}</p>' if message else ''
-    table_head='<div class="scroll"><table><thead><tr><th>Domain / rule scope</th><th>Decision</th><th>Requests / latest</th><th>Manage</th></tr></thead>'
+    table_head='<div class="scroll"><table><thead><tr><th>Domain</th><th>Decision / scope / expiry</th><th>Requests / latest</th><th>Manage</th></tr></thead>'
     query_escaped=esc(query)
     return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
 <main><h1>Domain approvals</h1><p>Approve or deny domains requested by agents. Changes apply to the next fetch without restarting MCP. The dashboard is accessible only from this computer.</p>{alert}
