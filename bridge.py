@@ -145,9 +145,17 @@ def _run_search(params: dict, max_results: int) -> list[dict] | dict:
     if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
         return {"success": False, "status": "invalid_response", "backend": "searxng",
                 "reason": "Local SearXNG returned an invalid results structure."}
-    if not payload.get("results") and payload.get("unresponsive_engines"):
+    rows = payload["results"]
+    if not rows and payload.get("unresponsive_engines"):
         return {"success": False, "status": "upstream_unavailable", "backend": "searxng",
                 "reason": "SearXNG returned no results because one or more engines were unresponsive. Retry later or choose another engine."}
+    # Preserve compatibility with partially malformed SearXNG responses: skip
+    # bad rows before limiting valid results. When *every* nonempty row is
+    # malformed, however, returning [] would misreport/cache a backend failure.
+    valid_rows = [row for row in rows if isinstance(row, dict)]
+    if rows and not valid_rows:
+        return {"success": False, "status": "invalid_response", "backend": "searxng",
+                "reason": "SearXNG returned results without any valid result objects."}
     return [
         {
             "title": str(r.get("title", ""))[:240],
@@ -155,7 +163,7 @@ def _run_search(params: dict, max_results: int) -> list[dict] | dict:
             "snippet": str(r.get("content", ""))[:1100],
             "engine": str(r.get("engine", "")),
         }
-        for r in [row for row in payload.get("results", []) if isinstance(row, dict)][:max_results]
+        for r in valid_rows[:max_results]
     ]
 
 

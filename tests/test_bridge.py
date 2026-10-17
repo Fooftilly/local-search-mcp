@@ -116,6 +116,26 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(second["status"], "invalid_response")
         self.assertEqual(len(seen), 2)
 
+    def test_all_malformed_search_rows_fail_explicitly_and_are_not_cached(self):
+        for bad_rows in ([None], ["not-an-object", 17], [None, [], False]):
+            self.module.request_cache.reset_for_test()
+            seen = []
+            original = httpx.Client
+            def handler(request):
+                seen.append(True)
+                return httpx.Response(200, json={"results": bad_rows})
+            def client(**kwargs):
+                return original(transport=httpx.MockTransport(handler))
+            with (self.subTest(bad_rows=bad_rows),
+                  patch.object(self.module.httpx, "Client", side_effect=client)):
+                first = self.module.web_search("malformed-results")
+                second = self.module.web_search("malformed-results")
+                self.assertEqual(first["status"], "invalid_response")
+                self.assertEqual(first["backend"], "searxng")
+                self.assertEqual(second["status"], "invalid_response")
+                self.assertEqual(len(seen), 2)
+                self.assertFalse(self.module.request_cache._CACHE)
+
     def test_schemeless_urls_bypass_private_search_cache(self):
         hits = []
         original = httpx.Client
