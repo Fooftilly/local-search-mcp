@@ -89,11 +89,15 @@ def web_fetch(url: str) -> dict:
     # the original URL proves the final destination is approved.
     redirected_url = page.get("redirected_url")
     original_url = page.get("url", url)
-    if not isinstance(original_url, str) or (
-        redirected_url is not None and not isinstance(redirected_url, str)
+    # An explicit empty or malformed redirected_url is not proof of a safe
+    # destination. Only an absent/None field preserves legacy behavior.
+    if not isinstance(original_url, str) or not original_url or (
+        redirected_url is not None and (
+            not isinstance(redirected_url, str) or not redirected_url
+        )
     ):
         return {"url": url, "success": False, "status": "blocked", "reason": "Unexpected Crawl4AI destination URL"}
-    final_url = redirected_url or original_url
+    final_url = original_url if redirected_url is None else redirected_url
     # Defense in depth: never return content from an unapproved redirect.
     # Browser/container egress controls must independently block unsafe traffic.
     if final_url != url and _check_public_target(final_url) is not None:
