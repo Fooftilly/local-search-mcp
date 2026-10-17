@@ -108,13 +108,13 @@ class DomainPolicyTests(unittest.TestCase):
                 ("explicit.example.org", "denied"),
                 ("allowed.example.net", "allowed"),
             ):
-                # Old request() clones recorded request_count=1 and a last
-                # request timestamp; standalone dashboard decisions did not.
+                # Old request() inserted a clone with count=1, then incremented
+                # it to 2; standalone dashboard decisions had no requests.
                 inherited = domain == "child.example.org"
                 db.execute("""INSERT INTO domains
                     (domain,status,created_at,updated_at,request_count,last_requested_at)
                     VALUES(?,?,?,?,?,?)""",
-                    (domain, status, now, now, 1 if inherited else 0,
+                    (domain, status, now, now, 2 if inherited else 0,
                      now if inherited else ""),
                 )
             db.execute("INSERT INTO decisions(at,domain,action) VALUES(?,?,'deny')",
