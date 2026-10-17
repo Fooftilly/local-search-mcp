@@ -127,7 +127,10 @@ def _crawl_metadata(page: dict, final_url: str) -> dict:
         if not isinstance(value, str) or not value.strip():
             value = page.get(key)
         if isinstance(value, str) and value.strip():
-            result[key] = value.strip()[:240 if key == "title" else 1000]
+            # Crawl4AI JSON strings may contain escaped unpaired surrogates.
+            # Normalize before handing metadata to the MCP JSON serializer.
+            cleaned = value.strip().encode("utf-8", errors="replace").decode("utf-8")
+            result[key] = cleaned[:240 if key == "title" else 1000]
     canonical = raw.get("canonical_url") or raw.get("canonical")
     if isinstance(canonical, str):
         try:
@@ -136,10 +139,14 @@ def _crawl_metadata(page: dict, final_url: str) -> dict:
                     and target.hostname.lower() == (requested.hostname or "").lower()
                     and target.username is None and target.password is None
                     and target.port in (None, 80, 443)):
-                result["canonical_url"] = urlunsplit(
+                canonical_url = urlunsplit(
                     (target.scheme, target.netloc, target.path, "", "")
                 )[:2000]
-        except ValueError:
+                # A malformed URL must not produce invalid JSON or a broken
+                # canonical link. Unlike display text, do not rewrite URLs.
+                canonical_url.encode("utf-8", errors="strict")
+                result["canonical_url"] = canonical_url
+        except (ValueError, UnicodeError):
             pass
     return result
 

@@ -223,6 +223,45 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(metadata["title"], "Top level title")
         self.assertEqual(metadata["description"], "Top level description")
 
+    def test_unpaired_unicode_metadata_serializes_for_initial_and_later_pages(self):
+        import json
+        from collections import OrderedDict
+
+        # JSON escaping carries lone UTF-16 surrogates through Crawl4AI JSON;
+        # their presence in an MCP response can break UTF-8 serialization.
+        page = {"url": "https://example.com/long", "success": True,
+                "markdown": "safe content " * 3000,
+                "metadata": {"title": "Bad\\ud800title",
+                             "description": "Bad\\udfffdescription",
+                             "canonical_url": "https://example.com/path\\ud800"}}
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [page]})
+
+        original = httpx.Client
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client),
+              patch.object(self.module.document_pages, "_CACHE", OrderedDict())):
+            first = self.module.web_fetch("https://example.com/long")
+            self.assertTrue(first["success"])
+            self.assertTrue(first["truncated"])
+            self.assertEqual(first["metadata"]["title"], "Bad?title")
+            self.assertEqual(first["metadata"]["description"], "Bad?description")
+            self.assertNotIn("canonical_url", first["metadata"])
+            next_page = self.module.web_fetch_page(first["document_id"], 2)
+            self.assertEqual(next_page["metadata"], first["metadata"])
+            for response in (first, next_page):
+                json.dumps(response, ensure_ascii=False).encode("utf-8")
+
+        fallback = self.module._crawl_metadata(
+            {"metadata": {"title": None},
+             "title": "Fallback\\ud800title"},
+            "https://example.com")
+        self.assertEqual(fallback["title"], "Fallback?title")
+
     def test_long_unapproved_redirect_is_never_cached(self):
         from collections import OrderedDict
         content = "private" * 6000
