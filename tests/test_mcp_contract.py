@@ -15,6 +15,7 @@ import unittest
 from unittest.mock import patch
 
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 import httpx
 
 import bridge
@@ -93,10 +94,10 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
                     "urls": inputs, "mode": "raw",
                 })
                 self.assertFalse(response.is_error)
-                invalid = await mcp_client.call_tool("web_fetch_batch", {
-                    "urls": [good] * 9,
-                })
-                self.assertTrue(invalid.is_error)
+                with self.assertRaisesRegex(ToolError, "list of 1 to 8 URLs"):
+                    await mcp_client.call_tool("web_fetch_batch", {
+                        "urls": [good] * 9,
+                    })
 
         rows = response.data["results"]
         self.assertEqual(response.data["count"], 5)
