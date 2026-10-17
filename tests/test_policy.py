@@ -47,6 +47,23 @@ class DomainPolicyTests(unittest.TestCase):
         result = policy.evaluate_fetch_url("https://someone-else.github.io/")
         self.assertEqual(result["status"], "approval_required")
 
+    def test_dashboard_rule_change_invalidates_fetch_cache_immediately(self):
+        import request_cache
+        request_cache.reset_for_test()
+        self.addCleanup(request_cache.reset_for_test)
+        key = ("fetch", "raw", "https://example.com/page")
+        request_cache.run("fetch", key, lambda: {"success": True, "markdown": "cached"},
+                          ttl=120)
+        self.assertIn(key, request_cache._CACHE)
+        initial = request_cache.policy_epoch()
+        policy.decide("example.com", "deny")
+        self.assertNotIn(key, request_cache._CACHE)
+        self.assertEqual(request_cache.policy_epoch(), initial + 1)
+        self.assertEqual(policy.request("example.com", "https://example.com/page")[0],
+                         "denied")
+        policy.decide("example.com", "allow")
+        self.assertEqual(request_cache.policy_epoch(), initial + 2)
+
     def test_unknown_request_is_pending_and_requires_local_decision(self):
         result = policy.evaluate_fetch_url("https://docs.python.org/help?token=secret")
         self.assertEqual(result["status"], "approval_required")

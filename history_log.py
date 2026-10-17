@@ -139,6 +139,11 @@ def logged_tool(kind: str):
                          "engine": str(r.get("engine", ""))[:100]}
                         for r in output[:5] if isinstance(r, dict)
                     ]
+                elif kind == "search" and isinstance(output, dict):
+                    event["status"] = "error" if output.get("success") is False else "success"
+                    event["error_type"] = output.get("status", "unknown")
+                    if isinstance(output.get("http_status"), int):
+                        event["http_status"] = output["http_status"]
                 elif kind == "page" and isinstance(output, dict):
                     event["status"] = output.get("status", "success" if output.get("success") else "error")
                     event["page_count"] = output.get("page_count")

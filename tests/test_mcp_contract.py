@@ -23,6 +23,8 @@ import domain_policy
 
 class MCPContractTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        bridge.request_cache.reset_for_test()
+        self.addCleanup(bridge.request_cache.reset_for_test)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         env = patch.dict(os.environ, {
@@ -119,6 +121,34 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(first.data["markdown"], audit)
             self.assertNotIn(content[24000:], audit)
         self.assertEqual(calls, ["/health", "/crawl"])
+
+    async def test_fresh_search_parameter_is_backward_compatible_in_real_mcp(self):
+        seen = []
+        original = httpx.Client
+        def handler(request):
+            seen.append(dict(request.url.params))
+            return httpx.Response(200, json={"results": [
+                {"url": "https://example.com", "title": "ok", "content": "ok", "engine": "test"}
+            ]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with patch.object(bridge.httpx, "Client", side_effect=factory):
+            async with Client(bridge.mcp) as client:
+                first = await client.call_tool("web_search", {"query": "mcp cache test"})
+                self.assertEqual(len(seen), 1)
+                second = await client.call_tool("web_search", {"query": "mcp cache test"})
+                self.assertEqual(len(seen), 1)
+                fresh = await client.call_tool("web_search", {
+                    "query": "mcp cache test", "fresh": True
+                })
+                self.assertEqual(len(seen), 2)
+        self.assertFalse(first.is_error)
+        self.assertFalse(second.is_error)
+        self.assertFalse(fresh.is_error)
+        self.assertEqual(first.data, second.data)
+        self.assertEqual(first.data, fresh.data)
+        self.assertEqual(len(seen), 2)
+        self.assertTrue(all("fresh" not in params for params in seen))
 
     async def test_invalid_public_targets_are_blocked_without_backend(self):
         """MCP cannot fetch local, special-use, credentialed or nonstandard URLs."""
