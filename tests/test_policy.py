@@ -59,6 +59,94 @@ class DomainPolicyTests(unittest.TestCase):
         self.assertEqual(policy.request("untrusted.example.com", "https://untrusted.example.com")[0], "denied")
         self.assertEqual(policy.request("safe.example.com", "https://safe.example.com")[0], "allowed")
 
+    def test_requested_subdomain_obeys_later_parent_allow(self):
+        first = policy.evaluate_fetch_url("https://docs.python.org/3/?token=private")
+        self.assertEqual(first["status"], "approval_required")
+        self.assertEqual(first["rule"], "docs.python.org")
+        policy.decide("python.org", "allow")
+        # After the parent decision the stale pending row must disappear,
+        # and the SAME previously requested hostname must be allowed.
+        self.assertNotIn("docs.python.org", {row["domain"] for row in policy.entries()})
+        self.assertEqual(policy.request("docs.python.org", "https://docs.python.org/3/"),
+                         ("allowed", "python.org"))
+        self.assertEqual(policy.request("www.python.org", "https://www.python.org/"),
+                         ("allowed", "python.org"))
+        self.assertNotIn("docs.python.org", {row["domain"] for row in policy.entries()})
+
+    def test_inherited_deny_never_persists_as_explicit_child_rule(self):
+        policy.decide("example.org", "deny")
+        self.assertEqual(policy.request("a.example.org", "https://a.example.org/"),
+                         ("denied", "example.org"))
+        self.assertNotIn("a.example.org", {row["domain"] for row in policy.entries()})
+        policy.decide("example.org", "allow")
+        self.assertEqual(policy.request("a.example.org", "https://a.example.org/"),
+                         ("allowed", "example.org"))
+
+    def test_explicit_child_exception_survives_parent_changes_and_restart(self):
+        policy.decide("example.org", "allow")
+        policy.decide("blocked.example.org", "deny")
+        policy.decide("ignored.example.org", "allow")
+        policy.decide("example.org", "deny")
+        policy.initialize()
+        self.assertEqual(policy.request("blocked.example.org", "https://blocked.example.org/"),
+                         ("denied", "blocked.example.org"))
+        self.assertEqual(policy.request("ignored.example.org", "https://ignored.example.org/"),
+                         ("allowed", "ignored.example.org"))
+        self.assertEqual(policy.request("other.example.org", "https://other.example.org/"),
+                         ("denied", "example.org"))
+        policy.decide("example.org", "allow")
+        self.assertEqual(policy.request("blocked.example.org", "https://blocked.example.org/")[0], "denied")
+        self.assertEqual(policy.request("other.example.org", "https://other.example.org/")[0], "allowed")
+
+    def test_legacy_inherited_deny_rows_migrate_without_losing_explicit_deny(self):
+        """Pre-migration child denies copied by request() are not user rules."""
+        with policy._db() as db:
+            now = policy.utcnow()
+            for domain, status in (
+                ("example.org", "denied"),
+                ("child.example.org", "denied"),
+                ("explicit.example.org", "denied"),
+                ("allowed.example.net", "allowed"),
+            ):
+                db.execute(
+                    "INSERT INTO domains(domain,status,created_at,updated_at) VALUES(?,?,?,?)",
+                    (domain, status, now, now),
+                )
+            db.execute("INSERT INTO decisions(at,domain,action) VALUES(?,?,'deny')",
+                       (now, "example.org"))
+            db.execute("INSERT INTO decisions(at,domain,action) VALUES(?,?,'deny')",
+                       (now, "explicit.example.org"))
+            db.execute("INSERT INTO metadata(key,value) VALUES('domain_seed_v1','1')")
+            db.commit()
+        policy.initialize()
+        rows = {row["domain"]: row for row in policy.entries()}
+        self.assertEqual(rows["child.example.org"]["status"], "pending")
+        self.assertEqual(rows["child.example.org"]["explicit_rule"], 0)
+        self.assertEqual(rows["explicit.example.org"]["status"], "denied")
+        self.assertEqual(rows["explicit.example.org"]["explicit_rule"], 1)
+        self.assertEqual(rows["allowed.example.net"]["explicit_rule"], 1)
+        policy.decide("example.org", "allow")
+        self.assertEqual(policy.request("child.example.org", "https://child.example.org/"),
+                         ("allowed", "example.org"))
+        self.assertEqual(policy.request("explicit.example.org", "https://explicit.example.org/"),
+                         ("denied", "explicit.example.org"))
+        policy.initialize()
+        with policy._db() as db:
+            self.assertEqual(db.execute(
+                "SELECT count(*) FROM metadata WHERE key='explicit_rules_v1'"
+            ).fetchone()[0], 1)
+
+    def test_explicit_rule_after_pending_request_overrides_parent(self):
+        result = policy.evaluate_fetch_url("https://docs.python.org/")
+        self.assertEqual(result["status"], "approval_required")
+        policy.decide("docs.python.org", "deny")
+        policy.decide("python.org", "allow")
+        self.assertEqual(policy.request("docs.python.org", "https://docs.python.org/"),
+                         ("denied", "docs.python.org"))
+        policy.decide("docs.python.org", "delete")
+        self.assertEqual(policy.request("docs.python.org", "https://docs.python.org/"),
+                         ("allowed", "python.org"))
+
     def test_nonstandard_port_is_blocked_before_approval(self):
         result=policy.evaluate_fetch_url("http://example.com:8080/")
         self.assertEqual(result["status"], "blocked")
