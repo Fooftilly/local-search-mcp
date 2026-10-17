@@ -138,7 +138,8 @@ class PrivateConfigTests(unittest.TestCase):
 
     def test_diagnostic_endpoint_and_dashboard_port_validation(self):
         report = config_diagnostics.collect_report({}, Path(self.tmp.name), self.directory, lambda path: {})
-        self.assertEqual(report["endpoints"]["searxng"]["value"], "http://127.0.0.1:8888")
+        self.assertEqual(report["endpoints"]["searxng"]["value"], "127.0.0.1:8888")
+        self.assertEqual(report["endpoints"]["searxng"]["transport"], "HTTP over loopback")
         self.assertEqual(report["endpoints"]["dashboard_port"]["value"], 8791)
         with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_DASHBOARD_PORT": "not-a-port",
                                       "CRAWL4AI_URL": "http://127.0.0.1:99999/"}):
