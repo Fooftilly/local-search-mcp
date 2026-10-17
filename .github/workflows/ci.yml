@@ -58,4 +58,4 @@ jobs:
           for name, contents in unit_files('/usr/bin/python3', Path.cwd()).items():
               (folder / name).write_text(contents)
           PY
-          SYSTEMD_UNIT_PATH="$UNIT_DIR" systemd-analyze verify "$UNIT_DIR"/*.service
+          SYSTEMD_UNIT_PATH="$UNIT_DIR:/usr/lib/systemd/system:/lib/systemd/system" systemd-analyze verify "$UNIT_DIR"/*.service
