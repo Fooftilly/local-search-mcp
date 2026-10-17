@@ -87,7 +87,7 @@ def append_history(event: dict) -> None:
 
 def logged_tool(kind: str):
     """Decorate a registered FastMCP tool while retaining its real signature."""
-    if kind not in ("search", "fetch"):
+    if kind not in ("search", "fetch", "page"):
         raise ValueError("Unrecognized history kind")
 
     def decorate(fn):
@@ -115,6 +115,11 @@ def logged_tool(kind: str):
                     value = params.get(field)
                     if isinstance(value, str) and value:
                         event[field] = value[:340]
+            elif kind == "page":
+                # Never persist bearer document handles, page text, or target URL.
+                requested_page = params.get("page", 2)
+                if type(requested_page) is int:
+                    event["page"] = requested_page
             else:
                 event["url"] = safe_url(params.get("url"))
                 try:
@@ -134,6 +139,9 @@ def logged_tool(kind: str):
                          "engine": str(r.get("engine", ""))[:100]}
                         for r in output[:5] if isinstance(r, dict)
                     ]
+                elif kind == "page" and isinstance(output, dict):
+                    event["status"] = output.get("status", "success" if output.get("success") else "error")
+                    event["page_count"] = output.get("page_count")
                 elif kind == "fetch" and isinstance(output, dict):
                     event["crawl_success"] = output.get("success")
                     event["status"] = {"approval_required":"pending", "denied":"denied", "blocked":"blocked"}.get(output.get("status"), "success" if output.get("success") is not False else "error")
