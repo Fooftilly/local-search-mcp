@@ -230,7 +230,11 @@ def _run_fetch(url: str, mode: str) -> dict:
     }
     with httpx.Client(timeout=75, trust_env=False) as client:
         try:
-            health = client.get(f"{CRAWL4AI_URL}/health", timeout=8)
+            health = _retry_request(lambda: client.get(
+                f"{CRAWL4AI_URL}/health", timeout=8))
+            if health is None:
+                return {"url": url, "success": False, "status": "blocked",
+                        "reason": "Crawl4AI security check unavailable: upstream connection error"}
             health.raise_for_status()
             health_error = verify_health(health.json())
         except (httpx.HTTPError, ValueError) as exc:

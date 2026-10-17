@@ -119,6 +119,27 @@ class BridgeTests(unittest.TestCase):
         # A failed call was not cached.
         self.assertFalse(self.module.request_cache._CACHE)
 
+    def test_crawl4ai_health_retries_once_then_validates_version(self):
+        seen = []
+        def handler(request):
+            seen.append(request.url.path)
+            if request.url.path == "/health" and seen.count("/health") == 1:
+                return httpx.Response(503, json={"status": "unhealthy"})
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [
+                {"url": "https://example.com/health", "success": True, "markdown": "OK"}
+            ]})
+        original = httpx.Client
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client),
+              patch.object(self.module.time, "sleep", return_value=None)):
+            result = self.module.web_fetch("https://example.com/health")
+        self.assertTrue(result["success"])
+        self.assertEqual(seen, ["/health", "/health", "/crawl"])
+
     def test_policy_epoch_change_during_crawl_fails_closed(self):
         def handler(request):
             if request.url.path == "/health":
