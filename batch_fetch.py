@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from copy import deepcopy
+from threading import Event
 from typing import Callable
 
 from history_log import logged_tool
@@ -68,7 +69,8 @@ def _finalize_result(url: str, answer: dict, *, policy_changed: bool) -> dict:
 
 
 def fetch_many(urls: list[str], mode: str, fresh: bool,
-               fetch: Callable[[str, str, bool], dict]) -> dict:
+               fetch: Callable[[str, str, bool], dict],
+               *, cancelled: Event | None = None) -> dict:
     """Map approved single-page fetches to independent ordered results.
 
     At most 3 distinct URL jobs execute at a time. Their existing HTTP timeouts
@@ -78,9 +80,18 @@ def fetch_many(urls: list[str], mode: str, fresh: bool,
     starting_policy_epoch = request_cache.policy_epoch()
     unique = list(dict.fromkeys(urls))
     results: dict[str, dict] = {}
+    def scheduled_fetch(url: str) -> dict:
+        # MCP task cancellation cannot safely kill an already-running browser
+        # fetch, but must prevent any *queued* URL from starting afterward.
+        if cancelled is not None and cancelled.is_set():
+            result = {"url": url, "success": False, "status": "cancelled",
+                      "reason": "Batch cancelled before this URL began fetching."}
+            return _audit_duplicate(url, result)
+        return fetch(url, mode, fresh)
+
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(unique)),
                             thread_name_prefix="local-search-batch") as pool:
-        tasks = {pool.submit(fetch, url, mode, fresh): url for url in unique}
+        tasks = {pool.submit(scheduled_fetch, url): url for url in unique}
         for future in as_completed(tasks):
             url = tasks[future]
             try:

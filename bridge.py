@@ -1,6 +1,7 @@
 """A local, read-only MCP adapter for SearXNG and self-hosted Crawl4AI."""
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import time
@@ -385,15 +386,21 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False) -> dict:
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
-def web_fetch_batch(urls: list[str], mode: str = "raw",
-                    fresh: bool = False) -> dict:
+async def web_fetch_batch(urls: list[str], mode: str = "raw",
+                          fresh: bool = False) -> dict:
     """Fetch 1–8 approved URLs, at most 3 concurrently, with ordered results.
 
-    Each unique URL is processed by the existing guarded web_fetch path.
-    Repeated URLs are fetched once per batch but remain distinct result rows
-    and audit events. A failed or blocked URL does not abort other URLs.
+    Each unique URL uses the existing guarded web_fetch path. If the MCP call
+    is cancelled, pending jobs are skipped; browser jobs already running
+    cannot be forcibly stopped.
     """
-    return fetch_many(urls, mode, fresh, web_fetch)
+    cancelled = threading.Event()
+    try:
+        return await asyncio.to_thread(
+            fetch_many, urls, mode, fresh, web_fetch, cancelled=cancelled)
+    except asyncio.CancelledError:
+        cancelled.set()
+        raise
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})

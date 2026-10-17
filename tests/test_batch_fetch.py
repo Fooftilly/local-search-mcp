@@ -143,6 +143,34 @@ class BatchFetchTests(unittest.TestCase):
                 self.assertNotIn("document_id", result)
                 self.assertNotIn("markdown", result)
 
+    def test_cancellation_skips_pending_urls_without_starting_new_crawls(self):
+        urls = [f"https://example.com/page-{i}" for i in range(8)]
+        started, release, stopped = Event(), Event(), Event()
+        count = [0]
+        lock = Lock()
+        calls = []
+        def slow_fetch(url, mode, fresh):
+            with lock:
+                calls.append(url)
+                count[0] += 1
+                if count[0] == 3:
+                    started.set()
+            self.assertTrue(release.wait(5))
+            return {"url": url, "success": True, "markdown": "safe"}
+        with ThreadPoolExecutor(max_workers=1) as caller:
+            future = caller.submit(fetch_many, urls, "raw", False,
+                                   slow_fetch, cancelled=stopped)
+            try:
+                self.assertTrue(started.wait(5))
+                stopped.set()
+            finally:
+                release.set()
+            response = future.result(timeout=5)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sum(x["result"].get("status") == "cancelled"
+                             for x in response["results"]), 5)
+        self.assertEqual(response["count"], 8)
+
     def test_per_url_failures_and_cancellations_do_not_abort_other_urls(self):
         urls = ["https://example.com/ok", "https://example.com/timeout",
                 "https://example.com/cancelled", "https://example.com/denied"]

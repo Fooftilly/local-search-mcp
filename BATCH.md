@@ -35,7 +35,7 @@ The example is illustrative: the exact approval response comes from the existing
 
 Each input gets a **sanitized private fetch audit event**, including repeated URLs; in-batch duplicate entries are audited without downloading the same page again. History still strips URL queries, fragments and credentials and never saves page text or document handles. The tool's result to its caller includes the requested URLs and fetched text, as the caller originally supplied/requested.
 
-The worker pool is bounded, but it does **not** forcibly interrupt an already running Crawl4AI browser job or DNS resolution. HTTPX timeouts are per network operation, not a hard total wall-clock deadline for the entire batch. Client disconnection/cancellation may not stop a running synchronous worker; the MCP bridge's existing browser containment and short retry ceilings remain necessary. Do not use this tool for high-volume crawling or private/authenticated websites.
+The worker pool is bounded, but it does **not** forcibly interrupt an already running Crawl4AI browser job or DNS resolution. HTTPX timeouts are per network operation, not a hard total wall-clock deadline for the entire batch. MCP request cancellation signals the batch's pending workers to skip URLs not yet started; already-running Crawl4AI/browser jobs cannot be forcibly interrupted. Those running jobs may finish after the caller disconnects, so the bridge's existing browser containment and short retry ceilings remain necessary. Do not use this tool for high-volume crawling or private/authenticated websites.
 
 ## Usage
 
@@ -43,4 +43,4 @@ The worker pool is bounded, but it does **not** forcibly interrupt an already ru
 fastmcp call http://127.0.0.1:8790/mcp web_fetch_batch urls='["https://example.com/a","https://example.org/b"]' --auth none
 ```
 
-Unknown or denied hosts produce structured pending/denied responses rather than reaching the Crawl4AI backend. Review requests and approve only intentional public domains in the **local** dashboard before retrying.
+Unknown hosts return `approval_required` when queued or `approval_queue_full` when pending-queue rate/capacity limits are reached; denied hosts return `denied`. None reaches Crawl4AI. For a full queue, ask a local operator to approve deliberately or retry after capacity frees (retrying does not grant approval). Review requests and approve only intentional public domains in the **local** dashboard.

@@ -103,8 +103,10 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.data["count"], 5)
         self.assertEqual([x["index"] for x in rows], list(range(5)))
         self.assertEqual([x["requested_url"] for x in rows], inputs)
-        self.assertEqual([x["result"]["status"] if "status" in x["result"] else "success"
-                          for x in rows],
+        for row in rows:
+            if "status" not in row["result"]:
+                self.assertIs(row["result"].get("success"), True)
+        self.assertEqual([x["result"].get("status", "success") for x in rows],
                          ["success", "approval_required", "success",
                           "upstream_unavailable", "success"])
         self.assertEqual(requests.count("/crawl"), 3)
