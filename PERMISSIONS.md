@@ -9,9 +9,10 @@ The local approval dashboard at `http://127.0.0.1:8791/` now lets the
 - **Exact host only**: a decision for `example.org` does not automatically
   apply to `docs.example.org`. Child hosts need their own permission, or may
   match a separate, less-specific rule.
-- **Permanent** (the default), **1 hour**, **24 hours**, or **7 days**: expiration
-  is saved in SQLite as a UTC timestamp and checked at every authorization,
-  including after dashboard/MCP restarts. An expired rule never grants access.
+- **Permanent** (the default), **1 hour**, **24 hours**, or **7 days**:
+  timed expirations are saved in SQLite as UTC timestamps and checked at every
+  authorization, including after restarts. Permanent rules have no expiry.
+  An expired rule never grants access.
   An expired exact-host rule becomes pending on the next request only if
   no less-specific active rule matches **and** the bounded approval queue has
   capacity. Otherwise a less-specific decision applies, or the request reports
@@ -24,7 +25,8 @@ existing permanent, subdomain-covering decisions. Invalid scope/duration
 inputs are rejected by the server, not trusted from HTML.
 
 Reapproving a domain with the **Allow** or **Deny** action replaces that rule's
-scope and duration. Check both selectors before confirming. The table labels
+scope and duration. Existing-rule forms require an explicit duration selection;
+no time-limited rule silently becomes permanent through a default selection. The table labels
 expired rules and shows scope/expiry. As before, a manual **Remove** erases
 the rule and a **Rename** preserves its existing limits.
 
