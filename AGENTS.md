@@ -25,6 +25,7 @@ boundaries, and review expectations.
 - Titles containing standalone `WIP`, `DNM`, or `DO NOT MERGE` mean the PR
   is not ready, even if the draft flag is cleared. Do not rename these titles
   just to bypass an intentionally unfinished state.
-- The Mergify Merge Protections check only blocks GitHub's manual merge button
-  after it is required in the active GitHub `master` branch ruleset. Until
-  then, inspect dependencies and readiness manually.
+- A failing Mergify Merge Protections check blocks both GitHub's manual
+  merge button and merge API calls once the check is required in the active
+  `master` branch ruleset, subject to GitHub ruleset bypass permissions.
+  Until it is required, inspect dependencies and readiness manually.
