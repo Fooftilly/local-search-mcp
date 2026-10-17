@@ -145,7 +145,10 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(first.is_error)
         self.assertFalse(second.is_error)
         self.assertFalse(fresh.is_error)
+        self.assertEqual(first.data, second.data)
+        self.assertEqual(first.data, fresh.data)
         self.assertEqual(len(seen), 2)
+        self.assertTrue(all("fresh" not in params for params in seen))
 
     async def test_invalid_public_targets_are_blocked_without_backend(self):
         """MCP cannot fetch local, special-use, credentialed or nonstandard URLs."""

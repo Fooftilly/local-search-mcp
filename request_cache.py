@@ -16,6 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 MAX_ITEMS = 64
 MAX_BYTES = 4 * 1024 * 1024
 MAX_ENTRY_BYTES = 128 * 1024
+MAX_KEY_BYTES = 2048
 SEARCH_TTL = 45
 FETCH_TTL = 120
 
@@ -40,8 +41,11 @@ def fetch_key(url: str, mode: str) -> tuple | None:
         if parsed.port is not None:
             netloc += f":{parsed.port}"
         path = parsed.path or "/"
-        return ("fetch", mode, urlunsplit((parsed.scheme.lower(), netloc, path, "", "")))
-    except (ValueError, TypeError):
+        canonical = urlunsplit((parsed.scheme.lower(), netloc, path, "", ""))
+        if len(canonical.encode("utf-8")) > MAX_KEY_BYTES:
+            return None
+        return ("fetch", mode, canonical)
+    except (ValueError, TypeError, UnicodeError):
         return None
 
 
@@ -51,13 +55,22 @@ def policy_epoch() -> int:
 
 
 def invalidate_fetch() -> None:
-    """Called by dashboard policy writes after SQLite commit."""
+    """Invalidate all fetch caches and detach old in-flight fetch operations.
+
+    Dashboard calls this BEFORE committing an explicit allow/deny/delete/rename
+    while it holds the SQLite write lock, so post-commit reads never see the
+    old generation. Old callers still wake and fail the bridge epoch check.
+    """
     global _POLICY_EPOCH
     with _LOCK:
         _POLICY_EPOCH += 1
         for key in list(_CACHE):
             if key[0] == "fetch":
                 del _CACHE[key]
+        for key in list(_INFLIGHT):
+            if key[0] == "fetch":
+                _INFLIGHT[key][2]["superseded"] = True
+                del _INFLIGHT[key]
 
 
 def reset_for_test() -> None:
@@ -76,11 +89,12 @@ def _purge(now: float) -> None:
             del _CACHE[key]
 
 
-def _cacheable_size(result: object) -> int:
+def _cacheable_size(result: object, key: tuple) -> int:
     try:
         if not isinstance(result, (list, dict)):
             return 0
-        size = len(json.dumps(result, ensure_ascii=True).encode("utf-8"))
+        size = (len(json.dumps(result, ensure_ascii=True).encode("utf-8"))
+                + len(json.dumps(key, ensure_ascii=True).encode("utf-8")))
         return size if size <= MAX_ENTRY_BYTES else 0
     except (TypeError, ValueError, UnicodeError):
         return 0
@@ -90,7 +104,7 @@ def _store(kind: str, key: tuple, result, ttl: float, generation: int,
            should_store, *, flight=None, refresh_token=None) -> bool:
     if should_store is not None and not should_store(result):
         return False
-    size = _cacheable_size(result)
+    size = _cacheable_size(result, key)
     if not size:
         return False
     with _LOCK:

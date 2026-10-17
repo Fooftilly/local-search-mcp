@@ -15,6 +15,7 @@ import socket
 import sqlite3
 from urllib.parse import urlsplit, urlunsplit
 from public_suffix import is_public_suffix, registrable_domain
+from request_cache import invalidate_fetch
 
 UI_URL = "http://127.0.0.1:8791/"
 SCHEMA_VERSION = 3
@@ -339,13 +340,13 @@ def decide(domain: str, action: str, new_domain: str = ""):
                 if domain != new_domain:
                     conn.execute('UPDATE domains SET domain=?,updated_at=? WHERE domain=?',(new_domain,now,domain))
             conn.execute('INSERT INTO decisions(at,domain,action) VALUES(?,?,?)',(now,domain,action))
+            # Invalidate before the commit publishes a new rule. Readers may
+            # check epochs concurrently, so commit-then-invalidate would
+            # leave a narrow post-commit window for stale cache returns.
+            invalidate_fetch()
             conn.commit()
         except BaseException:
             conn.rollback(); raise
-    # Keep process-local fetch caches consistent with explicit operator policy.
-    # In-flight crawls cannot repopulate entries from the previous generation.
-    from request_cache import invalidate_fetch
-    invalidate_fetch()
 
 
 def clear_pending_requests() -> int:

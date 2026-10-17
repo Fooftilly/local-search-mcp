@@ -141,7 +141,7 @@ def _run_search(params: dict, max_results: int) -> list[dict] | dict:
     except (ValueError, UnicodeError):
         return {"success": False, "status": "invalid_response", "backend": "searxng",
                 "reason": "Local SearXNG returned unreadable JSON."}
-    if not isinstance(payload, dict) or not isinstance(payload.get("results", []), list):
+    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
         return {"success": False, "status": "invalid_response", "backend": "searxng",
                 "reason": "Local SearXNG returned an invalid results structure."}
     if not payload.get("results") and payload.get("unresponsive_engines"):

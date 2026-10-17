@@ -51,11 +51,15 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(len(seen), 4)
             self.module.web_search("cache probe", page=2)
             self.assertEqual(len(seen), 5)
+            self.module.web_search("cache probe", language="en")
+            self.module.web_search("cache probe", categories="news")
+            self.module.web_search("cache probe", time_range="week")
+            self.assertEqual(len(seen), 8)
             # Never retain obviously secret-bearing search queries.
             keys_before = set(self.module.request_cache._CACHE)
             self.module.web_search("password=secret", fresh=False)
             self.module.web_search("password=secret", fresh=False)
-            self.assertEqual(len(seen), 7)
+            self.assertEqual(len(seen), 10)
             self.assertEqual(set(self.module.request_cache._CACHE), keys_before)
 
     def test_fetch_cache_requires_policy_and_skips_sensitive_urls(self):
@@ -88,6 +92,21 @@ class BridgeTests(unittest.TestCase):
              patch.object(self.module.httpx, "Client") as backend:
             self.assertEqual(self.module.web_fetch("https://example.com/page")["status"], "denied")
             backend.assert_not_called()
+
+    def test_search_missing_results_envelope_not_cached(self):
+        seen = []
+        original = httpx.Client
+        def handler(request):
+            seen.append(True)
+            return httpx.Response(200, json={"unexpected": "response"})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            first = self.module.web_search("missing-results")
+            second = self.module.web_search("missing-results")
+        self.assertEqual(first["status"], "invalid_response")
+        self.assertEqual(second["status"], "invalid_response")
+        self.assertEqual(len(seen), 2)
 
     def test_searxng_empty_unresponsive_engines_are_not_cached(self):
         hits = []

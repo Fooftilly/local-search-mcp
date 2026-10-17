@@ -54,7 +54,9 @@ class CacheTests(unittest.TestCase):
             results = [job.result(timeout=5) for job in [first, *followers]]
         self.assertEqual(len(count), 1)
         self.assertTrue(all(r["markdown"] == "safe" for r in results))
+        self.assertEqual(len({id(r) for r in results}), len(results))
         results[0]["markdown"] = "mutated"
+        self.assertTrue(all(r["markdown"] == "safe" for r in results[1:]))
         self.assertEqual(cache.run("fetch", ("fetch", "page"), load, ttl=90)["markdown"],
                          "safe")
 
@@ -150,6 +152,7 @@ class CacheTests(unittest.TestCase):
         self.assertIsNone(cache.fetch_key("https://example.com/page?token=secret", "raw"))
         self.assertIsNone(cache.fetch_key("https://example.com/#/user/1", "raw"))
         self.assertIsNone(cache.fetch_key("https://example.com/#access_token=secret", "raw"))
+        self.assertIsNone(cache.fetch_key("https://example.com/" + "path" * 700, "raw"))
         self.assertIsNone(cache.fetch_key("https://user:secret@example.com/page", "raw"))
         self.assertIsNone(cache.fetch_key("file:///etc/passwd", "raw"))
         a = cache.fetch_key("HTTPS://EXAMPLE.COM/a", "raw")
@@ -174,6 +177,7 @@ class CacheTests(unittest.TestCase):
             old = pool.submit(cache.run, "fetch", key, previous, ttl=90)
             self.assertTrue(old_started.wait(5))
             cache.invalidate_fetch()
+            self.assertNotIn(key, cache._INFLIGHT)
             recent = pool.submit(cache.run, "fetch", key, current, ttl=90)
             self.assertEqual(recent.result(timeout=5)["markdown"],
                              "after policy change")

@@ -8,7 +8,8 @@ Search and short-page fetch results are cached **in memory only** for the runnin
 | Short public-page fetch TTL | 120 seconds |
 | Maximum cached entries (combined) | 64 |
 | Maximum approximate cache bytes (combined) | 4 MiB |
-| Maximum serialized entry size | 128 KiB |
+| Maximum serialized entry size, including key | 128 KiB |
+| Maximum cacheable fetch URL key | 2 KiB of UTF-8 |
 | Retries for local upstream calls | 2 attempts total (one 150 ms backoff) |
 
 Search keys include the complete validated query, page, selected engines, categories, language, time range, result count, and the configured local SearXNG endpoint. Sensitive-looking queries containing URLs, email addresses, or apparent password/token parameters **bypass the cache**; this is a conservative heuristic, not a privacy detector. No search responses are shared across different running bridge processes.
