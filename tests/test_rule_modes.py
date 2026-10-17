@@ -101,6 +101,55 @@ class RuleModeTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["request_count"], 6)
 
+    def test_expired_exact_rule_respects_full_queue_limit(self):
+        with patch.object(policy, "utcnow", return_value="2026-10-17T12:00:00Z"):
+            policy.decide("example.org", "allow", scope="exact", expires_minutes=60)
+        with policy._db() as conn:
+            now = "2026-10-17T12:00:00Z"
+            conn.executemany(
+                """INSERT INTO domains(domain,status,created_at,updated_at)
+                   VALUES(?,'pending',?,?)""",
+                [(f"queued{i}.example.net", now, now)
+                 for i in range(policy.MAX_PENDING_TOTAL)]
+            )
+            conn.commit()
+        with patch.object(policy, "utcnow", return_value="2026-10-17T13:00:00Z"):
+            self.assertEqual(
+                policy.request("example.org", "https://example.org/")[0],
+                "queue_full")
+            row = next(r for r in policy.entries() if r["domain"] == "example.org")
+            self.assertEqual(row["status"], "allowed")
+            self.assertTrue(row["expired"])
+            self.assertEqual(row["request_count"], 1)
+            self.assertEqual(policy.counts()["pending"], policy.MAX_PENDING_TOTAL)
+
+    def test_expired_rules_share_site_hourly_admission_limits(self):
+        with patch.object(policy, "utcnow", return_value="2026-10-17T12:00:00Z"):
+            for i in range(policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR + 1):
+                policy.decide(f"host{i}.example.org", "allow",
+                              scope="exact", expires_minutes=60)
+        with patch.object(policy, "utcnow", return_value="2026-10-17T13:00:00Z"):
+            outcomes = [
+                policy.request(f"host{i}.example.org",
+                               f"https://host{i}.example.org/")[0]
+                for i in range(policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR + 1)
+            ]
+            self.assertEqual(outcomes,
+                             ["pending"] * policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR +
+                             ["queue_full"])
+            with policy._db() as conn:
+                count = conn.execute(
+                    "SELECT count(*) FROM pending_admissions WHERE site=?",
+                    ("example.org",)).fetchone()[0]
+            self.assertEqual(count, policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR)
+            self.assertEqual(
+                policy.request("host0.example.org", "https://host0.example.org/")[0],
+                "pending")
+            with policy._db() as conn:
+                self.assertEqual(conn.execute(
+                    "SELECT count(*) FROM pending_admissions WHERE site=?",
+                    ("example.org",)).fetchone()[0], count)
+
     def test_expiry_is_checked_after_waiting_for_the_database(self):
         with patch.object(policy, "utcnow", return_value="2026-10-17T12:00:00Z"):
             policy.decide("example.org", "allow", expires_minutes=60)
