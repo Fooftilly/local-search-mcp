@@ -56,6 +56,69 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["docs.python.org"]["last_requested_url"], "https://docs.python.org/safe")
         self.assertNotIn("hidden", str(saved))
 
+    async def test_bounded_batch_fetch_mixed_outcomes_and_private_audit(self):
+        good = "https://example.com/article?token=PRIVATE_QUERY_SENTINEL"
+        other = "https://example.com/other"
+        denied = "https://unapproved.example/path"
+        broken = "https://example.com/timeout"
+        inputs = [good, denied, good, broken, other]
+        requests = []
+        original = httpx.Client
+
+        def policy(url):
+            if url == denied:
+                return {"url": url, "success": False, "status": "approval_required"}
+            return None
+
+        def handler(request: httpx.Request):
+            requests.append(request.url.path)
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            target = json.loads(request.content)["urls"][0]
+            if target == broken:
+                raise httpx.ReadTimeout("PRIVATE_EXCEPTION_SENTINEL", request=request)
+            return httpx.Response(200, json={"results": [{
+                "url": target, "success": True, "markdown": "safe text"}]})
+
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+
+        with (patch.object(bridge, "CRAWLER_SECURITY_WARNING", None),
+              patch.object(bridge, "_check_public_target", side_effect=policy),
+              patch.object(bridge.httpx, "Client", side_effect=client)):
+            async with Client(bridge.mcp) as mcp_client:
+                names = {tool.name for tool in await mcp_client.list_tools()}
+                self.assertIn("web_fetch_batch", names)
+                response = await mcp_client.call_tool("web_fetch_batch", {
+                    "urls": inputs, "mode": "raw",
+                })
+                self.assertFalse(response.is_error)
+                invalid = await mcp_client.call_tool("web_fetch_batch", {
+                    "urls": [good] * 9,
+                })
+                self.assertTrue(invalid.is_error)
+
+        rows = response.data["results"]
+        self.assertEqual(response.data["count"], 5)
+        self.assertEqual([x["index"] for x in rows], list(range(5)))
+        self.assertEqual([x["requested_url"] for x in rows], inputs)
+        self.assertEqual([x["result"]["status"] if "status" in x["result"] else "success"
+                          for x in rows],
+                         ["success", "approval_required", "success",
+                          "upstream_unavailable", "success"])
+        self.assertEqual(requests.count("/crawl"), 3)
+        self.assertEqual(requests.count("/health"), 3)
+        self.assertEqual(rows[0]["result"], rows[2]["result"])
+        self.assertIsNot(rows[0]["result"], rows[2]["result"])
+        audit = (Path(self.tmp.name) / "history.jsonl").read_text()
+        events = [json.loads(line) for line in audit.splitlines()]
+        self.assertEqual(len(events), len(inputs))
+        self.assertEqual([x["kind"] for x in events], ["fetch"] * len(inputs))
+        self.assertNotIn("PRIVATE_QUERY_SENTINEL", audit)
+        self.assertNotIn("PRIVATE_EXCEPTION_SENTINEL", audit)
+        self.assertNotIn("safe text", audit)
+        self.assertEqual(sum(x["url"] == "https://example.com/article" for x in events), 2)
+
     async def test_optional_search_filters_are_exposed_over_real_mcp(self):
         seen = []
         def handler(request: httpx.Request):

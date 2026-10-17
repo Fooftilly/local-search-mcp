@@ -15,6 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 from history_log import logged_tool
 import document_pages
 import request_cache
+from batch_fetch import fetch_many
 
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://127.0.0.1:8888").rstrip("/")
 CRAWL4AI_URL = os.getenv("CRAWL4AI_URL", "http://127.0.0.1:11235").rstrip("/")
@@ -381,6 +382,18 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False) -> dict:
         return {"url": url, "success": False, "status": "blocked",
                 "reason": "Domain approval changed during the request. Retry after reviewing permissions."}
     return response
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+def web_fetch_batch(urls: list[str], mode: str = "raw",
+                    fresh: bool = False) -> dict:
+    """Fetch 1–8 approved URLs, at most 3 concurrently, with ordered results.
+
+    Each unique URL is processed by the existing guarded web_fetch path.
+    Repeated URLs are fetched once per batch but remain distinct result rows
+    and audit events. A failed or blocked URL does not abort other URLs.
+    """
+    return fetch_many(urls, mode, fresh, web_fetch)
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
