@@ -16,7 +16,8 @@ class ServiceTests(unittest.TestCase):
             self.assertIn("Managed by local-search-mcp", content)
             self.assertNotIn("CONTROL_PLANE_API_KEY=", content)
             self.assertNotIn("CRAWL4AI_API_TOKEN=", content)
-            self.assertIn("%%", content)
+        for name in ("local-search-mcp-bridge.service", "local-search-mcp-tunnel.service", "local-search-mcp-health.service"):
+            self.assertIn("%%", units[name])
         for name in ("local-search-mcp-bridge.service", "local-search-mcp-tunnel.service"):
             self.assertIn("Restart=on-failure", units[name])
             self.assertIn("RestartSec=30s", units[name])
