@@ -263,10 +263,14 @@ class PrivateConfigTests(unittest.TestCase):
             self.assertFalse(report["endpoints"]["crawl4ai"]["valid_loopback"])
         for url in ("http://127.0.0.1:8888?", "http://127.0.0.1:8888#",
                     "http://127.0.0.1:8888\n", "http://127.0.0.1:8888\t",
-                    " http://127.0.0.1:8888", "http://127.0.0.1:8888\x00"):
+                    " http://127.0.0.1:8888"):
             with self.subTest(url=url), patch.dict(os.environ, {"SEARXNG_URL": url}):
                 result = config_diagnostics.collect_report({}, Path(self.tmp.name), self.directory, lambda p: {})
                 self.assertFalse(result["endpoints"]["searxng"]["valid_loopback"])
+        # The operating system forbids NUL in environment values; test parsing
+        # directly instead of attempting an impossible os.environ assignment.
+        self.assertFalse(config_diagnostics._endpoint(
+            "SEARXNG_URL", "http://127.0.0.1:8888\x00")["valid_loopback"])
 
 
 if __name__ == "__main__":
