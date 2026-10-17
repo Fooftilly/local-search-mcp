@@ -462,7 +462,7 @@ def main() -> int:
             if args.service or args.setup_only or args.refresh_runtime_key or args.refresh_crawl_token or args.domains:
                 raise SetupError("--show-config cannot be combined with setup/service options")
             from config_diagnostics import collect_report
-            print(json.dumps(collect_report(read_config(), ROOT, PRIVATE_DIR), indent=2))
+            print(json.dumps(collect_report(read_config(), ROOT, PRIVATE_DIR, read_legacy_env), indent=2))
             return 0
         if args.service:
             if args.setup_only or args.refresh_runtime_key or args.refresh_crawl_token or args.domains:
