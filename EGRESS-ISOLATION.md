@@ -1,9 +1,10 @@
 # Crawl4AI Docker egress isolation (experimental Linux/nftables profile)
 
-This document describes **an optional operator-installed host firewall layer** for [issue #2](https://github.com/Fooftilly/local-search-mcp/issues/2). It is **not** enabled by `./start.sh`, does **not** manage Crawl4AI or Docker, and is **not a complete sandbox**. It supplements Crawl4AI 0.9.4+'s own URL pinning and SSRF protections. Do not expose the dashboard or the MCP endpoint on the LAN.
+This document describes **an optional operator-installed host firewall layer** for [issue #2](https://github.com/Fooftilly/local-search-mcp/issues/2). It is **not** enabled by `./start.sh`, does **not** manage Crawl4AI or Docker, and is **not a complete sandbox**. It supplements Crawl4AI 0.9.5+'s own URL pinning and SSRF protections. Do not expose the dashboard or the MCP endpoint on the LAN.
 
 ## Supported setup / prerequisites
 
+- Crawl4AI **0.9.5+ (stable)** must be installed and verified via `/health` before enabling remote-agent fetches; 0.9.4 retains an SSRF bypass through cache validation.
 - Linux host with Docker bridge networking, Docker access for the operator, and `nft` (`sudo pacman -S --needed nftables` on Arch).
 - Crawl4AI running **alone on a dedicated user-defined Docker bridge network**. No additional Docker networks, host networking, `--privileged` or `CAP_NET_ADMIN`. IPv6 must be disabled for that bridge.
 - Bind Crawl4AI's HTTP port to **127.0.0.1:11235** on the host, and keep API authentication enabled. Keep the dashboard and MCP server on loopback too.

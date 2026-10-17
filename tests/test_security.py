@@ -4,11 +4,15 @@ from bootstrap import validate_domains, SetupError
 
 class SafetyTests(unittest.TestCase):
     def test_minimum_crawler_version(self):
-        self.assertIsNone(verify_health({'status':'ok','version':'0.9.4'}))
+        self.assertIsNone(verify_health({'status':'ok','version':'0.9.5'}))
+        self.assertIsNone(verify_health({'status':'ok','version':'0.9.5+build.1'}))
         self.assertIsNone(verify_health({'status':'ok','version':'0.10.0'}))
         self.assertIsNotNone(verify_health({'status':'ok','version':'0.9.3'}))
+        self.assertIsNotNone(verify_health({'status':'ok','version':'0.9.4'}))
+        self.assertIsNotNone(verify_health({'status':'ok','version':'0.9.5-rc.1'}))
+        self.assertIsNotNone(verify_health({'status':'ok','version':'0.9.5.dev1'}))
         self.assertIsNotNone(verify_health({'status':'ok'}))
-        self.assertIsNotNone(verify_health({'status':'unhealthy','version':'0.9.4'}))
+        self.assertIsNotNone(verify_health({'status':'unhealthy','version':'0.9.5'}))
 
     def test_bootstrap_uses_same_public_suffix_rules(self):
         with self.assertRaises(SetupError):

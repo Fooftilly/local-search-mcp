@@ -1,14 +1,14 @@
 """Fail-closed compatibility gate for Crawl4AI Docker's hardened HTTP API.
 
 The bridge cannot replace the crawler's own network egress checks. Crawl4AI
-0.9.4 fixes multiple SSRF escape paths, and older or unverified versions are
+0.9.5 closes additional SSRF bypasses (including CacheValidator), and older or unverified versions are
 refused for remote MCP fetches.
 """
 from __future__ import annotations
 
 import re
 
-MINIMUM_VERSION = (0, 9, 4)
+MINIMUM_VERSION = (0, 9, 5)
 
 
 def verify_health(data: object) -> str | None:
@@ -16,9 +16,9 @@ def verify_health(data: object) -> str | None:
     if not isinstance(data, dict) or data.get("status") != "ok":
         return "Crawl4AI health endpoint did not report a healthy server"
     version = data.get("version")
-    match = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:$|[-+.])", version) if isinstance(version, str) else None
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:\+[A-Za-z0-9._-]+)?", version) if isinstance(version, str) else None
     if not match or tuple(map(int, match.groups())) < MINIMUM_VERSION:
-        return "Crawl4AI version 0.9.4 or newer is required for hardened SSRF handling"
+        return "Crawl4AI 0.9.5 or newer (stable) is required; older versions have known SSRF bypasses. Upgrade the Crawl4AI Docker server"
     return None
 
 

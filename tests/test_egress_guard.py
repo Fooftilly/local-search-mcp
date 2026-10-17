@@ -85,11 +85,13 @@ class GuardTests(unittest.TestCase):
         with patch.object(guard,'command',return_value=json.dumps(found)):
             self.assertTrue(guard.table_exists())
 
-if __name__=='__main__': unittest.main()
-
 class ProbeTests(unittest.TestCase):
     def test_no_side_effects_in_preview(self):
         c,n=fixture()
         with patch.object(guard,'command',side_effect=[json.dumps(c),json.dumps(n)]) as cmd:
             self.assertEqual(guard.main(['--container','crawl4ai','--print']),0)
             self.assertEqual(cmd.call_count,2)
+
+
+if __name__ == '__main__':
+    unittest.main()

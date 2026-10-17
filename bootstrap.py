@@ -232,7 +232,7 @@ def check_services() -> None:
     warning = local_container_warning()
     if warning:
         raise SetupError(warning)
-    info("Crawl4AI hardened API: OK (>= 0.9.4); verify container egress policy separately")
+    info("Crawl4AI hardened API: OK (>= 0.9.5 stable); verify container egress policy separately")
 
 
 def _download(url: str, dest: Path, size_limit: int = 90_000_000) -> None:
