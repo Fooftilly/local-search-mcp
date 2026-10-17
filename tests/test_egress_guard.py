@@ -125,6 +125,21 @@ class GuardTests(unittest.TestCase):
                 guard.validate_public_dns({'Dns':dns})
         guard.validate_public_dns({'Dns':['1.1.1.1','9.9.9.9']})
 
+    def test_probe_categories_stay_mapped_to_intended_firewall_ranges(self):
+        """Catch denylist reordering that could silently invalidate category coverage."""
+        expected = {
+            'RFC1918 10/8': '10.0.0.0/8',
+            'RFC1918 172.16/12': '172.16.0.0/12',
+            'RFC1918 192.168/16': '192.168.0.0/16',
+            'metadata/link-local': '169.254.0.0/16',
+            'carrier NAT': '100.64.0.0/10',
+            'documentation': '203.0.113.0/24',
+        }
+        self.assertEqual(len(guard.PROBE_RANGES), len(expected))
+        for label, index in guard.PROBE_RANGES:
+            with self.subTest(label=label):
+                self.assertEqual(guard.BLOCKED_IPV4[index], expected[label])
+
     def test_probes_avoid_docker_on_link_addresses(self):
         """An overlapping bridge subnet must not masquerade as a firewall rejection."""
         for subnet in ('172.31.0.0/16', '192.168.240.0/20', '10.254.0.0/16'):
