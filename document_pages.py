@@ -11,6 +11,7 @@ import re
 import secrets
 import threading
 import time
+from urllib.parse import urlsplit
 
 PAGE_CHARS = 24_000
 MAX_DOCUMENT_CHARS = 1_000_000
@@ -38,8 +39,14 @@ def save(url: str, markdown: str, metadata: dict) -> tuple[str, int]:
     """
     if not isinstance(markdown, str) or not PAGE_CHARS < len(markdown) <= MAX_DOCUMENT_CHARS:
         raise ValueError("Document is not eligible for temporary pagination")
-    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
-        raise ValueError("Only approved public web URLs may be saved")
+    try:
+        target = urlsplit(url) if isinstance(url, str) else None
+        if (target is None or target.scheme not in ("http", "https")
+                or not target.hostname or target.username is not None
+                or target.password is not None):
+            raise ValueError("Only approved public web URLs may be saved")
+    except ValueError as exc:
+        raise ValueError("Only approved public web URLs may be saved") from exc
     now = time.monotonic()
     with _LOCK:
         _purge_expired(now)

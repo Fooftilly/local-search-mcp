@@ -116,6 +116,7 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
             # Handles are never written into local audit history.
             audit = (Path(self.tmp.name) / "history.jsonl").read_text()
             self.assertNotIn(first.data["document_id"], audit)
+            self.assertNotIn(first.data["markdown"], audit)
             self.assertNotIn(content[24000:], audit)
         self.assertEqual(calls, ["/health", "/crawl"])
 

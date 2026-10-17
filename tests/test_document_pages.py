@@ -61,6 +61,14 @@ class DocumentPageTests(unittest.TestCase):
         self.assertEqual(pages.read(tokens[1], 2)["markdown"], "x")
         self.assertEqual(pages.read(tokens[2], 2)["markdown"], "x")
 
+    def test_case_insensitive_http_scheme_preserves_page_content(self):
+        document = "A" * (pages.PAGE_CHARS + 5)
+        handle, count = pages.save("HTTPS://example.com/article", document, {})
+        self.assertEqual(count, 2)
+        followup = pages.read(handle, 2)
+        self.assertEqual(followup["url"], "HTTPS://example.com/article")
+        self.assertEqual(followup["markdown"], "A" * 5)
+
     def test_total_memory_limit_and_document_limit_fail_closed(self):
         with patch.object(pages, "MAX_TOTAL_CHARS", pages.PAGE_CHARS + 20):
             first, _ = pages.save("https://example.com/first", "x" * (pages.PAGE_CHARS + 10), {})
