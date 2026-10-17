@@ -9,7 +9,7 @@ import time
 
 import httpx
 from fastmcp import FastMCP
-from domain_policy import evaluate_fetch_url
+from domain_policy import evaluate_fetch_url, expired_grant_without_active_fallback
 from admin_ui import create_dashboard_server
 from crawler_security import local_container_warning, verify_health
 import threading
@@ -401,6 +401,25 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False) -> dict:
     if before != request_cache.policy_epoch():
         return {"url": url, "success": False, "status": "blocked",
                 "reason": "Domain approval changed during the request. Retry after reviewing permissions."}
+    if isinstance(response, dict) and response.get("success") is True:
+        # Expiration is time-based, not an operator mutation, so it must not
+        # bump the global policy epoch and block unrelated batch URLs. Recheck
+        # the original and final host immediately before returning content.
+        # The final host matters for redirects even when their results are
+        # intentionally never cached across domains.
+        try:
+            first_host = urlsplit(url).hostname
+            last_host = urlsplit(response.get("url", url)).hostname
+            if (not first_host or not last_host or
+                    expired_grant_without_active_fallback(first_host) or
+                    (last_host != first_host and
+                     expired_grant_without_active_fallback(last_host))):
+                return {"url": url, "success": False, "status": "blocked",
+                        "reason": "A domain permission expired during the fetch. "
+                                  "Request local approval and retry."}
+        except (ValueError, TypeError):
+            return {"url": url, "success": False, "status": "blocked",
+                    "reason": "Invalid final domain in crawler response."}
     return response
 
 
