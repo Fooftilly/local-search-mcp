@@ -34,7 +34,8 @@ def _endpoint(key: str, default: str) -> dict[str, object]:
                  and (parsed.port is None or 1 <= parsed.port <= 65535))
         if valid:
             return {"source": source, "valid_loopback": True,
-                    "value": f"http://{'[' + parsed.hostname + ']' if ':' in parsed.hostname else parsed.hostname}:{parsed.port or 80}"}
+                    "transport": "HTTP over loopback",
+                    "value": f"{'[' + parsed.hostname + ']' if ':' in parsed.hostname else parsed.hostname}:{parsed.port or 80}"}
     except (ValueError, TypeError):
         pass
     return {"source": source, "valid_loopback": False, "value": "<redacted>",
