@@ -83,12 +83,13 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   }
 
   async function registerTab() {
-    if (stopped || !notifyEnabled || !available() || tabPresenceKey) return;
+    if (stopped || !notifyEnabled || !storageGet() ||
+        !available() || tabPresenceKey) return;
     try {
       // Register under the same lock as notification updates. Every live tab
       // has a unique key until pagehide, even when its polling is throttled.
       await navigator.locks.request(notificationLock, async () => {
-        if (stopped || !notifyEnabled || tabPresenceKey) return;
+        if (stopped || !notifyEnabled || !storageGet() || tabPresenceKey) return;
         const peers = activeTabKeys();
         const id = new Uint8Array(16);
         window.crypto.getRandomValues(id);
@@ -125,6 +126,23 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
     } catch (_) { tabPresenceKey = null; }
   }
 
+  async function resetDisabledNotifications() {
+    // A crashed tab may leave a presence key even if pagehide never fired.
+    // Explicit disable is an operator recovery action: clear *all* presence
+    // registrations, not only this tab, and discard old pending identifiers.
+    const clear = () => {
+      try {
+        for (const key of activeTabKeys()) window.localStorage.removeItem(key);
+        tabPresenceKey = null;
+        window.localStorage.removeItem(seenDomainIdsKey);
+        window.localStorage.setItem(pendingAlertKey, "[]");
+        window.localStorage.removeItem(latestSnapshotKey);
+      } catch (_) { /* The UI stays disabled if storage is unavailable. */ }
+    };
+    try { await navigator.locks.request(notificationLock, clear); }
+    catch (_) { clear(); }
+  }
+
   function renderToggle() {
     if (!notice) return;
     if (!available()) {
@@ -149,7 +167,7 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
       if (notifyEnabled) {
         notifyEnabled = false;
         storageSet(false);
-        unregisterTab();
+        await resetDisabledNotifications();
       } else if (available()) {
         // Permission is requested ONLY in direct response to an operator click.
         let permission = Notification.permission;
@@ -187,7 +205,8 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
       // A single Web Lock serializes state across tabs. Only salted SHA-256
       // identifiers (not domain names, URLs or query text) enter storage.
       await navigator.locks.request(notificationLock, async () => {
-        if (!notifyEnabled || Notification.permission !== "granted") return;
+        if (!notifyEnabled || !storageGet() ||
+            Notification.permission !== "granted") return;
         // An earlier HTTP response can arrive after a newer tab's snapshot.
         // Compare server-issued microsecond sequence under the same Web Lock
         // before changing any shared queue or owed-alert state.

@@ -223,13 +223,41 @@ async function main() {
   assert.deepEqual(JSON.parse(storage.get("local-search-mcp.notification-owed.v1")), []);
   reopened.close();
 
+  // Simulate an unclean browser exit: a tab never receives pagehide and
+  // leaves an orphaned presence key behind. Explicitly disabling from a
+  // different live tab must clear all registrations before opt-in resumes.
+  const orphan = createTab(["orphaned.example"]);
+  await settle();
+  const operator = createTab(["orphaned.example"]);
+  await settle();
+  assert.ok([...storage.keys()].some(key =>
+    key.startsWith("local-search-mcp.notification-tab.v1.")));
+  await operator.element("notification-toggle").onclick();
+  await settle();
+  assert.equal([...storage.keys()].filter(key =>
+    key.startsWith("local-search-mcp.notification-tab.v1.")).length, 0,
+    "explicit disable must purge registration keys from crashed tabs");
+  assert.equal(storage.has("local-search-mcp.notification-seen-ids.v1"), false);
+  assert.deepEqual(JSON.parse(storage.get("local-search-mcp.notification-owed.v1")), []);
+  await operator.element("notification-toggle").onclick();
+  await settle();
+  operator.close();
+  now = 510000;
+  const afterRecovery = createTab(["orphaned.example", "since-closed.example"]);
+  await settle();
+  assert.equal(notifications.length, 4,
+               "a fresh session after disable must not alert existing backlog");
+  afterRecovery.close();
+  // Intentionally do not call orphan.close(): this simulates an unclean exit.
+
   // The UI and persistent browser metadata must never contain input domains,
   // URL tokens, or private request details; only salted hashes and counts.
   const persisted = JSON.stringify([...storage.entries()]);
   const popupText = JSON.stringify(notifications);
   for (const secret of ["existing.example", "new.example", "later.example",
                         "multi-tab.example", "approved.example",
-                        "closed-session.example", "PRIVATE_URL_TOKEN"]) {
+                        "closed-session.example", "orphaned.example",
+                        "since-closed.example", "PRIVATE_URL_TOKEN"]) {
     assert.ok(!persisted.includes(secret), "private domain leaked to storage: " + secret);
     assert.ok(!popupText.includes(secret), "private domain leaked to popup: " + secret);
   }
