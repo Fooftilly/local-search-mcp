@@ -149,6 +149,32 @@ class BridgeTests(unittest.TestCase):
             self.assertNotIn("EXPIRED_CONTENT_SENTINEL", str(response))
             self.assertEqual(self.module.request_cache.policy_epoch(), old_epoch)
 
+    def test_expired_child_allow_cannot_bypass_active_parent_deny(self):
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns)):
+            policy.decide("example.org", "deny")
+            policy.decide("child.example.org", "allow", scope="exact",
+                          expires_minutes=60)
+            clock[0] = "2026-10-17T12:59:59Z"
+
+            def slow_crawler(_url, _mode):
+                clock[0] = "2026-10-17T13:00:00Z"
+                return {"url": "https://child.example.org/page",
+                        "success": True, "markdown": "DENIED_CONTENT_SENTINEL",
+                        "truncated": False}
+
+            with patch.object(self.module, "_run_fetch", side_effect=slow_crawler):
+                result = self.module.web_fetch("https://child.example.org/page")
+            self.assertEqual(result["status"], "blocked")
+            self.assertNotIn("DENIED_CONTENT_SENTINEL", str(result))
+            self.assertEqual(policy.request(
+                "child.example.org", "https://child.example.org/page")[0],
+                "denied")
+
     def test_cross_host_redirect_result_is_not_cached(self):
         final = {"url": "https://redirect.example.org/landing",
                  "success": True, "markdown": "public redirect content",
