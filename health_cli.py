@@ -6,7 +6,7 @@ import argparse
 import json
 import socket
 import sys
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 from crawler_security import verify_health
 
@@ -16,7 +16,10 @@ TIMEOUT = 3
 
 def get_json(url: str) -> object:
     """Get JSON from a fixed loopback endpoint, with a strict response limit."""
-    with urlopen(Request(url, headers={"User-Agent": "local-search-mcp-health/1"}), timeout=TIMEOUT) as response:
+    # These local upstreams expose HTTP over loopback only, without TLS.
+    # Never honor proxy environment variables for local health traffic.
+    opener = build_opener(ProxyHandler({}))
+    with opener.open(Request(url, headers={"User-Agent": "local-search-mcp-health/1"}), timeout=TIMEOUT) as response:
         if response.status != 200:
             raise ValueError("Unexpected health HTTP status")
         return json.loads(response.read(200_000))
@@ -34,7 +37,8 @@ def listening(port: int) -> bool:
 def dashboard_ok() -> bool:
     """Require the loopback management dashboard to return HTTP 200."""
     try:
-        with urlopen(Request(f"http://{HOST}:8791/", headers={"User-Agent": "local-search-mcp-health/1"}), timeout=TIMEOUT) as response:
+        opener = build_opener(ProxyHandler({}))
+        with opener.open(Request(f"http://{HOST}:8791/", headers={"User-Agent": "local-search-mcp-health/1"}), timeout=TIMEOUT) as response:  # NOSONAR (loopback-only HTTP API)
             return response.status == 200
     except (OSError, ValueError):
         return False
@@ -44,12 +48,12 @@ def snapshot() -> dict:
     """Report each dependency independently, distinguishing degraded from offline."""
     states = {}
     try:
-        response = get_json(f"http://{HOST}:8888/search?q=local-search-mcp-health&format=json")
+        response = get_json(f"http://{HOST}:8888/search?q=local-search-mcp-health&format=json")  # NOSONAR (loopback-only SearXNG)
         states["searxng"] = isinstance(response, dict) and isinstance(response.get("results"), list)
     except (OSError, ValueError, TypeError):
         states["searxng"] = False
     try:
-        states["crawl4ai"] = verify_health(get_json(f"http://{HOST}:11235/health")) is None
+        states["crawl4ai"] = verify_health(get_json(f"http://{HOST}:11235/health")) is None  # NOSONAR (loopback-only Crawl4AI)
     except (OSError, ValueError, TypeError):
         states["crawl4ai"] = False
     states["mcp_listener"] = listening(8790)
