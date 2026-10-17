@@ -231,13 +231,16 @@ class BridgeTests(unittest.TestCase):
         # their presence in an MCP response can break UTF-8 serialization.
         page = {"url": "https://example.com/long", "success": True,
                 "markdown": "safe content " * 3000,
-                "metadata": {"title": "Bad\\ud800title",
-                             "description": "Bad\\udfffdescription",
-                             "canonical_url": "https://example.com/path\\ud800"}}
+                "metadata": {"title": "Bad\ud800title",
+                             "description": "Bad\udfffdescription",
+                             "canonical_url": "https://example.com/path\ud800"}}
         def handler(request):
             if request.url.path == "/health":
                 return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
-            return httpx.Response(200, json={"results": [page]})
+            # Encode escaped surrogate sequences as ASCII JSON, exactly as a
+            # permissive upstream decoder can expose them to the bridge.
+            data = json.dumps({"results": [page]}, ensure_ascii=True).encode("ascii")
+            return httpx.Response(200, content=data, headers={"content-type": "application/json"})
 
         original = httpx.Client
         def client(**kwargs):
@@ -258,7 +261,7 @@ class BridgeTests(unittest.TestCase):
 
         fallback = self.module._crawl_metadata(
             {"metadata": {"title": None},
-             "title": "Fallback\\ud800title"},
+             "title": "Fallback\ud800title"},
             "https://example.com")
         self.assertEqual(fallback["title"], "Fallback?title")
 
