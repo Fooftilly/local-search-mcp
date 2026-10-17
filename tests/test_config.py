@@ -6,6 +6,8 @@ import io
 import json
 import os
 from pathlib import Path
+import sqlite3
+import stat
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -43,6 +45,48 @@ class PrivateConfigTests(unittest.TestCase):
         self.assertEqual(list(self.directory.glob(".config-*")), [])
         bootstrap.save_config({**initial, "ALLOWED_CRAWL_DOMAINS": "example.com"})
         self.assertEqual(bootstrap.read_config()["CRAWL4AI_API_TOKEN"], "secret")
+
+    def test_directory_permissions_block_unsafe_read_and_write(self):
+        """Never trust configuration under a group/world-accessible directory."""
+        self.directory.mkdir(mode=0o700)
+        self.file.write_text('{"CRAWL4AI_API_TOKEN": "original"}')
+        self.file.chmod(0o600)
+        for mode in (0o750, 0o707, 0o777):
+            self.directory.chmod(mode)
+            with self.subTest(mode=oct(mode)):
+                with self.assertRaisesRegex(bootstrap.SetupError, "directory permissions"):
+                    bootstrap.read_config()
+                with self.assertRaisesRegex(bootstrap.SetupError, "directory permissions"):
+                    bootstrap.save_config({"CRAWL4AI_API_TOKEN": "replacement"})
+        self.directory.chmod(0o700)
+        self.assertEqual(bootstrap.read_config()["CRAWL4AI_API_TOKEN"], "original")
+
+    def test_atomic_file_and_directory_sync_and_failed_rename(self):
+        """A durable update syncs its temp file before rename and its directory after."""
+        bootstrap.save_config({"CRAWL4AI_API_TOKEN": "original"})
+        events = []
+        fsync = os.fsync
+        replace = os.replace
+
+        def check_fsync(fd):
+            events.append(("fsync", stat.S_ISDIR(os.fstat(fd).st_mode)))
+            return fsync(fd)
+
+        def check_replace(source, target):
+            events.append(("replace", None))
+            return replace(source, target)
+
+        with (patch.object(bootstrap.os, "fsync", side_effect=check_fsync),
+              patch.object(bootstrap.os, "replace", side_effect=check_replace)):
+            bootstrap.save_config({"CRAWL4AI_API_TOKEN": "updated"})
+        self.assertEqual(events, [
+            ("fsync", False), ("replace", None), ("fsync", True),
+        ])
+        with patch.object(bootstrap.os, "replace", side_effect=OSError("simulated failure")):
+            with self.assertRaises(OSError):
+                bootstrap.save_config({"CRAWL4AI_API_TOKEN": "bad"})
+        self.assertEqual(bootstrap.read_config()["CRAWL4AI_API_TOKEN"], "updated")
+        self.assertEqual(list(self.directory.glob(".config-*")), [])
 
     def test_directory_and_dangling_file_symlinks_are_refused(self):
         other = Path(self.tmp.name) / "other"
