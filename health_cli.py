@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from http.client import HTTPConnection
+from http.client import HTTPConnection, HTTPException
 import json
 import socket
 import sys
@@ -52,7 +52,7 @@ def dashboard_ok() -> bool:
     try:
         status, _ = local_get(8791, "/", max_bytes=1024)
         return status == 200
-    except (OSError, ValueError):
+    except (OSError, ValueError, HTTPException):
         return False
 
 
@@ -61,7 +61,7 @@ def searxng_ok() -> bool:
     try:
         status, body = local_get(8888, "/healthz", max_bytes=50)
         return status == 200 and body.strip() == b"OK"
-    except (OSError, ValueError):
+    except (OSError, ValueError, HTTPException):
         return False
 
 
@@ -70,7 +70,7 @@ def snapshot() -> dict:
     states = {"searxng": searxng_ok()}
     try:
         states["crawl4ai"] = verify_health(get_json(11235, "/health")) is None
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, HTTPException):
         states["crawl4ai"] = False
     states["mcp_listener"] = listening(8790)
     states["dashboard_http"] = dashboard_ok()
