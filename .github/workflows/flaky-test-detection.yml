@@ -30,7 +30,8 @@ jobs:
       # Match the tested Python 3.13 dependency versions; install wheels only.
       # Keep these pins in sync with the supported ranges in requirements.txt.
       - name: Install dependencies
-        run: python -m pip install --only-binary=:all: 'fastmcp==4.1.0' 'httpx==0.28.1' 'pytest==9.1.1'
+        run: |
+          python -m pip install --only-binary=:all: 'fastmcp==4.1.0' 'httpx==0.28.1' 'pytest==9.1.1'
 
       - name: Run tests
         id: tests
