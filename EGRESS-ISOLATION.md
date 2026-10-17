@@ -7,7 +7,7 @@ This document describes **an optional operator-installed host firewall layer** f
 - Crawl4AI **0.9.5+ (stable)** must be installed and verified via `/health` before enabling remote-agent fetches; 0.9.4 retains an SSRF bypass through cache validation.
 - Linux host with Docker bridge networking, Docker access for the operator, and `nft` (`sudo pacman -S --needed nftables` on Arch).
 - Crawl4AI running **alone on a dedicated user-defined Docker bridge network**. No additional Docker networks, host networking, `--privileged` or `CAP_NET_ADMIN`. IPv6 must be disabled for that bridge.
-- Bind Crawl4AI's HTTP port to **127.0.0.1:11235** on the host, and keep API authentication enabled. Keep the dashboard and MCP server on loopback too.
+- Publish **only** `127.0.0.1:11235:11235/tcp` from Crawl4AI, with no additional published container ports. The guard refuses public/LAN/wildcard bindings and `PublishAllPorts`. Keep API authentication enabled, and keep the dashboard and MCP server on loopback too.
 - The firewall rules live on the **Docker host**, not in the crawler container, and require root to install. Never grant the untrusted browser process firewall control.
 - Docker's own iptables/nftables rules remain untouched. This tool creates only the `inet local_search_mcp_crawler` nftables table with `forward` and `input` hooks on the crawler's bridge interface. It is intended for a single local Crawl4AI instance.
 
@@ -36,7 +36,7 @@ sudo python scripts/crawler_egress_guard.py --container crawl4ai --probe
 - Reject crawler bridge traffic to RFC1918, localhost, link-local, cloud metadata (`169.254/16`), carrier NAT, non-global/reserved IPv4 and multicast ranges.
 - Reject **all outbound IPv6** from this bridge (intentional first-version limitation).
 
-The optional `--probe` starts a temporary listener on the bridge gateway, verifies that the endpoint is reachable from the host, and checks that an attempted **crawler-container TCP connection is blocked**. It separately checks that TCP connectivity to public `1.1.1.1:443` still works. Failure returns nonzero. This proves the specific tested paths, not a general guarantee that all URLs or browser subresources are safe. Run real approved-domain crawls after the probe to ensure the service remains usable.
+The optional `--probe` starts a temporary listener on the bridge gateway, verifies it is reachable from the host, and checks that the **crawler cannot connect**. It then sends TCP probes to six representative non-global IPv4 destinations (10/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10, and 203.0.113/24). For **each** target it requires an explicit connection refusal **and** an increase in this guard's named kernel nftables IPv4-denial counter. A timeout or unreachable route is *not* counted as a pass. Finally, a public TCP connection to `1.1.1.1:443` must succeed. The probe fails closed if the kernel counters cannot be read or do not increase. The crawler should be otherwise idle during the probe to reduce counter noise. These tests cover only the specified paths, not browser redirects, DNS rebinding, container-local loopback or every possible interface; also run real approved public-page crawls before rollout.
 
 To remove only this tool's rules:
 
@@ -52,6 +52,6 @@ sudo python scripts/crawler_egress_guard.py --remove
 - A host firewall cannot prevent an approved public website from acting as an application-level proxy to private services on another network; treat untrusted public proxies as a separate threat.
 - Only one container is allowed on the dedicated bridge at install time. Future additional peers or networks may bypass the intended topology; re-audit/reinstall after every configuration change.
 - Docker installations using unsupported network drivers, host mode, IPv6-enabled bridges, or atypical firewall/netfilter configuration need a separate security design. No automatic unsafe fallback is provided.
-- An exit-zero probe is a **bounded test** of host-gateway denial and public TCP success, not certification of all container interfaces, routes or browser behavior. Docker's default bridge and unmanaged installs are deliberately unsupported.
+- An exit-zero probe is a **bounded test** of host-gateway denial, representative forwarded IPv4-deny counters and public TCP success, not certification of all container interfaces, routes or browser behavior. Host-level nftables rules cannot block container-local loopback and this script does not test HTTP redirects or JavaScript subresources; issue #2 remains open until those paths are addressed and verified. Docker's default bridge and unmanaged installs are deliberately unsupported.
 
 For Linux Docker firewall behavior, refer to [Docker's nftables guide](https://docs.docker.com/engine/network/firewall-nftables/) and [iptables guide](https://docs.docker.com/engine/network/firewall-iptables/).

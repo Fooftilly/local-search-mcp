@@ -29,7 +29,7 @@ BLOCKED_IPV4 = (
 
 
 class GuardError(RuntimeError):
-    pass
+    """Reject unsafe Docker topologies and inconclusive firewall diagnostics."""
 
 
 def validated_container(value: str) -> str:
@@ -42,6 +42,7 @@ def validated_container(value: str) -> str:
 
 
 def command(argv: list[str], *, stdin: str | None = None) -> str:
+    """Run a restricted Docker/nft subprocess without shell interpretation."""
     if not argv or argv[0] not in ('docker', 'nft'):
         raise GuardError('Only Docker and nft commands may be executed')
     p = subprocess.run(argv, input=stdin, text=True, capture_output=True, check=False, timeout=12, shell=False)
@@ -51,8 +52,20 @@ def command(argv: list[str], *, stdin: str | None = None) -> str:
     return p.stdout
 
 
+def validate_api_bindings(host: dict) -> None:
+    """Refuse LAN-facing API publication and unexpected exposed host ports.
+
+    The bridge and tunnel are loopback consumers; a public Docker port mapping
+    would expose the crawler API and bypass these frontend protections.
+    """
+    expected = {'11235/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '11235'}]}
+    if host.get('PublishAllPorts') or host.get('PortBindings') != expected:
+        raise GuardError('Crawl4AI must publish only 127.0.0.1:11235 -> 11235/tcp; '
+                         'refusing wildcard/LAN/extra port bindings')
+
+
 def network_for(container: str) -> tuple[str, str]:
-    """Find a unique, private, single-container user-defined bridge."""
+    """Inspect the running crawler and require a dedicated locked-down bridge."""
     container = validated_container(container)
     raw = json.loads(command(['docker', 'inspect', '--type=container', container]))
     if len(raw) != 1:
@@ -61,8 +74,9 @@ def network_for(container: str) -> tuple[str, str]:
     if not c.get('State', {}).get('Running'):
         raise GuardError('Crawl4AI container must be running')
     host = c.get('HostConfig', {})
-    if host.get('Privileged') or any(cap.upper() == 'NET_ADMIN' for cap in (host.get('CapAdd') or [])):
-        raise GuardError('Refusing privileged/NET_ADMIN container: crawler could modify firewall or networking')
+    if host.get('Privileged') or any(cap.upper() in {'NET_ADMIN', 'SYS_ADMIN', 'SYS_MODULE', 'BPF'} for cap in (host.get('CapAdd') or [])):
+        raise GuardError('Refusing privileged or elevated container: crawler could modify firewall or networking')
+    validate_api_bindings(host)
     names = c.get('NetworkSettings', {}).get('Networks', {})
     if len(names) != 1:
         raise GuardError('Crawler must be attached to exactly one dedicated Docker bridge network')
@@ -92,15 +106,18 @@ def network_for(container: str) -> tuple[str, str]:
 
 
 def rules(bridge: str) -> str:
+    """Render an nftables table scoped to the inspected Docker bridge."""
     if not re.fullmatch(r'[a-zA-Z0-9_.-]{1,15}', bridge):
         raise GuardError('Invalid bridge name')
     cidrs = ', '.join(BLOCKED_IPV4)
     # iifname rather than interface index survives interface recreation only
     # while the name remains stable. Recheck after Docker/network recreation.
     return f'''table inet {TABLE} {{
+    counter blocked_ipv4 {{
+    }}
     chain block_forward {{
         type filter hook forward priority -200; policy accept;
-        iifname "{bridge}" ip daddr {{ {cidrs} }} counter reject
+        iifname "{bridge}" ip daddr {{ {cidrs} }} counter name blocked_ipv4 reject
         iifname "{bridge}" meta nfproto ipv6 counter reject
     }}
     chain block_host {{
@@ -113,9 +130,24 @@ def rules(bridge: str) -> str:
 
 
 def table_exists() -> bool:
+    """Detect only the firewall table owned by this tool."""
     d = json.loads(command(['nft', '-j', 'list', 'tables']))
     return any(item.get('table', {}).get('family') == 'inet' and
                item.get('table', {}).get('name') == TABLE for item in d.get('nftables', []))
+
+
+def counter_packets(name: str = 'blocked_ipv4') -> int:
+    """Read the kernel's named reject counter, failing closed on malformed data."""
+    if name != 'blocked_ipv4':
+        raise GuardError('Unknown firewall counter')
+    raw = json.loads(command(['nft', '-j', 'list', 'counter', 'inet', TABLE, name]))
+    matches = [item['counter'] for item in raw.get('nftables', [])
+               if isinstance(item, dict) and isinstance(item.get('counter'), dict)
+               and item['counter'].get('name') == name
+               and item['counter'].get('table') == TABLE]
+    if len(matches) != 1 or type(matches[0].get('packets')) is not int:
+        raise GuardError('Cannot verify installed IPv4 rejection counter')
+    return matches[0]['packets']
 
 
 def rejected_connection(code_text: str) -> None:
@@ -158,6 +190,19 @@ def probe(container: str, network: str) -> None:
             raise GuardError('Host-gateway probe could not execute correctly in Crawl4AI container')
         code_text = p.stdout.strip().split('CONNECT_RESULT ')[-1].strip()
         rejected_connection(code_text)
+    # Verify representative packets hit the host FORWARD deny rule, not merely
+    # some unrelated upstream timeout or missing route.
+    targets = ('10.254.0.9', '172.31.254.9', '192.168.254.9',
+               '169.254.169.254', '100.64.0.9', '203.0.113.9')
+    for target in targets:
+        before = counter_packets()
+        result = subprocess.run(['docker', 'exec', container, 'python', '-c', code, target, '80'],
+                                capture_output=True, text=True, timeout=10, check=False)
+        if result.returncode or not result.stdout.strip().startswith('CONNECT_RESULT '):
+            raise GuardError(f'Forward-denial test could not run for {target}')
+        rejected_connection(result.stdout.strip().split('CONNECT_RESULT ')[-1].strip())
+        if counter_packets() <= before:
+            raise GuardError(f'No kernel firewall deny counter increase for {target}; test inconclusive')
     # A separate positive probe avoids mistaking total network outage for
     # isolation, but cannot validate all CDN DNS, redirects or future routes.
     public = ("import socket,sys; "
@@ -166,15 +211,17 @@ def probe(container: str, network: str) -> None:
                        capture_output=True, text=True, timeout=13, check=False)
     if p.returncode != 0:
         raise GuardError('Public HTTPS connectivity failed; containment cannot be verified')
-    print('PASS: live host-gateway TCP connection rejected; public HTTPS TCP connection succeeded')
+    print('PASS: host-gateway rejected; six forwarded IPv4 destinations rejected by nft; public HTTPS TCP succeeded')
 
 
 def require_root() -> None:
+    """Reserve firewall changes and probes for the host administrator."""
     if os.geteuid() != 0:
         raise GuardError('Firewall changes require root; review --print first and use sudo --apply/--remove')
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Validate operator action, then preview, apply, inspect, probe or remove."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--container', default='crawl4ai', type=validated_container, help='Running Crawl4AI Docker container name or ID')
     modes = parser.add_mutually_exclusive_group(required=True)
