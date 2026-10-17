@@ -137,6 +137,22 @@ class BridgeTests(unittest.TestCase):
         # A failed call was not cached.
         self.assertFalse(self.module.request_cache._CACHE)
 
+    def test_crawl_read_timeout_does_not_retry_expensive_post(self):
+        attempts = []
+        original = httpx.Client
+        def handler(request):
+            attempts.append(request.url.path)
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            raise httpx.ReadTimeout("Slow crawl response", request=request)
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module, "_check_public_target", return_value=None), \
+             patch.object(self.module.httpx, "Client", side_effect=client):
+            response = self.module.web_fetch("https://example.com/slow")
+        self.assertEqual(response["status"], "upstream_unavailable")
+        self.assertEqual(attempts, ["/health", "/crawl"])
+
     def test_crawl4ai_health_retries_once_then_validates_version(self):
         seen = []
         def handler(request):

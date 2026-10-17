@@ -99,13 +99,40 @@ class CacheTests(unittest.TestCase):
 
     def test_fetch_urls_with_query_credentials_or_distinct_paths(self):
         self.assertIsNone(cache.fetch_key("https://example.com/page?token=secret", "raw"))
+        self.assertIsNone(cache.fetch_key("https://example.com/#/user/1", "raw"))
+        self.assertIsNone(cache.fetch_key("https://example.com/#access_token=secret", "raw"))
         self.assertIsNone(cache.fetch_key("https://user:secret@example.com/page", "raw"))
         self.assertIsNone(cache.fetch_key("file:///etc/passwd", "raw"))
-        a = cache.fetch_key("HTTPS://EXAMPLE.COM/a#top", "raw")
-        b = cache.fetch_key("https://example.com/a#different", "raw")
+        a = cache.fetch_key("HTTPS://EXAMPLE.COM/a", "raw")
+        b = cache.fetch_key("https://example.com/a", "raw")
         self.assertEqual(a, b)
         self.assertNotEqual(a, cache.fetch_key("https://example.com/b", "raw"))
         self.assertNotEqual(a, cache.fetch_key("https://example.com/a", "fit"))
+
+    def test_post_revoke_caller_never_joins_older_inflight_crawl(self):
+        old_started, release_old = Event(), Event()
+        key = ("fetch", "raw", "https://example.com/path")
+        calls = []
+        def previous():
+            calls.append("previous")
+            old_started.set()
+            self.assertTrue(release_old.wait(5))
+            return {"success": True, "markdown": "revoked secret"}
+        def current():
+            calls.append("current")
+            return {"success": True, "markdown": "after policy change"}
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            old = pool.submit(cache.run, "fetch", key, previous, ttl=90)
+            self.assertTrue(old_started.wait(5))
+            cache.invalidate_fetch()
+            recent = pool.submit(cache.run, "fetch", key, current, ttl=90)
+            self.assertEqual(recent.result(timeout=5)["markdown"],
+                             "after policy change")
+            release_old.set()
+            self.assertEqual(old.result(timeout=5)["markdown"], "revoked secret")
+        self.assertEqual(calls, ["previous", "current"])
+        self.assertEqual(cache.run("fetch", key, lambda: {"markdown": "wrong"}, ttl=90)
+                         ["markdown"], "after policy change")
 
     def test_policy_change_invalidates_fetch_and_prevents_inflight_repopulation(self):
         key = ("fetch", "long")

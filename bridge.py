@@ -87,20 +87,25 @@ def _search_params(query: str, max_results: int, language: str,
     return params, max_results
 
 
-def _retry_request(operation):
-    """At most two attempts for transient network or upstream errors.
+def _retry_request(operation, *, method: str = "GET"):
+    """At most two attempts, with tighter semantics for browser crawl POSTs.
 
-    No retries for 4xx other than 429, and no unbounded Retry-After delays.
+    Read timeouts and late response losses are NOT retried for POST: Crawl4AI
+    may still be running the first expensive browser job after a timeout.
     """
     for attempt in range(2):
         try:
             response = operation()
-        except httpx.RequestError:
-            if attempt == 0:
+        except httpx.RequestError as exc:
+            can_retry = method != "POST" or isinstance(
+                exc, (httpx.ConnectError, httpx.ConnectTimeout))
+            if attempt == 0 and can_retry:
                 time.sleep(0.15)
                 continue
             return None
-        if response.status_code in (429, 500, 502, 503, 504) and attempt == 0:
+        transient = ((429, 503) if method == "POST" else
+                     (429, 500, 502, 503, 504))
+        if response.status_code in transient and attempt == 0:
             time.sleep(0.15)
             continue
         return response
@@ -245,7 +250,7 @@ def _run_fetch(url: str, mode: str) -> dict:
         if health_error:
             return {"url": url, "success": False, "status": "blocked", "reason": health_error}
         response = _retry_request(lambda: client.post(
-            f"{CRAWL4AI_URL}/crawl", json=payload, headers=headers))
+            f"{CRAWL4AI_URL}/crawl", json=payload, headers=headers), method="POST")
         if response is None or response.status_code >= 400:
             return {"url": url, **_upstream_error(response, "crawl4ai")}
         try:

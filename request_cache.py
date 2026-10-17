@@ -21,7 +21,7 @@ FETCH_TTL = 120
 
 _LOCK = Lock()
 _CACHE: OrderedDict[tuple, tuple[float, int, object]] = OrderedDict()
-_INFLIGHT: dict[tuple, Future] = {}
+_INFLIGHT: dict[tuple, tuple[Future, int]] = {}
 _POLICY_EPOCH = 0
 _FRESH_REVISION = 0
 
@@ -31,7 +31,8 @@ def fetch_key(url: str, mode: str) -> tuple | None:
     try:
         parsed = urlsplit(url)
         if (parsed.scheme not in ("http", "https") or not parsed.hostname
-                or parsed.query or parsed.username or parsed.password
+                or parsed.query or parsed.fragment
+                or parsed.username or parsed.password
                 or parsed.port not in (None, 80, 443)):
             return None
         netloc = parsed.hostname.lower()
@@ -133,11 +134,18 @@ def run(kind: str, key: tuple | None, load, *, ttl: float, fresh: bool = False,
         if value is not None:
             _CACHE.move_to_end(key)
             return deepcopy(value[2])
-        future = _INFLIGHT.get(key)
-        leader = future is None
-        if leader:
+        in_flight = _INFLIGHT.get(key)
+        # A post-policy-change caller must never attach to a crawl that
+        # started when a now-revoked redirect target was still approved.
+        if in_flight is not None and (
+            kind != "fetch" or in_flight[1] == _POLICY_EPOCH
+        ):
+            future, _started_generation = in_flight
+            leader = False
+        else:
             future = Future()
-            _INFLIGHT[key] = future
+            leader = True
+            _INFLIGHT[key] = (future, _POLICY_EPOCH)
             generation = _POLICY_EPOCH
             revision = _FRESH_REVISION
     if not leader:
@@ -154,5 +162,6 @@ def run(kind: str, key: tuple | None, load, *, ttl: float, fresh: bool = False,
         raise
     finally:
         with _LOCK:
-            if _INFLIGHT.get(key) is future:
+            existing = _INFLIGHT.get(key)
+            if existing is not None and existing[0] is future:
                 del _INFLIGHT[key]
