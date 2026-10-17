@@ -45,7 +45,9 @@ class HistoryTests(unittest.TestCase):
             append_history({"time_utc": "2026-10-17T12:00:00Z", "kind": "fetch",
                             "status": "success", "url": "https://example.com/"})
             append_history({"time_utc": "2026-10-17T12:01:00Z", "kind": "page",
-                            "status": "success", "page": 2, "page_count": 3})
+                            "status": "success", "page": 2, "page_count": 3,
+                            "document_id": "PRIVATE_BEARER_CAPABILITY_SENTINEL",
+                            "markdown": "PRIVATE_PAGE_CONTENT_SENTINEL"})
             append_history({"time_utc": "2026-10-17T12:02:00Z", "kind": "page",
                             "status": "expired_or_unknown", "page": 3})
             out = io.StringIO()
@@ -57,12 +59,27 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual([r["page"] for r in rows], ["2", "3"])
             self.assertEqual(rows[0]["page_count"], "3")
             self.assertNotIn("document_id", out.getvalue())
+            self.assertNotIn("PRIVATE_BEARER_CAPABILITY_SENTINEL", out.getvalue())
+            self.assertNotIn("PRIVATE_PAGE_CONTENT_SENTINEL", out.getvalue())
             out = io.StringIO()
             with (patch.object(sys, "argv", ["history_cli.py", "--kind", "page"]),
                   contextlib.redirect_stdout(out)):
                 self.assertEqual(history_cli.main(), 0)
             self.assertIn("page 2/3", out.getvalue())
             self.assertNotIn("https://example.com/", out.getvalue())
+            self.assertNotIn("PRIVATE_BEARER_CAPABILITY_SENTINEL", out.getvalue())
+            self.assertNotIn("PRIVATE_PAGE_CONTENT_SENTINEL", out.getvalue())
+            out = io.StringIO()
+            with (patch.object(sys, "argv", ["history_cli.py", "--kind", "page", "--json"]),
+                  contextlib.redirect_stdout(out)):
+                self.assertEqual(history_cli.main(), 0)
+            exported = [json.loads(line) for line in out.getvalue().splitlines()]
+            self.assertEqual(len(exported), 2)
+            self.assertEqual(exported[0]["page"], 2)
+            self.assertNotIn("document_id", exported[0])
+            self.assertNotIn("markdown", exported[0])
+            self.assertNotIn("PRIVATE_BEARER_CAPABILITY_SENTINEL", out.getvalue())
+            self.assertNotIn("PRIVATE_PAGE_CONTENT_SENTINEL", out.getvalue())
 
     def test_private_history_file_and_rotation(self):
         with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {"XDG_STATE_HOME":d, "LOCAL_SEARCH_MCP_HISTORY_MAX_BYTES":"64000"}):

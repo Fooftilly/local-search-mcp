@@ -23,16 +23,23 @@ def events(path: Path):
             except json.JSONDecodeError:
                 continue
             if isinstance(event, dict):
+                if event.get("kind") == "page":
+                    # Page handles are bearer capabilities. Even a malformed
+                    # or legacy history row must not leak one through --json.
+                    safe_fields = ("time_utc", "kind", "backend", "status",
+                                   "page", "page_count", "duration_ms",
+                                   "error_type", "http_status")
+                    event = {key: event[key] for key in safe_fields if key in event}
                 yield event
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Show/export web_search and web_fetch history")
+    parser = argparse.ArgumentParser(description="Show/export web_search, web_fetch and continuation-page history")
     parser.add_argument("--last", type=int, default=30, help="Number of newest entries (default: 30)")
     parser.add_argument("--kind", choices=["search", "fetch", "page"], help="Only one kind of call")
     parser.add_argument("--status", choices=["success", "error", "pending", "denied", "blocked", "expired_or_unknown"], help="Filter by outcome")
     parser.add_argument("--since", type=date.fromisoformat, help="Include entries on or after YYYY-MM-DD (UTC)")
-    parser.add_argument("--json", action="store_true", help="Print raw JSON lines")
+    parser.add_argument("--json", action="store_true", help="Print JSON events (page handles and text omitted)")
     parser.add_argument("--csv", action="store_true", help="Print filtered events as CSV")
     parser.add_argument("--stats", action="store_true", help="Print event counts instead of records")
     args = parser.parse_args()
