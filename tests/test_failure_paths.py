@@ -15,17 +15,23 @@ import bridge
 
 class ServiceStartupFailures(unittest.TestCase):
     def test_unprepared_bridge_cannot_exec(self):
-        """Missing private config and absent executable must fail before execve."""
+        """Missing private config and absent executable each fail before execve."""
         with tempfile.TemporaryDirectory() as root:
             with patch.object(bootstrap, "ROOT", Path(root)), \
-                 patch.object(bootstrap, "read_config", return_value={
-                     "CRAWL4AI_API_TOKEN": "test-token",
-                     "ALLOWED_CRAWL_DOMAINS": "example.com",
-                 }), \
                  patch.object(bootstrap.os, "execve") as execve:
-                with self.assertRaises(bootstrap.SetupError):
-                    bootstrap.run_unattended_service("bridge")
-                execve.assert_not_called()
+                with self.subTest(missing="config"), \
+                     patch.object(bootstrap, "read_config", return_value={}):
+                    with self.assertRaisesRegex(bootstrap.SetupError, "Missing CRAWL4AI_API_TOKEN"):
+                        bootstrap.run_unattended_service("bridge")
+                    execve.assert_not_called()
+                with self.subTest(missing="executable"), \
+                     patch.object(bootstrap, "read_config", return_value={
+                         "CRAWL4AI_API_TOKEN": "test-token",
+                         "ALLOWED_CRAWL_DOMAINS": "example.com",
+                     }):
+                    with self.assertRaisesRegex(bootstrap.SetupError, "Missing service executable"):
+                        bootstrap.run_unattended_service("bridge")
+                    execve.assert_not_called()
 
     def test_tunnel_requires_prepared_profile_and_refuses_symlink(self):
         """A missing profile or linked tunnel executable never gets run."""
