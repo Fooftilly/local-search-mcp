@@ -136,6 +136,27 @@ class DomainPolicyTests(unittest.TestCase):
                 "SELECT count(*) FROM metadata WHERE key='explicit_rules_v1'"
             ).fetchone()[0], 1)
 
+    def test_legacy_pending_child_under_allowed_parent_is_removed_on_upgrade(self):
+        """A stale pending row does not keep asking for approval on a grant."""
+        with policy._db() as db:
+            now = policy.utcnow()
+            db.execute(
+                "INSERT INTO domains(domain,status,created_at,updated_at) VALUES(?,?,?,?)",
+                ("example.org", "allowed", now, now),
+            )
+            db.execute(
+                "INSERT INTO domains(domain,status,created_at,updated_at) VALUES(?,?,?,?)",
+                ("docs.example.org", "pending", now, now),
+            )
+            db.execute("INSERT INTO metadata(key,value) VALUES('domain_seed_v1','1')")
+            db.commit()
+        policy.initialize()
+        rows = {entry["domain"]: entry for entry in policy.entries()}
+        self.assertIn("example.org", rows)
+        self.assertNotIn("docs.example.org", rows)
+        self.assertEqual(policy.request("docs.example.org", "https://docs.example.org/"),
+                         ("allowed", "example.org"))
+
     def test_explicit_rule_after_pending_request_overrides_parent(self):
         result = policy.evaluate_fetch_url("https://docs.python.org/")
         self.assertEqual(result["status"], "approval_required")
