@@ -1,4 +1,5 @@
 """Network guard tests do not modify the host firewall."""
+import argparse
 import importlib.util
 import errno
 import json
@@ -61,7 +62,7 @@ class GuardTests(unittest.TestCase):
         for candidate in invalid:
             with self.subTest(container=candidate):
                 with patch.object(guard, 'command') as cmd:
-                    with self.assertRaises((guard.GuardError, ValueError)):
+                    with self.assertRaises((guard.GuardError, ValueError, argparse.ArgumentTypeError)):
                         guard.network_for(candidate)
                     cmd.assert_not_called()
         self.assertEqual(guard.validated_container('crawl4ai-v1.0'), 'crawl4ai-v1.0')
