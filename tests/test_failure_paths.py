@@ -99,7 +99,10 @@ class BridgeBackendFailures(unittest.TestCase):
                 result = bridge.web_fetch("https://example.com/test")
             self.assertEqual(result["status"], "blocked")
             self.assertFalse(result["success"])
-            self.assertEqual(requests, [("GET", "/health")])
+            # Retry only transient 5xx responses, and never proceed to
+            # /crawl until a successful and version-safe health reply.
+            expected_attempts = 2 if health_reply.status_code == 502 else 1
+            self.assertEqual(requests, [("GET", "/health")] * expected_attempts)
 
 
 if __name__ == "__main__":
