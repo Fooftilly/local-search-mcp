@@ -168,7 +168,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn(b"window.localStorage.setItem(lastNotificationKey", script)
         self.assertIn(b"Keep only still-pending alerts owed", script)
         self.assertIn(b"window.addEventListener(\"storage\"", script)
-        self.assertIn(b"void refresh();", script)
+        self.assertIn(b"startRefresh();", script)
         self.assertIn(b"data = await response.json();\n      } finally {\n        window.clearTimeout(abort);", script)
         self.assertNotIn(b"document.write(", script)
 
