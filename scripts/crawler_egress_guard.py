@@ -7,6 +7,7 @@ It protects host-routed traffic, not loopback within the crawler container.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import re
@@ -31,8 +32,19 @@ class GuardError(RuntimeError):
     pass
 
 
+def validated_container(value: str) -> str:
+    """Accept Docker names/IDs, never flags or command/control characters."""
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', value):
+        raise argparse.ArgumentTypeError('Container must be a Docker name or ID, not an option or path')
+    if value in ('.', '..'):
+        raise argparse.ArgumentTypeError('Invalid container name')
+    return value
+
+
 def command(argv: list[str], *, stdin: str | None = None) -> str:
-    p = subprocess.run(argv, input=stdin, text=True, capture_output=True, check=False, timeout=12)
+    if not argv or argv[0] not in ('docker', 'nft'):
+        raise GuardError('Only Docker and nft commands may be executed')
+    p = subprocess.run(argv, input=stdin, text=True, capture_output=True, check=False, timeout=12, shell=False)
     if p.returncode:
         # Avoid dumping Docker environment variables or other sensitive output.
         raise GuardError(f'{argv[0]} {argv[1]} failed (exit {p.returncode}): {p.stderr.strip()[:250]}')
@@ -41,6 +53,7 @@ def command(argv: list[str], *, stdin: str | None = None) -> str:
 
 def network_for(container: str) -> tuple[str, str]:
     """Find a unique, private, single-container user-defined bridge."""
+    container = validated_container(container)
     raw = json.loads(command(['docker', 'inspect', '--type=container', container]))
     if len(raw) != 1:
         raise GuardError('Expected exactly one Crawl4AI container')
@@ -54,6 +67,8 @@ def network_for(container: str) -> tuple[str, str]:
     if len(names) != 1:
         raise GuardError('Crawler must be attached to exactly one dedicated Docker bridge network')
     name, detail = next(iter(names.items()))
+    # Docker supplies this name, but it is still used as a CLI argument.
+    validated_container(name)
     raw_network = json.loads(command(['docker', 'network', 'inspect', name]))
     if len(raw_network) != 1:
         raise GuardError('Expected exactly one network')
@@ -71,6 +86,8 @@ def network_for(container: str) -> tuple[str, str]:
         raise GuardError('Unexpected Docker bridge interface name')
     if detail.get('NetworkID') != net['Id']:
         raise GuardError('Container/network identity mismatch')
+    if not re.fullmatch(r'[a-fA-F0-9]{64}', c.get('Id', '')) or not re.fullmatch(r'[a-fA-F0-9]{64}', net.get('Id', '')):
+        raise GuardError('Malformed Docker container/network identity')
     return name, bridge
 
 
@@ -101,12 +118,23 @@ def table_exists() -> bool:
                item.get('table', {}).get('name') == TABLE for item in d.get('nftables', []))
 
 
+def rejected_connection(code_text: str) -> None:
+    """A firewall reject should be ECONNREFUSED, not an arbitrary outage."""
+    if not code_text.isdigit():
+        raise GuardError('Host-gateway probe returned an invalid response')
+    result = int(code_text)
+    if result != errno.ECONNREFUSED:
+        raise GuardError(f'Host-gateway probe inconclusive: expected ECONNREFUSED, got errno {result}')
+
+
 def probe(container: str, network: str) -> None:
     """Prove host-gateway TCP denial with an actually listening test endpoint.
 
     A public HTTPS TCP connection should work; otherwise the deployment is not
     verified even if the firewall rejects the host-gateway probe.
     """
+    container = validated_container(container)
+    network = validated_container(network)
     raw = json.loads(command(['docker', 'network', 'inspect', network]))
     gateways = [x.get('Gateway') for x in raw[0].get('IPAM', {}).get('Config', []) if x.get('Gateway')]
     if len(gateways) != 1 or ':' in gateways[0]:
@@ -129,10 +157,7 @@ def probe(container: str, network: str) -> None:
         if p.returncode != 0 or not p.stdout.strip().startswith('CONNECT_RESULT '):
             raise GuardError('Host-gateway probe could not execute correctly in Crawl4AI container')
         code_text = p.stdout.strip().split('CONNECT_RESULT ')[-1].strip()
-        if not code_text.isdigit():
-            raise GuardError('Host-gateway probe returned an invalid response')
-        if int(code_text) == 0:
-            raise GuardError('FAILED: crawler connected to host gateway despite expected isolation')
+        rejected_connection(code_text)
     # A separate positive probe avoids mistaking total network outage for
     # isolation, but cannot validate all CDN DNS, redirects or future routes.
     public = ("import socket,sys; "
@@ -151,7 +176,7 @@ def require_root() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--container', default='crawl4ai', help='Running Crawl4AI Docker container name or ID')
+    parser.add_argument('--container', default='crawl4ai', type=validated_container, help='Running Crawl4AI Docker container name or ID')
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument('--print', action='store_true', help='Preview nftables rules; makes no changes')
     modes.add_argument('--apply', action='store_true', help='Install isolated nftables table as root')
