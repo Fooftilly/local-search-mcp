@@ -33,7 +33,7 @@ sudo python scripts/crawler_egress_guard.py --container crawl4ai --probe
 
 `--print` performs read-only Docker inspection. `--apply` validates the Docker topology, checks the nft syntax, and atomically replaces **only this tool's own table**. The nftables hooks:
 
-- Reject new crawler-to-host connections, preserving established response packets.
+- Reject **all crawler-initiated connections to the host**, including those already established before the guard is installed. Permit established **reply-direction** packets only for connections initiated by the host (needed for normal host-to-crawler API communication).
 - Reject crawler bridge traffic to RFC1918, localhost, link-local, cloud metadata (`169.254/16`), carrier NAT, non-global/reserved IPv4 and multicast ranges.
 - Reject **all outbound IPv6** from this bridge (intentional first-version limitation).
 

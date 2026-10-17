@@ -172,7 +172,9 @@ def rules(bridge: str) -> str:
     }}
     chain block_host {{
         type filter hook input priority -200; policy accept;
-        iifname "{bridge}" ct state established,related accept
+        # Only replies to host-initiated sessions pass; crawler-initiated
+        # connections established before installation are rejected too.
+        iifname "{bridge}" ct state established ct direction reply accept
         iifname "{bridge}" counter reject
     }}
 }}
@@ -207,6 +209,19 @@ def rejected_connection(code_text: str) -> None:
     result = int(code_text)
     if result != errno.ECONNREFUSED:
         raise GuardError(f'Host-gateway probe inconclusive: expected ECONNREFUSED, got errno {result}')
+
+
+def verify_forward_denials(container: str, code: str, targets: tuple[str, ...]) -> None:
+    """Demand kernel-rule evidence and explicit refusal for each forwarded probe."""
+    for target in targets:
+        before = counter_packets()
+        result = subprocess.run(['docker', 'exec', container, 'python', '-c', code, target, '80'],
+                                capture_output=True, text=True, timeout=10, check=False)
+        if result.returncode or not result.stdout.strip().startswith('CONNECT_RESULT '):
+            raise GuardError(f'Forward-denial test could not run for {target}')
+        rejected_connection(result.stdout.strip().split('CONNECT_RESULT ')[-1].strip())
+        if counter_packets() <= before:
+            raise GuardError(f'No kernel firewall deny counter increase for {target}; test inconclusive')
 
 
 def probe(container: str, network: str) -> None:
@@ -250,15 +265,7 @@ def probe(container: str, network: str) -> None:
     # Verify representative packets hit the host FORWARD deny rule, not merely
     # some unrelated upstream timeout or missing route.
     targets = probe_targets(subnet)
-    for target in targets:
-        before = counter_packets()
-        result = subprocess.run(['docker', 'exec', container, 'python', '-c', code, target, '80'],
-                                capture_output=True, text=True, timeout=10, check=False)
-        if result.returncode or not result.stdout.strip().startswith('CONNECT_RESULT '):
-            raise GuardError(f'Forward-denial test could not run for {target}')
-        rejected_connection(result.stdout.strip().split('CONNECT_RESULT ')[-1].strip())
-        if counter_packets() <= before:
-            raise GuardError(f'No kernel firewall deny counter increase for {target}; test inconclusive')
+    verify_forward_denials(container, code, targets)
     # Require both DNS resolution and a real hostname HTTPS TCP connection.
     # Connecting to an IP literal would report a false PASS when Docker's
     # embedded resolver forwards to a blocked LAN router or Pi-hole.

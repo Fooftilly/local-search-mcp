@@ -30,8 +30,9 @@ class GuardTests(unittest.TestCase):
         for value in ('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16','169.254.0.0/16',
                       '100.64.0.0/10','127.0.0.0/8','meta nfproto ipv6',
                       'hook forward priority -200','hook input priority -200',
-                      'ct state established,related accept'):
+                      'ct state established ct direction reply accept'):
             self.assertIn(value, rules)
+        self.assertNotIn('ct state established,related accept', rules)
         self.assertNotIn('flush ruleset',rules)
         with self.assertRaises(guard.GuardError):guard.rules('bad"; flush ruleset')
 
@@ -155,6 +156,42 @@ class GuardTests(unittest.TestCase):
         """Missing Docker or nftables raises a controlled command-line failure."""
         with patch.object(guard, 'network_for', side_effect=FileNotFoundError('docker')):
             self.assertEqual(guard.main(['--print']), 1)
+
+    def test_apply_batches_nft_syntax_validation_before_changes(self):
+        """Applying a guard tests the full nft transaction and touches its table only."""
+        for exists in (False, True):
+            with self.subTest(exists=exists):
+                with patch.object(guard, 'network_for', return_value=('crawler-egress','br-aaaaaaaaaaaa')), \
+                     patch.object(guard, 'require_root'), \
+                     patch.object(guard, 'table_exists', return_value=exists), \
+                     patch.object(guard, 'command', return_value='') as cmd:
+                    self.assertEqual(guard.main(['--apply']), 0)
+                    self.assertEqual(cmd.call_count, 2)
+                    checks = cmd.call_args_list
+                    self.assertEqual(checks[0].args[0], ['nft', '-c', '-f', '-'])
+                    self.assertEqual(checks[1].args[0], ['nft', '-f', '-'])
+                    self.assertEqual(checks[0].kwargs['stdin'], checks[1].kwargs['stdin'])
+                    payload = checks[0].kwargs['stdin']
+                    self.assertIn('table inet local_search_mcp_crawler', payload)
+                    self.assertNotIn('flush ruleset', payload)
+                    self.assertEqual(payload.startswith('delete table inet'), exists)
+
+    def test_forward_probe_requires_refusal_and_counter_increase(self):
+        """A failed connection alone is not proof that the nft denylist blocked it."""
+        from types import SimpleNamespace
+        success = SimpleNamespace(returncode=0, stdout='CONNECT_RESULT ' + str(errno.ECONNREFUSED))
+        with patch.object(guard, 'counter_packets', side_effect=[8, 9]), \
+             patch.object(guard.subprocess, 'run', return_value=success) as run:
+            guard.verify_forward_denials('crawl4ai', 'probe', ('blocked-probe',))
+            self.assertEqual(run.call_count, 1)
+        with patch.object(guard, 'counter_packets', side_effect=[8, 8]), \
+             patch.object(guard.subprocess, 'run', return_value=success):
+            with self.assertRaises(guard.GuardError):
+                guard.verify_forward_denials('crawl4ai', 'probe', ('blocked-probe',))
+        with patch.object(guard, 'counter_packets', return_value=8), \
+             patch.object(guard.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout='CONNECT_RESULT 0')):
+            with self.assertRaises(guard.GuardError):
+                guard.verify_forward_denials('crawl4ai', 'probe', ('blocked-probe',))
 
     def test_nft_table_discovery(self):
         """Recognize only the named inet firewall table."""
