@@ -120,8 +120,9 @@ class DomainPolicyTests(unittest.TestCase):
             db.commit()
         policy.initialize()
         rows = {row["domain"]: row for row in policy.entries()}
-        self.assertEqual(rows["child.example.org"]["status"], "pending")
-        self.assertEqual(rows["child.example.org"]["explicit_rule"], 0)
+        # Parent has an explicit deny, so the auto-inherited child row is
+        # obsolete and removed during migration, not retained as a rule.
+        self.assertNotIn("child.example.org", rows)
         self.assertEqual(rows["explicit.example.org"]["status"], "denied")
         self.assertEqual(rows["explicit.example.org"]["explicit_rule"], 1)
         self.assertEqual(rows["allowed.example.net"]["explicit_rule"], 1)
