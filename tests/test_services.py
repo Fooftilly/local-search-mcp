@@ -59,6 +59,28 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(result["checks"]["crawl4ai"])
         self.assertFalse(result["checks"]["tunnel_listener"])
 
+    def test_dashboard_probes_compact_health_endpoint(self):
+        """A healthy dashboard must not be marked down by its large HTML page."""
+        def dashboard_reply(port, path, max_bytes):
+            self.assertEqual((port, path, max_bytes), (8791, "/healthz", 1024))
+            return 200, b'{"status": "ok"}'
+
+        with patch.object(health_cli, "local_get", side_effect=dashboard_reply) as request:
+            self.assertTrue(health_cli.dashboard_ok())
+            request.assert_called_once()
+
+    def test_dashboard_health_rejects_invalid_content(self):
+        """An unrelated 200 page, malformed JSON or redirect is not healthy."""
+        for status, body in (
+            (200, b"<html>not a health response</html>"),
+            (200, b'{"status": "error"}'),
+            (200, b'{"status": "ok", "ignored": true}'),
+            (302, b'{"status": "ok"}'),
+        ):
+            with self.subTest(status=status, body=body), \
+                 patch.object(health_cli, "local_get", return_value=(status, body)):
+                self.assertFalse(health_cli.dashboard_ok())
+
     def test_redirects_are_refused_without_off_host_fetching(self):
         """HTTP redirects never trigger outbound follow-up requests."""
         with patch.object(health_cli, "local_get", return_value=(302, b"moved")) as call:
