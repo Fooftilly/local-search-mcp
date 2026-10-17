@@ -119,6 +119,20 @@ class RuleModeTests(unittest.TestCase):
             self.assertFalse(
                 policy.expired_grant_without_active_fallback("child.example.org"))
 
+    def test_expired_child_allow_falls_back_to_parent_deny(self):
+        with patch.object(policy, "utcnow", return_value="2026-10-17T12:00:00Z"):
+            policy.decide("example.org", "deny")
+            policy.decide("child.example.org", "allow", scope="exact",
+                          expires_minutes=60)
+            self.assertFalse(
+                policy.expired_grant_without_active_fallback("child.example.org"))
+        with patch.object(policy, "utcnow", return_value="2026-10-17T13:00:00Z"):
+            self.assertEqual(
+                policy.request("child.example.org", "https://child.example.org/")[0],
+                "denied")
+            self.assertTrue(
+                policy.expired_grant_without_active_fallback("child.example.org"))
+
     def test_expired_exact_rule_respects_full_queue_limit(self):
         with patch.object(policy, "utcnow", return_value="2026-10-17T12:00:00Z"):
             policy.decide("example.org", "allow", scope="exact", expires_minutes=60)
