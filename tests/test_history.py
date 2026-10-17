@@ -49,8 +49,8 @@ class HistoryTests(unittest.TestCase):
             append_history({"time_utc": "2026-10-17T12:02:00Z", "kind": "page",
                             "status": "expired_or_unknown", "page": 3})
             out = io.StringIO()
-            with patch.object(sys, "argv", ["history_cli.py", "--kind", "page", "--csv"]), \\
-                 contextlib.redirect_stdout(out):
+            with (patch.object(sys, "argv", ["history_cli.py", "--kind", "page", "--csv"]),
+                  contextlib.redirect_stdout(out)):
                 self.assertEqual(history_cli.main(), 0)
             rows = list(csv.DictReader(io.StringIO(out.getvalue())))
             self.assertEqual(len(rows), 2)
@@ -58,8 +58,8 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(rows[0]["page_count"], "3")
             self.assertNotIn("document_id", out.getvalue())
             out = io.StringIO()
-            with patch.object(sys, "argv", ["history_cli.py", "--kind", "page"]), \\
-                 contextlib.redirect_stdout(out):
+            with (patch.object(sys, "argv", ["history_cli.py", "--kind", "page"]),
+                  contextlib.redirect_stdout(out)):
                 self.assertEqual(history_cli.main(), 0)
             self.assertIn("page 2/3", out.getvalue())
             self.assertNotIn("https://example.com/", out.getvalue())
