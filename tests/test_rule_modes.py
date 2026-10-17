@@ -155,6 +155,26 @@ class RuleModeTests(unittest.TestCase):
             self.assertEqual(row["request_count"], 1)
             self.assertEqual(policy.counts()["pending"], policy.MAX_PENDING_TOTAL)
 
+    def test_only_clearing_expired_grants_invalidates_inflight_fetches(self):
+        request_cache.reset_for_test()
+        self.addCleanup(request_cache.reset_for_test)
+        policy.request("unseen.example.org", "https://unseen.example.org/")
+        old_epoch = request_cache.policy_epoch()
+        self.assertEqual(policy.clear_pending_requests(), 1)
+        self.assertEqual(request_cache.policy_epoch(), old_epoch)
+
+        with patch.object(policy, "utcnow", return_value="2026-10-17T12:00:00Z"):
+            policy.decide("example.org", "allow", scope="exact",
+                          expires_minutes=60)
+        with patch.object(policy, "utcnow", return_value="2026-10-17T13:00:00Z"):
+            self.assertEqual(policy.request("example.org",
+                                            "https://example.org/")[0], "pending")
+            old_epoch = request_cache.policy_epoch()
+            self.assertEqual(policy.clear_pending_requests(), 1)
+            self.assertEqual(request_cache.policy_epoch(), old_epoch + 1)
+            self.assertEqual(policy.clear_pending_requests(), 0)
+            self.assertEqual(request_cache.policy_epoch(), old_epoch + 1)
+
     def test_expired_rules_share_site_hourly_admission_limits(self):
         with patch.object(policy, "utcnow", return_value="2026-10-17T12:00:00Z"):
             for i in range(policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR + 1):
