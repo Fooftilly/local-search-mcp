@@ -1,5 +1,7 @@
 """No external HTTP calls; policy tests use isolated SQLite per test."""
 import os
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -182,6 +184,42 @@ class DomainPolicyTests(unittest.TestCase):
         policy.decide("example.org", "allow")
         self.assertEqual(policy.request("sub.example.org", "https://sub.example.org/"),
                          ("allowed", "example.org"))
+
+    def test_concurrent_v1_schema_upgrades_are_serialized(self):
+        """The dashboard and bridge may hit the first-time ALTER concurrently."""
+        database = policy.database_path()
+        database.parent.mkdir(parents=True, mode=0o700)
+        with sqlite3.connect(database) as db:
+            db.executescript("""
+                CREATE TABLE domains (
+                    domain TEXT PRIMARY KEY, status TEXT NOT NULL,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    request_count INTEGER NOT NULL DEFAULT 0,
+                    last_requested_at TEXT NOT NULL DEFAULT '',
+                    last_requested_url TEXT NOT NULL DEFAULT ''
+                );
+                INSERT INTO domains(domain,status,created_at,updated_at)
+                    VALUES('example.org','denied','2026-01-01','2026-01-01');
+            """)
+        workers = 6
+        start = Barrier(workers)
+
+        def initialize_together(_):
+            start.wait(timeout=10)
+            policy.initialize()
+            return policy.request("child.example.org", "https://child.example.org/")
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(initialize_together, range(workers)))
+        self.assertEqual(results, [("denied", "example.org")] * workers)
+        with policy._db() as db:
+            self.assertEqual(
+                [col["name"] for col in db.execute("PRAGMA table_info(domains)")
+                 if col["name"] == "explicit_rule"], ["explicit_rule"]
+            )
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM metadata WHERE key='explicit_rules_v1'"
+            ).fetchone()[0], 1)
 
     def test_legacy_child_denial_does_not_follow_removed_or_allowed_parent(self):
         """Old auto-denials are not user rules, even after a parent changed."""
