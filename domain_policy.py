@@ -118,16 +118,16 @@ def _seed(conn):
         # requests copied a parent's denial into child rows without user action.
         # Such inherited rows must never become independent deny rules.
         if conn.execute("SELECT 1 FROM metadata WHERE key='explicit_rules_v1'").fetchone() is None:
+            # Parent status is NOT evidence of a child's own decision:
+            # the old request() copied denials to children, even if the parent
+            # was later allowed or deleted. Only audited local denies and
+            # never-requested standalone denials are identifiable as explicit.
             conn.execute("""UPDATE domains SET explicit_rule=1
                 WHERE status='allowed' OR
                 (status='denied' AND (
                     EXISTS (SELECT 1 FROM decisions d WHERE d.domain=domains.domain
                             AND d.action='deny')
-                    OR NOT EXISTS (
-                        SELECT 1 FROM domains parent
-                        WHERE parent.status='denied' AND parent.domain != domains.domain
-                          AND domains.domain LIKE '%.' || parent.domain
-                    )
+                    OR (request_count=0 AND last_requested_at='')
                 ))""")
             # The only remaining denials are auto-inherited bookkeeping rows.
             # Keep their requests pending until a local decision is made.
