@@ -29,7 +29,7 @@ class BridgeTests(unittest.TestCase):
         def handler(request):
             calls.append(request.method)
             self.assertEqual(request.url.path,'/health')
-            return httpx.Response(200,json={'status':'ok','version':'0.9.3'})
+            return httpx.Response(200,json={'status':'ok','version':'0.9.4'})
         orig_client=httpx.Client
         def client(**kwargs):return orig_client(transport=httpx.MockTransport(handler))
         with patch.object(self.module, '_check_public_target',return_value=None),patch.object(self.module.httpx,'Client',side_effect=client):
@@ -41,7 +41,7 @@ class BridgeTests(unittest.TestCase):
         calls=[]
         def handler(request):
             calls.append(request.method)
-            if request.method=='GET':return httpx.Response(200,json={'status':'ok','version':'0.9.4'})
+            if request.method=='GET':return httpx.Response(200,json={'status':'ok','version':'0.9.5'})
             return httpx.Response(200,json={'results':[{'url':'https://example.com', 'success':True,'markdown':'Hello'}]})
         orig_client=httpx.Client
         def client(**kwargs):return orig_client(transport=httpx.MockTransport(handler))
@@ -53,7 +53,7 @@ class BridgeTests(unittest.TestCase):
 
     def test_unapproved_redirect_content_not_returned(self):
         def handler(request):
-            if request.method=='GET':return httpx.Response(200,json={'status':'ok','version':'0.9.4'})
+            if request.method=='GET':return httpx.Response(200,json={'status':'ok','version':'0.9.5'})
             return httpx.Response(200,json={'results':[{'url':'https://elsewhere.net','success':True,'markdown':'sensitive'}]})
         orig_client=httpx.Client
         def client(**kwargs):return orig_client(transport=httpx.MockTransport(handler))

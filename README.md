@@ -1,6 +1,6 @@
 # local-search-mcp
 
-A **local, read-only MCP bridge** for [SearXNG](https://docs.searxng.org/) search and [Crawl4AI](https://docs.crawl4ai.com/) page extraction, with a local domain-approval dashboard and private request history. Connect it to ChatGPT using an OpenAI Secure MCP Tunnel (where available). Linux-first; tested locally with Python, SearXNG and Crawl4AI 0.9.4. **Experimental software**, not a network firewall.
+A **local, read-only MCP bridge** for [SearXNG](https://docs.searxng.org/) search and [Crawl4AI](https://docs.crawl4ai.com/) page extraction, with a local domain-approval dashboard and private request history. Connect it to ChatGPT using an OpenAI Secure MCP Tunnel (where available). Linux-first; tested locally with Python, SearXNG and Crawl4AI 0.9.4; 0.9.5+ is now required for remote crawling. **Experimental software**, not a network firewall.
 
 ## What it provides
 
@@ -13,10 +13,12 @@ A **local, read-only MCP bridge** for [SearXNG](https://docs.searxng.org/) searc
 
 - Linux with Python 3.11+, **libpsl** (Arch: `sudo pacman -S libpsl`) and `python-venv` support.
 - SearXNG running at `http://127.0.0.1:8888` with JSON search enabled.
-- **Crawl4AI Docker server 0.9.4 or newer** at `http://127.0.0.1:11235`, with a locally configured API token and normal hardened settings. This bridge rejects older/unknown versions, but **does not itself enforce network isolation**: read [SECURITY.md](SECURITY.md).
+- **Crawl4AI Docker server 0.9.5 or newer (stable)** at `http://127.0.0.1:11235`, with a locally configured API token and normal hardened settings. This bridge rejects older/unknown versions, but **does not itself enforce network isolation**: read [SECURITY.md](SECURITY.md).
 - Optional: OpenAI Secure MCP Tunnel and the account permissions to create and use a tunnel.
 
 ## Start
+
+**Upgrade note (October 2026):** Crawl4AI 0.9.4 contains a cache-freshness SSRF bypass corrected in 0.9.5. This bridge now blocks `web_fetch` and launcher startup against 0.9.4 and prerelease builds. Upgrade the Crawl4AI Docker image to a verified 0.9.5+ build, preserve your container's private configuration/volumes and confirm `/health` reports the updated version. If a suitable image is not yet available for your platform, leave remote fetching disabled; do not weaken the gate.
 
 ```bash
 ./start.sh
@@ -61,6 +63,10 @@ python history_cli.py --last 50
 python history_cli.py --stats
 python history_cli.py --csv --last 5000 > ~/search-history.csv
 ```
+
+## Optional Docker egress guard (Linux)
+
+For operators using a dedicated Crawl4AI Docker bridge, see [EGRESS-ISOLATION.md](EGRESS-ISOLATION.md) for an **opt-in nftables containment tool**, an example workflow, and live negative/positive probes. This host firewall is **not installed by the launcher**, does not replace Crawl4AI's own protections, and must be re-applied after reboot or Docker network changes. It does not isolate loopback inside the crawler container.
 
 ## Connecting through OpenAI tunnel
 
