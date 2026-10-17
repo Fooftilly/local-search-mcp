@@ -46,14 +46,29 @@ class ServiceTests(unittest.TestCase):
                 bootstrap.run_unattended_service("bridge")
 
     def test_health_reports_degraded_upstream_independently(self):
-        with patch.object(health_cli, "get_json", side_effect=[
-            {"results": []}, {"status": "ok", "version": "0.9.5"}
-        ]), patch.object(health_cli, "listening", side_effect=[True, False]), \
+        with patch.object(health_cli, "get_json", return_value={"status": "ok", "version": "0.9.5"}), \
+             patch.object(health_cli, "searxng_ok", return_value=True), \
+             patch.object(health_cli, "listening", side_effect=[True, False]), \
              patch.object(health_cli, "dashboard_ok", return_value=True):
             result = health_cli.snapshot()
         self.assertEqual(result["status"], "degraded")
         self.assertTrue(result["checks"]["crawl4ai"])
         self.assertFalse(result["checks"]["tunnel_listener"])
+
+    def test_redirects_are_refused_without_off_host_fetching(self):
+        """Local health requests never follow redirects to another host."""
+        redirector = health_cli.NoRedirect()
+        self.assertIsNone(redirector.redirect_request(None, None, 302, "Moved", {}, "https://elsewhere.test/"))
+        with self.assertRaises(ValueError):
+            health_cli.local_request("https://elsewhere.test/health")
+
+    def test_units_limit_restart_bursts_and_no_invalid_working_directory(self):
+        """Systemd units must never use ExecStart quoting for WorkingDirectory."""
+        units = unit_files("/usr/bin/python3", Path("/tmp/local mcp"))
+        for name in ("local-search-mcp-bridge.service", "local-search-mcp-tunnel.service"):
+            self.assertIn("StartLimitIntervalSec=300", units[name])
+            self.assertIn("StartLimitBurst=5", units[name])
+        self.assertTrue(all("WorkingDirectory=" not in unit for unit in units.values()))
 
     def test_unhealthy_health_report_has_nonzero_exit(self):
         with patch.object(health_cli, "snapshot", return_value={
