@@ -129,11 +129,13 @@ class BridgeTests(unittest.TestCase):
         def client(**kwargs):
             return original(transport=httpx.MockTransport(
                 lambda request: httpx.Response(200, json={"results": [
-                    None, {"title": "Valid", "url": "https://example.com", "content": "ok"}
+                    None, {"title": "Valid", "url": "https://example.com", "content": "ok"},
+                    None, {"title": "Also valid", "url": "https://example.net", "content": "ok"}
                 ]})
             ))
         with patch.object(self.module.httpx, "Client", side_effect=client):
-            self.assertEqual(len(self.module.web_search("test")), 1)
+            results = self.module.web_search("test", max_results=2)
+        self.assertEqual([r["title"] for r in results], ["Valid", "Also valid"])
 
     def test_no_crawl_when_backend_old(self):
         calls=[]

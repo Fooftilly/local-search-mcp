@@ -111,8 +111,7 @@ def web_search(query: str, max_results: int = 8, language: str = "",
             "snippet": str(r.get("content", ""))[:1100],
             "engine": str(r.get("engine", "")),
         }
-        for r in payload.get("results", [])[:max_results]
-        if isinstance(r, dict)
+        for r in [row for row in payload.get("results", []) if isinstance(row, dict)][:max_results]
     ]
 
 
