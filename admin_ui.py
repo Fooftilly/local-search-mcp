@@ -7,12 +7,12 @@ import html
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
-from pathlib import Path
 import secrets
 import sqlite3
 from urllib.parse import parse_qs, urlsplit
 
 import domain_policy as policy
+from dashboard_live_script import LIVE_SCRIPT
 
 HOST='127.0.0.1'
 PORT=int(os.environ.get('LOCAL_SEARCH_MCP_DASHBOARD_PORT','8791'))
@@ -141,8 +141,15 @@ class Handler(BaseHTTPRequestHandler):
             return False
         host = self.headers.get('Host', '')
         origin = self.headers.get('Origin')
-        if origin is not None and origin != f'http://{host}':
-            return False
+        if origin is not None:
+            try:
+                parsed = urlsplit(origin)
+                if (parsed.scheme != 'http' or parsed.netloc != host
+                        or parsed.username or parsed.password
+                        or parsed.path or parsed.query or parsed.fragment):
+                    return False
+            except ValueError:
+                return False
         referer = self.headers.get('Referer')
         if referer:
             try:
@@ -160,8 +167,9 @@ class Handler(BaseHTTPRequestHandler):
         if path.path=='/healthz':return self._respond(200,json.dumps({'status':'ok'}),'application/json')
         if path.path=='/dashboard-live.js':
             if not self._read_origin_valid():return self._respond(403,'Forbidden')
-            return self._respond(200, Path(__file__).with_name('dashboard-live.js').read_bytes(),
-                                 'text/javascript; charset=utf-8')
+            # Fixed in-repository program literal, never a path read from
+            # request input. Keep the existing restricted CSP and MIME type.
+            return self._respond(200, LIVE_SCRIPT, 'text/javascript; charset=utf-8')
         if path.path=='/live':
             if not self._read_origin_valid():return self._respond(403,'Forbidden')
             query=parse_qs(path.query)

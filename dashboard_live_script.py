@@ -1,4 +1,11 @@
-/* Same-origin, opt-in live dashboard updates. No inline scripts or remote calls. */
+"""Embedded, fixed first-party JavaScript for the loopback dashboard.
+
+This is a trusted program literal, not an HTTP/file input or dynamically
+assembled script. Keep as a separate module to avoid accidental arbitrary-file
+reads flowing into the HTTP response writer.
+"""
+
+LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scripts or remote calls. */
 (() => {
   "use strict";
   const isHistory = document.documentElement.dataset.liveView === "history";
@@ -8,6 +15,16 @@
   const status = document.getElementById("live-status");
   const notice = document.getElementById("notification-toggle");
   const storageKey = "local-search-mcp.desktop-notifications.v1";
+  const lastTableHtml = new WeakMap();
+
+  function updateTable(body, html) {
+    if (!body || lastTableHtml.get(body) === html) return;
+    // Do not destroy a focused Rename input or button. Resume syncing this
+    // table on the next poll after the operator moves focus elsewhere.
+    if (body.contains(document.activeElement)) return;
+    body.innerHTML = html;
+    lastTableHtml.set(body, html);
+  }
   const interval = 10000;
   const minNotificationGap = 60000;
   let previousDomains = null;
@@ -131,10 +148,10 @@
       if (!response.ok) throw new Error("Live endpoint rejected request");
       const data = await response.json();
       if (isHistory) {
-        if (historyBody) historyBody.innerHTML = data.history_html;
+        updateTable(historyBody, data.history_html);
       } else {
-        if (pendingBody) pendingBody.innerHTML = data.pending_html;
-        if (decidedBody) decidedBody.innerHTML = data.decided_html;
+        updateTable(pendingBody, data.pending_html);
+        updateTable(decidedBody, data.decided_html);
         for (const type of ["pending", "allowed", "denied"]) {
           const count = document.getElementById("live-count-" + type);
           if (count) count.textContent = String(data.counts[type]);
@@ -145,10 +162,11 @@
     } catch (_) {
       say("Live updates paused · refresh manually if this persists");
     } finally {
-      if (!stopped) window.setTimeout(refresh, interval);
+      if (!stopped) window.setTimeout(() => { void refresh(); }, interval);
     }
   }
 
   window.addEventListener("pagehide", () => { stopped = true; });
-  refresh();
+  void refresh();
 })();
+"""
