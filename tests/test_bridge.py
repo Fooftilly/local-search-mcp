@@ -89,7 +89,7 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(checked, ["https://example.com", "https://docs.python.org/page"])
 
     def test_non_string_redirected_url_fails_closed(self):
-        for value in ({"href": "https://example.com"}, ["https://example.com"], 42):
+        for value in ({"href": "https://example.com"}, ["https://example.com"], 42, ""):
             def handler(request):
                 if request.method == "GET":
                     return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
