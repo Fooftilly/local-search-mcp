@@ -56,11 +56,12 @@ class ServiceTests(unittest.TestCase):
         self.assertFalse(result["checks"]["tunnel_listener"])
 
     def test_redirects_are_refused_without_off_host_fetching(self):
-        """Local health requests never follow redirects to another host."""
-        redirector = health_cli.NoRedirect()
-        self.assertIsNone(redirector.redirect_request(None, None, 302, "Moved", {}, "https://elsewhere.test/"))
+        """HTTP redirects never trigger outbound follow-up requests."""
+        with patch.object(health_cli, "local_get", return_value=(302, b"moved")) as call:
+            self.assertFalse(health_cli.dashboard_ok())
+            self.assertEqual(call.call_count, 1)
         with self.assertRaises(ValueError):
-            health_cli.local_request("https://elsewhere.test/health")
+            health_cli.local_get(443, "/health")
 
     def test_units_limit_restart_bursts_and_no_invalid_working_directory(self):
         """Systemd units must never use ExecStart quoting for WorkingDirectory."""
