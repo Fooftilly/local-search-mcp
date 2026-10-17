@@ -342,6 +342,10 @@ def decide(domain: str, action: str, new_domain: str = ""):
             conn.commit()
         except BaseException:
             conn.rollback(); raise
+    # Keep process-local fetch caches consistent with explicit operator policy.
+    # In-flight crawls cannot repopulate entries from the previous generation.
+    from request_cache import invalidate_fetch
+    invalidate_fetch()
 
 
 def clear_pending_requests() -> int:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 
 import httpx
 from fastmcp import FastMCP
@@ -13,6 +14,7 @@ import threading
 from urllib.parse import urlsplit, urlunsplit
 from history_log import logged_tool
 import document_pages
+import request_cache
 
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://127.0.0.1:8888").rstrip("/")
 CRAWL4AI_URL = os.getenv("CRAWL4AI_URL", "http://127.0.0.1:11235").rstrip("/")
@@ -85,27 +87,58 @@ def _search_params(query: str, max_results: int, language: str,
     return params, max_results
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
-@logged_tool("search")
-def web_search(query: str, max_results: int = 8, language: str = "",
-               categories: str = "", time_range: str = "",
-               engines: str = "", page: int = 1) -> list[dict]:
-    """Search locally via SearXNG, optionally filtering language, source and date.
+def _retry_request(operation):
+    """At most two attempts for transient network or upstream errors.
 
-    categories and engines are comma-separated names configured on the local
-    instance. Filters may be ignored by upstream engines without that ability.
+    No retries for 4xx other than 429, and no unbounded Retry-After delays.
     """
-    params, max_results = _search_params(
-        query, max_results, language, categories, time_range, engines, page,
-    )
+    for attempt in range(2):
+        try:
+            response = operation()
+        except httpx.RequestError:
+            if attempt == 0:
+                time.sleep(0.15)
+                continue
+            return None
+        if response.status_code in (429, 500, 502, 503, 504) and attempt == 0:
+            time.sleep(0.15)
+            continue
+        return response
+    return None
+
+
+def _upstream_error(response, backend: str) -> dict:
+    code = response.status_code if response is not None else None
+    if code == 429:
+        status, reason = "rate_limited", "The local upstream rate-limited this request. Retry later."
+    elif code is not None and code >= 500:
+        status, reason = "upstream_unavailable", "The local upstream is temporarily unavailable."
+    elif code is not None:
+        status, reason = "upstream_rejected", "The local upstream rejected the request or its filters."
+    else:
+        status, reason = "upstream_unavailable", "The local upstream could not be reached after two bounded attempts."
+    result = {"success": False, "status": status, "backend": backend, "reason": reason}
+    if code is not None:
+        result["http_status"] = code
+    return result
+
+
+def _run_search(params: dict, max_results: int) -> list[dict] | dict:
     with httpx.Client(timeout=25, trust_env=False) as client:
-        response = client.get(f"{SEARXNG_URL}/search", params=params)
-        if response.status_code in (400, 422) and len(params) > 2:
-            raise ValueError("Local SearXNG rejected the requested filters or page")
-        response.raise_for_status()
+        response = _retry_request(lambda: client.get(
+            f"{SEARXNG_URL}/search", params=params))
+    if response is not None and response.status_code in (400, 422) and len(params) > 2:
+        raise ValueError("Local SearXNG rejected the requested filters or page")
+    if response is None or response.status_code >= 400:
+        return _upstream_error(response, "searxng")
+    try:
         payload = response.json()
+    except (ValueError, UnicodeError):
+        return {"success": False, "status": "invalid_response", "backend": "searxng",
+                "reason": "Local SearXNG returned unreadable JSON."}
     if not isinstance(payload, dict) or not isinstance(payload.get("results", []), list):
-        raise ValueError("Local SearXNG returned an invalid results structure")
+        return {"success": False, "status": "invalid_response", "backend": "searxng",
+                "reason": "Local SearXNG returned an invalid results structure."}
     return [
         {
             "title": str(r.get("title", ""))[:240],
@@ -116,6 +149,30 @@ def web_search(query: str, max_results: int = 8, language: str = "",
         for r in [row for row in payload.get("results", []) if isinstance(row, dict)][:max_results]
     ]
 
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+@logged_tool("search")
+def web_search(query: str, max_results: int = 8, language: str = "",
+               categories: str = "", time_range: str = "",
+               engines: str = "", page: int = 1, fresh: bool = False) -> list[dict] | dict:
+    """Search SearXNG with bounded, memory-only caching; fresh bypasses cache."""
+    if not isinstance(fresh, bool):
+        raise ValueError("fresh must be a boolean")
+    params, max_results = _search_params(
+        query, max_results, language, categories, time_range, engines, page,
+    )
+    # Avoid caching obviously sensitive-looking queries. No queries are saved
+    # to disk by this cache; the separate opt-in history remains unchanged.
+    private = bool(re.search(
+        r"@|https?://|(?:password|token|secret|api[_-]?key|bearer|cookie)\\s*[:=]",
+        params["q"], flags=re.IGNORECASE))
+    key = None if private else (
+        "search", SEARXNG_URL, tuple(sorted(params.items())), max_results,
+    )
+    return request_cache.run(
+        "search", key, lambda: _run_search(params, max_results),
+        ttl=request_cache.SEARCH_TTL, fresh=fresh, should_store=lambda r: isinstance(r, list),
+    )
 
 def _crawl_metadata(page: dict, final_url: str) -> dict:
     """Return only short, safe, untrusted public-page metadata."""
@@ -153,21 +210,8 @@ def _crawl_metadata(page: dict, final_url: str) -> dict:
     return result
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
-@logged_tool("fetch")
-def web_fetch(url: str, mode: str = "raw") -> dict:
-    """Fetch a permitted public page; optionally select fit Markdown.
-
-    Long approved documents expose an opaque, short-lived continuation token
-    for web_fetch_page. Existing one-argument calls retain their short-page shape.
-    """
-    if mode not in ("raw", "fit"):
-        raise ValueError("mode must be raw or fit")
-    policy_result = _check_public_target(url)
-    if policy_result is not None:
-        return policy_result
-    if CRAWLER_SECURITY_WARNING:
-        return {"url": url, "success": False, "status": "blocked", "reason": CRAWLER_SECURITY_WARNING}
+def _run_fetch(url: str, mode: str) -> dict:
+    """Crawl only after the caller has passed current local policy checks."""
     headers = {"Authorization": f"Bearer {CRAWL4AI_TOKEN}"} if CRAWL4AI_TOKEN else {}
     crawler_params = {"stream": False}
     if mode == "fit":
@@ -193,13 +237,20 @@ def web_fetch(url: str, mode: str = "raw") -> dict:
             return {"url": url, "success": False, "status": "blocked", "reason": f"Crawl4AI security check unavailable: {type(exc).__name__}"}
         if health_error:
             return {"url": url, "success": False, "status": "blocked", "reason": health_error}
-        response = client.post(f"{CRAWL4AI_URL}/crawl", json=payload, headers=headers)
-        response.raise_for_status()
-        result = response.json()
+        response = _retry_request(lambda: client.post(
+            f"{CRAWL4AI_URL}/crawl", json=payload, headers=headers))
+        if response is None or response.status_code >= 400:
+            return {"url": url, **_upstream_error(response, "crawl4ai")}
+        try:
+            result = response.json()
+        except (ValueError, UnicodeError):
+            return {"url": url, "success": False, "status": "invalid_response",
+                    "reason": "Crawl4AI returned unreadable JSON."}
     results = result.get("results", []) if isinstance(result, dict) else result
     page = results[0] if isinstance(results, list) and results else result
     if not isinstance(page, dict):
-        raise RuntimeError("Unrecognized Crawl4AI response")
+        return {"url": url, "success": False, "status": "invalid_response",
+                "reason": "Crawl4AI returned an invalid page structure."}
     # CrawlResult.url is the REQUESTED URL; CrawlResult.redirected_url records
     # the final navigation, including JavaScript redirects. Never assume that
     # the original URL proves the final destination is approved.
@@ -258,6 +309,45 @@ def web_fetch(url: str, mode: str = "raw") -> dict:
         return {"url": final_url, "success": False, "status": "crawl_failed",
                 "reason": "Crawl4AI reported failure; no incomplete document was cached"}
     return output
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+@logged_tool("fetch")
+def web_fetch(url: str, mode: str = "raw", fresh: bool = False) -> dict:
+    """Fetch an approved page; bounded memory cache for public short pages.
+
+    Authorization runs before every cache hit. Fresh skips both cache and
+    concurrent request coalescing. Long paged responses are never cached.
+    """
+    if mode not in ("raw", "fit"):
+        raise ValueError("mode must be raw or fit")
+    if not isinstance(fresh, bool):
+        raise ValueError("fresh must be a boolean")
+    before = request_cache.policy_epoch()
+    policy_result = _check_public_target(url)
+    if policy_result is not None:
+        return policy_result
+    if before != request_cache.policy_epoch():
+        return {"url": url, "success": False, "status": "blocked",
+                "reason": "Domain approval changed during the request. Retry after reviewing permissions."}
+    if CRAWLER_SECURITY_WARNING:
+        return {"url": url, "success": False, "status": "blocked",
+                "reason": CRAWLER_SECURITY_WARNING}
+    key = request_cache.fetch_key(url, mode)
+    response = request_cache.run(
+        "fetch", key, lambda: _run_fetch(url, mode),
+        ttl=request_cache.FETCH_TTL, fresh=fresh,
+        should_store=lambda r: (
+            isinstance(r, dict) and r.get("success") is True
+            and r.get("truncated") is False
+            and "document_id" not in r
+            and request_cache.fetch_key(r.get("url", ""), mode) is not None
+        ),
+    )
+    if before != request_cache.policy_epoch():
+        return {"url": url, "success": False, "status": "blocked",
+                "reason": "Domain approval changed during the request. Retry after reviewing permissions."}
+    return response
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})

@@ -24,6 +24,119 @@ class BridgeTests(unittest.TestCase):
         with patch.dict(sys.modules,{'fastmcp':fake}),patch('crawler_security.local_container_warning',return_value=None):
             spec.loader.exec_module(cls.module)
 
+    def setUp(self):
+        self.module.request_cache.reset_for_test()
+        self.addCleanup(self.module.request_cache.reset_for_test)
+
+    def test_search_results_are_cached_per_filter_with_fresh_bypass(self):
+        seen = []
+        def handler(request):
+            seen.append(dict(request.url.params))
+            return httpx.Response(200, json={"results": [
+                {"title": "Result", "url": "https://example.com/a",
+                 "content": "OK", "engine": "mock"}
+            ]})
+        original = httpx.Client
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            self.assertEqual(len(self.module.web_search("cache probe")), 1)
+            self.assertEqual(len(self.module.web_search("cache probe")), 1)
+            self.assertEqual(len(seen), 1)
+            self.module.web_search("cache probe", engines="qwant")
+            self.assertEqual(len(seen), 2)
+            self.module.web_search("cache probe", fresh=True)
+            self.assertEqual(len(seen), 3)
+            self.module.web_search("cache probe", max_results=2)
+            self.assertEqual(len(seen), 4)
+            self.module.web_search("cache probe", page=2)
+            self.assertEqual(len(seen), 5)
+            # Never retain obviously secret-bearing search queries.
+            self.module.web_search("password=secret", fresh=False)
+            self.module.web_search("password=secret", fresh=False)
+            self.assertEqual(len(seen), 7)
+
+    def test_fetch_cache_requires_policy_and_skips_sensitive_urls(self):
+        counts = []
+        def handler(request):
+            counts.append(request.url.path)
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [
+                {"url": "https://example.com/page", "success": True, "markdown": "Hello"}
+            ]})
+        original = httpx.Client
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            self.assertEqual(self.module.web_fetch("https://example.com/page")["markdown"], "Hello")
+            self.assertEqual(self.module.web_fetch("https://example.com/page")["markdown"], "Hello")
+            self.assertEqual(counts.count("/crawl"), 1)
+            self.module.web_fetch("https://example.com/page", fresh=True)
+            self.assertEqual(counts.count("/crawl"), 2)
+            self.module.request_cache.invalidate_fetch()
+            self.module.web_fetch("https://example.com/page")
+            self.assertEqual(counts.count("/crawl"), 3)
+            self.module.web_fetch("https://example.com/page?x=1")
+            self.module.web_fetch("https://example.com/page?x=1")
+            self.assertEqual(counts.count("/crawl"), 5)
+        with patch.object(self.module, "_check_public_target",
+                          return_value={"success": False, "status": "denied"}), \
+             patch.object(self.module.httpx, "Client") as backend:
+            self.assertEqual(self.module.web_fetch("https://example.com/page")["status"], "denied")
+            backend.assert_not_called()
+
+    def test_upstream_transient_errors_are_structured_and_retry_bounded(self):
+        seen = []
+        def search_handler(request):
+            seen.append(request.url.path)
+            return httpx.Response(429, json={"private": "not returned"})
+        original = httpx.Client
+        def client_search(**kwargs):
+            return original(transport=httpx.MockTransport(search_handler))
+        with patch.object(self.module.httpx, "Client", side_effect=client_search), \
+             patch.object(self.module.time, "sleep", return_value=None):
+            failed = self.module.web_search("retry-case")
+        self.assertEqual(failed["status"], "rate_limited")
+        self.assertEqual(failed["http_status"], 429)
+        self.assertEqual(seen, ["/search", "/search"])
+        attempts = []
+        def fetch_handler(request):
+            attempts.append(request.url.path)
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(503, json={"private": "not returned"})
+        def client_fetch(**kwargs):
+            return original(transport=httpx.MockTransport(fetch_handler))
+        with patch.object(self.module, "_check_public_target", return_value=None), \
+             patch.object(self.module.httpx, "Client", side_effect=client_fetch), \
+             patch.object(self.module.time, "sleep", return_value=None):
+            failure = self.module.web_fetch("https://example.com/page")
+        self.assertEqual(failure["status"], "upstream_unavailable")
+        self.assertEqual(attempts, ["/health", "/crawl", "/crawl"])
+        self.assertNotIn("private", str(failure))
+        # A failed call was not cached.
+        self.assertFalse(self.module.request_cache._CACHE)
+
+    def test_policy_epoch_change_during_crawl_fails_closed(self):
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            self.module.request_cache.invalidate_fetch()
+            return httpx.Response(200, json={"results": [
+                {"url": "https://example.com/a", "success": True, "markdown": "secret"}
+            ]})
+        original = httpx.Client
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module, "_check_public_target", return_value=None), \
+             patch.object(self.module.httpx, "Client", side_effect=client):
+            result = self.module.web_fetch("https://example.com/a")
+        self.assertEqual(result["status"], "blocked")
+        self.assertNotIn("secret", str(result))
+        self.assertFalse(self.module.request_cache._CACHE)
+
     def test_search_old_signature_preserves_default_request_and_shape(self):
         calls = []
         def handler(request):
