@@ -1,5 +1,6 @@
 """Network guard tests do not modify the host firewall."""
 import importlib.util
+import errno
 import json
 from pathlib import Path
 import unittest
@@ -53,6 +54,30 @@ class GuardTests(unittest.TestCase):
         with patch.object(guard,'command',side_effect=[json.dumps(c),json.dumps(n)]) as cmd, patch.object(guard.os,'geteuid',return_value=1000):
             self.assertEqual(guard.main(['--container','crawl4ai','--apply']),1)
             self.assertEqual(cmd.call_count,2)
+
+    def test_untrusted_container_input_is_rejected_before_subprocess(self):
+        invalid = ('--privileged', '-x', '../crawl4ai', 'a/b', 'a\\n--help',
+                   '$(whoami)', '', '.')
+        for candidate in invalid:
+            with self.subTest(container=candidate):
+                with patch.object(guard, 'command') as cmd:
+                    with self.assertRaises((guard.GuardError, ValueError)):
+                        guard.network_for(candidate)
+                    cmd.assert_not_called()
+        self.assertEqual(guard.validated_container('crawl4ai-v1.0'), 'crawl4ai-v1.0')
+
+    def test_probe_requires_specific_firewall_rejection_not_any_outage(self):
+        guard.rejected_connection(str(errno.ECONNREFUSED))
+        for candidate in ('0', str(errno.ETIMEDOUT), str(errno.EHOSTUNREACH), 'oops'):
+            with self.subTest(value=candidate):
+                with self.assertRaises(guard.GuardError):
+                    guard.rejected_connection(candidate)
+
+    def test_command_runner_never_accepts_other_executables(self):
+        with patch.object(guard.subprocess, 'run') as proc:
+            with self.assertRaises(guard.GuardError):
+                guard.command(['sh', '-c', 'id'])
+            proc.assert_not_called()
 
     def test_nft_table_discovery(self):
         found={'nftables':[{'metainfo':{}},{'table':{'family':'inet','name':guard.TABLE}}]}
