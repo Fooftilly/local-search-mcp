@@ -130,8 +130,8 @@ def row_html(r):
             f'<input aria-label="Rename {dom}" name="new_domain" value="{dom}"'
             f' style="width:195px"><button name="action" value="rename">'
             f'Rename</button></form>')
-    return (f'<tr><td class="domain">{dom}{limits}</td>'
-            f'<td><span class="pill {stat}">{stat}</span></td>'
+    return (f'<tr><td class="domain">{dom}</td>'
+            f'<td><span class="pill {stat}">{stat}</span>{limits}</td>'
             f'<td>{int(r["request_count"])}'
             f'<div class="subtle">{esc(r["last_requested_at"] or "—")}</div></td>'
             f'<td class="actions">{actions}'
