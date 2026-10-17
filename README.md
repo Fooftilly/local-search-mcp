@@ -62,7 +62,7 @@ python history_cli.py --stats
 python history_cli.py --csv --last 5000 > ~/search-history.csv
 ```
 
-## Connecting through OpenAI tunnel
+## Optional Docker egress guard (Linux)\n\nFor operators using a dedicated Crawl4AI Docker bridge, see [EGRESS-ISOLATION.md](EGRESS-ISOLATION.md) for an **opt-in nftables containment tool**, an example workflow, and live negative/positive probes. This host firewall is **not installed by the launcher**, does not replace Crawl4AI's own protections, and must be re-applied after reboot or Docker network changes. It does not isolate loopback inside the crawler container.\n\n## Connecting through OpenAI tunnel
 
 Read `./tunnel-client help quickstart` and configure a profile referencing `http://127.0.0.1:8790/mcp`. Store runtime key outside Git. See the [official Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels). The tunnel does not expose the dashboard or native Crawl4AI endpoints.
 
