@@ -21,6 +21,7 @@ const locks = {
 };
 let now = 100000;
 let serverSnapshot = 0;
+let serverRun = "a".repeat(32);
 class Clock extends Date { static now() { return now; } }
 const localStorage = {
   get length() { return storage.size; },
@@ -37,7 +38,7 @@ Notification.requestPermission = async () => "granted";
 
 function createTab(initialDomains) {
   const state = { domains: [...initialDomains], timers: [], handlers: {},
-                  nextSnapshotUs: null };
+                  nextSnapshotUs: null, nextSnapshotRun: null };
   const targets = new Map();
   function element(id) {
     if (!targets.has(id)) {
@@ -69,11 +70,14 @@ function createTab(initialDomains) {
   const fetch = async () => {
     const domains = [...state.domains];
     const snapshot = state.nextSnapshotUs ?? ++serverSnapshot;
+    const run = state.nextSnapshotRun ?? serverRun;
     state.nextSnapshotUs = null;
+    state.nextSnapshotRun = null;
     return {
       ok: true,
       json: async () => ({
         snapshot_us: snapshot,
+        snapshot_run: run,
         pending_domains: domains,
         counts: { pending: domains.length, allowed: 0, denied: 0 },
         pending_html: "pending: " + domains.join(","),
@@ -170,6 +174,25 @@ async function main() {
   assert.equal(JSON.parse(storage.get("local-search-mcp.notification-owed.v1")).length,
                0, "stale cross-tab responses must not queue duplicate alerts");
 
+  // A dashboard restart with a rolled-back clock must reset sequencing,
+  // without allowing a delayed response from the retired process to undo it.
+  const retiredRun = serverRun;
+  serverRun = "b".repeat(32);
+  serverSnapshot = 0;
+  await poll(tab, 243000);
+  assert.equal(storage.get("local-search-mcp.notification-snapshot-run.v1"), serverRun);
+  assert.equal(storage.get("local-search-mcp.notification-snapshot-us.v1"), "1");
+  second.state.nextSnapshotRun = retiredRun;
+  second.state.nextSnapshotUs = 999999999999;
+  second.state.domains = [];
+  await poll(second, 244000);
+  assert.equal(storage.get("local-search-mcp.notification-snapshot-run.v1"), serverRun,
+               "a late response from an old server instance must be rejected");
+  second.state.domains = [...tab.state.domains];
+  await poll(tab, 245000);
+  assert.equal(notifications.length, 3,
+               "clock rollback and retired replies must not create duplicate alerts");
+
   // Rename field state and focus survive a changed poll response.
   const decided = tab.element("live-decided");
   const editing = { value: "unfinished-rename" };
@@ -212,6 +235,22 @@ async function main() {
   await poll(tab, 335000);
   assert.equal(activeTimers().length, 1,
                "restored poll timer must not duplicate on subsequent polls");
+
+  // A queued disabled storage event may arrive only after a rapid re-enable.
+  // The tab must repair its vanished registration even when the stored
+  // preference is currently "enabled" again.
+  for (const key of [...storage.keys()]) {
+    if (key.startsWith("local-search-mcp.notification-tab.v1.")) {
+      storage.delete(key);
+    }
+  }
+  tab.state.handlers.storage({
+    key: "local-search-mcp.desktop-notifications.v1", newValue: "disabled"
+  });
+  await settle();
+  assert.ok([...storage.keys()].some(key =>
+    key.startsWith("local-search-mcp.notification-tab.v1.")),
+    "delayed disable event must re-register an enabled tab");
 
   tab.close();
   second.close();

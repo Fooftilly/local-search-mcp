@@ -21,6 +21,9 @@ PORT=int(os.environ.get('LOCAL_SEARCH_MCP_DASHBOARD_PORT','8791'))
 CSRF=secrets.token_urlsafe(32)
 _LIVE_SNAPSHOT_LOCK = threading.Lock()
 _LAST_LIVE_SNAPSHOT_US = 0
+# Ephemeral ID distinguishes dashboard process restarts even if system time
+# moves backward. The browser rejects delayed responses from retired runs.
+_LIVE_SNAPSHOT_RUN = secrets.token_hex(16)
 
 CSS="""
 :root{color-scheme:dark;font-family:Inter,system-ui,-apple-system,sans-serif;background:#101318;color:#e9edf2;font-size:14px}
@@ -82,6 +85,7 @@ def live_snapshot(query='', view='policy'):
         _LAST_LIVE_SNAPSHOT_US = max(
             time.time_ns() // 1000, _LAST_LIVE_SNAPSHOT_US + 1)
         return {
+            'snapshot_run': _LIVE_SNAPSHOT_RUN,
             'snapshot_us': _LAST_LIVE_SNAPSHOT_US,
             'counts': counts,
             'pending_html': ''.join(row_html(r) for r in pending_rows)

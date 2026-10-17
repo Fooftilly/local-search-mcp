@@ -19,6 +19,8 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   const pendingAlertKey = "local-search-mcp.notification-owed.v1";
   const seenDomainIdsKey = "local-search-mcp.notification-seen-ids.v1";
   const latestSnapshotKey = "local-search-mcp.notification-snapshot-us.v1";
+  const snapshotRunKey = "local-search-mcp.notification-snapshot-run.v1";
+  const retiredRunKey = "local-search-mcp.notification-retired-runs.v1";
   const tabPresencePrefix = "local-search-mcp.notification-tab.v1.";
   const fingerprintSaltKey = "local-search-mcp.notification-salt.v1";
   const notificationLock = "local-search-mcp.notification-lock.v1";
@@ -83,6 +85,11 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   }
 
   async function registerTab() {
+    // A disable in another tab can remove our key before its storage event
+    // reaches this tab. Repair the stale local pointer before short-circuiting.
+    if (tabPresenceKey && window.localStorage.getItem(tabPresenceKey) !== "open") {
+      tabPresenceKey = null;
+    }
     if (stopped || !notifyEnabled || !storageGet() ||
         !available() || tabPresenceKey) return;
     try {
@@ -102,6 +109,8 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
           window.localStorage.removeItem(seenDomainIdsKey);
           window.localStorage.setItem(pendingAlertKey, "[]");
           window.localStorage.removeItem(latestSnapshotKey);
+        window.localStorage.removeItem(snapshotRunKey);
+        window.localStorage.removeItem(retiredRunKey);
         }
       });
     } catch (_) {
@@ -122,6 +131,8 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
         window.localStorage.removeItem(seenDomainIdsKey);
         window.localStorage.setItem(pendingAlertKey, "[]");
         window.localStorage.removeItem(latestSnapshotKey);
+        window.localStorage.removeItem(snapshotRunKey);
+        window.localStorage.removeItem(retiredRunKey);
       }
     } catch (_) { tabPresenceKey = null; }
   }
@@ -137,6 +148,8 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
         window.localStorage.removeItem(seenDomainIdsKey);
         window.localStorage.setItem(pendingAlertKey, "[]");
         window.localStorage.removeItem(latestSnapshotKey);
+        window.localStorage.removeItem(snapshotRunKey);
+        window.localStorage.removeItem(retiredRunKey);
       } catch (_) { /* The UI stays disabled if storage is unavailable. */ }
     };
     try { await navigator.locks.request(notificationLock, clear); }
@@ -196,7 +209,7 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
     } catch (_) { return null; }
   }
 
-  async function processNotifications(domains, snapshotUs) {
+  async function processNotifications(domains, snapshotUs, snapshotRun) {
     if (!notifyEnabled || !available() ||
         Notification.permission !== "granted") return;
     try {
@@ -210,9 +223,28 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
         // An earlier HTTP response can arrive after a newer tab's snapshot.
         // Compare server-issued microsecond sequence under the same Web Lock
         // before changing any shared queue or owed-alert state.
+        if (!/^[a-f0-9]{32}$/.test(snapshotRun) ||
+            !Number.isSafeInteger(snapshotUs) || snapshotUs <= 0) return;
+        const currentRun = window.localStorage.getItem(snapshotRunKey);
+        if (currentRun !== snapshotRun) {
+          // An updated dashboard process may begin again at a smaller
+          // timestamp after a clock rollback. Never mistake it for a stale
+          // response; but do not accept late responses from retired runs.
+          let retired = [];
+          try {
+            const saved = JSON.parse(window.localStorage.getItem(retiredRunKey) || "[]");
+            if (Array.isArray(saved)) retired = saved.filter(
+              id => typeof id === "string" && /^[a-f0-9]{32}$/.test(id)).slice(-8);
+          } catch (_) { /* Corrupted optional metadata means no retired IDs. */ }
+          if (retired.includes(snapshotRun)) return;
+          if (currentRun && /^[a-f0-9]{32}$/.test(currentRun)) retired.push(currentRun);
+          window.localStorage.setItem(retiredRunKey,
+                                      JSON.stringify([...new Set(retired)].slice(-8)));
+          window.localStorage.setItem(snapshotRunKey, snapshotRun);
+          window.localStorage.removeItem(latestSnapshotKey);
+        }
         const latest = Number(window.localStorage.getItem(latestSnapshotKey) || "0");
-        if (!Number.isSafeInteger(snapshotUs) || snapshotUs <= 0 ||
-            (Number.isFinite(latest) && snapshotUs <= latest)) return;
+        if (snapshotUs <= latest) return;
         window.localStorage.setItem(latestSnapshotKey, String(snapshotUs));
         let salt = window.localStorage.getItem(fingerprintSaltKey);
         if (!salt) {
@@ -274,17 +306,25 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
     }
   }
 
-  function maybeNotify(domains, snapshotUs) {
+  function maybeNotify(domains, snapshotUs, snapshotRun) {
     // Run every poll, even without fresh arrivals, to flush a previously
     // queued cross-tab alert after the one-minute cooldown.
-    if (Array.isArray(domains)) void processNotifications(domains, snapshotUs);
+    if (Array.isArray(domains)) {
+      void processNotifications(domains, snapshotUs, snapshotRun);
+    }
   }
 
   window.addEventListener("storage", (event) => {
     if (event.key === storageKey) {
       const enabled = storageGet() && available() &&
         Notification.permission === "granted";
-      if (!enabled) unregisterTab();
+      // The event itself can represent a disable even when a rapid
+      // disable/re-enable makes storageGet() already return enabled.
+      if (event.newValue !== "enabled" || !enabled) unregisterTab();
+      if (tabPresenceKey &&
+          window.localStorage.getItem(tabPresenceKey) !== "open") {
+        tabPresenceKey = null;
+      }
       notifyEnabled = enabled;
       if (enabled) void registerTab();
       renderToggle();
@@ -339,7 +379,7 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
           if (count) count.textContent = String(data.counts[type]);
         }
         if (Array.isArray(data.pending_domains)) {
-          maybeNotify(data.pending_domains, data.snapshot_us);
+          maybeNotify(data.pending_domains, data.snapshot_us, data.snapshot_run);
         }
       }
       say("Live updates on · every 10 seconds");
