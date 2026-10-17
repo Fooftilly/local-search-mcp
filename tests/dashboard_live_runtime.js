@@ -193,6 +193,18 @@ async function main() {
   assert.equal(notifications.length, 3,
                "clock rollback and retired replies must not create duplicate alerts");
 
+  // Corrupted or non-finite saved snapshots must not suppress future valid
+  // server responses, even when the current server run has not changed.
+  const snapshotKey = "local-search-mcp.notification-snapshot-us.v1";
+  for (const invalid of ["Infinity", "NaN", "9007199254740992"]) {
+    storage.set(snapshotKey, invalid);
+    await poll(tab, 246000);
+    assert.equal(storage.get(snapshotKey), String(serverSnapshot),
+                 "invalid saved snapshot must recover: " + invalid);
+  }
+  assert.equal(notifications.length, 3,
+               "recovering corrupt snapshot state must not duplicate alerts");
+
   // Rename field state and focus survive a changed poll response.
   const decided = tab.element("live-decided");
   const editing = { value: "unfinished-rename" };

@@ -159,6 +159,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn(b"window.localStorage.setItem(seenDomainIdsKey", script)
         self.assertIn(b"window.localStorage.setItem(latestSnapshotKey", script)
         self.assertIn(b"owedIds.filter(id => current.has(id))", script)
+        self.assertIn(b"Number.isSafeInteger(latest)", script)
         self.assertIn(b"snapshotUs <= latest", script)
         self.assertIn(b"retired.includes(snapshotRun)", script)
         self.assertIn(b'event.newValue !== "enabled"', script)

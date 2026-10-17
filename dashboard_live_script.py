@@ -244,7 +244,10 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
           window.localStorage.removeItem(latestSnapshotKey);
         }
         const latest = Number(window.localStorage.getItem(latestSnapshotKey) || "0");
-        if (snapshotUs <= latest) return;
+        // Corrupted persisted timestamps (including Infinity) must not freeze
+        // notifications indefinitely. A valid server snapshot replaces them.
+        if (Number.isSafeInteger(latest) && latest >= 0 &&
+            snapshotUs <= latest) return;
         window.localStorage.setItem(latestSnapshotKey, String(snapshotUs));
         let salt = window.localStorage.getItem(fingerprintSaltKey);
         if (!salt) {
