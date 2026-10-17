@@ -26,6 +26,19 @@ jobs:
         run: python -m compileall -q bootstrap.py bridge.py admin_ui.py domain_policy.py crawler_security.py public_suffix.py history_log.py history_cli.py health_cli.py scripts tests
       - name: Tests
         run: python -m unittest discover -s tests -v
+  static-security-lint:
+    name: undefined names and dangerous execution
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ruff
+        run: |
+          python3 -m pip install --only-binary=:all: 'ruff==0.17.1'
+      - name: Check undefined names and unsafe dynamic execution
+        run: ruff check --select F821,F822,F823,S307,S602 .
+
   nft-syntax:
     name: nftables syntax
     runs-on: ubuntu-latest
