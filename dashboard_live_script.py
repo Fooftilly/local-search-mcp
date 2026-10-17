@@ -17,8 +17,8 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   const storageKey = "local-search-mcp.desktop-notifications.v1";
   const lastNotificationKey = "local-search-mcp.notification-time.v1";
   const pendingAlertKey = "local-search-mcp.notification-owed.v1";
-  const queueFingerprintKey = "local-search-mcp.notification-queue-id.v1";
-  const queueCountKey = "local-search-mcp.notification-queue-count.v1";
+  const seenDomainIdsKey = "local-search-mcp.notification-seen-ids.v1";
+  const lastPollKey = "local-search-mcp.notification-poll-time.v1";
   const fingerprintSaltKey = "local-search-mcp.notification-salt.v1";
   const notificationLock = "local-search-mcp.notification-lock.v1";
   const lastTableHtml = new WeakMap();
@@ -89,8 +89,8 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
         notifyEnabled = false;
         storageSet(false);
         try {
-          window.localStorage.setItem(pendingAlertKey, "0");
-          window.localStorage.removeItem(queueFingerprintKey);
+          window.localStorage.setItem(pendingAlertKey, "[]");
+          window.localStorage.removeItem(seenDomainIdsKey);
         } catch (_) { /* Refuse silently if private storage is unavailable. */ }
       } else if (available()) {
         // Permission is requested ONLY in direct response to an operator click.
@@ -103,21 +103,33 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
         storageSet(notifyEnabled);
         if (notifyEnabled) {
           // A new opt-in starts with a clean baseline, not old backlog.
-          window.localStorage.setItem(pendingAlertKey, "0");
-          window.localStorage.removeItem(queueFingerprintKey);
+          window.localStorage.setItem(pendingAlertKey, "[]");
+          window.localStorage.removeItem(seenDomainIdsKey);
         }
       }
       renderToggle();
     });
   }
 
+  function readHashedIds(key) {
+    try {
+      const value = window.localStorage.getItem(key);
+      if (value === null) return null;
+      const ids = JSON.parse(value);
+      if (!Array.isArray(ids) || ids.length > 512 ||
+          !ids.every(id => typeof id === "string" && /^[a-f0-9]{64}$/.test(id))) {
+        return null;
+      }
+      return ids;
+    } catch (_) { return null; }
+  }
+
   async function processNotifications(domains) {
     if (!notifyEnabled || !available() ||
         Notification.permission !== "granted") return;
     try {
-      // The Web Lock serializes detection, shared pending-alert updates and
-      // emission across all tabs on this origin. No domain names are
-      // persisted: only a salted digest and bounded counts are stored.
+      // A single Web Lock serializes state across tabs. Only salted SHA-256
+      // identifiers (not domain names, URLs or query text) enter storage.
       await navigator.locks.request(notificationLock, async () => {
         if (!notifyEnabled || Notification.permission !== "granted") return;
         let salt = window.localStorage.getItem(fingerprintSaltKey);
@@ -128,48 +140,53 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
             byte.toString(16).padStart(2, "0")).join("");
           window.localStorage.setItem(fingerprintSaltKey, salt);
         }
-        const stableDomains = Array.from(new Set(domains)).sort();
-        const bytes = new TextEncoder().encode(
-          salt + ":" + JSON.stringify(stableDomains));
-        const digest = await window.crypto.subtle.digest("SHA-256", bytes);
-        const fingerprint = Array.from(new Uint8Array(digest), byte =>
-          byte.toString(16).padStart(2, "0")).join("");
-
-        const lastFingerprint = window.localStorage.getItem(queueFingerprintKey);
-        const earlierCount = Number(window.localStorage.getItem(queueCountKey) || "0");
-        let owed = Number(window.localStorage.getItem(pendingAlertKey) || "0");
-        if (!Number.isFinite(owed) || owed < 0) owed = 0;
-        if (lastFingerprint === null) {
-          // First opening initializes the queue baseline without notifying
-          // for an existing backlog.
-          window.localStorage.setItem(queueFingerprintKey, fingerprint);
-          window.localStorage.setItem(queueCountKey, String(stableDomains.length));
-        } else if (lastFingerprint !== fingerprint) {
-          const growth = Math.max(0, stableDomains.length -
-            (Number.isFinite(earlierCount) ? earlierCount : 0));
-          // A changed same-size set can mean one host was replaced. A pure
-          // decrease means removals, which should not cause an alert.
-          const additions = growth || (stableDomains.length >= earlierCount ? 1 : 0);
-          owed = Math.min(512, owed + additions);
-          window.localStorage.setItem(queueFingerprintKey, fingerprint);
-          window.localStorage.setItem(queueCountKey, String(stableDomains.length));
-          if (owed) window.localStorage.setItem(pendingAlertKey, String(owed));
-        }
-
-        if (!owed) return;
+        const stableDomains = Array.from(new Set(domains)).slice(0, 512).sort();
+        const domainIds = await Promise.all(stableDomains.map(async domain => {
+          const bytes = new TextEncoder().encode(salt + ":" + domain);
+          const digest = await window.crypto.subtle.digest("SHA-256", bytes);
+          return Array.from(new Uint8Array(digest), byte =>
+            byte.toString(16).padStart(2, "0")).join("");
+        }));
+        const current = new Set(domainIds);
+        const previousIds = readHashedIds(seenDomainIdsKey);
+        const lastPoll = Number(window.localStorage.getItem(lastPollKey) || "0");
         const now = Date.now();
-        const previous = Number(window.localStorage.getItem(lastNotificationKey) || "0");
-        if (!Number.isFinite(previous) || now - previous < minNotificationGap) {
-          // Leave the shared alert owed; another ordinary poll will deliver
-          // it after the cooldown even when no further requests appear.
+        const stale = Number.isFinite(lastPoll) && lastPoll > 0 &&
+          (now - lastPoll > 45000 || now < lastPoll - 1000);
+        window.localStorage.setItem(lastPollKey, String(now));
+
+        if (previousIds === null || stale) {
+          // Start or resume after a long gap with a clean baseline; never
+          // notify for an old backlog from a closed browser session.
+          window.localStorage.setItem(seenDomainIdsKey, JSON.stringify(domainIds));
+          window.localStorage.setItem(pendingAlertKey, "[]");
           return;
         }
-        window.localStorage.setItem(pendingAlertKey, "0");
+
+        const previous = new Set(previousIds);
+        const owedIds = readHashedIds(pendingAlertKey) || [];
+        // Resolved/denied hosts are removed from alerts still owed.
+        const owed = new Set(owedIds.filter(id => current.has(id)));
+        for (const id of domainIds) {
+          if (!previous.has(id)) owed.add(id);
+        }
+        window.localStorage.setItem(seenDomainIdsKey, JSON.stringify(domainIds));
+        window.localStorage.setItem(pendingAlertKey, JSON.stringify([...owed]));
+
+        if (!owed.size) return;
+        const lastNotification = Number(window.localStorage.getItem(lastNotificationKey) || "0");
+        if (!Number.isFinite(lastNotification) ||
+            now - lastNotification < minNotificationGap) {
+          // Keep only still-pending alerts owed. A normal next poll will
+          // deliver them after the cooldown without another new request.
+          return;
+        }
+        window.localStorage.setItem(pendingAlertKey, "[]");
         window.localStorage.setItem(lastNotificationKey, String(now));
         new Notification("Local Search MCP", {
-          body: owed === 1 ?
+          body: owed.size === 1 ?
             "One new domain request awaits local review." :
-            `${owed} new domain requests await local review.`,
+            `${owed.size} new domain requests await local review.`,
           tag: "local-search-mcp-pending"
         });
       });
