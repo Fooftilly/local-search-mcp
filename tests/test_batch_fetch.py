@@ -117,6 +117,66 @@ class BatchFetchTests(unittest.TestCase):
         self.assertNotIn("REVOKED_CONTENT_SENTINEL", str(response))
         self.assertNotIn("LATE_CONTENT_SENTINEL", str(response))
 
+    def test_policy_revocation_redacts_failed_crawl_content_and_metadata(self):
+        request_cache.reset_for_test()
+        self.addCleanup(request_cache.reset_for_test)
+        early_done, slow_started, release_slow = Event(), Event(), Event()
+        urls = ["https://example.com/failure", "https://example.com/slow"]
+
+        def fetch(url, mode, fresh):
+            if url.endswith("/failure"):
+                early_done.set()
+                return {"url": url, "success": False,
+                        "status": "crawl_failed",
+                        "markdown": "REVOKED_FAILED_MARKDOWN",
+                        "metadata": {"title": "REVOKED_FAILED_TITLE"},
+                        "document_id": "REVOKED_FAILED_HANDLE"}
+            slow_started.set()
+            self.assertTrue(release_slow.wait(5))
+            return {"url": url, "success": True, "markdown": "LATE_MARKDOWN"}
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            work = executor.submit(fetch_many, urls, "raw", False, fetch)
+            try:
+                self.assertTrue(early_done.wait(5))
+                self.assertTrue(slow_started.wait(5))
+                request_cache.invalidate_fetch()
+            finally:
+                release_slow.set()
+            result = work.result(timeout=5)
+
+        self.assertEqual([row["result"]["status"] for row in result["results"]],
+                         ["blocked", "blocked"])
+        for secret in ("REVOKED_FAILED_MARKDOWN", "REVOKED_FAILED_TITLE",
+                       "REVOKED_FAILED_HANDLE", "LATE_MARKDOWN"):
+            self.assertNotIn(secret, str(result))
+
+    def test_late_policy_change_redacts_even_failed_results(self):
+        import batch_fetch
+        request_cache.reset_for_test()
+        self.addCleanup(request_cache.reset_for_test)
+        urls = ["https://example.com/failure", "https://example.com/other"]
+        audit_orig = batch_fetch._audit_duplicate
+
+        def fetch(url, mode, fresh):
+            return {"url": url, "success": False,
+                    "status": "crawl_failed",
+                    "markdown": "FAILED_CONTENT_SENTINEL"}
+
+        def audit_then_revoke(url, result):
+            request_cache.invalidate_fetch()
+            return audit_orig(url, result)
+
+        # The first epoch check passes, but a duplicate audit triggers a
+        # revocation while final response rows are already being assembled.
+        with patch.object(batch_fetch, "_audit_duplicate",
+                          side_effect=audit_then_revoke):
+            result = fetch_many([urls[0], urls[0], urls[1]],
+                                "raw", False, fetch)
+        self.assertTrue(all(row["result"]["status"] == "blocked"
+                            for row in result["results"]))
+        self.assertNotIn("FAILED_CONTENT_SENTINEL", str(result))
+
     def test_evicted_continuations_are_not_returned_as_usable_handles(self):
         # Eight eligible documents of about 1 MiB each exceed the existing
         # 3-million-character global store. Returning all eight handles would

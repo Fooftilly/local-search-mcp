@@ -54,7 +54,9 @@ def _safe_failure(url: str, exc: Exception) -> dict:
 
 def _finalize_result(url: str, answer: dict, *, policy_changed: bool) -> dict:
     """Never return content revoked mid-batch or already-evicted page handles."""
-    if policy_changed and answer.get("success") is True:
+    if policy_changed:
+        # Failed Crawl4AI pages may also carry markdown, metadata or handles.
+        # Redact the *entire* earlier result, not just successful responses.
         return {"url": url, "success": False, "status": "blocked",
                 "reason": "Domain permissions changed during the batch. Retry the URL."}
     if answer.get("success") is True and "document_id" in answer:
@@ -131,7 +133,6 @@ def fetch_many(urls: list[str], mode: str, fresh: bool,
     # A second check also covers an edit while the final rows are assembled.
     if starting_policy_epoch != request_cache.policy_epoch():
         for row in output:
-            if row["result"].get("success") is True:
-                row["result"] = _finalize_result(
-                    row["requested_url"], row["result"], policy_changed=True)
+            row["result"] = _finalize_result(
+                row["requested_url"], row["result"], policy_changed=True)
     return {"results": output, "count": len(output)}
