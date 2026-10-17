@@ -12,9 +12,10 @@ merge_protections_settings:
 merge_queue:
   queue_controls_comment: false
 
-# A failing rule blocks manual GitHub merges ONLY after enabling the Merge
-# Protections product and requiring the "Mergify Merge Protections" check in
-# the GitHub master ruleset. Built-in Depends-On / Merge-After still apply.
+# A failing rule blocks manual merges and merge API calls once the product
+# is enabled and "Mergify Merge Protections" is required by the GitHub master
+# ruleset, subject to GitHub ruleset bypass permissions.
+# Built-in Depends-On / Merge-After also apply.
 merge_protections:
   - name: local-search-mcp / No unfinished pull request titles
     description: >-
