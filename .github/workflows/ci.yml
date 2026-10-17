@@ -26,3 +26,16 @@ jobs:
         run: python -m compileall -q bootstrap.py bridge.py admin_ui.py domain_policy.py crawler_security.py public_suffix.py history_log.py history_cli.py
       - name: Tests
         run: python -m unittest discover -s tests -v
+  nft-syntax:
+    name: nftables syntax
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nftables
+        run: sudo apt-get update && sudo apt-get install -y nftables
+      - name: Validate generated guard rules without applying them
+        run: |
+          python3 -c "from scripts.crawler_egress_guard import rules; print(rules('br-localcheck'))" > /tmp/local-search-mcp-guard.nft
+          sudo nft --check --file /tmp/local-search-mcp-guard.nft
