@@ -137,6 +137,170 @@ class BridgeTests(unittest.TestCase):
             results = self.module.web_search("test", max_results=2)
         self.assertEqual([r["title"] for r in results], ["Valid", "Also valid"])
 
+    def test_long_approved_page_can_be_read_without_second_crawl(self):
+        from collections import OrderedDict
+        content = "a" * 24000 + "b" * 24000 + "tail"
+        calls = []
+        def handler(request):
+            calls.append(request.url.path)
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/long", "success": True,
+                "metadata": {"title": "A long document",
+                             "canonical_url": "https://example.com/long?secret=yes",
+                             "description": "Summary"},
+                "markdown": {"raw_markdown": content, "fit_markdown": "fit content"}
+            }]})
+        original = httpx.Client
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module, "_check_public_target", return_value=None), \
+             patch.object(self.module.httpx, "Client", side_effect=client), \
+             patch.object(self.module.document_pages, "_CACHE", OrderedDict()):
+            result = self.module.web_fetch("https://example.com/long")
+            self.assertEqual(result["markdown"], "a" * 24000)
+            self.assertTrue(result["truncated"])
+            self.assertEqual(result["page_count"], 3)
+            self.assertEqual(result["next_page"], 2)
+            self.assertEqual(result["metadata"]["canonical_url"], "https://example.com/long")
+            self.assertEqual(len(result["document_id"]), 32)
+            second = self.module.web_fetch_page(result["document_id"], page=2)
+            third = self.module.web_fetch_page(result["document_id"], page=3)
+            self.assertEqual(result["markdown"] + second["markdown"] + third["markdown"], content)
+            self.assertFalse(third["truncated"])
+            self.assertIsNone(third["next_page"])
+            self.assertEqual(calls, ["/health", "/crawl"])
+
+    def test_extraction_modes_empty_fit_and_oversized_content(self):
+        from collections import OrderedDict
+        selected = ["raw"]
+        request_configs = []
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            import json
+            request_configs.append(json.loads(request.content)["crawler_config"]["params"])
+            obj = {"raw_markdown": "Raw text", "fit_markdown": "Fit text"} if selected[0] == "raw" else {
+                "raw_markdown": "Z" * (self.module.document_pages.MAX_DOCUMENT_CHARS + 1)}
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/test", "success": True,
+                "markdown": obj,
+                "metadata": {"canonical_url": "file:///etc/passwd", "title": "<untrusted>"}
+            }]})
+        original = httpx.Client
+        def client(**kwargs): return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module, "_check_public_target", return_value=None), \
+             patch.object(self.module.httpx, "Client", side_effect=client), \
+             patch.object(self.module.document_pages, "_CACHE", OrderedDict()):
+            self.assertEqual(self.module.web_fetch("https://example.com/test")["markdown"], "Raw text")
+            fitted = self.module.web_fetch("https://example.com/test", mode="fit")
+            self.assertEqual(fitted["markdown"], "Fit text")
+            self.assertEqual(fitted["metadata"]["title"], "<untrusted>")
+            self.assertNotIn("canonical_url", fitted["metadata"])
+            self.assertEqual(request_configs[0], {"stream": False})
+            generator = request_configs[1]["markdown_generator"]
+            self.assertEqual(generator["type"], "DefaultMarkdownGenerator")
+            self.assertEqual(generator["params"]["content_filter"]["type"],
+                             "PruningContentFilterLXML")
+            selected[0] = "huge"
+            huge = self.module.web_fetch("https://example.com/test")
+            self.assertEqual(huge["status"], "document_too_large")
+            self.assertNotIn("markdown", huge)
+            missing = self.module.web_fetch("https://example.com/test", mode="fit")
+            self.assertEqual(missing["status"], "unavailable_extraction")
+        with patch.object(self.module, "_check_public_target") as target:
+            with self.assertRaisesRegex(ValueError, "mode must be"):
+                self.module.web_fetch("https://example.com", mode="not-real")
+            target.assert_not_called()
+
+    def test_metadata_falls_back_when_nested_title_is_unusable(self):
+        metadata = self.module._crawl_metadata({
+            "metadata": {"title": "", "description": None},
+            "title": "Top level title",
+            "description": "Top level description",
+        }, "https://example.com/")
+        self.assertEqual(metadata["title"], "Top level title")
+        self.assertEqual(metadata["description"], "Top level description")
+
+    def test_oversized_metadata_is_bounded_before_serialization(self):
+        import json
+        metadata = self.module._crawl_metadata({
+            "metadata": {
+                "title": "  " + "x" * 239 + "\ud800" + "tail" * 100_000,
+                "description": "z" * 999 + "\udfff" + "tail" * 100_000,
+            }
+        }, "https://example.com/long")
+        self.assertEqual(metadata["title"], "x" * 239 + "?")
+        self.assertEqual(metadata["description"], "z" * 999 + "?")
+        self.assertEqual(len(metadata["title"]), 240)
+        self.assertEqual(len(metadata["description"]), 1000)
+        json.dumps(metadata, ensure_ascii=False).encode("utf-8")
+
+    def test_unpaired_unicode_metadata_serializes_for_initial_and_later_pages(self):
+        import json
+        from collections import OrderedDict
+
+        # JSON escaping carries lone UTF-16 surrogates through Crawl4AI JSON;
+        # their presence in an MCP response can break UTF-8 serialization.
+        page = {"url": "https://example.com/long", "success": True,
+                "markdown": "safe content " * 3000,
+                "metadata": {"title": "Bad\ud800title",
+                             "description": "Bad\udfffdescription",
+                             "canonical_url": "https://example.com/path\ud800"}}
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            # Encode escaped surrogate sequences as ASCII JSON, exactly as a
+            # permissive upstream decoder can expose them to the bridge.
+            data = json.dumps({"results": [page]}, ensure_ascii=True).encode("ascii")
+            return httpx.Response(200, content=data, headers={"content-type": "application/json"})
+
+        original = httpx.Client
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client),
+              patch.object(self.module.document_pages, "_CACHE", OrderedDict())):
+            first = self.module.web_fetch("https://example.com/long")
+            self.assertTrue(first["success"])
+            self.assertTrue(first["truncated"])
+            self.assertEqual(first["metadata"]["title"], "Bad?title")
+            self.assertEqual(first["metadata"]["description"], "Bad?description")
+            self.assertNotIn("canonical_url", first["metadata"])
+            next_page = self.module.web_fetch_page(first["document_id"], 2)
+            self.assertEqual(next_page["metadata"], first["metadata"])
+            for response in (first, next_page):
+                json.dumps(response, ensure_ascii=False).encode("utf-8")
+
+        fallback = self.module._crawl_metadata(
+            {"metadata": {"title": None},
+             "title": "Fallback\ud800title"},
+            "https://example.com")
+        self.assertEqual(fallback["title"], "Fallback?title")
+
+    def test_long_unapproved_redirect_is_never_cached(self):
+        from collections import OrderedDict
+        content = "private" * 6000
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com", "redirected_url": "https://internal.example.org/",
+                "success": True, "markdown": content
+            }]})
+        original = httpx.Client
+        def client(**kwargs): return original(transport=httpx.MockTransport(handler))
+        def check(url):
+            return {"status": "approval_required"} if "internal.example.org" in url else None
+        with patch.object(self.module, "_check_public_target", side_effect=check), \
+             patch.object(self.module.httpx, "Client", side_effect=client), \
+             patch.object(self.module.document_pages, "_CACHE", OrderedDict()) as cache:
+            result = self.module.web_fetch("https://example.com")
+            self.assertEqual(result["status"], "blocked")
+            self.assertNotIn("markdown", result)
+            self.assertFalse(cache)
+
     def test_no_crawl_when_backend_old(self):
         calls=[]
         def handler(request):

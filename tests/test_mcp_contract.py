@@ -77,6 +77,49 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
             "categories": "news", "time_range": "day", "engines": "qwant", "pageno": "2",
         }])
 
+    async def test_long_document_continuation_over_actual_mcp_dispatch(self):
+        from collections import OrderedDict
+        content = "A" * 24000 + "B" * 17000
+        calls = []
+        def handler(request: httpx.Request):
+            calls.append(request.url.path)
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/long", "success": True,
+                "markdown": {"raw_markdown": content}
+            }]})
+        original = httpx.Client
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        global_answer = [(socket.AF_INET, socket.SOCK_STREAM, 6, "",
+                          ("93.184.215.14", 443))]
+        with patch.object(bridge, "CRAWLER_SECURITY_WARNING", None), \
+             patch.object(bridge.httpx, "Client", side_effect=factory), \
+             patch.object(domain_policy.socket, "getaddrinfo", return_value=global_answer), \
+             patch.object(bridge.document_pages, "_CACHE", OrderedDict()):
+            async with Client(bridge.mcp) as client:
+                tools = {tool.name for tool in await client.list_tools()}
+                self.assertIn("web_fetch_page", tools)
+                first = await client.call_tool("web_fetch", {"url": "https://example.com/long"})
+                self.assertFalse(first.is_error)
+                second = await client.call_tool("web_fetch_page", {
+                    "document_id": first.data["document_id"], "page": 2
+                })
+                self.assertFalse(second.is_error)
+                self.assertEqual(first.data["markdown"] + second.data["markdown"], content)
+                self.assertIsNone(second.data["next_page"])
+                missing = await client.call_tool("web_fetch_page", {
+                    "document_id": "A" * 32, "page": 2
+                })
+                self.assertEqual(missing.data["status"], "expired_or_unknown")
+            # Handles are never written into local audit history.
+            audit = (Path(self.tmp.name) / "history.jsonl").read_text()
+            self.assertNotIn(first.data["document_id"], audit)
+            self.assertNotIn(first.data["markdown"], audit)
+            self.assertNotIn(content[24000:], audit)
+        self.assertEqual(calls, ["/health", "/crawl"])
+
     async def test_invalid_public_targets_are_blocked_without_backend(self):
         """MCP cannot fetch local, special-use, credentialed or nonstandard URLs."""
         invalid = (

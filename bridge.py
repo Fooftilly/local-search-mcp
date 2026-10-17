@@ -10,7 +10,9 @@ from domain_policy import evaluate_fetch_url
 from admin_ui import create_dashboard_server
 from crawler_security import local_container_warning, verify_health
 import threading
+from urllib.parse import urlsplit, urlunsplit
 from history_log import logged_tool
+import document_pages
 
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://127.0.0.1:8888").rstrip("/")
 CRAWL4AI_URL = os.getenv("CRAWL4AI_URL", "http://127.0.0.1:11235").rstrip("/")
@@ -115,20 +117,72 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     ]
 
 
+def _crawl_metadata(page: dict, final_url: str) -> dict:
+    """Return only short, safe, untrusted public-page metadata."""
+    raw = page.get("metadata")
+    raw = raw if isinstance(raw, dict) else {}
+    result = {}
+    for key in ("title", "description"):
+        value = raw.get(key)
+        if not isinstance(value, str) or not value.strip():
+            value = page.get(key)
+        if isinstance(value, str) and value.strip():
+            # Crawl4AI may return both very large metadata and unpaired
+            # surrogates. Bound the string before UTF-8 normalization, so
+            # the encoder only allocates for the portion we will return.
+            limit = 240 if key == "title" else 1000
+            cleaned = value.strip()[:limit].encode("utf-8", errors="replace").decode("utf-8")
+            result[key] = cleaned
+    canonical = raw.get("canonical_url") or raw.get("canonical")
+    if isinstance(canonical, str):
+        try:
+            requested, target = urlsplit(final_url), urlsplit(canonical)
+            if (target.scheme in ("http", "https") and target.hostname
+                    and target.hostname.lower() == (requested.hostname or "").lower()
+                    and target.username is None and target.password is None
+                    and target.port in (None, 80, 443)):
+                canonical_url = urlunsplit(
+                    (target.scheme, target.netloc, target.path, "", "")
+                )[:2000]
+                # A malformed URL must not produce invalid JSON or a broken
+                # canonical link. Unlike display text, do not rewrite URLs.
+                canonical_url.encode("utf-8", errors="strict")
+                result["canonical_url"] = canonical_url
+        except (ValueError, UnicodeError):
+            pass
+    return result
+
+
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
 @logged_tool("fetch")
-def web_fetch(url: str) -> dict:
-    """Fetch a permitted public web page with the user's local Crawl4AI server."""
+def web_fetch(url: str, mode: str = "raw") -> dict:
+    """Fetch a permitted public page; optionally select fit Markdown.
+
+    Long approved documents expose an opaque, short-lived continuation token
+    for web_fetch_page. Existing one-argument calls retain their short-page shape.
+    """
+    if mode not in ("raw", "fit"):
+        raise ValueError("mode must be raw or fit")
     policy_result = _check_public_target(url)
     if policy_result is not None:
         return policy_result
     if CRAWLER_SECURITY_WARNING:
         return {"url": url, "success": False, "status": "blocked", "reason": CRAWLER_SECURITY_WARNING}
     headers = {"Authorization": f"Bearer {CRAWL4AI_TOKEN}"} if CRAWL4AI_TOKEN else {}
+    crawler_params = {"stream": False}
+    if mode == "fit":
+        # Stock Crawl4AI only generates fit Markdown when a content filter
+        # is configured. These are upstream-allowlisted safe config classes.
+        crawler_params["markdown_generator"] = {
+            "type": "DefaultMarkdownGenerator",
+            "params": {"content_filter": {
+                "type": "PruningContentFilterLXML", "params": {}
+            }},
+        }
     payload = {
         "urls": [url],
         "browser_config": {"type": "BrowserConfig", "params": {"headless": True}},
-        "crawler_config": {"type": "CrawlerRunConfig", "params": {"stream": False}},
+        "crawler_config": {"type": "CrawlerRunConfig", "params": crawler_params},
     }
     with httpx.Client(timeout=75, trust_env=False) as client:
         try:
@@ -164,15 +218,57 @@ def web_fetch(url: str) -> dict:
     # Browser/container egress controls must independently block unsafe traffic.
     if final_url != url and _check_public_target(final_url) is not None:
         return {"url": url, "success": False, "status": "blocked", "reason": "Crawl4AI redirected to a destination that is not approved"}
-    markdown = page.get("markdown", "")
-    if isinstance(markdown, dict):
-        markdown = markdown.get("raw_markdown") or markdown.get("fit_markdown") or ""
-    return {
+    markdown_response = page.get("markdown", "")
+    if isinstance(markdown_response, dict):
+        raw = markdown_response.get("raw_markdown")
+        fit = markdown_response.get("fit_markdown")
+    else:
+        raw, fit = markdown_response, page.get("fit_markdown")
+    if mode == "fit":
+        markdown = fit
+    else:
+        markdown = raw or fit or ""
+    if mode == "fit" and (markdown is None or markdown == ""):
+        return {"url": final_url, "success": False, "status": "unavailable_extraction",
+                "reason": "Crawl4AI did not provide fit Markdown for this page"}
+    if not isinstance(markdown, str):
+        return {"url": final_url, "success": False, "status": "invalid_extraction",
+                "reason": "Crawl4AI returned an invalid Markdown representation"}
+    if len(markdown) > document_pages.MAX_DOCUMENT_CHARS:
+        return {"url": final_url, "success": False, "status": "document_too_large",
+                "reason": "Document exceeds the bounded extraction limit; content was not silently truncated"}
+    # Invalid surrogate code points cannot safely be encoded as UTF-8 in MCP
+    # JSON responses. Replace them deterministically before chunking.
+    markdown = markdown.encode("utf-8", errors="replace").decode("utf-8")
+    success = page.get("success", result.get("success") if isinstance(result, dict) else None)
+    metadata = _crawl_metadata(page, final_url)
+    output = {
         "url": final_url,
-        "success": page.get("success", result.get("success") if isinstance(result, dict) else None),
-        "markdown": str(markdown)[:24000],
-        "truncated": len(str(markdown)) > 24000,
+        "success": success,
+        "markdown": markdown[:document_pages.PAGE_CHARS],
+        "truncated": len(markdown) > document_pages.PAGE_CHARS,
     }
+    if metadata:
+        output["metadata"] = metadata
+    if len(markdown) > document_pages.PAGE_CHARS and success is not False:
+        token, page_count = document_pages.save(final_url, markdown, metadata)
+        output.update({"document_id": token, "page": 1,
+                       "page_count": page_count, "next_page": 2})
+    elif len(markdown) > document_pages.PAGE_CHARS:
+        return {"url": final_url, "success": False, "status": "crawl_failed",
+                "reason": "Crawl4AI reported failure; no incomplete document was cached"}
+    return output
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+@logged_tool("page")
+def web_fetch_page(document_id: str, page: int = 2) -> dict:
+    """Read a previously fetched continuation page; no crawler or file access.
+
+    The document_id is an unguessable temporary bearer capability. It is
+    never stored in local request history and expires after 15 minutes.
+    """
+    return document_pages.read(document_id, page)
 
 
 def serve_mcp() -> None:
