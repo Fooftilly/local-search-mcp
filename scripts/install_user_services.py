@@ -28,24 +28,22 @@ def unit_files(python: str, root: Path) -> dict[str, str]:
     exe = quote(str(Path(python).resolve()))
     launch = quote(str(root / "bootstrap.py"))
     health = quote(str(root / "health_cli.py"))
-    workdir = quote(str(root))
     common = (
         "\n[Service]\nType=simple\n"
-        f"WorkingDirectory={workdir}\n"
         "Restart=on-failure\nRestartSec=30s\n"
         "UMask=0077\nNoNewPrivileges=true\n"
     )
     return {
-        NAMES[0]: MARKER + "[Unit]\nDescription=Local SearXNG/Crawl4AI MCP bridge\n" +
+        NAMES[0]: MARKER + "[Unit]\nDescription=Local SearXNG/Crawl4AI MCP bridge\nStartLimitIntervalSec=300\nStartLimitBurst=5\n" +
                   common + f"ExecStart={exe} {launch} --service bridge\n" +
                   "\n[Install]\nWantedBy=default.target\n",
-        NAMES[1]: MARKER + "[Unit]\nDescription=Local research MCP OpenAI tunnel\n"
+        NAMES[1]: MARKER + "[Unit]\nDescription=Local research MCP OpenAI tunnel\nStartLimitIntervalSec=300\nStartLimitBurst=5\n"
                   "Wants=local-search-mcp-bridge.service\nAfter=local-search-mcp-bridge.service\n" +
                   common + f"ExecStart={exe} {launch} --service tunnel\n" +
                   "\n[Install]\nWantedBy=default.target\n",
         NAMES[2]: MARKER + "[Unit]\nDescription=Local research MCP health snapshot\n"
                   "\n[Service]\nType=oneshot\nUMask=0077\nNoNewPrivileges=true\n" +
-                  f"WorkingDirectory={workdir}\nExecStart={exe} {health} --json\n",
+                  f"ExecStart={exe} {health} --json\n",
         NAMES[3]: MARKER + "[Unit]\nDescription=Periodic local research MCP health check\n"
                   "\n[Timer]\nOnBootSec=2min\nOnUnitActiveSec=2min\n"
                   "Unit=local-search-mcp-health.service\n"
