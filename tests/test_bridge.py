@@ -317,10 +317,12 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(generator["params"]["content_filter"]["type"],
                              "PruningContentFilterLXML")
             selected[0] = "huge"
-            huge = self.module.web_fetch("https://example.com/test")
+            # A changed mocked upstream must bypass the intentional short-page
+            # fetch cache. Callers can use fresh=True for this exact purpose.
+            huge = self.module.web_fetch("https://example.com/test", fresh=True)
             self.assertEqual(huge["status"], "document_too_large")
             self.assertNotIn("markdown", huge)
-            missing = self.module.web_fetch("https://example.com/test", mode="fit")
+            missing = self.module.web_fetch("https://example.com/test", mode="fit", fresh=True)
             self.assertEqual(missing["status"], "unavailable_extraction")
         with patch.object(self.module, "_check_public_target") as target:
             with self.assertRaisesRegex(ValueError, "mode must be"):

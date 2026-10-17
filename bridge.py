@@ -164,7 +164,7 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     # Avoid caching obviously sensitive-looking queries. No queries are saved
     # to disk by this cache; the separate opt-in history remains unchanged.
     private = bool(re.search(
-        r"@|https?://|(?:password|token|secret|api[_-]?key|bearer|cookie)\\s*[:=]",
+        r"@|https?://|(?:password|token|secret|api[_-]?key|bearer|cookie)\s*[:=]",
         params["q"], flags=re.IGNORECASE))
     key = None if private else (
         "search", SEARXNG_URL, tuple(sorted(params.items())), max_results,
