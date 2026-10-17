@@ -1,0 +1,108 @@
+"""Read-only redacted diagnostics for the launcher's configuration sources.
+
+Never prints tokens, profile contents, URL credentials, private file paths,
+or the persisted domain approval list. Inspecting does not call Docker or
+write to the SQLite database.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import sqlite3
+from urllib.parse import urlsplit
+
+
+def _source(key: str, saved: dict[str, str], legacy: dict[str, str]) -> tuple[str, bool]:
+    """Report the interactive setup source, excluding Docker's unqueried token."""
+    if os.environ.get(key):
+        return "environment", True
+    if saved.get(key):
+        return "private JSON", True
+    if legacy.get(key):
+        return "legacy env", True
+    return "missing", False
+
+
+def _endpoint(key: str, default: str) -> dict[str, object]:
+    """Parse an endpoint without ever displaying credentials or remote hosts."""
+    raw = os.environ.get(key, default)
+    source = "environment" if key in os.environ else "default"
+    try:
+        parsed = urlsplit(raw)
+        valid = (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1", "::1")
+                 and parsed.username is None and parsed.password is None
+                 and not parsed.path.strip("/") and not parsed.query and not parsed.fragment
+                 and "?" not in raw and "#" not in raw
+                 and not any(ord(character) <= 32 or ord(character) == 127 for character in raw)
+                 and (parsed.port is None or 1 <= parsed.port <= 65535))
+        if valid:
+            return {"source": source, "valid_loopback": True,
+                    "transport": "HTTP over loopback",
+                    "value": f"{'[' + parsed.hostname + ']' if ':' in parsed.hostname else parsed.hostname}:{parsed.port or 80}"}
+    except (ValueError, TypeError):
+        pass
+    return {"source": source, "valid_loopback": False, "value": "<redacted>",
+            "warning": "Endpoint must be checked manually; remote/malformed endpoints are not displayed"}
+
+
+def _dashboard_port() -> dict[str, object]:
+    raw = os.environ.get("LOCAL_SEARCH_MCP_DASHBOARD_PORT", "8791")
+    try:
+        port = int(raw)
+        if 1 <= port <= 65535:
+            return {"source": "environment" if "LOCAL_SEARCH_MCP_DASHBOARD_PORT" in os.environ else "default",
+                    "value": port, "warning": "Health monitor currently probes port 8791" if port != 8791 else None}
+    except (TypeError, ValueError):
+        pass
+    return {"source": "environment", "value": "<invalid>", "warning": "Expected integer port 1–65535"}
+
+
+def _database_authority(database: Path) -> str:
+    """Inspect the existing seed flag without opening a write-capable connection."""
+    if database.parent.is_symlink() or database.is_symlink():
+        return "unsafe SQLite symlink (inspect manually)"
+    if not database.is_file():
+        return "initial seed on next launch"
+    if any(Path(str(database) + suffix).exists() for suffix in ("-journal", "-wal", "-shm")):
+        return "seed status unknown (SQLite transaction sidecar present; inspect manually)"
+    try:
+        # SQLite's normal read-only mode honors rollback-journal locks and hot
+        # journals. immutable=1 would bypass locking and can read stale data.
+        with sqlite3.connect(database.absolute().as_uri() + "?mode=ro", uri=True, timeout=0.25) as conn:
+            row = conn.execute("SELECT value FROM metadata WHERE key='domain_seed_v1'").fetchone()
+        if row is None:
+            return "initial seed pending (metadata flag absent)"
+        return "persisted SQLite rules (not modified or listed)"
+    except (sqlite3.Error, OSError, ValueError):
+        return "seed status unknown (database unreadable or uninitialized)"
+
+
+def collect_report(saved: dict[str, str], root: Path, private_dir: Path, legacy_reader) -> dict:
+    """Return a JSON-safe diagnostic without modifying files or evaluating secrets."""
+    legacy = {**legacy_reader(root / ".env"), **legacy_reader(root / ".tunnel-env")}
+    secrets = {}
+    for key in ("CONTROL_PLANE_API_KEY", "CRAWL4AI_API_TOKEN"):
+        source, configured = _source(key, saved, legacy)
+        secrets[key] = {"source": source, "configured": configured,
+                        "value": "<redacted>" if configured else "<missing>"}
+    source, configured = _source("ALLOWED_CRAWL_DOMAINS", saved, legacy)
+    state_home = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")).expanduser()
+    database = state_home / "local-search-mcp" / "domains.sqlite3"
+    authority = _database_authority(database)
+    return {
+        "secrets": secrets,
+        "domain_policy": {
+            "authority": authority,
+            "interactive_setup_seed_source": source if configured else "launcher default",
+            "systemd_service_seed_source": "private JSON" if saved.get("ALLOWED_CRAWL_DOMAINS") else "missing (service will not start)",
+            "seed_applies_only_before_first_initialization": True,
+        },
+        "endpoints": {"searxng": _endpoint("SEARXNG_URL", "http://127.0.0.1:8888"),
+                      "crawl4ai": _endpoint("CRAWL4AI_URL", "http://127.0.0.1:11235"),
+                      "dashboard_port": _dashboard_port()},
+        "service_mode": "systemd --service uses saved private JSON credentials, not env overrides",
+        "crawl_token_note": "reported secret sources exclude Docker discovery; interactive setup may select and save a different Crawl4AI token",
+        "profile": "tunnel-client profile is separately managed and never inspected here",
+        "private_json_exists": (private_dir / "config.json").is_file(),
+        "read_only": True,
+    }
