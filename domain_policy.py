@@ -325,11 +325,15 @@ def request(domain: str, safe_url: str):
                             VALUES (?,'pending',?,?,1,?,?)""",
                             (domain, now, now, now, safe_url[:512]))
                     else:
+                        # Preserve its chosen scope as the default for
+                        # local reapproval. _match already ignored the expired
+                        # rule; converting its display state does not revoke a
+                        # previously active authorization. Do not bump the
+                        # process-wide fetch-cache epoch from an agent request.
                         conn.execute("""UPDATE domains
                             SET status='pending',explicit_rule=0,expires_at='',
-                                match_scope='subdomains',updated_at=?
+                                updated_at=?
                             WHERE domain=?""", (now, domain))
-                        invalidate_fetch()
                     conn.execute("""INSERT INTO pending_admissions(site,admitted_at)
                         VALUES (?,?)""", (site, now))
             if exact is not None or rule is not None:
