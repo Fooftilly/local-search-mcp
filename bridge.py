@@ -15,6 +15,13 @@ SEARXNG_URL = os.getenv("SEARXNG_URL", "http://127.0.0.1:8888").rstrip("/")
 CRAWL4AI_URL = os.getenv("CRAWL4AI_URL", "http://127.0.0.1:11235").rstrip("/")
 CRAWL4AI_TOKEN = os.getenv("CRAWL4AI_API_TOKEN", "")
 mcp = FastMCP("Local SearXNG and Crawl4AI")
+# This unauthenticated endpoint is deliberately loopback-only. Validate both
+# request authority and browser Origin: binding localhost alone cannot prevent
+# a DNS-rebinding attack from an untrusted browser tab.
+MCP_BIND_HOST = "127.0.0.1"
+MCP_PORT = 8790
+MCP_ALLOWED_HOSTS = ["127.0.0.1:8790", "localhost:8790"]
+MCP_ALLOWED_ORIGINS = ["http://127.0.0.1:8790", "http://localhost:8790"]
 CRAWLER_SECURITY_WARNING = local_container_warning()
 
 
@@ -77,22 +84,46 @@ def web_fetch(url: str) -> dict:
     page = results[0] if isinstance(results, list) and results else result
     if not isinstance(page, dict):
         raise RuntimeError("Unrecognized Crawl4AI response")
-    final_url = page.get("url", url)
-    if not isinstance(final_url, str):
+    # CrawlResult.url is the REQUESTED URL; CrawlResult.redirected_url records
+    # the final navigation, including JavaScript redirects. Never assume that
+    # the original URL proves the final destination is approved.
+    redirected_url = page.get("redirected_url")
+    original_url = page.get("url", url)
+    # An explicit empty or malformed redirected_url is not proof of a safe
+    # destination. Only an absent/None field preserves legacy behavior.
+    if not isinstance(original_url, str) or not original_url or (
+        redirected_url is not None and (
+            not isinstance(redirected_url, str) or not redirected_url
+        )
+    ):
         return {"url": url, "success": False, "status": "blocked", "reason": "Unexpected Crawl4AI destination URL"}
-    # Defense in depth: no data from an unapproved redirect is returned.
-    # NOTE: this does not replace the crawler's own egress controls.
+    final_url = original_url if redirected_url is None else redirected_url
+    # Defense in depth: never return content from an unapproved redirect.
+    # Browser/container egress controls must independently block unsafe traffic.
     if final_url != url and _check_public_target(final_url) is not None:
         return {"url": url, "success": False, "status": "blocked", "reason": "Crawl4AI redirected to a destination that is not approved"}
     markdown = page.get("markdown", "")
     if isinstance(markdown, dict):
         markdown = markdown.get("raw_markdown") or markdown.get("fit_markdown") or ""
     return {
-        "url": page.get("url", url),
+        "url": final_url,
         "success": page.get("success", result.get("success") if isinstance(result, dict) else None),
         "markdown": str(markdown)[:24000],
         "truncated": len(str(markdown)) > 24000,
     }
+
+
+def serve_mcp() -> None:
+    """Launch with explicit Host/Origin validation, including via local tunnel."""
+    mcp.run(
+        transport="http",
+        host=MCP_BIND_HOST,
+        port=MCP_PORT,
+        stateless_http=True,
+        host_origin_protection=True,
+        allowed_hosts=MCP_ALLOWED_HOSTS,
+        allowed_origins=MCP_ALLOWED_ORIGINS,
+    )
 
 
 if __name__ == "__main__":
@@ -103,7 +134,7 @@ if __name__ == "__main__":
     thread.start()
     print("Local dashboard: http://127.0.0.1:8791/", flush=True)
     try:
-        mcp.run(transport="http", host="127.0.0.1", port=8790, stateless_http=True)
+        serve_mcp()
     finally:
         dashboard.shutdown()
         dashboard.server_close()
