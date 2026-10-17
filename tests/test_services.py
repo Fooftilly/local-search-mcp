@@ -1,5 +1,9 @@
 """Test user-service generation, unattended execution and health without live services."""
 from pathlib import Path
+from http.client import BadStatusLine, IncompleteRead, LineTooLong
+import contextlib
+import io
+import json
 import unittest
 from unittest.mock import patch
 
@@ -70,6 +74,32 @@ class ServiceTests(unittest.TestCase):
             self.assertIn("StartLimitIntervalSec=300", units[name])
             self.assertIn("StartLimitBurst=5", units[name])
         self.assertTrue(all("WorkingDirectory=" not in unit for unit in units.values()))
+
+    def test_malformed_or_truncated_http_marks_local_services_unavailable(self):
+        """Protocol parsing failures must not abort periodic monitoring."""
+        failures = (
+            BadStatusLine("unexpected response"),
+            LineTooLong("malformed response header"),
+            IncompleteRead(b"partial", 15),
+        )
+        for failure in failures:
+            with self.subTest(error=type(failure).__name__):
+                with patch.object(health_cli, "local_get", side_effect=failure):
+                    self.assertFalse(health_cli.dashboard_ok())
+                    self.assertFalse(health_cli.searxng_ok())
+                with patch.object(health_cli, "searxng_ok", return_value=True), \\
+                     patch.object(health_cli, "get_json", side_effect=failure), \\
+                     patch.object(health_cli, "listening", side_effect=[True, True]), \\
+                     patch.object(health_cli, "dashboard_ok", return_value=True):
+                    status = health_cli.snapshot()
+                self.assertEqual(status["status"], "degraded")
+                self.assertFalse(status["checks"]["crawl4ai"])
+                with patch.object(health_cli, "snapshot", return_value=status):
+                    stdout = io.StringIO()
+                    with contextlib.redirect_stdout(stdout):
+                        exit_code = health_cli.main(["--json"])
+                self.assertEqual(exit_code, 1)
+                self.assertIs(json.loads(stdout.getvalue())["checks"]["crawl4ai"], False)
 
     def test_unhealthy_health_report_has_nonzero_exit(self):
         with patch.object(health_cli, "snapshot", return_value={
