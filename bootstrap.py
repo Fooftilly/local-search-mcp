@@ -400,14 +400,48 @@ def launch(venv_python: Path, binary: Path, env: dict[str, str]) -> None:
         stop_process(bridge)
 
 
+def run_unattended_service(component: str) -> None:
+    """Exec a prepared service without prompts, downloads or secret arguments."""
+    config = read_config()
+    env = dict(os.environ)
+    if component == "bridge":
+        for key in ("CRAWL4AI_API_TOKEN", "ALLOWED_CRAWL_DOMAINS"):
+            if not config.get(key):
+                raise SetupError(f"Missing {key}; run ./start.sh --setup-only first")
+            env[key] = config[key]
+        binary = ROOT / ".venv" / "bin" / "python"
+        argv = [str(binary), str(ROOT / "bridge.py")]
+    elif component == "tunnel":
+        if not config.get("CONTROL_PLANE_API_KEY"):
+            raise SetupError("Missing CONTROL_PLANE_API_KEY; run ./start.sh --setup-only first")
+        if not profile_path().is_file():
+            raise SetupError("Missing private tunnel profile; run ./start.sh --setup-only first")
+        env["CONTROL_PLANE_API_KEY"] = config["CONTROL_PLANE_API_KEY"]
+        binary = ROOT / "tunnel-client"
+        if binary.is_symlink():
+            raise SetupError("Refusing symlinked tunnel executable")
+        argv = [str(binary), "run", "--profile", PROFILE_NAME]
+    else:
+        raise SetupError("Unknown service component")
+    if not binary.is_file():
+        raise SetupError(f"Missing service executable: {binary}; run ./start.sh --setup-only first")
+    env["PYTHONUNBUFFERED"] = "1"
+    os.execve(str(binary), argv, env)
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Configure and run local SearXNG/Crawl4AI MCP and OpenAI tunnel")
     parser.add_argument("--setup-only", action="store_true", help="Configure dependencies/credentials but do not start processes")
+    parser.add_argument("--service", choices=("bridge", "tunnel"), help=argparse.SUPPRESS)
     parser.add_argument("--refresh-runtime-key", action="store_true", help="Prompt for a new OpenAI runtime key and replace the saved one")
     parser.add_argument("--refresh-crawl-token", action="store_true", help="Prompt for a replacement Crawl4AI token instead of detecting Docker token")
     parser.add_argument("--domains", help="Replace the allowed public crawl domains, comma-separated")
     args = parser.parse_args()
     try:
+        if args.service:
+            if args.setup_only or args.refresh_runtime_key or args.refresh_crawl_token or args.domains:
+                raise SetupError("--service cannot be combined with interactive setup options")
+            run_unattended_service(args.service)
+            return 0
         # Do not ask for credentials if basic prerequisites are unavailable.
         check_services()
         venv_python = make_venv()
