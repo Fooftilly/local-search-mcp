@@ -48,10 +48,10 @@ def listening(port: int) -> bool:
 
 
 def dashboard_ok() -> bool:
-    """Verify the management UI responds with 200 without following redirects."""
+    """Check the dashboard's small health endpoint, not its full HTML page."""
     try:
-        status, _ = local_get(8791, "/", max_bytes=1024)
-        return status == 200
+        status, body = local_get(8791, "/healthz", max_bytes=1024)
+        return status == 200 and json.loads(body) == {"status": "ok"}
     except (OSError, ValueError, HTTPException):
         return False
 
