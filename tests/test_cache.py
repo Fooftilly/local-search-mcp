@@ -161,6 +161,77 @@ class CacheTests(unittest.TestCase):
         self.assertNotEqual(a, cache.fetch_key("https://example.com/b", "raw"))
         self.assertNotEqual(a, cache.fetch_key("https://example.com/a", "fit"))
 
+    def test_policy_edit_during_fresh_fetch_preserves_newer_cached_entry(self):
+        key = ("fetch", "raw", "https://example.com/page")
+        started, release = Event(), Event()
+        cache.run("fetch", key,
+                  lambda: {"success": True, "markdown": "before edit"}, ttl=90)
+
+        def old_refresh():
+            started.set()
+            self.assertTrue(release.wait(5))
+            return {"success": True, "markdown": "old policy refresh"}
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            stale = pool.submit(cache.run, "fetch", key, old_refresh,
+                                ttl=90, fresh=True)
+            try:
+                self.assertTrue(started.wait(5))
+                self.assertIn(key, cache._REFRESHING)
+                cache.invalidate_fetch()
+                self.assertNotIn(key, cache._REFRESHING)
+                self.assertNotIn(key, cache._CACHE)
+                post_edit = cache.run(
+                    "fetch", key,
+                    lambda: {"success": True, "markdown": "new policy content"},
+                    ttl=90)
+                self.assertEqual(post_edit["markdown"], "new policy content")
+            finally:
+                release.set()
+            self.assertEqual(stale.result(timeout=5)["markdown"],
+                             "old policy refresh")
+
+        self.assertEqual(cache.run(
+            "fetch", key, lambda: self.fail("new content was wrongly evicted"),
+            ttl=90)["markdown"], "new policy content")
+
+    def test_default_flight_started_during_fresh_cannot_overwrite_refresh(self):
+        key = ("search", "same query")
+        refreshing_started, release_refresh = Event(), Event()
+        default_started, release_default = Event(), Event()
+
+        def fresh_loader():
+            refreshing_started.set()
+            self.assertTrue(release_refresh.wait(5))
+            return [{"title": "new refresh result"}]
+
+        def default_loader():
+            default_started.set()
+            self.assertTrue(release_default.wait(5))
+            return [{"title": "old default result"}]
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fresh = pool.submit(cache.run, "search", key, fresh_loader,
+                                ttl=90, fresh=True)
+            try:
+                self.assertTrue(refreshing_started.wait(5))
+                default = pool.submit(cache.run, "search", key,
+                                      default_loader, ttl=90)
+                self.assertTrue(default_started.wait(5))
+                self.assertTrue(cache._INFLIGHT[key][2]["superseded"])
+                release_refresh.set()
+                self.assertEqual(fresh.result(timeout=5),
+                                 [{"title": "new refresh result"}])
+            finally:
+                release_refresh.set()
+                release_default.set()
+            self.assertEqual(default.result(timeout=5),
+                             [{"title": "old default result"}])
+
+        self.assertEqual(cache.run(
+            "search", key, lambda: self.fail("late flight overwrote refresh"),
+            ttl=90), [{"title": "new refresh result"}])
+
     def test_post_revoke_caller_never_joins_older_inflight_crawl(self):
         old_started, release_old = Event(), Event()
         key = ("fetch", "raw", "https://example.com/path")

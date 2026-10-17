@@ -71,6 +71,12 @@ def invalidate_fetch() -> None:
             if key[0] == "fetch":
                 _INFLIGHT[key][2]["superseded"] = True
                 del _INFLIGHT[key]
+        # A pre-change fresh request still owns its local token. Detach the
+        # token now so that when its loader finishes it cannot evict a valid
+        # entry populated by a later, post-change request for the same key.
+        for key in list(_REFRESHING):
+            if key[0] == "fetch":
+                del _REFRESHING[key]
 
 
 def reset_for_test() -> None:
@@ -177,7 +183,11 @@ def run(kind: str, key: tuple | None, load, *, ttl: float, fresh: bool = False,
             leader = False
         else:
             future = Future()
-            flight = (future, _POLICY_EPOCH, {"superseded": False})
+            # An uncached default call may begin while a forced refresh is
+            # already running. Its result must not overwrite that newer
+            # refresh, even if it completes last.
+            flight = (future, _POLICY_EPOCH,
+                      {"superseded": key in _REFRESHING})
             leader = True
             _INFLIGHT[key] = flight
             generation = _POLICY_EPOCH
