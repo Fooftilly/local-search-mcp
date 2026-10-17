@@ -268,11 +268,13 @@ def request(domain: str, safe_url: str):
     decision. Only a local user's explicit decision can create a child rule.
     """
     domain = normalize_domain(domain)
-    now = utcnow()
     with _db() as conn:
         _seed(conn)
         conn.execute('BEGIN IMMEDIATE')
         try:
+            # Read time only after acquiring the write lock. A request may
+            # wait for SQLite while a finite permission reaches its expiry.
+            now = utcnow()
             rule = _match(conn, domain, now)
             exact = conn.execute('SELECT * FROM domains WHERE domain=?', (domain,)).fetchone()
             if (rule is None and exact is not None and exact['explicit_rule']
