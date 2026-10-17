@@ -40,6 +40,39 @@ class SearchResultTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assertIsNone(normalized_url(bad))
 
+    def test_ipv6_zone_spelling_is_not_merged(self):
+        original = "http://[FE80::ABCD%25Eth0]:80/path"
+        other_zone = "http://[fe80::abcd%25eth0]/path"
+        normalized = "http://[fe80::abcd%25Eth0]/path"
+        self.assertEqual(normalized_url(original), normalized)
+        self.assertEqual(normalized_url(normalized), normalized)
+        self.assertNotEqual(normalized_url(original),
+                            normalized_url(other_zone))
+        rows = [row(original, "qwant", "Upper zone"),
+                row(normalized, "bing", "Same zone"),
+                row(other_zone, "yahoo", "Lower zone")]
+        grouped = enrich_search_results(rows, 4, deduplicate=True)
+        self.assertEqual([x["title"] for x in grouped],
+                         ["Upper zone", "Lower zone"])
+        self.assertEqual([x["duplicate_count"] for x in grouped], [2, 1])
+        self.assertEqual(grouped[0]["source_engines"], ["qwant", "bing"])
+
+    def test_more_than_sixteen_engines_count_for_ranking(self):
+        engines = [f"engine-{i:02}" for i in range(24)]
+        rows = [
+            row("https://one.example", "solo", "First"),
+            row("https://many.example", engines[0], "Many",
+                engines=engines + [engines[0], None, 123, "x" * 101]),
+            row("https://third.example", "third", "Third",
+                engines=["third", "other"]),
+        ]
+        grouped = enrich_search_results(rows, 3, deduplicate=True,
+                                        ranking="source_count")
+        self.assertEqual([x["title"] for x in grouped],
+                         ["Many", "Third", "First"])
+        self.assertEqual([x["source_count"] for x in grouped], [24, 2, 1])
+        self.assertEqual(grouped[0]["source_engines"], engines)
+
     def test_default_keeps_legacy_shape_first_n_and_order(self):
         rows = [
             row("https://example.com/a", "qwant", "First", "1"),

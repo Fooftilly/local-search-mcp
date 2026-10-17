@@ -23,9 +23,15 @@ def normalized_url(value: object) -> str | None:
         if (parsed.scheme not in ("http", "https") or not parsed.hostname
                 or parsed.username is not None or parsed.password is not None):
             return None
-        host = parsed.hostname.lower()
+        host = parsed.hostname
         if ":" in host:
-            host = f"[{host}]"  # Preserve bracketed IPv6 netloc syntax.
+            # IPv6 addresses are case-insensitive, but their zone identifiers
+            # are not necessarily so. urllib.parse.hostname preserves the
+            # original zone spelling even though it lowercases the address.
+            address, separator, zone = host.partition("%")
+            host = f"[{address.lower()}{separator}{zone}]"
+        else:
+            host = host.lower()
         port = parsed.port
         default_port = 80 if parsed.scheme == "http" else 443
         if port is not None and port != default_port:
@@ -42,14 +48,18 @@ def normalized_url(value: object) -> str | None:
 
 
 def _engines(row: dict) -> list[str]:
-    """Read source engine names, ignoring malformed or unbounded fields."""
+    """Read all valid upstream engine names without an arbitrary count cap."""
     names = []
+    seen = set()
     raw = row.get("engines")
-    possible = ([row.get("engine")] + raw[:16]
-                if isinstance(raw, list) else [row.get("engine")])
+    possible = [row.get("engine")]
+    if isinstance(raw, list):
+        possible.extend(raw)
     for name in possible:
-        if isinstance(name, str) and name and len(name) <= 100 and name not in names:
+        if (isinstance(name, str) and name and len(name) <= 100
+                and name not in seen):
             names.append(name)
+            seen.add(name)
     return names
 
 

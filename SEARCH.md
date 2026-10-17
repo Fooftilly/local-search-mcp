@@ -28,11 +28,11 @@ fastmcp call http://127.0.0.1:8790/mcp web_search query='linux' max_results=8 en
 By default, `web_search` keeps SearXNG's original order and the existing **four response fields** (`title`, `url`, `snippet`, `engine`). `deduplicate=true` groups conservative HTTP(S) URL matches **before** the result limit. The first result's URL/title/snippet/engine remain the primary fields, with additional opt-in fields:
 
 - `source_engines`: ordered names of distinct engines observed in the merged records (including an upstream `engines` list when supplied)
-- `source_count`: the number of those distinct engine names, **not** a search relevance score
+- `source_count`: the number of those distinct engine names across the full validated upstream `engines` list (not capped at 16), **not** a search relevance score
 - `duplicate_count`: the number of SearXNG result entries grouped together
 - `source_matches`: up to eight original `engine`/`title`/`snippet` alternatives; the count may exceed this bounded list
 
-URL identity lowercases DNS hostnames, drops standard HTTP/HTTPS ports, removes fragment identifiers, and treats an empty path as `/`. It preserves HTTP versus HTTPS, non-default ports, path case and trailing slashes, percent-encoding and query parameter values/order. It does **not** remove tracking parameters, recrawl canonical links or infer content equality. Invalid or credential-bearing URLs remain separate rather than being merged. Results spanning different search pages are never automatically combined.
+URL identity lowercases DNS hostnames and IPv6 address hex digits (without changing IPv6 zone identifier case), drops standard HTTP/HTTPS ports, removes fragment identifiers, and treats an empty path as `/`. It preserves HTTP versus HTTPS, non-default ports, path case and trailing slashes, percent-encoding and query parameter values/order. It does **not** remove tracking parameters, recrawl canonical links or infer content equality. Invalid or credential-bearing URLs remain separate rather than being merged. Results spanning different search pages are never automatically combined.
 
 `ranking="source_count"` is an **optional explainable heuristic**: groups with more distinct reporting engines come first; ties keep their original SearXNG order. This does not imply objectively higher-quality results or uniform engine coverage. A result returned by one engine may already carry an upstream multi-engine attribution list, which is counted without inventing additional matches. The unranked default remains `ranking="searxng"`.
 
