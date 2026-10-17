@@ -140,6 +140,14 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
             return original(transport=httpx.MockTransport(handler), trust_env=False)
         with patch.object(bridge.httpx, "Client", side_effect=client):
             async with Client(bridge.mcp) as client:
+                tool = next(tool for tool in await client.list_tools()
+                            if tool.name == "web_search")
+                ranking_schema = tool.inputSchema["properties"]["ranking"]
+                self.assertEqual(set(ranking_schema["enum"]),
+                                 {"searxng", "source_count"})
+                self.assertEqual(ranking_schema["default"], "searxng")
+                self.assertIn("deduplicate=true", tool.description)
+                self.assertIn("fresh=true", tool.description)
                 standard = await client.call_tool("web_search", {
                     "query": "dedupe mcp", "max_results": 2,
                 })
@@ -153,7 +161,8 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r["title"] for r in enhanced.data], ["High", "Low"])
         self.assertEqual(enhanced.data[0]["source_count"], 2)
         self.assertEqual(enhanced.data[0]["source_engines"], ["bing", "brave"])
-        self.assertEqual(enhanced.data[0]["source_matches"][1]["title"], "High again")
+        self.assertEqual(enhanced.data[0]["source_matches"][0]["title"], "High again")
+        self.assertEqual(enhanced.data[1]["source_matches"], [])
         self.assertEqual(len(urls), 2)
         self.assertTrue(all("deduplicate" not in dict(url.params)
                             and "ranking" not in dict(url.params) for url in urls))

@@ -108,7 +108,9 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
         entry["source_count"] = len(entry["source_engines"])
         # Retain an inspectable, bounded summary of merged result variants;
         # the main title/snippet remain the first matching SearXNG result.
-        if len(entry["source_matches"]) < 8:
+        if entry["duplicate_count"] > 1 and len(entry["source_matches"]) < 8:
+            # The first occurrence is already represented by the primary
+            # engine/title/snippet. Only retain actual alternative matches.
             entry["source_matches"].append({
                 "engine": str(row.get("engine", ""))[:100],
                 "title": str(row.get("title", ""))[:240],

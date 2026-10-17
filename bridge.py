@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Literal
 import os
 import re
 import time
@@ -171,10 +172,15 @@ def _run_search(params: dict, max_results: int, *,
 def web_search(query: str, max_results: int = 8, language: str = "",
                categories: str = "", time_range: str = "",
                engines: str = "", page: int = 1, fresh: bool = False,
-               deduplicate: bool = False, ranking: str = "searxng") -> list[dict] | dict:
-    """Search SearXNG; opt in to provenance-preserving deduplication/ranking.
+               deduplicate: bool = False,
+               ranking: Literal["searxng", "source_count"] = "searxng") -> list[dict] | dict:
+    """Search SearXNG, with optional URL deduplication and source attribution.
 
-    The default parameters preserve historic SearXNG order and result shape.
+    Defaults preserve SearXNG order and the historic four-field result shape.
+    Set deduplicate=true to merge equivalent URLs; ranking="source_count"
+    requires deduplicate=true and sorts by distinct reporting engine count,
+    breaking ties by SearXNG order. ranking="searxng" preserves upstream order.
+    Set fresh=true to bypass the in-memory search cache and fetch fresh data.
     """
     if not isinstance(fresh, bool):
         raise ValueError("fresh must be a boolean")

@@ -30,13 +30,13 @@ By default, `web_search` keeps SearXNG's original order and the existing **four 
 - `source_engines`: ordered names of distinct engines observed in the merged records (including an upstream `engines` list when supplied)
 - `source_count`: the number of those distinct engine names across the full validated upstream `engines` list (not capped at 16), **not** a search relevance score
 - `duplicate_count`: the number of SearXNG result entries grouped together
-- `source_matches`: up to eight original `engine`/`title`/`snippet` alternatives; the count may exceed this bounded list
+- `source_matches`: up to eight additional `engine`/`title`/`snippet` alternatives *after the primary result*; empty when no duplicates were merged. The `duplicate_count` may exceed the bounded alternatives list.
 
 URL identity lowercases DNS hostnames and IPv6 address hex digits (without changing IPv6 zone identifier case), drops standard HTTP/HTTPS ports, removes fragment identifiers, and treats an empty path as `/`. It preserves HTTP versus HTTPS, non-default ports, path case and trailing slashes, percent-encoding and query parameter values/order. It does **not** remove tracking parameters, recrawl canonical links or infer content equality. Invalid or credential-bearing URLs remain separate rather than being merged. Results spanning different search pages are never automatically combined.
 
 `ranking="source_count"` is an **optional explainable heuristic**: groups with more distinct reporting engines come first; ties keep their original SearXNG order. This does not imply objectively higher-quality results or uniform engine coverage. A result returned by one engine may already carry an upstream multi-engine attribution list, which is counted without inventing additional matches. The unranked default remains `ranking="searxng"`.
 
-Both options are handled entirely by the bridge, never forwarded to SearXNG. Cache entries are separated by deduplication and ranking choice; private audit history notes chosen flags but not alternate snippets. With deduplication enabled there may be fewer than `max_results` unique URLs even if SearXNG returned enough rows; the bridge does not invent pages or issue hidden extra upstream requests.
+Both options are handled entirely by the bridge, never forwarded to SearXNG. The MCP tool schema exposes `ranking` as an enumeration (`searxng`, `source_count`) and the tool description specifies that source-count ranking requires `deduplicate=true`. Cache entries are separated by deduplication and ranking choice; private audit history notes chosen flags but not alternate snippets. With deduplication enabled there may be fewer than `max_results` unique URLs even if SearXNG returned enough rows; the bridge does not invent pages or issue hidden extra upstream requests.
 
 ```bash
 fastmcp call http://127.0.0.1:8790/mcp web_search query='linux containers' max_results=8 deduplicate=true --auth none

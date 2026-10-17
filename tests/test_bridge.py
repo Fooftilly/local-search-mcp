@@ -60,7 +60,8 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(set(default[0]), {"title", "url", "snippet", "engine"})
         self.assertEqual([x["title"] for x in unique], ["First", "Other"])
         self.assertEqual(unique[0]["source_engines"], ["qwant", "yahoo"])
-        self.assertEqual(unique[0]["source_matches"][1]["title"], "Alternate")
+        self.assertEqual(unique[0]["source_matches"][0]["title"], "Alternate")
+        self.assertEqual(unique[1]["source_matches"], [])
         self.assertEqual([x["title"] for x in ranked], ["First", "Other"])
         self.assertEqual(ranked[0]["source_count"], 2)
 

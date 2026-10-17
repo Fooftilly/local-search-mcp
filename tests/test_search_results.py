@@ -105,7 +105,8 @@ class SearchResultTests(unittest.TestCase):
         self.assertEqual(result[0]["source_count"], 2)
         self.assertEqual(result[0]["duplicate_count"], 2)
         self.assertEqual([r["title"] for r in result[0]["source_matches"]],
-                         ["Original", "Alternate"])
+                         ["Alternate"])
+        self.assertEqual(result[1]["source_matches"], [])
         self.assertEqual(result[1]["title"], "Other")
 
     def test_source_count_ranking_is_stable_on_ties(self):
@@ -144,8 +145,18 @@ class SearchResultTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["duplicate_count"], 20)
         self.assertEqual(len(result[0]["source_matches"]), 8)
+        self.assertEqual(result[0]["source_matches"][0]["title"], "Title 1")
         self.assertEqual(len(result[0]["source_engines"]), 20)
         self.assertEqual(len(result[0]["source_matches"][0]["snippet"]), 1100)
+
+    def test_unmerged_sources_do_not_duplicate_snippet_text(self):
+        rows = [row(f"https://site.example/item/{i}", "qwant",
+                    f"Item {i}", "S" * 1100) for i in range(12)]
+        results = enrich_search_results(rows, 12, deduplicate=True)
+        self.assertEqual(len(results), 12)
+        self.assertTrue(all(r["source_matches"] == [] and r["duplicate_count"] == 1
+                            and r["source_count"] == 1 for r in results))
+        self.assertEqual([r["snippet"] for r in results], ["S" * 1100] * 12)
 
     def test_missing_source_engine_does_not_gain_unearned_count(self):
         rows = [row("https://site.example", "", "No attribution"),
