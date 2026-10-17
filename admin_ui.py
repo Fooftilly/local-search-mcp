@@ -103,14 +103,16 @@ def row_html(r):
     scope = r.get('match_scope', 'subdomains')
     scope_label = 'Exact host' if scope == 'exact' else 'Host + subdomains'
     expires = r.get('expires_at') or 'Never'
-    limits = (f'<div class="subtle">{esc(scope_label)} · Expires: '
+    limits = ('' if r['status'] == 'pending' else
+              f'<div class="subtle">{esc(scope_label)} · Expires: '
               f'{esc(expires)}</div>')
     opts = ('<label class="small">Scope <select name="scope">'
             + '<option value="subdomains"' + (' selected' if scope != 'exact' else '') +
             '>Host + subdomains</option><option value="exact"' +
             (' selected' if scope == 'exact' else '') +
             '>Exact host only</option></select></label>'
-            '<label class="small">Duration <select name="expires_minutes">'
+            '<label class="small">Duration <select name="expires_minutes" required>'
+            '<option value="" selected disabled>Choose duration</option>'
             '<option value="0">Permanent</option><option value="60">1 hour</option>'
             '<option value="1440">24 hours</option>'
             '<option value="10080">7 days</option></select></label>')
