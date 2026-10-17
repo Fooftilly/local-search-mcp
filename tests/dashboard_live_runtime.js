@@ -74,7 +74,9 @@ function createTab(initialDomains) {
       })
     };
   };
-  vm.runInNewContext(source, {
+  // First-party LIVE_SCRIPT arrives solely from the checked-in Python module;
+  // no user-supplied code, network input, or path is evaluated in this test.
+  vm.runInNewContext(source, { // NOSONAR: trusted embedded test fixture only
     window, document, navigator: { locks }, Notification, fetch,
     TextEncoder, AbortController, URLSearchParams, Date: Clock
   }, { timeout: 5000 });
@@ -85,10 +87,14 @@ function createTab(initialDomains) {
 }
 
 async function settle() {
-  // WebCrypto and promise/microtask chains complete without real timers.
+  // WebCrypto runs on Node's worker pool and may outlive multiple event-loop
+  // ticks. Wait for the actual in-flight Web Lock callback, not an arbitrary
+  // number of microtasks, before advancing the fake clock or queue snapshot.
   for (let i = 0; i < 14; i++) {
     await new Promise(resolve => setImmediate(resolve));
   }
+  await Promise.all([...lockQueues.values()]);
+  await new Promise(resolve => setImmediate(resolve));
 }
 
 async function poll(tab, at) {
@@ -107,7 +113,9 @@ async function main() {
 
   tab.state.domains.push("new.example");
   await poll(tab, 110000);
-  assert.equal(notifications.length, 1, "new request notifies immediately");
+  assert.equal(notifications.length, 1, "new request notifies immediately; " +
+    JSON.stringify({ storage: [...storage.entries()],
+                     status: tab.element("live-status").textContent }));
   assert.match(notifications[0].body, /One new domain request/);
 
   tab.state.domains.push("later.example");
