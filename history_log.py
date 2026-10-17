@@ -106,6 +106,15 @@ def logged_tool(kind: str):
                 event["query"] = str(params.get("query", ""))[:300]
                 if "max_results" in params:
                     event["max_results"] = params["max_results"]
+                # Capture bounded, nonsecret filter metadata so page 1 and
+                # page 3 are distinguishable in the local audit trail.
+                page = params.get("page", 1)
+                if type(page) is int and 1 <= page <= 10:
+                    event["page"] = page
+                for field in ("language", "categories", "time_range", "engines"):
+                    value = params.get(field)
+                    if isinstance(value, str) and value:
+                        event[field] = value[:340]
             else:
                 event["url"] = safe_url(params.get("url"))
                 try:

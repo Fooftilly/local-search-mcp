@@ -66,11 +66,34 @@ class BridgeTests(unittest.TestCase):
             "categories": "news,science", "time_range": "month",
             "engines": "qwant,yahoo", "pageno": "3",
         })
-        self.assertEqual(str(calls[0].url.host), "127.0.0.1")
+        self.assertEqual(calls[0].url.host, httpx.URL(self.module.SEARXNG_URL).host)
+
+    def test_searxng_engine_dots_and_language_aliases(self):
+        seen = []
+        def handler(request):
+            seen.append(dict(request.url.params))
+            return httpx.Response(200, json={"results": []})
+        original = httpx.Client
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            self.module.web_search("q", engines="brave.news,crates.io", language="auto")
+            self.module.web_search("q", engines="pkg.go.dev", language="fr-CA")
+            self.module.web_search("q", language="all")
+        self.assertEqual(seen[0]["engines"], "brave.news,crates.io")
+        self.assertEqual(seen[0]["language"], "auto")
+        self.assertEqual(seen[1]["engines"], "pkg.go.dev")
+        self.assertEqual(seen[1]["language"], "fr-CA")
+        self.assertEqual(seen[2]["language"], "all")
 
     def test_invalid_search_options_do_not_contact_upstream(self):
         cases = (
             {"language": "en&format=html"},
+            {"language": "en_US"},
+            {"language": "EN"},
+            {"language": "zh-Hant-TW"},
+            {"language": "es-419"},  # Upstream VALID_LANGUAGE_CODE rejects numeric regions.
+            {"language": "autox"},
             {"categories": "news,,images"},
             {"categories": "news,news"},
             {"categories": "malicious;url"},

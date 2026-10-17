@@ -39,7 +39,7 @@ def _search_tokens(value: str, name: str) -> str:
         return ""
     parts = [part.strip() for part in value.split(",")]
     if (len(parts) > 8 or any(
-        not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _-]{0,39}", part)
+        not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}", part)
         for part in parts
     ) or len({part.casefold() for part in parts}) != len(parts)):
         raise ValueError(f"{name} must contain 1 to 8 unique names of up to 40 characters")
@@ -57,11 +57,14 @@ def _search_params(query: str, max_results: int, language: str,
     max_results = max(1, min(max_results, 12))  # Preserve old clamping behavior.
     if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= 10:
         raise ValueError("page must be an integer from 1 through 10")
+    # Match SearXNG's VALID_LANGUAGE_CODE plus its recognized 'auto'/'all'
+    # selectors. Broad BCP-47 tags (including es-419) are not accepted by
+    # the current upstream search-language parser.
     if not isinstance(language, str) or (
-        language and language != "all"
-        and not re.fullmatch(r"[A-Za-z]{2,3}(?:[-_][A-Za-z]{2,8}){0,2}", language)
+        language and language not in ("all", "auto")
+        and not re.fullmatch(r"[a-z]{2,3}(?:-[a-zA-Z]{2})?", language)
     ):
-        raise ValueError("language must be a language/locale code such as en, en-US, or all")
+        raise ValueError("language must be en, en-US, auto, all or a supported similar code")
     if not isinstance(time_range, str) or time_range not in ("", "day", "week", "month", "year"):
         raise ValueError("time_range must be day, week, month, or year")
     selected_categories = _search_tokens(categories, "categories")
