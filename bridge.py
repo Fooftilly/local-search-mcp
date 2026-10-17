@@ -103,8 +103,9 @@ def _retry_request(operation, *, method: str = "GET"):
                 time.sleep(0.15)
                 continue
             return None
-        transient = ((429, 503) if method == "POST" else
-                     (429, 500, 502, 503, 504))
+        # A definite upstream 5xx response is retryable, but ambiguous
+        # transport failures after starting a crawl POST are not.
+        transient = (429, 500, 502, 503, 504)
         if response.status_code in transient and attempt == 0:
             time.sleep(0.15)
             continue
@@ -172,7 +173,7 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     # Avoid caching obviously sensitive-looking queries. No queries are saved
     # to disk by this cache; the separate opt-in history remains unchanged.
     private = bool(re.search(
-        r"@|https?://|(?:password|token|secret|api[_-]?key|bearer|cookie)\s*[:=]",
+        r"@|https?://|\b[a-z0-9-]+(?:\.[a-z0-9-]+)+/\S+|(?:password|token|secret|api[_-]?key|bearer|cookie)\s*[:=]",
         params["q"], flags=re.IGNORECASE))
     key = None if private else (
         "search", SEARXNG_URL, tuple(sorted(params.items())), max_results,
@@ -258,11 +259,23 @@ def _run_fetch(url: str, mode: str) -> dict:
         except (ValueError, UnicodeError):
             return {"url": url, "success": False, "status": "invalid_response",
                     "reason": "Crawl4AI returned unreadable JSON."}
-    results = result.get("results", []) if isinstance(result, dict) else result
-    page = results[0] if isinstance(results, list) and results else result
+    if isinstance(result, dict) and "results" in result:
+        results = result["results"]
+        if not isinstance(results, list) or not results or not isinstance(results[0], dict):
+            return {"url": url, "success": False, "status": "invalid_response",
+                    "reason": "Crawl4AI returned an empty or invalid page list."}
+        page = results[0]
+    elif isinstance(result, list):
+        page = result[0] if result and isinstance(result[0], dict) else None
+    else:
+        page = result
     if not isinstance(page, dict):
         return {"url": url, "success": False, "status": "invalid_response",
                 "reason": "Crawl4AI returned an invalid page structure."}
+    reported_success = page.get("success", result.get("success") if isinstance(result, dict) else None)
+    if not isinstance(reported_success, bool):
+        return {"url": url, "success": False, "status": "invalid_response",
+                "reason": "Crawl4AI omitted a valid success flag from its page result."}
     # CrawlResult.url is the REQUESTED URL; CrawlResult.redirected_url records
     # the final navigation, including JavaScript redirects. Never assume that
     # the original URL proves the final destination is approved.
@@ -303,7 +316,7 @@ def _run_fetch(url: str, mode: str) -> dict:
     # Invalid surrogate code points cannot safely be encoded as UTF-8 in MCP
     # JSON responses. Replace them deterministically before chunking.
     markdown = markdown.encode("utf-8", errors="replace").decode("utf-8")
-    success = page.get("success", result.get("success") if isinstance(result, dict) else None)
+    success = reported_success
     metadata = _crawl_metadata(page, final_url)
     output = {
         "url": final_url,
