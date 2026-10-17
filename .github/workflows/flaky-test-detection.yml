@@ -3,7 +3,6 @@ name: Flaky Test Detection
 on:
   schedule:
     - cron: '0 */12 * * 1-5'  # Every 12 hours, Monday-Friday (UTC)
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -35,7 +34,19 @@ jobs:
           python -m pip install 'pytest>=8,<10'
 
       - name: Run tests
-        run: python -m pytest -q tests --junitxml=junit-unit-${{ matrix.run_number }}.xml || true
+        id: tests
+        run: |
+          run_tests() {
+            local status=0
+            python -m pytest -q tests --junitxml=junit-unit-${{ matrix.run_number }}.xml || status=$?
+            if [ "$status" -eq 0 ]; then
+              echo "outcome=success" >> "$GITHUB_OUTPUT"
+            else
+              echo "outcome=failure" >> "$GITHUB_OUTPUT"
+            fi
+            return "$status"
+          }
+          run_tests || true
 
       - name: Upload test results to Mergify
         if: success() || failure()
@@ -43,3 +54,4 @@ jobs:
         with:
           token: ${{ secrets.MERGIFY_TOKEN }}
           report_path: "junit-*.xml"
+          test_step_outcome: ${{ steps.tests.outputs.outcome }}
