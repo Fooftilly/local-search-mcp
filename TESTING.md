@@ -12,7 +12,7 @@ This slice of [issue #4](https://github.com/Fooftilly/local-search-mcp/issues/4)
 
 ## What this does not prove
 
-In-memory protocol tests **do not run the browser**, exercise network egress/redirect DNS rebinding inside Chromium, or prove remote OpenAI tunnel connectivity. Issue #2 still requires real Docker host and browser security checks; issue #3 still requires real systemd startup/recovery testing.
+In-memory protocol tests **do not run the browser**, exercise network egress/redirect DNS rebinding inside Chromium, or prove remote OpenAI tunnel connectivity. The original roadmap issues [#2](https://github.com/Fooftilly/local-search-mcp/issues/2) and [#3](https://github.com/Fooftilly/local-search-mcp/issues/3) are already closed; their closed status does not establish that a live operator deployment has passed these tests. Follow [EGRESS-ISOLATION.md](EGRESS-ISOLATION.md) for the Docker-host probes and [SYSTEMD.md](SYSTEMD.md) for systemd startup/recovery procedures.
 
 ## Real loopback dashboard and failure regressions (second slice)
 
@@ -24,4 +24,4 @@ The CI matrix covers Python 3.11/3.13/3.14 and includes a targeted Ruff gate for
 
 ## What still needs verification
 
-These tests do **not** run a real browser or untrusted Chromium subresources, verify private-network egress isolation, simulate real DNS rebinding during a page load, test the remote tunnel end to end, or prove reboot-time user-systemd recovery. Disposable real HTTP MCP transport and live operator-driven Docker isolation validation remain future work. Preserve issues #2/#3/#4 as open until their remaining acceptance criteria are fulfilled.
+These tests do **not** run a real browser or untrusted Chromium subresources, verify private-network egress isolation, simulate real DNS rebinding during a page load, test the remote tunnel end to end, or prove reboot-time user-systemd recovery. Disposable real HTTP MCP transport and live operator-driven Docker isolation validation remain future work. Roadmap issues [#2](https://github.com/Fooftilly/local-search-mcp/issues/2), [#3](https://github.com/Fooftilly/local-search-mcp/issues/3) and [#4](https://github.com/Fooftilly/local-search-mcp/issues/4) have **already been closed**. This document does not reopen them or imply that their live-host acceptance tests were run. Any still-required end-to-end or operator validation should be tracked separately before claiming deployment-level assurance.
