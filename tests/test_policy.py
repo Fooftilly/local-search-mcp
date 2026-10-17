@@ -178,6 +178,42 @@ class DomainPolicyTests(unittest.TestCase):
         self.assertEqual(policy.request("sub.example.org", "https://sub.example.org/"),
                          ("allowed", "example.org"))
 
+    def test_legacy_child_denial_does_not_follow_removed_or_allowed_parent(self):
+        """Old auto-denials are not user rules, even after a parent changed."""
+        with policy._db() as db:
+            now = policy.utcnow()
+            for domain, status, requests in (
+                ("example.org", "allowed", 0),        # former deny, now allowed
+                ("blocked.example.org", "denied", 3), # inherited during old deny
+                ("orphan.example.net", "denied", 2),  # parent deleted before upgrade
+                ("manual.example.net", "denied", 0),  # no request-derived history
+                ("explicit.example.org", "denied", 2),
+            ):
+                db.execute("""INSERT INTO domains
+                    (domain,status,created_at,updated_at,request_count,last_requested_at)
+                    VALUES(?,?,?,?,?,?)""", (domain, status, now, now, requests,
+                                               now if requests else ""))
+            db.execute("INSERT INTO metadata(key,value) VALUES('domain_seed_v1','1')")
+            db.execute("INSERT INTO decisions(at,domain,action) VALUES(?,?,'allow')",
+                       (now, "example.org"))
+            db.execute("INSERT INTO decisions(at,domain,action) VALUES(?,?,'deny')",
+                       (now, "explicit.example.org"))
+            db.commit()
+        policy.initialize()
+        rows = {r["domain"]: r for r in policy.entries()}
+        self.assertNotIn("blocked.example.org", rows)
+        self.assertEqual(rows["orphan.example.net"]["status"], "pending")
+        self.assertEqual(rows["orphan.example.net"]["explicit_rule"], 0)
+        self.assertEqual(rows["manual.example.net"]["status"], "denied")
+        self.assertEqual(rows["manual.example.net"]["explicit_rule"], 1)
+        self.assertEqual(rows["explicit.example.org"]["explicit_rule"], 1)
+        self.assertEqual(policy.request("blocked.example.org", "https://blocked.example.org/"),
+                         ("allowed", "example.org"))
+        self.assertEqual(policy.request("orphan.example.net", "https://orphan.example.net/"),
+                         ("pending", "orphan.example.net"))
+        self.assertEqual(policy.request("explicit.example.org", "https://explicit.example.org/"),
+                         ("denied", "explicit.example.org"))
+
     def test_legacy_pending_child_under_allowed_parent_is_removed_on_upgrade(self):
         """A stale pending row does not keep asking for approval on a grant."""
         with policy._db() as db:
