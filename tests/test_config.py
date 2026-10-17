@@ -92,9 +92,9 @@ class PrivateConfigTests(unittest.TestCase):
         }):
             with patch.object(bootstrap, "read_legacy_env", return_value={
                 "CRAWL4AI_API_TOKEN": "legacy-secret",
-            }), patch.object(bootstrap, "check_services") as services, \\
-                 patch.object(bootstrap, "docker_token") as docker, \\
-                 patch.object(bootstrap, "save_config") as save, \\
+            }), patch.object(bootstrap, "check_services") as services, \
+                 patch.object(bootstrap, "docker_token") as docker, \
+                 patch.object(bootstrap, "save_config") as save, \
                  patch("sys.argv", ["bootstrap.py", "--show-config"]):
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):
@@ -127,7 +127,7 @@ class PrivateConfigTests(unittest.TestCase):
             "CONTROL_PLANE_API_KEY": "existing-tunnel-secret",
             "ALLOWED_CRAWL_DOMAINS": "example.com",
         }
-        with patch.object(bootstrap, "docker_token", return_value=""), \\
+        with patch.object(bootstrap, "docker_token", return_value=""), \
              patch.object(bootstrap, "read_legacy_env", return_value={
                  "CRAWL4AI_API_TOKEN": "legacy-crawl", "CONTROL_PLANE_API_KEY": "legacy-key",
              }):
