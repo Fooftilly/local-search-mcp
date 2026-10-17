@@ -87,6 +87,14 @@ class BridgeTests(unittest.TestCase):
             self.module.web_fetch("https://example.com/page?x=1")
             self.module.web_fetch("https://example.com/page?x=1")
             self.assertEqual(counts.count("/crawl"), 5)
+            # An empty ?/# still changes the browser-visible URL; neither
+            # may reuse /page's cached response or populate that cache key.
+            for url in ("https://example.com/page?", "https://example.com/page#",
+                        "https://example.com/page?#"):
+                self.module.web_fetch(url)
+                self.module.web_fetch(url)
+            self.assertEqual(counts.count("/crawl"), 11)
+            self.assertEqual(len(self.module.request_cache._CACHE), 1)
         with patch.object(self.module, "_check_public_target",
                           return_value={"success": False, "status": "denied"}), \
              patch.object(self.module.httpx, "Client") as backend:

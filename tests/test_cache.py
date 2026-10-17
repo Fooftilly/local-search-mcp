@@ -150,6 +150,13 @@ class CacheTests(unittest.TestCase):
 
     def test_fetch_urls_with_query_credentials_or_distinct_paths(self):
         self.assertIsNone(cache.fetch_key("https://example.com/page?token=secret", "raw"))
+        # urlsplit treats empty delimiters as empty components; these are
+        # still distinct browser URLs and must not share the plain-page key.
+        for suffix in ("?", "#", "?#", "?x=1", "#/user/1", "?x=1#frag"):
+            with self.subTest(suffix=suffix):
+                self.assertIsNone(
+                    cache.fetch_key("https://example.com/page" + suffix, "raw")
+                )
         self.assertIsNone(cache.fetch_key("https://example.com/#/user/1", "raw"))
         self.assertIsNone(cache.fetch_key("https://example.com/#access_token=secret", "raw"))
         self.assertIsNone(cache.fetch_key("https://example.com/" + "path" * 700, "raw"))

@@ -30,6 +30,11 @@ _POLICY_EPOCH = 0
 def fetch_key(url: str, mode: str) -> tuple | None:
     """Cache only queryless public-looking URLs; authorization is separate."""
     try:
+        # urlsplit discards the distinction between /page and /page? or
+        # /page#. A browser may render different content for these URLs.
+        # Skip all literal query/fragment delimiters, even empty ones.
+        if "?" in url or "#" in url:
+            return None
         parsed = urlsplit(url)
         if (parsed.scheme not in ("http", "https") or not parsed.hostname
                 or parsed.query or parsed.fragment
