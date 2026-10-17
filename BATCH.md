@@ -7,13 +7,13 @@
 | Property | Limit |
 | --- | --- |
 | URLs per batch | 1–8 |
-| Maximum concurrent active batch fetches across all client calls | 3, enforced by a process-wide semaphore |
+| Maximum concurrent active batch fetches across all client calls | 3, enforced by a process-wide FIFO permit limiter |
 | Maximum individual URL length | 2,048 characters |
 | Maximum combined URL length | 8,192 characters |
 | Retry and request timeouts | The existing `web_fetch` security probe, Crawl4AI HTTPX timeouts and bounded retry rules |
 | Continuation pages | Existing 24,000-character pages and process-local 15-minute handles |
 
-Input size, `mode` and `fresh` types are validated **before** starting any fetches. If a batch is oversized or otherwise invalid, the MCP tool returns a validation error and does not submit workers. A separate worker handles each **distinct input URL**; a global semaphore also prevents multiple simultaneous batches from exceeding three active underlying fetches. repeated exact URLs share one in-batch result even when `fresh=true`, but remain separate result rows. No disk cache or batch-result archive is created.
+Input size, `mode` and `fresh` types are validated **before** starting any fetches. If a batch is oversized or otherwise invalid, the MCP tool returns a validation error and does not submit workers. A separate worker handles each **distinct input URL**; a process-wide FIFO limiter also prevents multiple simultaneous batches from exceeding three active underlying fetches, without letting one batch repeatedly jump ahead of earlier waiters. Repeated exact URLs share one in-batch result even when `fresh=true`, but remain separate result rows. No disk cache or batch-result archive is created.
 
 Results preserve **original input order** despite completion order:
 

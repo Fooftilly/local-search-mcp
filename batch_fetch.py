@@ -6,9 +6,10 @@ A private audit event is recorded for each input (including duplicates).
 """
 from __future__ import annotations
 
+from collections import deque
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from copy import deepcopy
-from threading import BoundedSemaphore, Event
+from threading import Condition, Event
 from typing import Callable
 
 from history_log import logged_tool
@@ -20,8 +21,45 @@ MAX_WORKERS = 3
 MAX_URL_CHARS = 2048
 MAX_TOTAL_URL_CHARS = 8192
 
-# Limit active crawls across *all* client batch requests, not per executor.
-_ACTIVE_BATCH_FETCHES = BoundedSemaphore(MAX_WORKERS)
+class _FairBatchLimiter:
+    """FIFO active-fetch permits shared by all local batch calls.
+
+    Waiting tasks are served in arrival order. Cancelled workers can abandon
+    their ticket without waiting for another crawler to finish.
+    """
+
+    def __init__(self, limit: int):
+        self._limit = limit
+        self._condition = Condition()
+        self._running = 0
+        self._waiting: deque[object] = deque()
+
+    def acquire(self, cancelled: Event | None) -> bool:
+        ticket = object()
+        with self._condition:
+            self._waiting.append(ticket)
+            while True:
+                if cancelled is not None and cancelled.is_set():
+                    self._waiting.remove(ticket)
+                    self._condition.notify_all()
+                    return False
+                if self._waiting[0] is ticket and self._running < self._limit:
+                    self._waiting.popleft()
+                    self._running += 1
+                    self._condition.notify_all()
+                    return True
+                # A cancelled MCP call may not signal this condition directly.
+                self._condition.wait(timeout=0.1 if cancelled is not None else None)
+
+    def release(self) -> None:
+        with self._condition:
+            self._running -= 1
+            self._condition.notify_all()
+
+
+# All batches use this single FIFO limiter; per-call thread pools remain
+# bounded, and no caller can repeatedly jump ahead of earlier waiters.
+_ACTIVE_BATCH_FETCHES = _FairBatchLimiter(MAX_WORKERS)
 
 
 @logged_tool("fetch")
@@ -88,14 +126,14 @@ def fetch_many(urls: list[str], mode: str, fresh: bool,
     def scheduled_fetch(url: str) -> dict:
         # This permit is process-wide. Multiple simultaneous client batches
         # may queue workers but cannot exceed 3 active underlying fetches.
-        with _ACTIVE_BATCH_FETCHES:
-            # MCP task cancellation cannot safely kill an already-running
-            # browser fetch, but must prevent *queued* URLs from starting.
-            if cancelled is not None and cancelled.is_set():
-                result = {"url": url, "success": False, "status": "cancelled",
-                          "reason": "Batch cancelled before this URL began fetching."}
-                return _audit_duplicate(url, result)
+        if not _ACTIVE_BATCH_FETCHES.acquire(cancelled):
+            result = {"url": url, "success": False, "status": "cancelled",
+                      "reason": "Batch cancelled before this URL began fetching."}
+            return _audit_duplicate(url, result)
+        try:
             return fetch(url, mode, fresh)
+        finally:
+            _ACTIVE_BATCH_FETCHES.release()
 
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(unique)),
                             thread_name_prefix="local-search-batch") as pool:

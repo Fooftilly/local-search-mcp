@@ -242,6 +242,59 @@ class BatchFetchTests(unittest.TestCase):
         self.assertEqual(started_count[0], 10)
         self.assertEqual(maximum_running[0], 3)
 
+    def test_waiting_batch_gets_fair_turn_before_earlier_batch_next_url(self):
+        import batch_fetch
+        first_three = Event()
+        allow_first = Event()
+        allow_other_two = Event()
+        second_started = Event()
+        release_second = Event()
+        gate = Lock()
+        starts = []
+        urls_a = [f"https://example.com/a{i}" for i in range(8)]
+        urls_b = ["https://example.com/b0"]
+
+        def fetch(url, mode, fresh):
+            with gate:
+                starts.append(url)
+                if all(x in starts for x in urls_a[:3]):
+                    first_three.set()
+                if url == urls_b[0]:
+                    second_started.set()
+            if url == urls_a[0]:
+                self.assertTrue(allow_first.wait(5))
+            elif url in urls_a[1:3]:
+                self.assertTrue(allow_other_two.wait(5))
+            elif url == urls_b[0]:
+                self.assertTrue(release_second.wait(5))
+            return {"url": url, "success": True}
+
+        with ThreadPoolExecutor(max_workers=2) as clients:
+            first = clients.submit(fetch_many, urls_a, "raw", False, fetch)
+            try:
+                self.assertTrue(first_three.wait(5))
+                second = clients.submit(fetch_many, urls_b, "raw", False, fetch)
+                # Ensure the second batch has entered the FIFO waiting queue.
+                for _ in range(100):
+                    with batch_fetch._ACTIVE_BATCH_FETCHES._condition:
+                        waiting = len(batch_fetch._ACTIVE_BATCH_FETCHES._waiting)
+                    if waiting:
+                        break
+                    second_started.wait(0.01)
+                self.assertGreater(waiting, 0)
+                allow_first.set()
+                self.assertTrue(second_started.wait(5))
+                with gate:
+                    self.assertNotIn(urls_a[3], starts)
+            finally:
+                allow_first.set()
+                allow_other_two.set()
+                release_second.set()
+            self.assertEqual(first.result(timeout=5)["count"], 8)
+            self.assertEqual(second.result(timeout=5)["count"], 1)
+        with gate:
+            self.assertLess(starts.index(urls_b[0]), starts.index(urls_a[3]))
+
     def test_cancellation_skips_pending_urls_without_starting_new_crawls(self):
         urls = [f"https://example.com/page-{i}" for i in range(8)]
         started, release, stopped = Event(), Event(), Event()
