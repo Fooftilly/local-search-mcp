@@ -17,7 +17,7 @@ from urllib.parse import urlsplit, urlunsplit
 from public_suffix import is_public_suffix
 
 UI_URL = "http://127.0.0.1:8791/"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def storage_dir() -> Path:
@@ -54,8 +54,13 @@ def _db():
         updated_at TEXT NOT NULL,
         request_count INTEGER NOT NULL DEFAULT 0,
         last_requested_at TEXT NOT NULL DEFAULT '',
-        last_requested_url TEXT NOT NULL DEFAULT ''
+        last_requested_url TEXT NOT NULL DEFAULT '',
+        explicit_rule INTEGER NOT NULL DEFAULT 0 CHECK(explicit_rule IN (0,1))
     )""")
+    # Older installs have domains but no separate marker for intentional
+    # dashboard decisions versus automatically created request rows.
+    if not any(col["name"] == "explicit_rule" for col in conn.execute("PRAGMA table_info(domains)")):
+        conn.execute("ALTER TABLE domains ADD COLUMN explicit_rule INTEGER NOT NULL DEFAULT 0 CHECK(explicit_rule IN (0,1))")
     conn.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     conn.execute("""CREATE TABLE IF NOT EXISTS decisions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,6 +114,25 @@ def _seed(conn):
                 now = utcnow()
                 conn.execute("INSERT OR IGNORE INTO domains(domain,status,created_at,updated_at) VALUES(?,?,?,?)", (domain,'allowed',now,now))
             conn.execute("INSERT INTO metadata (key, value) VALUES ('domain_seed_v1', '1')")
+        # Preserve intentional decisions when upgrading older databases. Older
+        # requests copied a parent's denial into child rows without user action.
+        # Such inherited rows must never become independent deny rules.
+        if conn.execute("SELECT 1 FROM metadata WHERE key='explicit_rules_v1'").fetchone() is None:
+            conn.execute("""UPDATE domains SET explicit_rule=1
+                WHERE status='allowed' OR
+                (status='denied' AND (
+                    EXISTS (SELECT 1 FROM decisions d WHERE d.domain=domains.domain
+                            AND d.action='deny')
+                    OR NOT EXISTS (
+                        SELECT 1 FROM domains parent
+                        WHERE parent.status='denied' AND parent.domain != domains.domain
+                          AND domains.domain LIKE '%.' || parent.domain
+                    )
+                ))""")
+            # The only remaining denials are auto-inherited bookkeeping rows.
+            # Keep their requests pending until a local decision is made.
+            conn.execute("UPDATE domains SET status='pending' WHERE status='denied' AND explicit_rule=0")
+            conn.execute("INSERT INTO metadata(key,value) VALUES('explicit_rules_v1','1')")
         # Existing databases may contain insecure broad grants from older versions.
         # Remove unsafe rules once and preserve a decision audit trail.
         if conn.execute("SELECT 1 FROM metadata WHERE key='psl_cleanup_v1'").fetchone() is None:
@@ -148,39 +172,49 @@ def counts():
 
 
 def _match(conn, domain: str):
+    """Return the most specific *explicit* policy rule, never request metadata."""
     pieces = domain.split('.')
-    for i in range(len(pieces)-1):
-        candidate='.'.join(pieces[i:])
-        row=conn.execute('SELECT * FROM domains WHERE domain=?',(candidate,)).fetchone()
-        if row:
+    for i in range(len(pieces) - 1):
+        candidate = '.'.join(pieces[i:])
+        row = conn.execute('SELECT * FROM domains WHERE domain=?', (candidate,)).fetchone()
+        if row and row['explicit_rule'] and row['status'] in ('allowed', 'denied'):
             return dict(row)
     return None
 
 
 def request(domain: str, safe_url: str):
-    """Decide effective policy and queue previously unseen domains, without approving."""
-    domain=normalize_domain(domain)
-    now=utcnow()
+    """Apply explicit parent/child rules while recording requests as metadata.
+
+    An automatically created pending child cannot override a later parent
+    decision. Only a local user's explicit decision can create a child rule.
+    """
+    domain = normalize_domain(domain)
+    now = utcnow()
     with _db() as conn:
         _seed(conn)
         conn.execute('BEGIN IMMEDIATE')
         try:
-            row=_match(conn, domain)
-            if row is None:
-                conn.execute('INSERT OR IGNORE INTO domains(domain,status,created_at,updated_at,request_count,last_requested_at,last_requested_url) VALUES (?,\'pending\',?,?,1,?,?)', (domain,now,now,now,safe_url[:512]))
-                status='pending'
-                matched=domain
+            rule = _match(conn, domain)
+            exact = conn.execute('SELECT domain FROM domains WHERE domain=?', (domain,)).fetchone()
+            status = rule['status'] if rule else 'pending'
+            matched = rule['domain'] if rule else domain
+            if exact is None and rule is None:
+                conn.execute("""INSERT INTO domains
+                    (domain,status,created_at,updated_at,request_count,last_requested_at,last_requested_url)
+                    VALUES (?,'pending',?,?,1,?,?)""", (domain, now, now, now, safe_url[:512]))
             else:
-                status=row['status']; matched=row['domain']
-                # Avoid updating the broad parent rule when a subdomain requested.
-                if status in ('pending','denied') and matched != domain:
-                    conn.execute('INSERT OR IGNORE INTO domains(domain,status,created_at,updated_at,request_count,last_requested_at,last_requested_url) VALUES (?,?,?,?,1,?,?)', (domain,status,now,now,now,safe_url[:512]))
-                    matched=domain
-                conn.execute('UPDATE domains SET request_count=request_count+1,last_requested_at=?,last_requested_url=? WHERE domain=?',(now,safe_url[:512],matched))
+                # Keep per-host request counts when already present; otherwise
+                # count against the matching explicit parent without creating
+                # inherited allow/deny rows for every agent-requested host.
+                target = domain if exact else matched
+                conn.execute("""UPDATE domains SET request_count=request_count+1,
+                    last_requested_at=?,last_requested_url=? WHERE domain=?""",
+                    (now, safe_url[:512], target))
             conn.commit()
             return status, matched
         except BaseException:
-            conn.rollback(); raise
+            conn.rollback()
+            raise
 
 
 def decide(domain: str, action: str, new_domain: str = ""):
@@ -196,7 +230,15 @@ def decide(domain: str, action: str, new_domain: str = ""):
         try:
             if action in ('allow','deny'):
                 status = 'allowed' if action == 'allow' else 'denied'
-                conn.execute('INSERT INTO domains(domain,status,created_at,updated_at) VALUES(?,?,?,?) ON CONFLICT(domain) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at',(domain,status,now,now))
+                conn.execute("""INSERT INTO domains(domain,status,created_at,updated_at,explicit_rule)
+                    VALUES(?,?,?,?,1) ON CONFLICT(domain) DO UPDATE
+                    SET status=excluded.status,updated_at=excluded.updated_at,explicit_rule=1""",
+                    (domain,status,now,now))
+                # Pending descendant requests were never independent rules.
+                # After an explicit parent decision their queue entries are
+                # obsolete; explicit child allow/deny exceptions are preserved.
+                conn.execute("""DELETE FROM domains WHERE explicit_rule=0
+                    AND domain != ? AND domain LIKE '%.' || ?""", (domain,domain))
             elif action == 'delete':
                 conn.execute('DELETE FROM domains WHERE domain=?',(domain,))
             else:
