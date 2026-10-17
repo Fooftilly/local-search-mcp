@@ -207,12 +207,12 @@ def web_fetch(url: str, mode: str = "raw") -> dict:
         markdown = fit
     else:
         markdown = raw or fit or ""
+    if mode == "fit" and (markdown is None or markdown == ""):
+        return {"url": final_url, "success": False, "status": "unavailable_extraction",
+                "reason": "Crawl4AI did not provide fit Markdown for this page"}
     if not isinstance(markdown, str):
         return {"url": final_url, "success": False, "status": "invalid_extraction",
                 "reason": "Crawl4AI returned an invalid Markdown representation"}
-    if mode == "fit" and not markdown:
-        return {"url": final_url, "success": False, "status": "unavailable_extraction",
-                "reason": "Crawl4AI did not provide fit Markdown for this page"}
     if len(markdown) > document_pages.MAX_DOCUMENT_CHARS:
         return {"url": final_url, "success": False, "status": "document_too_large",
                 "reason": "Document exceeds the bounded extraction limit; content was not silently truncated"}
