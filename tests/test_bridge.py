@@ -223,6 +223,20 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(metadata["title"], "Top level title")
         self.assertEqual(metadata["description"], "Top level description")
 
+    def test_oversized_metadata_is_bounded_before_serialization(self):
+        import json
+        metadata = self.module._crawl_metadata({
+            "metadata": {
+                "title": "  " + "x" * 239 + "\ud800" + "tail" * 100_000,
+                "description": "z" * 999 + "\udfff" + "tail" * 100_000,
+            }
+        }, "https://example.com/long")
+        self.assertEqual(metadata["title"], "x" * 239 + "?")
+        self.assertEqual(metadata["description"], "z" * 999 + "?")
+        self.assertEqual(len(metadata["title"]), 240)
+        self.assertEqual(len(metadata["description"]), 1000)
+        json.dumps(metadata, ensure_ascii=False).encode("utf-8")
+
     def test_unpaired_unicode_metadata_serializes_for_initial_and_later_pages(self):
         import json
         from collections import OrderedDict
