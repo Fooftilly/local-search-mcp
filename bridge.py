@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 import httpx
 from fastmcp import FastMCP
@@ -30,18 +31,79 @@ def _check_public_target(url: str) -> dict | None:
     return evaluate_fetch_url(url)
 
 
+def _search_tokens(value: str, name: str) -> str:
+    """Validate a short comma-separated SearXNG category or engine selection."""
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be comma-separated text")
+    if not value:
+        return ""
+    parts = [part.strip() for part in value.split(",")]
+    if (len(parts) > 8 or any(
+        not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}", part)
+        for part in parts
+    ) or len({part.casefold() for part in parts}) != len(parts)):
+        raise ValueError(f"{name} must contain 1 to 8 unique names of up to 40 characters")
+    return ",".join(parts)
+
+
+def _search_params(query: str, max_results: int, language: str,
+                   categories: str, time_range: str, engines: str,
+                   page: int) -> tuple[dict, int]:
+    """Translate validated optional arguments to SearXNG's public search API."""
+    if not isinstance(query, str) or not 1 <= len(query.strip()) <= 300:
+        raise ValueError("Query must contain 1 to 300 characters")
+    if isinstance(max_results, bool) or not isinstance(max_results, int):
+        raise ValueError("max_results must be an integer")
+    max_results = max(1, min(max_results, 12))  # Preserve old clamping behavior.
+    if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= 10:
+        raise ValueError("page must be an integer from 1 through 10")
+    # Match SearXNG's VALID_LANGUAGE_CODE plus its recognized 'auto'/'all'
+    # selectors. Broad BCP-47 tags (including es-419) are not accepted by
+    # the current upstream search-language parser.
+    if not isinstance(language, str) or (
+        language and language not in ("all", "auto")
+        and not re.fullmatch(r"[a-z]{2,3}(?:-[a-zA-Z]{2})?", language)
+    ):
+        raise ValueError("language must be en, en-US, auto, all or a supported similar code")
+    if not isinstance(time_range, str) or time_range not in ("", "day", "week", "month", "year"):
+        raise ValueError("time_range must be day, week, month, or year")
+    selected_categories = _search_tokens(categories, "categories")
+    selected_engines = _search_tokens(engines, "engines")
+    params = {"q": query.strip(), "format": "json"}
+    if language:
+        params["language"] = language
+    if selected_categories:
+        params["categories"] = selected_categories
+    if time_range:
+        params["time_range"] = time_range
+    if selected_engines:
+        params["engines"] = selected_engines
+    if page != 1:
+        params["pageno"] = page
+    return params, max_results
+
+
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
 @logged_tool("search")
-def web_search(query: str, max_results: int = 8) -> list[dict]:
-    """Search the public web through the user's local SearXNG instance."""
-    query = query.strip()
-    if not 1 <= len(query) <= 300:
-        raise ValueError("Query must contain 1 to 300 characters")
-    max_results = max(1, min(max_results, 12))
+def web_search(query: str, max_results: int = 8, language: str = "",
+               categories: str = "", time_range: str = "",
+               engines: str = "", page: int = 1) -> list[dict]:
+    """Search locally via SearXNG, optionally filtering language, source and date.
+
+    categories and engines are comma-separated names configured on the local
+    instance. Filters may be ignored by upstream engines without that ability.
+    """
+    params, max_results = _search_params(
+        query, max_results, language, categories, time_range, engines, page,
+    )
     with httpx.Client(timeout=25, trust_env=False) as client:
-        response = client.get(f"{SEARXNG_URL}/search", params={"q": query, "format": "json"})
+        response = client.get(f"{SEARXNG_URL}/search", params=params)
+        if response.status_code in (400, 422) and len(params) > 2:
+            raise ValueError("Local SearXNG rejected the requested filters or page")
         response.raise_for_status()
-        results = response.json().get("results", [])
+        payload = response.json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("results", []), list):
+        raise ValueError("Local SearXNG returned an invalid results structure")
     return [
         {
             "title": str(r.get("title", ""))[:240],
@@ -49,7 +111,7 @@ def web_search(query: str, max_results: int = 8) -> list[dict]:
             "snippet": str(r.get("content", ""))[:1100],
             "engine": str(r.get("engine", "")),
         }
-        for r in results[:max_results]
+        for r in [row for row in payload.get("results", []) if isinstance(row, dict)][:max_results]
     ]
 
 
