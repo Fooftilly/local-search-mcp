@@ -1,6 +1,7 @@
 """A local, read-only MCP adapter for SearXNG and self-hosted Crawl4AI."""
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import time
@@ -15,6 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 from history_log import logged_tool
 import document_pages
 import request_cache
+from batch_fetch import fetch_many
 
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://127.0.0.1:8888").rstrip("/")
 CRAWL4AI_URL = os.getenv("CRAWL4AI_URL", "http://127.0.0.1:11235").rstrip("/")
@@ -381,6 +383,24 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False) -> dict:
         return {"url": url, "success": False, "status": "blocked",
                 "reason": "Domain approval changed during the request. Retry after reviewing permissions."}
     return response
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def web_fetch_batch(urls: list[str], mode: str = "raw",
+                          fresh: bool = False) -> dict:
+    """Fetch 1–8 approved URLs, at most 3 concurrently, with ordered results.
+
+    Each unique URL uses the existing guarded web_fetch path. If the MCP call
+    is cancelled, pending jobs are skipped; browser jobs already running
+    cannot be forcibly stopped.
+    """
+    cancelled = threading.Event()
+    try:
+        return await asyncio.to_thread(
+            fetch_many, urls, mode, fresh, web_fetch, cancelled=cancelled)
+    except asyncio.CancelledError:
+        cancelled.set()
+        raise
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
