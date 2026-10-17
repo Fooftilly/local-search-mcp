@@ -18,7 +18,7 @@ from public_suffix import is_public_suffix, registrable_domain
 from request_cache import invalidate_fetch
 
 UI_URL = "http://127.0.0.1:8791/"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 # Fixed safeguards for agent-created pending requests (not explicit rules).
 MAX_PENDING_TOTAL = 512
 MAX_NEW_PENDING_GLOBAL_PER_HOUR = 128
@@ -67,11 +67,20 @@ def _db():
                 request_count INTEGER NOT NULL DEFAULT 0,
                 last_requested_at TEXT NOT NULL DEFAULT '',
                 last_requested_url TEXT NOT NULL DEFAULT '',
-                explicit_rule INTEGER NOT NULL DEFAULT 0 CHECK(explicit_rule IN (0,1))
+                explicit_rule INTEGER NOT NULL DEFAULT 0 CHECK(explicit_rule IN (0,1)),
+                match_scope TEXT NOT NULL DEFAULT 'subdomains' CHECK(match_scope IN ('exact','subdomains')),
+                expires_at TEXT NOT NULL DEFAULT ''
             )""")
             if not any(col["name"] == "explicit_rule" for col in conn.execute("PRAGMA table_info(domains)")):
                 conn.execute("""ALTER TABLE domains ADD COLUMN explicit_rule INTEGER
                     NOT NULL DEFAULT 0 CHECK(explicit_rule IN (0,1))""")
+            columns = {col["name"] for col in conn.execute("PRAGMA table_info(domains)")}
+            if "match_scope" not in columns:
+                conn.execute("""ALTER TABLE domains ADD COLUMN match_scope TEXT
+                    NOT NULL DEFAULT 'subdomains'
+                    CHECK(match_scope IN ('exact','subdomains'))""")
+            if "expires_at" not in columns:
+                conn.execute("ALTER TABLE domains ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''")
             conn.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             conn.execute("""CREATE TABLE IF NOT EXISTS decisions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -220,22 +229,35 @@ def entries(search: str = "", limit: int = 1000, status: str | None = None):
             " ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'allowed' THEN 1 ELSE 2 END, updated_at DESC LIMIT ?",
             (*args, limit),
         ).fetchall()
-        return [dict(r) for r in rows]
+        now = utcnow()
+        return [dict(r) | {"expired": bool(
+            r["explicit_rule"] and r["expires_at"] and r["expires_at"] <= now)}
+            for r in rows]
 
 def counts():
     with _db() as conn:
         _seed(conn)
-        return {s: conn.execute('SELECT count(*) FROM domains WHERE status=?',(s,)).fetchone()[0] for s in ('pending','allowed','denied')}
+        now = utcnow()
+        return {s: conn.execute(
+            "SELECT count(*) FROM domains WHERE status=? AND "
+            "(?='pending' OR expires_at='' OR expires_at>?)",
+            (s, s, now)).fetchone()[0] for s in ('pending','allowed','denied')}
 
 
-def _match(conn, domain: str):
-    """Return the most specific *explicit* policy rule, never request metadata."""
+def _match(conn, domain: str, now: str):
+    """Most-specific currently valid rule; exact-host scope never matches children."""
     pieces = domain.split('.')
     for i in range(len(pieces) - 1):
         candidate = '.'.join(pieces[i:])
         row = conn.execute('SELECT * FROM domains WHERE domain=?', (candidate,)).fetchone()
-        if row and row['explicit_rule'] and row['status'] in ('allowed', 'denied'):
-            return dict(row)
+        if not row or not row['explicit_rule'] or row['status'] not in ('allowed','denied'):
+            continue
+        if row['match_scope'] == 'exact' and candidate != domain:
+            continue
+        # ISO8601 UTC seconds are fixed width, so lexical order is chronological.
+        if row['expires_at'] and row['expires_at'] <= now:
+            continue
+        return dict(row)
     return None
 
 
@@ -251,8 +273,18 @@ def request(domain: str, safe_url: str):
         _seed(conn)
         conn.execute('BEGIN IMMEDIATE')
         try:
-            rule = _match(conn, domain)
-            exact = conn.execute('SELECT domain FROM domains WHERE domain=?', (domain,)).fetchone()
+            rule = _match(conn, domain, now)
+            exact = conn.execute('SELECT * FROM domains WHERE domain=?', (domain,)).fetchone()
+            if (rule is None and exact is not None and exact['explicit_rule']
+                    and exact['expires_at'] and exact['expires_at'] <= now):
+                # An expired exact entry must become an actionable pending row:
+                # otherwise the bridge asks for approval but the UI shows it as
+                # already allowed/denied. Keep its request counts and history.
+                conn.execute("""UPDATE domains
+                    SET status='pending',explicit_rule=0,expires_at='',
+                        match_scope='subdomains',updated_at=?
+                    WHERE domain=?""", (now, domain))
+                invalidate_fetch()
             status = rule['status'] if rule else 'pending'
             matched = rule['domain'] if rule else domain
             if exact is None and rule is None:
@@ -310,43 +342,60 @@ def request(domain: str, safe_url: str):
             raise
 
 
-def decide(domain: str, action: str, new_domain: str = ""):
-    domain=normalize_domain(domain)
+def decide(domain: str, action: str, new_domain: str = "",
+           *, scope: str = "subdomains", expires_minutes: int = 0):
+    """Only the dashboard can write explicit decisions and their limits.
+
+    0 minutes means permanent. Allowed finite durations are deliberately
+    bounded to avoid arbitrary, malformed or never-ending timestamps.
+    """
+    domain = normalize_domain(domain)
     if action not in ('allow','deny','delete','rename'):
         raise ValueError('Unrecognized domain action')
     if action == 'rename':
-        new_domain=normalize_domain(new_domain)
-    now=utcnow()
+        new_domain = normalize_domain(new_domain)
+    if scope not in ('exact', 'subdomains'):
+        raise ValueError('Invalid rule scope')
+    if type(expires_minutes) is not int or expires_minutes not in (0, 60, 1440, 10080):
+        raise ValueError('Invalid permission duration')
+    now = utcnow()
+    expires_at = ((datetime.fromisoformat(now.replace('Z', '+00:00')) +
+                   timedelta(minutes=expires_minutes)).isoformat(
+                       timespec='seconds').replace('+00:00', 'Z')
+                  if expires_minutes else '')
     with _db() as conn:
         _seed(conn)
         conn.execute('BEGIN IMMEDIATE')
         try:
             if action in ('allow','deny'):
                 status = 'allowed' if action == 'allow' else 'denied'
-                conn.execute("""INSERT INTO domains(domain,status,created_at,updated_at,explicit_rule)
-                    VALUES(?,?,?,?,1) ON CONFLICT(domain) DO UPDATE
-                    SET status=excluded.status,updated_at=excluded.updated_at,explicit_rule=1""",
-                    (domain,status,now,now))
-                # Pending descendant requests were never independent rules.
-                # After an explicit parent decision their queue entries are
-                # obsolete; explicit child allow/deny exceptions are preserved.
-                conn.execute("""DELETE FROM domains WHERE explicit_rule=0
-                    AND domain != ? AND domain LIKE '%.' || ?""", (domain,domain))
+                conn.execute("""INSERT INTO domains
+                    (domain,status,created_at,updated_at,explicit_rule,match_scope,expires_at)
+                    VALUES(?,?,?,?,1,?,?) ON CONFLICT(domain) DO UPDATE
+                    SET status=excluded.status,updated_at=excluded.updated_at,
+                        explicit_rule=1,match_scope=excluded.match_scope,
+                        expires_at=excluded.expires_at""",
+                    (domain,status,now,now,scope,expires_at))
+                # Remove only obsolete auto-queued descendants covered by the
+                # new rule. Exact-host rules must leave children in the queue.
+                if scope == 'subdomains':
+                    conn.execute("""DELETE FROM domains WHERE explicit_rule=0
+                        AND domain != ? AND domain LIKE '%.' || ?""", (domain,domain))
             elif action == 'delete':
                 conn.execute('DELETE FROM domains WHERE domain=?',(domain,))
             else:
                 if not conn.execute('SELECT 1 FROM domains WHERE domain=?',(domain,)).fetchone():
                     raise ValueError('Domain no longer exists')
                 if domain != new_domain:
-                    conn.execute('UPDATE domains SET domain=?,updated_at=? WHERE domain=?',(new_domain,now,domain))
+                    conn.execute('UPDATE domains SET domain=?,updated_at=? WHERE domain=?',
+                                 (new_domain,now,domain))
             conn.execute('INSERT INTO decisions(at,domain,action) VALUES(?,?,?)',(now,domain,action))
-            # Invalidate before the commit publishes a new rule. Readers may
-            # check epochs concurrently, so commit-then-invalidate would
-            # leave a narrow post-commit window for stale cache returns.
+            # As before, invalidate before the write is visible to readers.
             invalidate_fetch()
             conn.commit()
         except BaseException:
-            conn.rollback(); raise
+            conn.rollback()
+            raise
 
 
 def clear_pending_requests() -> int:
