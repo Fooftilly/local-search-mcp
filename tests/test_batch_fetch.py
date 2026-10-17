@@ -1,6 +1,7 @@
 """Bounded batch scheduling, isolation, cancellation and privacy regressions."""
-from concurrent.futures import CancelledError
-from threading import Barrier, Lock
+from collections import OrderedDict
+from concurrent.futures import CancelledError, ThreadPoolExecutor
+from threading import Barrier, Event, Lock
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,8 @@ import unittest
 from unittest.mock import patch
 
 from batch_fetch import MAX_URLS, fetch_many, validate_batch
+import document_pages
+import request_cache
 
 
 class BatchFetchTests(unittest.TestCase):
@@ -83,6 +86,62 @@ class BatchFetchTests(unittest.TestCase):
                             for entry in events))
         self.assertNotIn("PRIVATE_AUDIT_SENTINEL", audit)
         self.assertNotIn("safe page", audit)
+
+    def test_policy_revocation_mid_batch_redacts_earlier_successes(self):
+        request_cache.reset_for_test()
+        self.addCleanup(request_cache.reset_for_test)
+        early_done, slow_started, release_slow = Event(), Event(), Event()
+        urls = ["https://example.com/early", "https://example.com/slow"]
+        def fetch(url, mode, fresh):
+            if url.endswith("/early"):
+                early_done.set()
+                return {"success": True, "url": url,
+                        "markdown": "REVOKED_CONTENT_SENTINEL"}
+            slow_started.set()
+            self.assertTrue(release_slow.wait(5))
+            return {"success": True, "url": url, "markdown": "LATE_CONTENT_SENTINEL"}
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(fetch_many, urls, "raw", False, fetch)
+            try:
+                self.assertTrue(early_done.wait(5))
+                self.assertTrue(slow_started.wait(5))
+                request_cache.invalidate_fetch()
+            finally:
+                release_slow.set()
+            response = future.result(timeout=5)
+
+        self.assertEqual(response["count"], 2)
+        self.assertEqual([x["result"]["status"] for x in response["results"]],
+                         ["blocked", "blocked"])
+        self.assertNotIn("REVOKED_CONTENT_SENTINEL", str(response))
+        self.assertNotIn("LATE_CONTENT_SENTINEL", str(response))
+
+    def test_evicted_continuations_are_not_returned_as_usable_handles(self):
+        # Eight eligible documents of about 1 MiB each exceed the existing
+        # 3-million-character global store. Returning all eight handles would
+        # silently give callers five already-evicted continuation capabilities.
+        urls = [f"https://example.com/long-{i}" for i in range(8)]
+        with patch.object(document_pages, "_CACHE", OrderedDict()):
+            def fetch(url, mode, fresh):
+                contents = "x" * document_pages.MAX_DOCUMENT_CHARS
+                handle, pages = document_pages.save(url, contents, {})
+                return {"url": url, "success": True, "markdown": contents[:24000],
+                        "truncated": True, "document_id": handle,
+                        "page": 1, "page_count": pages}
+            response = fetch_many(urls, "raw", False, fetch)
+            valid = [row["result"] for row in response["results"]
+                     if row["result"]["success"]]
+            expired = [row["result"] for row in response["results"]
+                       if row["result"].get("status") == "continuation_evicted"]
+            self.assertEqual(len(valid) + len(expired), 8)
+            self.assertGreater(len(expired), 0)
+            self.assertLessEqual(len(valid), 3)
+            for result in valid:
+                self.assertTrue(document_pages.read(result["document_id"], 2)["success"])
+            for result in expired:
+                self.assertNotIn("document_id", result)
+                self.assertNotIn("markdown", result)
 
     def test_per_url_failures_and_cancellations_do_not_abort_other_urls(self):
         urls = ["https://example.com/ok", "https://example.com/timeout",

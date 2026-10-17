@@ -11,6 +11,8 @@ from copy import deepcopy
 from typing import Callable
 
 from history_log import logged_tool
+import document_pages
+import request_cache
 
 MAX_URLS = 8
 MAX_WORKERS = 3
@@ -46,6 +48,25 @@ def _safe_failure(url: str, exc: Exception) -> dict:
             "error_type": type(exc).__name__}
 
 
+def _finalize_result(url: str, answer: dict, *, policy_changed: bool) -> dict:
+    """Never return content revoked mid-batch or already-evicted page handles."""
+    if policy_changed and answer.get("success") is True:
+        return {"url": url, "success": False, "status": "blocked",
+                "reason": "Domain permissions changed during the batch. Retry the URL."}
+    if answer.get("success") is True and "document_id" in answer:
+        try:
+            continuation = document_pages.read(answer["document_id"], 2)
+            valid = continuation.get("success") is True
+        except (ValueError, TypeError):
+            valid = False
+        if not valid:
+            # Discard any unusable token, page text or other cached details
+            # rather than presenting a fake usable long-document result.
+            return {"url": url, "success": False, "status": "continuation_evicted",
+                    "reason": "The temporary continuation expired or was evicted while fetching other batch URLs. Fetch this URL individually."}
+    return answer
+
+
 def fetch_many(urls: list[str], mode: str, fresh: bool,
                fetch: Callable[[str, str, bool], dict]) -> dict:
     """Map approved single-page fetches to independent ordered results.
@@ -54,6 +75,7 @@ def fetch_many(urls: list[str], mode: str, fresh: bool,
     and retry limits still apply. No new URLs are approved by this function.
     """
     validate_batch(urls, mode, fresh)
+    starting_policy_epoch = request_cache.policy_epoch()
     unique = list(dict.fromkeys(urls))
     results: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(unique)),
@@ -74,11 +96,25 @@ def fetch_many(urls: list[str], mode: str, fresh: bool,
     # order. Each duplicate receives its own response object and audit event.
     seen: set[str] = set()
     output = []
+    # Invalidation is intentionally conservative: permission changes to any
+    # domain block earlier successes, even if another domain was edited. A
+    # single-fetch result may have completed minutes before the last worker.
+    changed = starting_policy_epoch != request_cache.policy_epoch()
+    finalized = {
+        url: _finalize_result(url, result, policy_changed=changed)
+        for url, result in results.items()
+    }
     for index, url in enumerate(urls):
-        result = deepcopy(results[url])
+        result = deepcopy(finalized[url])
         if url in seen:
             _audit_duplicate(url, result)
         else:
             seen.add(url)
         output.append({"index": index, "requested_url": url, "result": result})
+    # A second check also covers an edit while the final rows are assembled.
+    if starting_policy_epoch != request_cache.policy_epoch():
+        for row in output:
+            if row["result"].get("success") is True:
+                row["result"] = _finalize_result(
+                    row["requested_url"], row["result"], policy_changed=True)
     return {"results": output, "count": len(output)}
