@@ -1,0 +1,121 @@
+"""Exercise the real FastMCP tool protocol without external services or credentials.
+
+In-process FastMCP transport verifies tool registration, structured return
+values, domain-approval boundaries, and mocked SearXNG/Crawl4AI HTTP calls.
+It does NOT exercise a real Chromium browser or certify network isolation.
+"""
+from __future__ import annotations
+
+import os
+import socket
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from fastmcp import Client
+import httpx
+
+import bridge
+import domain_policy
+
+
+class MCPContractTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        env = patch.dict(os.environ, {
+            "XDG_STATE_HOME": self.tmp.name,
+            "ALLOWED_CRAWL_DOMAINS": "example.com",
+        })
+        env.start()
+        self.addCleanup(env.stop)
+
+    async def test_tools_exposed_and_unknown_domain_is_pending(self):
+        """An actual MCP call must return an actionable, non-granting response."""
+        async with Client(bridge.mcp) as client:
+            names = {tool.name for tool in await client.list_tools()}
+            self.assertIn("web_search", names)
+            self.assertIn("web_fetch", names)
+            with patch.object(bridge.httpx, "Client") as backend:
+                result = await client.call_tool(
+                    "web_fetch", {"url": "https://docs.python.org/safe?secret=hidden"}
+                )
+                backend.assert_not_called()
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.data["status"], "approval_required")
+        self.assertIn("approval_dashboard", result.data)
+        self.assertEqual(domain_policy.request(
+            "docs.python.org", "https://docs.python.org/safe"
+        )[0], "pending")
+        self.assertNotIn("hidden", str(domain_policy.entries()))
+
+    async def test_invalid_public_targets_are_blocked_without_backend(self):
+        """MCP cannot fetch local, special-use, credentialed or nonstandard URLs."""
+        invalid = (
+            "http://127.0.0.1/",
+            "http://localhost/",
+            "file:///etc/passwd",
+            "http://example.com:8080/",
+            "https://co.uk/",
+            "https://username:password@example.com/",
+        )
+        async with Client(bridge.mcp) as client:
+            for target in invalid:
+                with self.subTest(url=target):
+                    with patch.object(bridge.httpx, "Client") as backend:
+                        result = await client.call_tool("web_fetch", {"url": target})
+                        backend.assert_not_called()
+                    self.assertFalse(result.is_error)
+                    self.assertEqual(result.data["status"], "blocked")
+
+    async def test_approved_search_and_fetch_over_real_mcp_dispatch(self):
+        """Both real MCP tools must work against simulated local upstream APIs."""
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append((request.method, request.url.path))
+            if request.url.path == "/search":
+                self.assertEqual(request.url.params["q"], "secure search")
+                return httpx.Response(200, json={
+                    "results": [{"title": "Result", "url": "https://example.com",
+                                 "content": "summary", "engine": "mock"}]
+                })
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            if request.url.path == "/crawl":
+                self.assertEqual(request.method, "POST")
+                return httpx.Response(200, json={
+                    "results": [{"url": "https://example.com/page",
+                                 "success": True, "markdown": "Page content"}]
+                })
+            raise AssertionError(f"Unexpected upstream API path: {request.url.path}")
+
+        original = httpx.Client
+
+        def client_factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+
+        global_answer = [(socket.AF_INET, socket.SOCK_STREAM, 6, "",
+                          ("93.184.215.14", 443))]
+        with patch.object(bridge, "CRAWLER_SECURITY_WARNING", None), \
+             patch.object(bridge.httpx, "Client", side_effect=client_factory), \
+             patch.object(domain_policy.socket, "getaddrinfo", return_value=global_answer):
+            async with Client(bridge.mcp) as client:
+                search = await client.call_tool(
+                    "web_search", {"query": "secure search", "max_results": 2}
+                )
+                fetch = await client.call_tool(
+                    "web_fetch", {"url": "https://example.com/page"}
+                )
+        self.assertFalse(search.is_error)
+        self.assertEqual(search.data[0]["title"], "Result")
+        self.assertFalse(fetch.is_error)
+        self.assertTrue(fetch.data["success"])
+        self.assertEqual(fetch.data["markdown"], "Page content")
+        self.assertEqual(requests, [
+            ("GET", "/search"), ("GET", "/health"), ("POST", "/crawl")
+        ])
+
+
+if __name__ == "__main__":
+    unittest.main()
