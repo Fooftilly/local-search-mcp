@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Literal
 import os
 import re
 import time
@@ -16,6 +17,7 @@ from urllib.parse import urlsplit, urlunsplit
 from history_log import logged_tool
 import document_pages
 import request_cache
+from search_results import enrich_search_results
 from batch_fetch import fetch_many
 
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://127.0.0.1:8888").rstrip("/")
@@ -131,7 +133,9 @@ def _upstream_error(response, backend: str) -> dict:
     return result
 
 
-def _run_search(params: dict, max_results: int) -> list[dict] | dict:
+def _run_search(params: dict, max_results: int, *,
+                deduplicate: bool = False,
+                ranking: str = "searxng") -> list[dict] | dict:
     with httpx.Client(timeout=25, trust_env=False) as client:
         response = _retry_request(lambda: client.get(
             f"{SEARXNG_URL}/search", params=params))
@@ -158,25 +162,34 @@ def _run_search(params: dict, max_results: int) -> list[dict] | dict:
     if rows and not valid_rows:
         return {"success": False, "status": "invalid_response", "backend": "searxng",
                 "reason": "SearXNG returned results without any valid result objects."}
-    return [
-        {
-            "title": str(r.get("title", ""))[:240],
-            "url": str(r.get("url", "")),
-            "snippet": str(r.get("content", ""))[:1100],
-            "engine": str(r.get("engine", "")),
-        }
-        for r in valid_rows[:max_results]
-    ]
+    return enrich_search_results(
+        valid_rows, max_results, deduplicate=deduplicate, ranking=ranking
+    )
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
 @logged_tool("search")
 def web_search(query: str, max_results: int = 8, language: str = "",
                categories: str = "", time_range: str = "",
-               engines: str = "", page: int = 1, fresh: bool = False) -> list[dict] | dict:
-    """Search SearXNG with bounded, memory-only caching; fresh bypasses cache."""
+               engines: str = "", page: int = 1, fresh: bool = False,
+               deduplicate: bool = False,
+               ranking: Literal["searxng", "source_count"] = "searxng") -> list[dict] | dict:
+    """Search SearXNG, with optional URL deduplication and source attribution.
+
+    Defaults preserve SearXNG order and the historic four-field result shape.
+    Set deduplicate=true to merge equivalent URLs; ranking="source_count"
+    requires deduplicate=true and sorts by distinct reporting engine count,
+    breaking ties by SearXNG order. ranking="searxng" preserves upstream order.
+    Set fresh=true to bypass the in-memory search cache and fetch fresh data.
+    """
     if not isinstance(fresh, bool):
         raise ValueError("fresh must be a boolean")
+    if not isinstance(deduplicate, bool):
+        raise ValueError("deduplicate must be a boolean")
+    if not isinstance(ranking, str) or ranking not in ("searxng", "source_count"):
+        raise ValueError("ranking must be searxng or source_count")
+    if ranking == "source_count" and not deduplicate:
+        raise ValueError("source_count ranking requires deduplicate=true")
     params, max_results = _search_params(
         query, max_results, language, categories, time_range, engines, page,
     )
@@ -186,10 +199,12 @@ def web_search(query: str, max_results: int = 8, language: str = "",
         r"@|https?://|\b[a-z0-9-]+(?:\.[a-z0-9-]+)+/\S+|(?:password|token|secret|api[_-]?key|bearer|cookie)\s*[:=]",
         params["q"], flags=re.IGNORECASE))
     key = None if private else (
-        "search", SEARXNG_URL, tuple(sorted(params.items())), max_results,
+        "search", SEARXNG_URL, tuple(sorted(params.items())),
+        max_results, deduplicate, ranking,
     )
     return request_cache.run(
-        "search", key, lambda: _run_search(params, max_results),
+        "search", key, lambda: _run_search(
+            params, max_results, deduplicate=deduplicate, ranking=ranking),
         ttl=request_cache.SEARCH_TTL, fresh=fresh, should_store=lambda r: isinstance(r, list),
     )
 

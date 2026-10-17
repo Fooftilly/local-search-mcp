@@ -28,6 +28,58 @@ class BridgeTests(unittest.TestCase):
         self.module.request_cache.reset_for_test()
         self.addCleanup(self.module.request_cache.reset_for_test)
 
+    def test_opt_in_search_dedupe_rank_and_cache_isolation(self):
+        calls = []
+        rows = [
+            {"title": "First", "url": "https://EXAMPLE.org:443/post#part",
+             "content": "first snippet", "engine": "qwant"},
+            {"title": "Other", "url": "https://other.example/path",
+             "content": "unrelated", "engine": "bing"},
+            {"title": "Alternate", "url": "https://example.org/post",
+             "content": "second snippet", "engine": "yahoo"},
+            {"title": "Third", "url": "https://third.example/", "engine": "brave"},
+        ]
+        original = httpx.Client
+        def handler(request):
+            calls.append(dict(request.url.params))
+            return httpx.Response(200, json={"results": rows})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            default = self.module.web_search("dedupe lookup", max_results=2)
+            unique = self.module.web_search("dedupe lookup", max_results=2,
+                                            deduplicate=True)
+            ranked = self.module.web_search("dedupe lookup", max_results=2,
+                                            deduplicate=True, ranking="source_count")
+            self.assertEqual(self.module.web_search(
+                "dedupe lookup", max_results=2, deduplicate=True), unique)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all(params == {"q": "dedupe lookup", "format": "json"}
+                            for params in calls))
+        self.assertEqual([x["title"] for x in default], ["First", "Other"])
+        self.assertEqual(set(default[0]), {"title", "url", "snippet", "engine"})
+        self.assertEqual([x["title"] for x in unique], ["First", "Other"])
+        self.assertEqual(unique[0]["source_engines"], ["qwant", "yahoo"])
+        self.assertEqual(unique[0]["source_matches"][0]["title"], "Alternate")
+        self.assertEqual(unique[1]["source_matches"], [])
+        self.assertEqual([x["title"] for x in ranked], ["First", "Other"])
+        self.assertEqual(ranked[0]["source_count"], 2)
+
+    def test_search_dedupe_invalid_options_do_not_contact_backend(self):
+        cases = [
+            {"deduplicate": 1},
+            {"deduplicate": "true"},
+            {"ranking": "not_real"},
+            {"ranking": "source_count"},
+            {"ranking": 2, "deduplicate": True},
+        ]
+        for options in cases:
+            with self.subTest(options=options):
+                with patch.object(self.module.httpx, "Client") as client:
+                    with self.assertRaises(ValueError):
+                        self.module.web_search("test", **options)
+                    client.assert_not_called()
+
     def test_search_results_are_cached_per_filter_with_fresh_bypass(self):
         seen = []
         def handler(request):

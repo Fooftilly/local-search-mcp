@@ -4,7 +4,7 @@ A **local, read-only MCP bridge** for [SearXNG](https://docs.searxng.org/) searc
 
 ## What it provides
 
-- MCP `web_search(query, max_results=8)` — SearXNG-backed public web search, with optional language, category, time range, engine and page filters. See [SEARCH.md](SEARCH.md).
+- MCP `web_search(query, max_results=8)` — SearXNG-backed public web search, with optional language, category, time range, engine and page filters, plus opt-in URL deduplication and deterministic source-count ranking. See [SEARCH.md](SEARCH.md).
 - MCP `web_fetch(url, mode="raw")` — Crawl4AI-backed extraction of an approved public page, with optional fit Markdown and short metadata. Long approved pages expose `web_fetch_page(document_id, page=2)` for bounded in-memory continuation without recrawling. See [EXTRACTION.md](EXTRACTION.md). Unknown domains enter the dashboard approval queue. Agents cannot approve domains.
 - MCP `web_fetch_batch(urls, mode="raw", fresh=false)` — fetch up to eight public URLs in one call, with three concurrent workers, per-URL permission checks and ordered individual outcomes. See [BATCH.md](BATCH.md).
 - Local approvals, deny rules, domain history and search/fetch audit trail.

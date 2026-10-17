@@ -115,6 +115,10 @@ def logged_tool(kind: str):
                     value = params.get(field)
                     if isinstance(value, str) and value:
                         event[field] = value[:340]
+                if params.get("deduplicate") is True:
+                    event["deduplicate"] = True
+                if params.get("ranking") == "source_count":
+                    event["ranking"] = "source_count"
             elif kind == "page":
                 # Never persist bearer document handles, page text, or target URL.
                 requested_page = params.get("page", 2)
