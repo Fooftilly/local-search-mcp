@@ -74,6 +74,27 @@ class DashboardTests(unittest.TestCase):
         self.assertNotIn('<td class="domain">blocked.example.org</td>', filtered)
         self.assertNotIn('<td class="domain">r0.flood-example.org</td>', filtered)
 
+    def test_clear_pending_requires_confirmation_and_preserves_decisions(self):
+        policy.decide("trusted.example.net", "allow")
+        policy.request("queued.example.net", "https://queued.example.net/")
+        endpoint = f"http://127.0.0.1:{self.server_port}/pending/clear"
+        def clear(confirm, csrf=admin_ui.CSRF, headers=None):
+            data = urlencode({"confirm": confirm, "csrf": csrf}).encode()
+            request = Request(endpoint, data=data, method="POST", headers=headers or {})
+            try:
+                with urlopen(request, timeout=3) as response:
+                    return response.status
+            except HTTPError as exc:
+                return exc.code
+        self.assertEqual(clear("CLEAR", csrf="bad"), 403)
+        self.assertEqual(clear("CLEAR", headers={"Origin": "http://evil.example"}), 403)
+        self.assertEqual(clear("wrong"), 400)
+        self.assertEqual(policy.counts()["pending"], 1)
+        self.assertEqual(clear("CLEAR"), 200)
+        self.assertEqual(policy.counts()["pending"], 0)
+        self.assertEqual(policy.request("trusted.example.net",
+                                        "https://trusted.example.net/")[0], "allowed")
+
     def test_reject_csrf(self):
         self.assertEqual(self.post(csrf='bad'),403)
 

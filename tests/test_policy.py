@@ -473,6 +473,43 @@ class DomainPolicyTests(unittest.TestCase):
                     "SELECT COUNT(*) FROM pending_admissions WHERE site='quota-example.net'"
                 ).fetchone()[0], 1)
 
+    def test_global_hourly_admissions_bound_cross_site_bursts(self):
+        with (patch.object(policy, "MAX_PENDING_TOTAL", 512),
+              patch.object(policy, "MAX_NEW_PENDING_GLOBAL_PER_HOUR", 3),
+              patch.object(policy, "MAX_PENDING_PER_SITE", 32),
+              patch.object(policy, "MAX_NEW_PENDING_PER_SITE_PER_HOUR", 8)):
+            for i in range(3):
+                host = f"h.multi-site-{i}.org"
+                self.assertEqual(policy.request(host, "https://" + host)[0], "pending")
+            fourth = "new.unique-site.org"
+            self.assertEqual(policy.request(fourth, "https://" + fourth)[0], "queue_full")
+            self.assertEqual(policy.clear_pending_requests(), 3)
+            self.assertEqual(policy.counts()["pending"], 0)
+            # Bulk-clearing requests does not reset a rolling admission limit.
+            self.assertEqual(policy.request(fourth, "https://" + fourth)[0], "queue_full")
+            with policy._db() as conn:
+                conn.execute("UPDATE pending_admissions SET admitted_at='2020-01-01T00:00:00Z'")
+                conn.commit()
+            self.assertEqual(policy.request(fourth, "https://" + fourth)[0], "pending")
+
+    def test_clear_pending_preserves_explicit_rules_and_audits(self):
+        policy.decide("blocked.example.net", "deny")
+        self.assertEqual(policy.request("one.queue-example.net", "https://one.queue-example.net")[0],
+                         "pending")
+        self.assertEqual(policy.request("two.queue-example.net", "https://two.queue-example.net")[0],
+                         "pending")
+        self.assertEqual(policy.clear_pending_requests(), 2)
+        self.assertEqual(policy.clear_pending_requests(), 0)
+        self.assertEqual(policy.counts()["pending"], 0)
+        self.assertEqual(policy.request("blocked.example.net", "https://blocked.example.net")[0],
+                         "denied")
+        self.assertEqual(policy.request("example.com", "https://example.com")[0], "allowed")
+        with policy._db() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT count(*) FROM decisions WHERE action='delete' "
+                "AND domain IN ('one.queue-example.net','two.queue-example.net')"
+            ).fetchone()[0], 2)
+
     def test_queue_limited_fetch_is_not_falsely_reported_pending(self):
         with patch.object(policy, "MAX_PENDING_TOTAL", 0):
             result = policy.evaluate_fetch_url("https://docs.python.org/3/")

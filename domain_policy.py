@@ -20,6 +20,7 @@ UI_URL = "http://127.0.0.1:8791/"
 SCHEMA_VERSION = 3
 # Fixed safeguards for agent-created pending requests (not explicit rules).
 MAX_PENDING_TOTAL = 512
+MAX_NEW_PENDING_GLOBAL_PER_HOUR = 128
 MAX_PENDING_PER_SITE = 32
 MAX_NEW_PENDING_PER_SITE_PER_HOUR = 8
 
@@ -86,6 +87,9 @@ def _db():
             conn.execute("""CREATE INDEX IF NOT EXISTS
                 idx_pending_admissions_site_time
                 ON pending_admissions(site, admitted_at)""")
+            conn.execute("""CREATE INDEX IF NOT EXISTS
+                idx_pending_admissions_time
+                ON pending_admissions(admitted_at)""")
             conn.commit()
         except BaseException:
             conn.rollback()
@@ -274,7 +278,12 @@ def request(domain: str, safe_url: str):
                        WHERE site=? AND admitted_at >= ?""",
                     (site, cutoff),
                 ).fetchone()[0]
+                recent_global_admissions = conn.execute(
+                    "SELECT count(*) FROM pending_admissions WHERE admitted_at >= ?",
+                    (cutoff,),
+                ).fetchone()[0]
                 if (total >= MAX_PENDING_TOTAL or
+                        recent_global_admissions >= MAX_NEW_PENDING_GLOBAL_PER_HOUR or
                         per_site >= MAX_PENDING_PER_SITE or
                         recent_site_admissions >= MAX_NEW_PENDING_PER_SITE_PER_HOUR):
                     # Never claim an approval request was queued if it was not.
@@ -333,6 +342,29 @@ def decide(domain: str, action: str, new_domain: str = ""):
             conn.commit()
         except BaseException:
             conn.rollback(); raise
+
+
+def clear_pending_requests() -> int:
+    """Delete pending queue entries only, preserving explicit decisions.
+
+    This is a local dashboard operation, never an MCP tool. Record deletions
+    in the decision audit; admission quotas intentionally remain unchanged.
+    """
+    now = utcnow()
+    with _db() as conn:
+        _seed(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("""INSERT INTO decisions(at,domain,action)
+                SELECT ?,domain,'delete' FROM domains
+                WHERE status='pending' AND explicit_rule=0""", (now,))
+            result = conn.execute("""DELETE FROM domains
+                WHERE status='pending' AND explicit_rule=0""")
+            conn.commit()
+            return result.rowcount
+        except BaseException:
+            conn.rollback()
+            raise
 
 
 def safe_display_url(url: str) -> str:
