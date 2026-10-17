@@ -16,6 +16,10 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   const notice = document.getElementById("notification-toggle");
   const storageKey = "local-search-mcp.desktop-notifications.v1";
   const lastNotificationKey = "local-search-mcp.notification-time.v1";
+  const pendingAlertKey = "local-search-mcp.notification-owed.v1";
+  const queueFingerprintKey = "local-search-mcp.notification-queue-id.v1";
+  const queueCountKey = "local-search-mcp.notification-queue-count.v1";
+  const fingerprintSaltKey = "local-search-mcp.notification-salt.v1";
   const notificationLock = "local-search-mcp.notification-lock.v1";
   const lastTableHtml = new WeakMap();
 
@@ -29,9 +33,7 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   }
   const interval = 10000;
   const minNotificationGap = 60000;
-  let previousDomains = null;
   let notifyEnabled = false;
-  let groupedNewRequests = 0;
   let stopped = false;
 
   function say(value) {
@@ -52,7 +54,9 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
     // Disable desktop alerts if atomic coordination or local storage is
     // unavailable; never risk a multi-tab notification flood.
     if (!window.isSecureContext || !("Notification" in window) ||
-        !navigator.locks || typeof navigator.locks.request !== "function") return false;
+        !navigator.locks || typeof navigator.locks.request !== "function" ||
+        !window.crypto || !window.crypto.subtle ||
+        typeof window.crypto.getRandomValues !== "function") return false;
     try {
       const probe = "local-search-mcp.notification-storage-test";
       window.localStorage.setItem(probe, "1");
@@ -84,6 +88,10 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
       if (notifyEnabled) {
         notifyEnabled = false;
         storageSet(false);
+        try {
+          window.localStorage.setItem(pendingAlertKey, "0");
+          window.localStorage.removeItem(queueFingerprintKey);
+        } catch (_) { /* Refuse silently if private storage is unavailable. */ }
       } else if (available()) {
         // Permission is requested ONLY in direct response to an operator click.
         let permission = Notification.permission;
@@ -93,31 +101,79 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
         }
         notifyEnabled = permission === "granted";
         storageSet(notifyEnabled);
+        if (notifyEnabled) {
+          // A new opt-in starts with a clean baseline, not old backlog.
+          window.localStorage.setItem(pendingAlertKey, "0");
+          window.localStorage.removeItem(queueFingerprintKey);
+        }
       }
       renderToggle();
     });
   }
 
-  async function sendCoordinatedNotification(total) {
+  async function processNotifications(domains) {
+    if (!notifyEnabled || !available() ||
+        Notification.permission !== "granted") return;
     try {
+      // The Web Lock serializes detection, shared pending-alert updates and
+      // emission across all tabs on this origin. No domain names are
+      // persisted: only a salted digest and bounded counts are stored.
       await navigator.locks.request(notificationLock, async () => {
         if (!notifyEnabled || Notification.permission !== "granted") return;
+        let salt = window.localStorage.getItem(fingerprintSaltKey);
+        if (!salt) {
+          const random = new Uint8Array(16);
+          window.crypto.getRandomValues(random);
+          salt = Array.from(random, byte =>
+            byte.toString(16).padStart(2, "0")).join("");
+          window.localStorage.setItem(fingerprintSaltKey, salt);
+        }
+        const stableDomains = Array.from(new Set(domains)).sort();
+        const bytes = new TextEncoder().encode(
+          salt + ":" + JSON.stringify(stableDomains));
+        const digest = await window.crypto.subtle.digest("SHA-256", bytes);
+        const fingerprint = Array.from(new Uint8Array(digest), byte =>
+          byte.toString(16).padStart(2, "0")).join("");
+
+        const lastFingerprint = window.localStorage.getItem(queueFingerprintKey);
+        const earlierCount = Number(window.localStorage.getItem(queueCountKey) || "0");
+        let owed = Number(window.localStorage.getItem(pendingAlertKey) || "0");
+        if (!Number.isFinite(owed) || owed < 0) owed = 0;
+        if (lastFingerprint === null) {
+          // First opening initializes the queue baseline without notifying
+          // for an existing backlog.
+          window.localStorage.setItem(queueFingerprintKey, fingerprint);
+          window.localStorage.setItem(queueCountKey, String(stableDomains.length));
+        } else if (lastFingerprint !== fingerprint) {
+          const growth = Math.max(0, stableDomains.length -
+            (Number.isFinite(earlierCount) ? earlierCount : 0));
+          // A changed same-size set can mean one host was replaced. A pure
+          // decrease means removals, which should not cause an alert.
+          const additions = growth || (stableDomains.length >= earlierCount ? 1 : 0);
+          owed = Math.min(512, owed + additions);
+          window.localStorage.setItem(queueFingerprintKey, fingerprint);
+          window.localStorage.setItem(queueCountKey, String(stableDomains.length));
+          if (owed) window.localStorage.setItem(pendingAlertKey, String(owed));
+        }
+
+        if (!owed) return;
         const now = Date.now();
         const previous = Number(window.localStorage.getItem(lastNotificationKey) || "0");
-        if (!Number.isFinite(previous) || now - previous < minNotificationGap) return;
-        // Write under the shared cross-tab lock *before* notifying, so all
-        // other tabs see the one-minute cooldown even if a popup fails.
+        if (!Number.isFinite(previous) || now - previous < minNotificationGap) {
+          // Leave the shared alert owed; another ordinary poll will deliver
+          // it after the cooldown even when no further requests appear.
+          return;
+        }
+        window.localStorage.setItem(pendingAlertKey, "0");
         window.localStorage.setItem(lastNotificationKey, String(now));
         new Notification("Local Search MCP", {
-          body: total === 1 ?
+          body: owed === 1 ?
             "One new domain request awaits local review." :
-            `${total} new domain requests await local review.`,
+            `${owed} new domain requests await local review.`,
           tag: "local-search-mcp-pending"
         });
       });
     } catch (_) {
-      // Browser privacy restrictions or notification API failures must never
-      // throw from a detached asynchronous task.
       notifyEnabled = false;
       storageSet(false);
       renderToggle();
@@ -125,28 +181,9 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   }
 
   function maybeNotify(domains) {
-    const current = new Set(domains);
-    if (previousDomains === null) {
-      // Never alert for a pre-existing backlog after opening the dashboard.
-      previousDomains = current;
-      return;
-    }
-    let newlyPending = 0;
-    for (const domain of current) {
-      if (!previousDomains.has(domain)) newlyPending += 1;
-    }
-    previousDomains = current;
-    if (!notifyEnabled || !available() || Notification.permission !== "granted") {
-      groupedNewRequests = 0;
-      return;
-    }
-    groupedNewRequests += newlyPending;
-    if (!groupedNewRequests) return;
-    const total = groupedNewRequests;
-    groupedNewRequests = 0;
-    // Only generic counts cross this boundary: never notify or persist URLs,
-    // private query strings, domain names, or page content.
-    void sendCoordinatedNotification(total);
+    // Run every poll, even without fresh arrivals, to flush a previously
+    // queued cross-tab alert after the one-minute cooldown.
+    if (Array.isArray(domains)) void processNotifications(domains);
   }
 
   window.addEventListener("storage", (event) => {
