@@ -17,7 +17,7 @@ from urllib.parse import urlsplit, urlunsplit
 from public_suffix import is_public_suffix, registrable_domain
 
 UI_URL = "http://127.0.0.1:8791/"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 # Fixed safeguards for agent-created pending requests (not explicit rules).
 MAX_PENDING_TOTAL = 512
 MAX_PENDING_PER_SITE = 32
@@ -76,6 +76,16 @@ def _db():
                 at TEXT NOT NULL, domain TEXT NOT NULL,
                 action TEXT NOT NULL CHECK(action IN ('allow', 'deny', 'delete', 'rename'))
             )""")
+            # Retain hourly admission history even after an operator resolves
+            # or deletes pending domains. A request row is not an audit log.
+            conn.execute("""CREATE TABLE IF NOT EXISTS pending_admissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site TEXT NOT NULL,
+                admitted_at TEXT NOT NULL
+            )""")
+            conn.execute("""CREATE INDEX IF NOT EXISTS
+                idx_pending_admissions_site_time
+                ON pending_admissions(site, admitted_at)""")
             conn.commit()
         except BaseException:
             conn.rollback()
@@ -249,21 +259,32 @@ def request(domain: str, safe_url: str):
                 total = conn.execute(
                     "SELECT count(*) FROM domains WHERE status='pending'"
                 ).fetchone()[0]
+                # Prune old admission events in the same write transaction.
+                # Crucially, deciding/deleting a pending rule does not reset
+                # its hourly admission quota.
+                conn.execute("DELETE FROM pending_admissions WHERE admitted_at < ?",
+                             (cutoff,))
                 per_site = conn.execute(
-                    """SELECT count(*), count(CASE WHEN created_at >= ? THEN 1 END)
-                       FROM domains WHERE status='pending'
+                    """SELECT count(*) FROM domains WHERE status='pending'
                        AND (domain=? OR domain LIKE ?)""",
-                    (cutoff, site, "%." + site),
-                ).fetchone()
+                    (site, "%." + site),
+                ).fetchone()[0]
+                recent_site_admissions = conn.execute(
+                    """SELECT count(*) FROM pending_admissions
+                       WHERE site=? AND admitted_at >= ?""",
+                    (site, cutoff),
+                ).fetchone()[0]
                 if (total >= MAX_PENDING_TOTAL or
-                        per_site[0] >= MAX_PENDING_PER_SITE or
-                        per_site[1] >= MAX_NEW_PENDING_PER_SITE_PER_HOUR):
+                        per_site >= MAX_PENDING_PER_SITE or
+                        recent_site_admissions >= MAX_NEW_PENDING_PER_SITE_PER_HOUR):
                     # Never claim an approval request was queued if it was not.
                     status = "queue_full"
                 else:
                     conn.execute("""INSERT INTO domains
                         (domain,status,created_at,updated_at,request_count,last_requested_at,last_requested_url)
                         VALUES (?,'pending',?,?,1,?,?)""", (domain, now, now, now, safe_url[:512]))
+                    conn.execute("""INSERT INTO pending_admissions(site,admitted_at)
+                        VALUES (?,?)""", (site, now))
             else:
                 # Keep per-host request counts when already present; otherwise
                 # count against the matching explicit parent without creating

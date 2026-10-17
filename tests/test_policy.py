@@ -437,12 +437,41 @@ class DomainPolicyTests(unittest.TestCase):
             self.assertEqual(policy.request("c.example.org", "https://c.example.org")[0],
                              "queue_full")
             with policy._db() as conn:
-                conn.execute("UPDATE domains SET created_at='2020-01-01T00:00:00Z'"
-                             " WHERE domain='a.example.org'")
+                conn.execute("UPDATE pending_admissions SET admitted_at='2020-01-01T00:00:00Z'"
+                             " WHERE id=(SELECT MIN(id) FROM pending_admissions)")
                 conn.commit()
             self.assertEqual(policy.request("c.example.org", "https://c.example.org")[0],
                              "pending")
             self.assertEqual(policy.counts()["pending"], 3)
+
+    def test_hourly_quota_survives_resolve_delete_and_restart(self):
+        with (patch.object(policy, "MAX_PENDING_TOTAL", 50),
+              patch.object(policy, "MAX_PENDING_PER_SITE", 50),
+              patch.object(policy, "MAX_NEW_PENDING_PER_SITE_PER_HOUR", 2)):
+            first = "a.quota-example.net"
+            second = "b.quota-example.net"
+            for domain in (first, second):
+                self.assertEqual(policy.request(domain, "https://" + domain)[0], "pending")
+            policy.decide(first, "allow")
+            policy.decide(second, "delete")
+            self.assertEqual(policy.counts()["pending"], 0)
+            policy.initialize()  # The admissions survive reopening SQLite.
+            blocked = "c.quota-example.net"
+            self.assertEqual(policy.request(blocked, "https://" + blocked),
+                             ("queue_full", blocked))
+            with policy._db() as conn:
+                self.assertEqual(conn.execute(
+                    "SELECT COUNT(*) FROM pending_admissions WHERE site='quota-example.net'"
+                ).fetchone()[0], 2)
+                conn.execute("""UPDATE pending_admissions SET admitted_at='2020-01-01T00:00:00Z'
+                    WHERE site='quota-example.net'""")
+                conn.commit()
+            self.assertEqual(policy.request(blocked, "https://" + blocked),
+                             ("pending", blocked))
+            with policy._db() as conn:
+                self.assertEqual(conn.execute(
+                    "SELECT COUNT(*) FROM pending_admissions WHERE site='quota-example.net'"
+                ).fetchone()[0], 1)
 
     def test_queue_limited_fetch_is_not_falsely_reported_pending(self):
         with patch.object(policy, "MAX_PENDING_TOTAL", 0):
@@ -461,7 +490,7 @@ class DomainPolicyTests(unittest.TestCase):
         self.assertEqual(registrable_domain("docs.team.github.io"), "team.github.io")
         with (patch.object(policy, "MAX_PENDING_TOTAL", 10),
               patch.object(policy, "MAX_PENDING_PER_SITE", 1),
-              patch.object(policy, "MAX_NEW_PENDING_PER_SITE_PER_HOUR", 1)):
+              patch.object(policy, "MAX_NEW_PENDING_PER_SITE_PER_HOUR", 5)):
             self.assertEqual(policy.request("a.team.github.io", "https://a.team.github.io")[0],
                              "pending")
             self.assertEqual(policy.request("b.team.github.io", "https://b.team.github.io")[0],

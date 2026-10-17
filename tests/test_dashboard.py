@@ -69,7 +69,10 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Showing at most 200 pending entries", page)
         self.assertEqual(page.count('<tr><td class="domain">r'), 200)
         filtered = admin_ui.render("trusted.example.net")
-        self.assertIn("trusted.example.net", filtered)
+        self.assertIn('name="q" value="trusted.example.net"', filtered)
+        self.assertIn('<td class="domain">trusted.example.net</td>', filtered)
+        self.assertNotIn('<td class="domain">blocked.example.org</td>', filtered)
+        self.assertNotIn('<td class="domain">r0.flood-example.org</td>', filtered)
 
     def test_reject_csrf(self):
         self.assertEqual(self.post(csrf='bad'),403)
