@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sqlite3
 from urllib.parse import urlsplit
 
 
@@ -31,6 +32,7 @@ def _endpoint(key: str, default: str) -> dict[str, object]:
         valid = (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1", "::1")
                  and parsed.username is None and parsed.password is None
                  and not parsed.path.strip("/") and not parsed.query and not parsed.fragment
+                 and "?" not in raw and "#" not in raw
                  and (parsed.port is None or 1 <= parsed.port <= 65535))
         if valid:
             return {"source": source, "valid_loopback": True,
@@ -54,6 +56,28 @@ def _dashboard_port() -> dict[str, object]:
     return {"source": "environment", "value": "<invalid>", "warning": "Expected integer port 1–65535"}
 
 
+def _database_authority(database: Path) -> str:
+    """Inspect the existing seed flag without opening a write-capable connection."""
+    if database.parent.is_symlink() or database.is_symlink():
+        return "unsafe SQLite symlink (inspect manually)"
+    if not database.is_file():
+        return "initial seed on next launch"
+    if (Path(str(database) + "-wal").exists() or
+            Path(str(database) + "-shm").exists()):
+        # Immutable mode skips WAL locking; do not misreport potentially newer
+        # metadata when SQLite sidecar files are present.
+        return "seed status unknown (SQLite WAL present; inspect manually)"
+    try:
+        # immutable=1 guarantees the diagnostic creates no SQLite state files.
+        with sqlite3.connect(database.absolute().as_uri() + "?mode=ro&immutable=1", uri=True) as conn:
+            row = conn.execute("SELECT value FROM metadata WHERE key='domain_seed_v1'").fetchone()
+        if row is None:
+            return "initial seed pending (metadata flag absent)"
+        return "persisted SQLite rules (not modified or listed)"
+    except (sqlite3.Error, OSError, ValueError):
+        return "seed status unknown (database unreadable or uninitialized)"
+
+
 def collect_report(saved: dict[str, str], root: Path, private_dir: Path, legacy_reader) -> dict:
     """Return a JSON-safe diagnostic without modifying files or evaluating secrets."""
     legacy = {**legacy_reader(root / ".env"), **legacy_reader(root / ".tunnel-env")}
@@ -65,21 +89,20 @@ def collect_report(saved: dict[str, str], root: Path, private_dir: Path, legacy_
     source, configured = _source("ALLOWED_CRAWL_DOMAINS", saved, legacy)
     state_home = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")).expanduser()
     database = state_home / "local-search-mcp" / "domains.sqlite3"
-    if database.is_symlink():
-        authority = "unsafe SQLite symlink (inspect manually)"
-    elif database.is_file():
-        authority = "persisted SQLite rules (not modified or listed)"
-    else:
-        authority = "initial seed on next launch"
+    authority = _database_authority(database)
     return {
         "secrets": secrets,
-        "domain_policy": {"authority": authority, "seed_source": source if configured else "launcher default",
-                          "seed_applies_only_before_first_initialization": True},
+        "domain_policy": {
+            "authority": authority,
+            "interactive_setup_seed_source": source if configured else "launcher default",
+            "systemd_service_seed_source": "private JSON" if saved.get("ALLOWED_CRAWL_DOMAINS") else "missing (service will not start)",
+            "seed_applies_only_before_first_initialization": True,
+        },
         "endpoints": {"searxng": _endpoint("SEARXNG_URL", "http://127.0.0.1:8888"),
                       "crawl4ai": _endpoint("CRAWL4AI_URL", "http://127.0.0.1:11235"),
                       "dashboard_port": _dashboard_port()},
         "service_mode": "systemd --service uses saved private JSON credentials, not env overrides",
-        "crawl_token_note": "interactive setup may prefer a Docker-discovered token; Docker was not queried",
+        "crawl_token_note": "reported secret sources exclude Docker discovery; interactive setup may select and save a different Crawl4AI token",
         "profile": "tunnel-client profile is separately managed and never inspected here",
         "private_json_exists": (private_dir / "config.json").is_file(),
         "read_only": True,

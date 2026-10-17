@@ -26,7 +26,7 @@ A **local, read-only MCP bridge** for [SearXNG](https://docs.searxng.org/) searc
 
 The first run provisions a virtual environment and prompts securely for secrets it cannot retrieve. The launcher stores configuration in `~/.config/local-search-mcp/config.json` (mode `0600`). It reuses `~/.config/tunnel-client/local-research.yaml` if present and downloads the verified official Linux x86_64 `tunnel-client` release if the binary is missing. It does **not** install or reconfigure SearXNG/Crawl4AI itself.
 
-For a read-only report of effective setting sources with credentials redacted, run `python3 bootstrap.py --show-config`. For the source-precedence rules, hardening requirements and migration notes, see [CONFIGURATION.md](CONFIGURATION.md). This report does not query Docker, print private tokens or modify domain approvals.
+For read-only configuration-source diagnostics with credentials redacted, run `python3 bootstrap.py --show-config`. For the source-precedence rules, hardening requirements and migration notes, see [CONFIGURATION.md](CONFIGURATION.md). This report does not query Docker, print private tokens or modify domain approvals.
 
 For setup without starting processes:
 

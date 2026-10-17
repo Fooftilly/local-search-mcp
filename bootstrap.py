@@ -62,6 +62,8 @@ def _verify_private_location() -> None:
         directory = PRIVATE_DIR.stat()
         if not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid():
             raise SetupError("Private configuration directory is not an owned directory")
+        if directory.st_mode & 0o077:
+            raise SetupError("Private configuration directory permissions are too broad; require mode 700")
     if PRIVATE_CONFIG.exists():
         info = PRIVATE_CONFIG.stat()
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
@@ -103,6 +105,13 @@ def save_config(config: dict[str, str]) -> None:
             os.fsync(output.fileno())
         _verify_private_location()
         os.replace(tmp, PRIVATE_CONFIG)
+        # The file fsync protects contents; syncing its directory persists the
+        # renamed directory entry after a crash on supported Linux filesystems.
+        dirfd = os.open(PRIVATE_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
