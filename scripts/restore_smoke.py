@@ -7,6 +7,7 @@ to their real application location.
 from __future__ import annotations
 
 import argparse
+import json
 from contextlib import contextmanager
 import os
 from pathlib import Path
@@ -28,17 +29,22 @@ else:
 @contextmanager
 def _isolated_environment(home: Path):
     """Use a new XDG state root; never inherit a live custom history path."""
+    # Never consult the operator's real configuration, including timeout
+    # overrides, when validating files restored from an archive.
     names = (
-        "XDG_STATE_HOME",
+        "XDG_STATE_HOME", "XDG_CONFIG_HOME", "ALLOWED_CRAWL_DOMAINS",
         "LOCAL_SEARCH_MCP_HISTORY_FILE",
         "LOCAL_SEARCH_MCP_HISTORY_RETENTION_DAYS",
-        "ALLOWED_CRAWL_DOMAINS",
+        "LOCAL_SEARCH_MCP_HISTORY_MAX_BYTES",
+        "LOCAL_SEARCH_MCP_SEARXNG_TIMEOUT",
+        "LOCAL_SEARCH_MCP_CRAWL_TIMEOUT",
     )
     original = {key: os.environ.get(key) for key in names}
     try:
-        os.environ["XDG_STATE_HOME"] = str(home)
-        os.environ.pop("LOCAL_SEARCH_MCP_HISTORY_FILE", None)
-        os.environ["LOCAL_SEARCH_MCP_HISTORY_RETENTION_DAYS"] = "30"
+        os.environ["XDG_STATE_HOME"] = str(home / "state")
+        os.environ["XDG_CONFIG_HOME"] = str(home / "config")
+        for key in names[3:]:
+            os.environ.pop(key, None)
         os.environ["ALLOWED_CRAWL_DOMAINS"] = ""
         yield
     finally:
@@ -58,22 +64,39 @@ def smoke(archive: Path) -> tuple[int, int]:
     payload = backup_state.verified_payload(archive)
     with tempfile.TemporaryDirectory(prefix="mcp-fresh-restore-") as tmp:
         home = Path(tmp)
-        state = home / "local-search-mcp"
-        state.mkdir(mode=0o700)
+        state = home / "state" / "local-search-mcp"
+        config = home / "config" / "local-search-mcp"
+        state.mkdir(parents=True, mode=0o700)
         for name, data in payload.items():
             if name not in backup_state.ALLOWED_FILES:
                 raise ValueError("Unrecognized backup file")
-            file = state / name
+            # Backup archive members are flattened; settings belong to
+            # XDG_CONFIG_HOME, not the XDG_STATE_HOME directory.
+            destination = config if name in backup_state.SETTINGS_NAMES else state
+            destination.mkdir(parents=True, mode=0o700, exist_ok=True)
+            file = destination / name
             fd = os.open(file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             with os.fdopen(fd, "wb") as stream:
                 stream.write(data)
-            file.chmod(0o600)
 
         with _isolated_environment(home):
             # Runtime modules use XDG_STATE_HOME dynamically. Import only after
             # isolating the environment, so no live user state is accessed.
             import domain_policy
             import history_index
+            import safe_settings
+            import upstream_settings
+
+            # Verify the files using real application readers, not just the
+            # backup schema verifier. Missing optional files are valid.
+            for name, reader in (
+                ("history-settings.json", safe_settings.dashboard_settings),
+                ("upstream-timeouts.json", upstream_settings.dashboard_settings),
+            ):
+                if name in payload:
+                    expected = json.loads(payload[name].decode("utf-8"))["settings"]
+                    if reader()["values"] != expected:
+                        raise ValueError("Recovered settings differ from archive")
 
             domain_policy.initialize()
             with sqlite3.connect(domain_policy.database_path()) as conn:
@@ -103,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(
         f"Fresh-install smoke check passed: {policies} policy entries; "
-        f"{recent} most recent indexed events (30-day retention). "
+        f"{recent} most recent indexed events (restored or default retention). "
         "No live state changed."
     )
     return 0
