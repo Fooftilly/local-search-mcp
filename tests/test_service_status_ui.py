@@ -34,6 +34,29 @@ class StatusTests(unittest.TestCase):
         self.assertNotIn("8888", repr(report))
         self.assertNotIn("11235", repr(report))
 
+    def test_localhost_is_numeric_loopback_and_explicit_zero_port_is_invalid(self):
+        calls = []
+        def connect(target, timeout):
+            calls.append((target, timeout))
+            return FakeConnection()
+        with patch.dict(os.environ, {
+            "SEARXNG_URL": "http://localhost:8888",
+            "CRAWL4AI_URL": "http://[::1]:11235",
+        }, clear=True):
+            report = service_status.probe_services(connector=connect)
+        self.assertTrue(all(x["status"] == "TCP reachable" for x in report))
+        self.assertEqual(calls, [(("127.0.0.1", 8888), 0.3),
+                                 (("::1", 11235), 0.3)])
+        calls.clear()
+        with patch.dict(os.environ, {
+            "SEARXNG_URL": "http://localhost:0",
+            "CRAWL4AI_URL": "https://127.0.0.1:0",
+        }, clear=True):
+            report = service_status.probe_services(connector=connect)
+        self.assertFalse(calls)
+        self.assertTrue(all(x["status"] == "configuration invalid"
+                            for x in report))
+
     def test_remote_and_credentials_never_get_probed_or_disclosed(self):
         calls = []
         with patch.dict(os.environ, {
