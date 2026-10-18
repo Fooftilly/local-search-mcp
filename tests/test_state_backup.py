@@ -281,7 +281,10 @@ class BackupTests(unittest.TestCase):
         forged.chmod(0o600)
         with self.assertRaises(ValueError):
             backup.verified_payload(forged)
-        self.assertFalse((self.base / "bad-restore").exists())
+        staged = self.base / "bad-restore"
+        with self.assertRaises(ValueError):
+            backup.restore(forged, staged)
+        self.assertFalse(staged.exists())
 
     def test_unsafe_config_sources_fail_closed_and_explicit_isolation(self):
         conf = self._write_nonsecret_settings()
@@ -310,11 +313,20 @@ class BackupTests(unittest.TestCase):
             backup.backup(self.archive, state_dir=self.state,
                           config_dir=self.base / "missing-config")
         self.assertFalse(self.archive.exists())
-        # Alternate state roots must not read the operator's default config.
+        # Populate the *default* config location so a regression that reads
+        # it despite an explicit --state-dir would copy these real settings.
+        default_config = self.base / "local-search-mcp"
+        default_config.mkdir(mode=0o700)
+        for name in ("history-settings.json", "upstream-timeouts.json"):
+            source = conf / name
+            target = default_config / name
+            target.write_bytes(source.read_bytes())
+            target.chmod(0o600)
         with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.base)}):
             backup.backup(self.archive, state_dir=self.state)
-        self.assertEqual(set(backup.verified_payload(self.archive)),
-                         {"domains.sqlite3", "history.jsonl"})
+        archived = backup.verified_payload(self.archive)
+        self.assertEqual(set(archived), {"domains.sqlite3", "history.jsonl"})
+        self.assertTrue(set(backup.SETTINGS_NAMES).isdisjoint(archived))
 
     def test_default_location_archives_only_validated_nonsecret_settings(self):
         conf = self._write_nonsecret_settings()
