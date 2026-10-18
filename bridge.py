@@ -502,6 +502,29 @@ def web_fetch_page(document_id: str, page: int = 2) -> dict:
     return result
 
 
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+def web_metrics(hours: Literal[1, 24, 168] = 24) -> dict:
+    """Read private-text-free operation and cache statistics (last 1/24/168h).
+
+    Operation outcomes come from the local, retention-controlled history index.
+    Cache hit/miss/eviction counts are process-lifetime and reset on restart.
+    This tool cannot modify permissions or expose queries, URLs, or page text.
+    """
+    import sqlite3
+    import history_index
+
+    if type(hours) is not int or hours not in (1, 24, 168):
+        raise ValueError("hours must be 1, 24, or 168")
+    cache = request_cache.metrics_snapshot()
+    try:
+        history = history_index.operational_metrics(hours)
+    except (OSError, sqlite3.Error, ValueError):
+        return {"success": False, "status": "history_unavailable",
+                "reason": "Local aggregated history could not be read.",
+                "cache": cache}
+    return {"success": True, "history": history, "cache": cache}
+
+
 def serve_mcp() -> None:
     """Launch with explicit Host/Origin validation, including via local tunnel."""
     mcp.run(

@@ -294,3 +294,39 @@ def summarize_history() -> list[dict]:
             """SELECT kind,status,count(*) AS count,
                round(avg(duration_ms),1) AS avg_duration_ms
                FROM history GROUP BY kind,status ORDER BY kind,status""")]
+
+
+def operational_metrics(hours: int = 24) -> dict:
+    """Aggregate retained events only; never expose domains or private text.
+
+    Metrics cover events that still exist in the rotating JSONL source and
+    its retention-bounded SQLite index. Runtime cache counters are separate.
+    """
+    if type(hours) is not int or hours not in (1, 24, 168):
+        raise ValueError("Metrics window must be 1, 24, or 168 hours")
+    sync_history()
+    cutoff_ms = int((datetime.now(timezone.utc) -
+                     timedelta(hours=hours)).timestamp() * 1000)
+    with closing(sqlite3.connect(index_path(), timeout=10)) as conn:
+        rows = conn.execute(
+            """SELECT kind,
+                      CASE WHEN status IN (
+                        'success', 'pending', 'denied', 'blocked', 'error',
+                        'expired_or_unknown', 'approval_queue_full',
+                        'upstream_unavailable', 'invalid_response',
+                        'unavailable_extraction', 'continuation_evicted',
+                        'crawl_failed', 'fetch_error', 'cancelled'
+                      ) THEN status ELSE 'other' END AS safe_status,
+                      count(*) AS n, round(avg(duration_ms),1) AS avg_ms
+               FROM history WHERE at_ms>=?
+               GROUP BY kind,safe_status ORDER BY kind,safe_status""",
+            (cutoff_ms,)
+        ).fetchall()
+    # Keep the output schema fixed: no hostnames, URLs or search terms.
+    outcomes = [
+        {"tool": kind, "status": status, "count": count,
+         "avg_duration_ms": average}
+        for kind, status, count, average in rows
+    ]
+    return {"window_hours": hours, "total_events": sum(x["count"] for x in outcomes),
+            "outcomes": outcomes}
