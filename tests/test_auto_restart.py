@@ -251,8 +251,9 @@ class AutoRestartTests(unittest.TestCase):
         def offline_runner(command, **kwargs):
             commands.append(command)
             if "-c" in command:
-                return actual_run([sys.executable, "-I", "-c", command[-1]],
-                                  **kwargs)
+                script_at = command.index("-c") + 1
+                return actual_run([sys.executable, "-I", "-c",
+                                   *command[script_at:]], **kwargs)
             self.assertEqual(command[-3:], ["-m", "pip", "check"])
             return subprocess.CompletedProcess(command, 0)
 
@@ -267,6 +268,105 @@ class AutoRestartTests(unittest.TestCase):
                     "https://example.invalid/missing.whl\n")
         with patch.object(update.subprocess, "run", side_effect=offline_runner):
             self.assertFalse(update.requirements_ready(self.root))
+
+    def test_replacement_manifest_changes_stay_gated_after_migration(self):
+        update.initialize(self.root, path=self.state)
+        (self.root / "config").mkdir()
+        self.git("mv", "requirements.txt", "config/dependencies.txt")
+        self.commit("migrate pip dependency manifest")
+        initial, _, _ = self.check()
+        self.assertIn("--dependencies-ready", initial)
+        with patch.object(update, "requirements_ready", return_value=True):
+            self.assertIn("Restart requested", self.check(dependencies_ready=True)[0])
+
+        # The second commit does not mention the old requirements.txt.
+        self.change("config/dependencies.txt", "fastmcp>=4.9,<5\n")
+        self.commit("change replacement dependency manifest")
+        before = self.state.read_text()
+        message, restarted, _ = self.check()
+        self.assertIn("--dependencies-ready", message)
+        self.assertEqual(restarted, [])
+        self.assertEqual(before, self.state.read_text())
+        with patch.object(update, "requirements_ready", return_value=False):
+            failed, restarted, _ = self.check(dependencies_ready=True)
+        self.assertIn("failed offline validation", failed)
+        self.assertEqual(restarted, [])
+        with patch.object(update, "requirements_ready", return_value=True) as check:
+            result, restarted, _ = self.check(dependencies_ready=True)
+        self.assertIn("Restart requested", result)
+        check.assert_called_once_with(self.root, ["config/dependencies.txt"])
+        self.assertEqual(restarted, list(update.SERVICES))
+
+    def test_other_dependency_formats_are_gated_for_manual_review(self):
+        self.assertTrue(update.dependency_manifest("pyproject.toml"))
+        self.assertTrue(update.dependency_manifest("uv.lock"))
+        self.assertTrue(update.dependency_manifest("requirements/base.txt"))
+        self.assertTrue(update.dependency_manifest("config/dependencies.txt"))
+        self.assertTrue(update.dependency_manifest("constraints.txt"))
+        self.assertFalse(update.dependency_manifest("docs/requirements.txt"))
+        self.assertFalse(update.dependency_manifest("README.md"))
+        update.initialize(self.root, path=self.state)
+        self.change("pyproject.toml", "[project]\ndependencies = []\n")
+        self.commit("add metadata")
+        result, restarted, _ = self.check()
+        self.assertIn("--dependencies-ready", result)
+        self.assertEqual(restarted, [])
+
+    def test_pip_requirement_includes_and_constraints_offline(self):
+        # Use the running interpreter only to evaluate the isolated probe;
+        # keep its pip check mocked to avoid relying on the host environment.
+        self.change("requirements.txt",
+                    "-r requirements/base.txt\n-c constraints.txt\n")
+        self.change("requirements/base.txt", "pip>=0\n")
+        self.change("constraints.txt", "pip>=0\n")
+        interpreter = self.root / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.touch()
+        actual_run = subprocess.run
+
+        def offline_runner(command, **kwargs):
+            if "-c" in command:
+                index = command.index("-c") + 1
+                return actual_run([sys.executable, "-I", "-c",
+                                   *command[index:]], **kwargs)
+            self.assertEqual(command[-3:], ["-m", "pip", "check"])
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertTrue(update.requirements_ready(
+                self.root, ["requirements.txt", "requirements/base.txt",
+                            "constraints.txt"]))
+            self.change("constraints.txt", "pip>=999999\n")
+            self.assertFalse(update.requirements_ready(
+                self.root, ["requirements.txt", "constraints.txt"]))
+            self.change("requirements/base.txt", "-r ../requirements.txt\n")
+            self.assertFalse(update.requirements_ready(
+                self.root, ["requirements.txt"]))
+            self.change("requirements/base.txt", "-r ../outside.txt\n")
+            self.assertFalse(update.requirements_ready(
+                self.root, ["requirements.txt"]))
+
+    def test_pip_replacement_manifest_checks_local_versions(self):
+        self.git("mv", "requirements.txt", "config/dependencies.txt")
+        self.change("config/dependencies.txt", "pip>=0\n")
+        interpreter = self.root / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.touch()
+        actual_run = subprocess.run
+
+        def offline_runner(command, **kwargs):
+            if "-c" in command:
+                index = command.index("-c") + 1
+                return actual_run([sys.executable, "-I", "-c",
+                                   *command[index:]], **kwargs)
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertTrue(update.requirements_ready(
+                self.root, ["config/dependencies.txt"]))
+            self.change("config/dependencies.txt", "pip>=999999\n")
+            self.assertFalse(update.requirements_ready(
+                self.root, ["config/dependencies.txt"]))
 
     def test_dependency_acknowledgement_still_checks_local_versions(self):
         update.initialize(self.root, path=self.state)
