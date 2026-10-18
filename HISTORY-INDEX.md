@@ -36,3 +36,23 @@ This is the first observability slice. MCP-native metrics, finer-grained
 cache/error counters, and optional enhanced CLI indexing remain tracked by
 [issue #14](https://github.com/Fooftilly/local-search-mcp/issues/14).
 No live firewalling or crawler egress isolation is implied by the dashboard.
+
+## Read-only MCP operational metrics
+
+The `web_metrics(hours=24)` MCP tool returns aggregate operation counts,
+status outcomes and average duration in milliseconds for the last **1**, **24**
+(default) or **168** hours. Metrics derive from the same retention-bounded
+SQLite history index; old events that have rotated out of JSONL or passed the
+retention cutoff cannot be reconstructed. A missing or broken index returns a
+bounded `history_unavailable` result, not path details or credentials.
+
+The tool additionally reports **process-lifetime** search/fetch cache hit,
+miss, coalescing, refresh, uncached operation, stored-entry, eviction and fetch
+policy-invalidation counters, along with current cache entry counts and byte
+usage. Cache counters reset when the bridge restarts and are deliberately not
+mixed into durable history totals. No URL keys, search queries, page text,
+document handles, individual request IDs or per-domain user activity are
+exposed through the MCP endpoint. The tool is read-only and does not provide
+any policy-changing actions. It measures bridge-level events; it does not
+certify the crawler's separate network isolation or expose backend-native
+Crawl4AI statistics.
