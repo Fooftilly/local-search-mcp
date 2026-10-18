@@ -259,25 +259,40 @@ def sync_history() -> None:
         os.close(fd)
 
 
-def search_history(*, limit: int = 25, kind: str = "", status: str = "",
-                   domain: str = "") -> list[dict]:
-    """Return bounded, newest-first metadata without importing sensitive text."""
-    if type(limit) is not int or not 1 <= limit <= MAX_QUERY_RESULTS:
-        raise ValueError("Invalid history page size")
+HISTORY_WINDOWS = (0, 1, 24, 168)
+
+
+def _history_filter(kind: str, status: str, domain: str,
+                    hours: int) -> tuple[str, list]:
+    """Build one bounded, parameterized filter for rows and summary bars."""
     if kind not in ("", "search", "fetch", "page"):
         raise ValueError("Invalid history kind")
+    if type(hours) is not int or hours not in HISTORY_WINDOWS:
+        raise ValueError("Invalid history time window")
     if (not isinstance(status, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{0,48}", status)
             or not isinstance(domain, str) or len(domain) > 253
             or not re.fullmatch(r"[a-zA-Z0-9.-]*", domain)):
         raise ValueError("Invalid history filter")
-    sync_history()
     where = []
-    args: list = []
+    args = []
     for col, term in (("kind", kind), ("status", status), ("domain", domain.lower())):
         if term:
             where.append(col + "=?")
             args.append(term)
-    suffix = (" WHERE " + " AND ".join(where)) if where else ""
+    if hours:
+        where.append("at_ms>=?")
+        args.append(int((datetime.now(timezone.utc) -
+                         timedelta(hours=hours)).timestamp() * 1000))
+    return (" WHERE " + " AND ".join(where)) if where else "", args
+
+
+def search_history(*, limit: int = 25, kind: str = "", status: str = "",
+                   domain: str = "", hours: int = 0) -> list[dict]:
+    """Return bounded newest-first metadata, with optional rolling time filter."""
+    if type(limit) is not int or not 1 <= limit <= MAX_QUERY_RESULTS:
+        raise ValueError("Invalid history page size")
+    suffix, args = _history_filter(kind, status, domain, hours)
+    sync_history()
     with closing(sqlite3.connect(index_path(), timeout=10)) as conn:
         conn.row_factory = sqlite3.Row
         return [dict(r) for r in conn.execute(
@@ -285,15 +300,18 @@ def search_history(*, limit: int = 25, kind: str = "", status: str = "",
             suffix + " ORDER BY at_ms DESC,rowid DESC LIMIT ?", (*args, limit))]
 
 
-def summarize_history() -> list[dict]:
-    """Grouped operational counts and elapsed-time aggregates."""
+def summarize_history(*, kind: str = "", status: str = "",
+                      domain: str = "", hours: int = 0) -> list[dict]:
+    """Grouped operational counts for the same filters as the history table."""
+    suffix, args = _history_filter(kind, status, domain, hours)
     sync_history()
     with closing(sqlite3.connect(index_path(), timeout=10)) as conn:
         conn.row_factory = sqlite3.Row
         return [dict(r) for r in conn.execute(
             """SELECT kind,status,count(*) AS count,
                round(avg(duration_ms),1) AS avg_duration_ms
-               FROM history GROUP BY kind,status ORDER BY kind,status""")]
+               FROM history""" + suffix +
+            " GROUP BY kind,status ORDER BY count DESC,kind,status", args)]
 
 
 def operational_metrics(hours: int = 24) -> dict:
