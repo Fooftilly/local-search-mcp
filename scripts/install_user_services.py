@@ -59,13 +59,16 @@ def unit_files(python: str, root: Path, *, auto_restart: bool = False, reflog_pa
             else:
                 from restart_on_update import reflog
             reflog_path = reflog(root)
+        watch_path = str(reflog_path)
+        if "\n" in watch_path or "\r" in watch_path:
+            raise ValueError("Refusing newline in systemd path")
         checker = quote(str(root / "scripts" / "restart_on_update.py"))
         units.update({
             NAMES[4]: MARKER + "[Unit]\nDescription=Restart local MCP services after local Git updates\n" +
                       "\n[Service]\nType=oneshot\nUMask=0077\nNoNewPrivileges=true\nTimeoutStartSec=90s\n" +
                       f"ExecStart={exe} {checker}\n",
             NAMES[5]: MARKER + "[Unit]\nDescription=Watch local MCP Git HEAD reflog\n" +
-                      "\n[Path]\n" + f"PathChanged={quote(str(reflog_path))}\n" +
+                      "\n[Path]\n" + f"PathChanged={watch_path.replace('%', '%%')}\n" +
                       "Unit=local-search-mcp-update.service\n" +
                       "\n[Install]\nWantedBy=default.target\n",
             NAMES[6]: MARKER + "[Unit]\nDescription=Recheck local MCP Git revision without network access\n" +
