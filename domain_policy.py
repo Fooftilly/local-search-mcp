@@ -502,10 +502,10 @@ def _claim_once_for_public_url(url: str) -> tuple[str, str] | None:
     final URL checks, cache bypass, policy epochs, and content release guards.
     It MUST NOT be wired to web_fetch until those paths are implemented.
     """
+    if not isinstance(url, str):
+        return None
     try:
         parsed = urlsplit(url)
-        if not isinstance(url, str):
-            return None
         host = normalize_domain(parsed.hostname or "")
         if (parsed.scheme not in ("http", "https") or
                 parsed.username is not None or parsed.password is not None or
@@ -519,8 +519,14 @@ def _claim_once_for_public_url(url: str) -> tuple[str, str] | None:
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     try:
         records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-        if not records or not all(
-                ipaddress.ip_address(rec[4][0]).is_global for rec in records):
+        if not records:
+            return None
+        # Python's ipaddress marks some multicast addresses as is_global.
+        # Multicast is never a public unicast destination; reject it before
+        # an irreversible single-use claim, including mixed DNS answers.
+        addresses = [ipaddress.ip_address(rec[4][0]) for rec in records]
+        if not all(addr.is_global and not addr.is_multicast
+                   for addr in addresses):
             return None
     except (socket.gaierror, ValueError, IndexError, TypeError):
         return None
