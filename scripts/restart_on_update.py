@@ -217,6 +217,26 @@ _INDEX_STAT = re.compile(
 )
 
 
+def _git_index_stat(info: os.stat_result) -> tuple[int, ...]:
+    """Normalize lstat fields to Git's 32-bit unsigned index representation.
+
+    Git's fill_stat_data() truncates seconds, dev/inode, uid/gid and size
+    to unsigned int. For a nonzero size divisible by 2**32 it stores
+    0x80000000 instead of zero (munge_st_size). Avoid false dirty reports
+    on filesystems with 64-bit inode numbers or large sparse files.
+    """
+    u32 = 0xFFFFFFFF
+    size = info.st_size & u32
+    if info.st_size and not size:
+        size = 0x80000000
+    values = (
+        *divmod(info.st_ctime_ns, 1_000_000_000),
+        *divmod(info.st_mtime_ns, 1_000_000_000),
+        info.st_dev, info.st_ino, info.st_uid, info.st_gid, size,
+    )
+    return tuple(int(value) & u32 for value in values)
+
+
 def _tracked_metadata_dirty(root: Path, *, include_untracked: bool = False,
                             runtime_only: bool = False) -> bool:
     """Fail closed on any mismatched index stat, without running Git filters.
@@ -260,11 +280,7 @@ def _tracked_metadata_dirty(root: Path, *, include_untracked: bool = False,
         # Compare both ctime/mtime and stat identity: this detects touched
         # files even when Git filters would normalize them to index content.
         indexed = tuple(int(x) for x in match.groups()[:9])
-        actual = (
-            *divmod(info.st_ctime_ns, 1_000_000_000),
-            *divmod(info.st_mtime_ns, 1_000_000_000),
-            info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_size,
-        )
+        actual = _git_index_stat(info)
         if indexed != actual or match.group(10) != b"0":
             return True
     if include_untracked:

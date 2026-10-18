@@ -162,6 +162,61 @@ class RollbackPreflightTests(unittest.TestCase):
         finally:
             self.git("bisect", "reset")
 
+    def test_git_index_stat_uses_unsigned_32bit_fields(self):
+        from types import SimpleNamespace
+
+        original = (self.root / "bridge.py").lstat()
+        shift = 1 << 32
+        fake = SimpleNamespace(
+            st_ctime_ns=original.st_ctime_ns + shift * 1_000_000_000,
+            st_mtime_ns=original.st_mtime_ns + shift * 1_000_000_000,
+            st_dev=original.st_dev + shift,
+            st_ino=original.st_ino + shift,
+            st_uid=original.st_uid + shift,
+            st_gid=original.st_gid + shift,
+            st_size=original.st_size + shift,
+        )
+        # Git index stores all these fields modulo 2**32, so a wider
+        # filesystem stat must compare equal to the same index entry.
+        self.assertEqual(update._git_index_stat(fake),
+                         update._git_index_stat(original))
+        self.assertFalse(update._tracked_metadata_dirty(self.root))
+        real_lstat = Path.lstat
+
+        def large_inode(path, *args, **kwargs):
+            if path == self.root / "bridge.py":
+                return fake
+            return real_lstat(path, *args, **kwargs)
+
+        with patch.object(Path, "lstat", autospec=True, side_effect=large_inode):
+            self.assertFalse(update._tracked_metadata_dirty(self.root))
+            result = rollback.preflight(self.target, self.archive, root=self.root)
+        self.assertIn("Offline rollback preflight passed", result)
+
+    def test_git_index_size_exact_multiple_of_4gib(self):
+        from types import SimpleNamespace
+        original = (self.root / "bridge.py").lstat()
+        empty = SimpleNamespace(
+            st_ctime_ns=original.st_ctime_ns,
+            st_mtime_ns=original.st_mtime_ns,
+            st_dev=original.st_dev,
+            st_ino=original.st_ino,
+            st_uid=original.st_uid,
+            st_gid=original.st_gid,
+            st_size=0,
+        )
+        sparse = SimpleNamespace(
+            st_ctime_ns=original.st_ctime_ns,
+            st_mtime_ns=original.st_mtime_ns,
+            st_dev=original.st_dev,
+            st_ino=original.st_ino,
+            st_uid=original.st_uid,
+            st_gid=original.st_gid,
+            st_size=1 << 32,
+        )
+        self.assertEqual(update._git_index_stat(empty)[-1], 0)
+        self.assertEqual(update._git_index_stat(sparse)[-1], 0x80000000)
+
     def test_clean_filter_never_executes_in_preflight(self):
         import shlex
         marker = Path(self.tmp.name) / "filter-ran"
