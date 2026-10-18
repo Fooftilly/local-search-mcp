@@ -666,10 +666,15 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/settings':
                 if val('confirm') != 'APPLY':
                     raise ValueError('Type APPLY to confirm the settings update')
-                safe_settings.update_settings({
-                    'retention_days': val('retention_days'),
-                    'max_bytes': val('max_bytes'),
-                }, val('state'))
+                try:
+                    safe_settings.update_settings({
+                        'retention_days': val('retention_days'),
+                        'max_bytes': val('max_bytes'),
+                    }, val('state'))
+                except OSError as exc:
+                    # File and permission errors must not disclose private
+                    # paths or escape as a dropped HTTP connection.
+                    raise ValueError('Cannot safely save nonsecret settings') from exc
                 return self._respond(200,history_settings_page(
                     message='History settings saved; effective for subsequent history operations.'))
             if self.path == '/rules/preview':
