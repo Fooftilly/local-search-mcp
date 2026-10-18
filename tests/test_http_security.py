@@ -6,6 +6,7 @@ These tests do not certify Chromium container/network isolation.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from http.client import HTTPConnection
 import json
 import os
@@ -212,7 +213,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertNotIn("new.example.org", after["pending_domains"])
 
         (Path(os.environ["LOCAL_SEARCH_MCP_HISTORY_FILE"])).write_text(
-            json.dumps({"time_utc": "2026-10-17T19:00:00Z",
+            json.dumps({"time_utc": datetime.now(timezone.utc).isoformat(),
                         "kind": "search", "status": "<script>alert(1)</script>",
                         "query": "<img src=x onerror=alert(1)>"}) + "\n",
             encoding="utf-8")
