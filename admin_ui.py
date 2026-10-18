@@ -147,9 +147,9 @@ def row_html(r):
             f'<div style="margin-top:7px">{edit}</div></td></tr>')
 
 
-def decision_audit_html():
+def decision_audit_html(search=""):
     """Render only operator-entered notes and identifiers, HTML escaped."""
-    rows = policy.recent_decisions()
+    rows = policy.recent_decisions(search=search)
     cells = ''.join(
         '<tr><td class="small">' + esc(r['at']) + '</td>'
         '<td class="domain">' + esc(r['domain']) + '</td>'
@@ -178,7 +178,7 @@ def render(query='', message='', kind='success'):
     alert=f'<p class="alert {"error" if kind=="error" else "success"}">{esc(message)}</p>' if message else ''
     table_head='<div class="scroll"><table><thead><tr><th>Domain</th><th>Decision / scope / expiry</th><th>Requests / latest</th><th>Manage</th></tr></thead>'
     query_escaped=esc(query)
-    audit_html = decision_audit_html()
+    audit_html = decision_audit_html(query)
     return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
 <main><h1>Domain approvals</h1><p>Approve or deny domains requested by agents. Changes apply to the next fetch without restarting MCP. The dashboard is accessible only from this computer.</p>{alert}
 <section class="stats"><div class="stat"><span>Awaiting approval</span><b id="live-count-pending">{c['pending']}</b></div><div class="stat"><span>Allowed</span><b id="live-count-allowed">{c['allowed']}</b></div><div class="stat"><span>Denied</span><b id="live-count-denied">{c['denied']}</b></div><div class="stat"><span>Dashboard</span><b style="font-size:14px">127.0.0.1:{PORT}</b></div></section>
