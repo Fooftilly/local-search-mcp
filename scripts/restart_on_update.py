@@ -598,9 +598,58 @@ def apply(root: Path = ROOT, *, path: Path | None = None,
     return "Restart requested for previously active services after local commit update"
 
 
+def inspect_status(root: Path = ROOT, *, path: Path | None = None) -> str:
+    """Inspect local revision changes without writing state or touching services.
+
+    This is a comparison, not a package audit, update fetch, restart/rollback,
+    or approval to change the running configuration.
+    """
+    verify_checkout(root)
+    location = path or state_file()
+    previous = read_state(location)
+    current = head(root)
+    if previous is None:
+        return ("No local update baseline; check the pinned --state-file path "
+                "or install the opt-in watcher. Nothing changed.")
+    if busy(root) or tracked_source_dirty(root):
+        return ("Git operation or tracked runtime edits in progress; cannot "
+                "classify local update. Nothing changed.")
+    if previous == current:
+        return "No local commit change since saved baseline; nothing changed."
+    try:
+        git(root, "cat-file", "-e", previous + "^{commit}")
+    except subprocess.CalledProcessError:
+        return ("Saved baseline commit is unavailable locally; manual revision "
+                "and service review required. Nothing changed.")
+    changed = changed_files(root, previous, current)
+    dependency_paths = referenced_requirement_files(root)
+    manifests = [name for name in changed
+                 if dependency_manifest(name) or name in dependency_paths]
+    runtime = [name for name in changed if affects_runtime(name)]
+    if not checkout_stable(root, current):
+        return "Git checkout changed during inspection; retry. Nothing changed."
+    prefix = ("Local revision differs from saved baseline "
+              f"({previous[:12]} -> {current[:12]}). ")
+    if manifests:
+        return (prefix + f"{len(manifests)} dependency input(s) changed, "
+                f"{len(runtime)} runtime file(s) changed. Manual dependency "
+                "review/preparation and explicit --dependencies-ready are "
+                "required before the watcher can restart services. "
+                "No service or state change performed.")
+    if runtime:
+        return (prefix + f"{len(runtime)} runtime file(s) changed. "
+                "The watcher may restart active services only after its own "
+                "preflight checks; this inspection does not validate readiness. "
+                "No service or state change performed.")
+    return (prefix + "Documentation/test-only change; the watcher does not "
+            "require a service restart. No service or state change performed.")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_mutually_exclusive_group()
+    actions.add_argument("--status", action="store_true",
+                         help="Inspect local revisions only; never restart or download")
     actions.add_argument("--dependencies-ready", action="store_true",
                          help="Acknowledge that changed Python requirements were installed manually")
     actions.add_argument("--reset-baseline", metavar="COMMIT",
@@ -611,7 +660,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.state_file is not None and not args.state_file.is_absolute():
         parser.error("--state-file must be an absolute path")
     try:
-        if args.reset_baseline is not None:
+        if args.status:
+            message = inspect_status(path=args.state_file)
+        elif args.reset_baseline is not None:
             message = reset_baseline(args.reset_baseline, path=args.state_file)
         else:
             message = apply(path=args.state_file, dependencies_ready=args.dependencies_ready)

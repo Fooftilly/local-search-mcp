@@ -52,6 +52,22 @@ systemctl --user daemon-reload
 systemctl --user enable --now local-search-mcp-update.path local-search-mcp-update.timer
 ```
 
+Before applying a local Git update or planning a manual rollback, inspect
+the local revision comparison without affecting services or stored state:
+
+```sh
+python3 scripts/restart_on_update.py --status --state-file '/path/from/checker/journal'
+```
+
+`--status` is strictly **read-only**. It compares the saved watcher baseline
+with local `HEAD`, identifies runtime versus documentation-only changes,
+and flags changed Python dependency inputs (including transitive pip includes).
+It neither initializes a missing baseline nor runs systemctl, accesses remote
+repositories, downloads packages, verifies dependency installations, or
+approves a rollback. Use the *pinned* state-file path from the installed unit
+rather than assuming the interactive shell shares its XDG state directory.
+This is an inspection aid, not a full upgrade or rollback implementation.
+
 The update checker oneshot has a ten-minute timeout to accommodate bounded
 serial Git checks, dependency validation, and two potentially slow systemd
 service restarts. The private update-state directory must be owned by the

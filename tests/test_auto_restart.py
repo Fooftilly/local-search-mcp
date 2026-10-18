@@ -50,6 +50,84 @@ class AutoRestartTests(unittest.TestCase):
                                   dependencies_ready=dependencies_ready)
         return result, calls, act.call_count
 
+    def test_status_never_initializes_or_mutates_or_restarts(self):
+        with patch.object(update, "active", side_effect=AssertionError("probe")), \
+             patch.object(update, "restart", side_effect=AssertionError("restart")), \
+             patch.object(update, "write_state", side_effect=AssertionError("write")):
+            self.assertIn("No local update baseline",
+                          update.inspect_status(self.root, path=self.state))
+        self.assertFalse(self.state.exists())
+        update.initialize(self.root, path=self.state)
+        baseline = self.state.read_bytes()
+        with patch.object(update, "active", side_effect=AssertionError("probe")), \
+             patch.object(update, "restart", side_effect=AssertionError("restart")), \
+             patch.object(update, "write_state", side_effect=AssertionError("write")):
+            self.assertIn("No local commit change",
+                          update.inspect_status(self.root, path=self.state))
+            self.change("README.md", "a docs change\n")
+            self.commit("docs update")
+            self.assertIn("Documentation/test-only",
+                          update.inspect_status(self.root, path=self.state))
+            self.change("bridge.py", "print('updated')\n")
+            self.commit("runtime update")
+            self.assertIn("runtime file(s) changed",
+                          update.inspect_status(self.root, path=self.state))
+            self.change("requirements.txt", "fastmcp>=4,<6\n")
+            self.commit("requirements update")
+            self.assertIn("explicit --dependencies-ready",
+                          update.inspect_status(self.root, path=self.state))
+        self.assertEqual(self.state.read_bytes(), baseline)
+
+    def test_status_detects_transitive_dependency_inputs(self):
+        self.change("requirements.txt", "-r locks/pins.txt\n")
+        self.change("locks/pins.txt", "fastmcp>=4,<5\n")
+        self.commit("initial includes")
+        update.initialize(self.root, path=self.state)
+        self.change("locks/pins.txt", "fastmcp>=4,<6\n")
+        self.commit("update included file")
+        result = update.inspect_status(self.root, path=self.state)
+        self.assertIn("1 dependency input(s) changed", result)
+        self.assertIn("explicit --dependencies-ready", result)
+
+    def test_status_missing_invalid_or_symlink_baseline(self):
+        self.assertIn("No local update baseline",
+                      update.inspect_status(self.root, path=self.state))
+        update.write_state(self.state, "f" * 40)
+        before = self.state.read_bytes()
+        self.assertIn("baseline commit is unavailable",
+                      update.inspect_status(self.root, path=self.state))
+        self.assertEqual(self.state.read_bytes(), before)
+        self.state.unlink()
+        target = self.root / "secret"
+        target.write_text("unchanged")
+        self.state.symlink_to(target)
+        with self.assertRaises(ValueError):
+            update.inspect_status(self.root, path=self.state)
+        self.assertEqual(target.read_text(), "unchanged")
+
+    def test_status_defers_dirty_runtime_tree_without_changing_baseline(self):
+        update.initialize(self.root, path=self.state)
+        self.change("bridge.py", "print('new')\n")
+        self.commit("runtime commit")
+        baseline = self.state.read_bytes()
+        self.change("bridge.py", "print('dirty')\n")
+        self.assertIn("tracked runtime edits",
+                      update.inspect_status(self.root, path=self.state))
+        self.assertEqual(self.state.read_bytes(), baseline)
+
+    def test_status_cli_is_read_only_and_incompatible_with_apply_flags(self):
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+        with patch.object(update, "inspect_status", return_value="local status") as status, \
+             patch.object(update, "apply", side_effect=AssertionError("applied")), \
+             redirect_stdout(io.StringIO()) as stream:
+            self.assertEqual(update.main(["--status", "--state-file", str(self.state)]), 0)
+        status.assert_called_once_with(path=self.state)
+        self.assertEqual(stream.getvalue().strip(), "local status")
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            update.main(["--status", "--dependencies-ready"])
+
+
     def test_opt_in_units_and_literal_safe_paths(self):
         root = Path("/tmp/checkout % has spaces")
         normal = unit_files("/usr/bin/python3", root)
