@@ -86,7 +86,7 @@ def _db():
             if "request_id" not in columns:
                 conn.execute("ALTER TABLE domains ADD COLUMN request_id TEXT NOT NULL DEFAULT ''")
             # Preserve the same opaque ID on existing requests across restart.
-            for row in conn.execute("SELECT domain FROM domains WHERE request_id=''"):
+            for row in conn.execute("SELECT domain FROM domains WHERE request_id=''").fetchall():
                 conn.execute("UPDATE domains SET request_id=? WHERE domain=?",
                              (secrets.token_hex(12), row["domain"]))
             conn.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -95,7 +95,11 @@ def _db():
                 at TEXT NOT NULL, domain TEXT NOT NULL,
                 action TEXT NOT NULL CHECK(action IN ('allow', 'deny', 'delete', 'rename')),
                 request_id TEXT NOT NULL DEFAULT '',
-                reason TEXT NOT NULL DEFAULT ''
+                reason TEXT NOT NULL DEFAULT '',
+                requested_url TEXT NOT NULL DEFAULT '',
+                first_seen_at TEXT NOT NULL DEFAULT '',
+                last_requested_at TEXT NOT NULL DEFAULT '',
+                request_count INTEGER NOT NULL DEFAULT 0
             )""")
             decision_columns = {col["name"] for col in conn.execute(
                 "PRAGMA table_info(decisions)")}
@@ -103,6 +107,14 @@ def _db():
                 conn.execute("ALTER TABLE decisions ADD COLUMN request_id TEXT NOT NULL DEFAULT ''")
             if "reason" not in decision_columns:
                 conn.execute("ALTER TABLE decisions ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
+            for name, sql_type in (
+                ("requested_url", "TEXT NOT NULL DEFAULT ''"),
+                ("first_seen_at", "TEXT NOT NULL DEFAULT ''"),
+                ("last_requested_at", "TEXT NOT NULL DEFAULT ''"),
+                ("request_count", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if name not in decision_columns:
+                    conn.execute(f"ALTER TABLE decisions ADD COLUMN {name} {sql_type}")
             # Retain hourly admission history even after an operator resolves
             # or deletes pending domains. A request row is not an audit log.
             conn.execute("""CREATE TABLE IF NOT EXISTS pending_admissions (
@@ -163,7 +175,8 @@ def _seed(conn):
                 except ValueError:
                     continue
                 now = utcnow()
-                conn.execute("INSERT OR IGNORE INTO domains(domain,status,created_at,updated_at) VALUES(?,?,?,?)", (domain,'allowed',now,now))
+                conn.execute("INSERT OR IGNORE INTO domains(domain,status,created_at,updated_at,request_id) VALUES(?,?,?,?,?)",
+                             (domain,'allowed',now,now,secrets.token_hex(12)))
             conn.execute("INSERT INTO metadata (key, value) VALUES ('domain_seed_v1', '1')")
         # Preserve intentional decisions when upgrading older databases. Older
         # requests copied a parent's denial into child rows without user action.
@@ -440,10 +453,15 @@ def decide(domain: str, action: str, new_domain: str = "",
         _seed(conn)
         conn.execute('BEGIN IMMEDIATE')
         try:
-            existing = conn.execute("SELECT request_id FROM domains WHERE domain=?",
+            existing = conn.execute("SELECT * FROM domains WHERE domain=?",
                                     (domain,)).fetchone()
             request_id = (existing["request_id"] if existing and existing["request_id"]
                           else secrets.token_hex(12))
+            snapshot_url = (safe_display_url(existing["last_requested_url"])
+                            if existing and existing["last_requested_url"] else "")
+            first_seen_at = existing["created_at"] if existing else now
+            last_requested_at = existing["last_requested_at"] if existing else ""
+            request_count = existing["request_count"] if existing else 0
             if action in ('allow','deny'):
                 status = 'allowed' if action == 'allow' else 'denied'
                 conn.execute("""INSERT INTO domains
@@ -451,7 +469,9 @@ def decide(domain: str, action: str, new_domain: str = "",
                     VALUES(?,?,?,?,1,?,?,?) ON CONFLICT(domain) DO UPDATE
                     SET status=excluded.status,updated_at=excluded.updated_at,
                         explicit_rule=1,match_scope=excluded.match_scope,
-                        expires_at=excluded.expires_at""",
+                        expires_at=excluded.expires_at,
+                        request_id=CASE WHEN domains.request_id=''
+                                        THEN excluded.request_id ELSE domains.request_id END""",
                     (domain,status,now,now,scope,expires_at,request_id))
                 # Remove only obsolete auto-queued descendants covered by the
                 # new rule. Exact-host rules must leave children in the queue.
@@ -467,8 +487,12 @@ def decide(domain: str, action: str, new_domain: str = "",
                     conn.execute('UPDATE domains SET domain=?,updated_at=? WHERE domain=?',
                                  (new_domain,now,domain))
             conn.execute(
-                "INSERT INTO decisions(at,domain,action,request_id,reason) VALUES(?,?,?,?,?)",
-                (now,domain,action,request_id,reason))
+                """INSERT INTO decisions
+                   (at,domain,action,request_id,reason,requested_url,
+                    first_seen_at,last_requested_at,request_count)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (now,domain,action,request_id,reason,snapshot_url,
+                 first_seen_at,last_requested_at,request_count))
             # As before, invalidate before the write is visible to readers.
             invalidate_fetch()
             conn.commit()
@@ -501,8 +525,11 @@ def clear_pending_requests() -> int:
                 """SELECT 1 FROM domains WHERE status='pending'
                    AND explicit_rule=0 AND expires_at != '' LIMIT 1"""
             ).fetchone() is not None
-            conn.execute("""INSERT INTO decisions(at,domain,action,request_id)
-                SELECT ?,domain,'delete',request_id FROM domains
+            conn.execute("""INSERT INTO decisions
+                (at,domain,action,request_id,requested_url,
+                 first_seen_at,last_requested_at,request_count)
+                SELECT ?,domain,'delete',request_id,last_requested_url,
+                       created_at,last_requested_at,request_count FROM domains
                 WHERE status='pending' AND explicit_rule=0""", (now,))
             result = conn.execute("""DELETE FROM domains
                 WHERE status='pending' AND explicit_rule=0""")
@@ -521,7 +548,8 @@ def recent_decisions(limit: int = 25) -> list[dict]:
         raise ValueError("Invalid decision audit limit")
     with _db() as conn:
         return [dict(row) for row in conn.execute(
-            "SELECT at,domain,action,request_id,reason FROM decisions "
+            """SELECT at,domain,action,request_id,reason,requested_url,
+                      first_seen_at,last_requested_at,request_count FROM decisions """
             "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
 
 
