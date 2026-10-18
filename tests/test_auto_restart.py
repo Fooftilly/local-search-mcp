@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -229,6 +230,43 @@ class AutoRestartTests(unittest.TestCase):
         self.assertIn("Previous commit unavailable", message)
         self.assertIn("--state-file " + shlex.quote(str(special_state)), message)
         self.assertIn("--reset-baseline", message)
+
+    def test_direct_url_needs_ack_and_accepts_installed_package_offline(self):
+        update.initialize(self.root, path=self.state)
+        old_state = self.state.read_text()
+        self.change("requirements.txt",
+                    "pip @ https://example.invalid/pip-1.0-py3-none-any.whl\\n")
+        self.commit("use manually installed wheel URL")
+        deferred, restarted, _ = self.check()
+        self.assertIn("--dependencies-ready", deferred)
+        self.assertEqual(restarted, [])
+        self.assertEqual(self.state.read_text(), old_state)
+
+        interpreter = self.root / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.touch()  # requirements_ready checks existence only.
+        actual_run = subprocess.run
+        commands = []
+
+        def offline_runner(command, **kwargs):
+            commands.append(command)
+            if "-c" in command:
+                return actual_run([sys.executable, "-I", "-c", command[-1]],
+                                  **kwargs)
+            self.assertEqual(command[-3:], ["-m", "pip", "check"])
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertTrue(update.requirements_ready(self.root))
+        self.assertEqual(len(commands), 2)
+        self.assertTrue(any("pip" in cmd and "check" in cmd for cmd in commands))
+
+        # A URL entry cannot pass if the named distribution is absent locally.
+        self.change("requirements.txt",
+                    "definitely-absent-local-mcp-98371 @ "
+                    "https://example.invalid/missing.whl\\n")
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertFalse(update.requirements_ready(self.root))
 
     def test_dependency_acknowledgement_still_checks_local_versions(self):
         update.initialize(self.root, path=self.state)
