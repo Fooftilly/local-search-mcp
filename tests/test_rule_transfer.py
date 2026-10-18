@@ -141,6 +141,11 @@ class PortableDomainRulesTests(unittest.TestCase):
         self.assertTrue(row["explicit_rule"])
         audit = policy.recent_decisions()[0]
         self.assertEqual(audit["action"], "allow")
+        self.assertEqual(audit["request_id"], pending["request_id"])
+        self.assertEqual(audit["requested_url"], "https://docs.example.org")
+        self.assertEqual(audit["first_requested_at"], pending["first_requested_at"])
+        self.assertEqual(audit["last_requested_at"], pending["last_requested_at"])
+        self.assertEqual(audit["request_count"], pending["request_count"])
         self.assertNotIn("DONT_EXPORT", repr(audit))
         self.assertNotIn("DONT_EXPORT", json.dumps(transfer.export_rules()))
 
