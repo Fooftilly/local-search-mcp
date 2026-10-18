@@ -76,6 +76,8 @@ The dashboard stores permissions in `~/.local/state/local-search-mcp/domains.sql
 
 The local history dashboard now supports filtered, private indexed SQLite metadata and 30-day default retention. See [HISTORY-INDEX.md](HISTORY-INDEX.md). The original JSONL files and CLI exports remain unchanged.
 
+MCP `web_metrics(hours=24)` returns aggregate 1/24/168-hour operation outcomes and process-lifetime cache counters without exposing queries, URLs or document content. Details: [HISTORY-INDEX.md](HISTORY-INDEX.md).
+
 History commands:
 
 ```bash
