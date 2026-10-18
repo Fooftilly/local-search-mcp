@@ -116,8 +116,10 @@ def busy(root: Path) -> bool:
 
 
 def changed_files(root: Path, old: str, new: str) -> list[str]:
+    # Disabling rename detection surfaces both a removed runtime source and
+    # its new documentation destination, so neither is silently ignored.
     output = subprocess.run(
-        ["git", "diff", "--name-only", "--no-ext-diff", "-z", old, new, "--"],
+        ["git", "diff", "--no-renames", "--name-only", "--no-ext-diff", "-z", old, new, "--"],
         cwd=root, capture_output=True, check=True, timeout=15,
     ).stdout
     return [os.fsdecode(name) for name in output.split(b"\0") if name]
@@ -134,8 +136,10 @@ def affects_runtime(name: str) -> bool:
 
 def tracked_source_dirty(root: Path) -> bool:
     """Do not restart with partially checked-out or locally edited tracked code."""
+    # --no-renames emits individual add/delete paths rather than an R/C record
+    # with an extra NUL-delimited source name (which cannot be sliced as XY path).
     result = subprocess.run(
-        ["git", "status", "--porcelain", "-z", "--untracked-files=no", "--"],
+        ["git", "status", "--porcelain=v1", "--no-renames", "-z", "--untracked-files=no", "--"],
         cwd=root, capture_output=True, check=True, timeout=15,
     )
     names = [os.fsdecode(item[3:]) for item in result.stdout.split(b"\0") if item]
@@ -241,9 +245,10 @@ def apply(root: Path = ROOT, *, path: Path | None = None,
     if tunnel and not bridge:
         # The tunnel unit Wants=bridge; restarting the tunnel would start an
         # intentionally inactive/failed bridge as an implicit dependency.
-        write_state(location, current)
-        return ("Bridge inactive while tunnel runs; skipped tunnel restart "
-                "to avoid activating the bridge (manual review required)")
+        # Keep the old baseline: once the bridge is brought up manually, a
+        # subsequent tick can safely restart both services on the new code.
+        return ("Bridge inactive while tunnel runs; restart deferred until "
+                "bridge is active (baseline unchanged)")
     # Record exactly once *before* affecting live processes: a failed restart
     # must not cause an endless restart loop on each timer tick.
     write_state(location, current)
