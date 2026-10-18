@@ -15,6 +15,9 @@ NAMES = (
     "local-search-mcp-tunnel.service",
     "local-search-mcp-health.service",
     "local-search-mcp-health.timer",
+    "local-search-mcp-update.service",
+    "local-search-mcp-update.path",
+    "local-search-mcp-update.timer",
 )
 
 
@@ -23,7 +26,7 @@ def quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
 
 
-def unit_files(python: str, root: Path) -> dict[str, str]:
+def unit_files(python: str, root: Path, *, auto_restart: bool = False, reflog_path: Path | None = None) -> dict[str, str]:
     """Generate secrets-free unit content with absolute paths."""
     exe = quote(str(Path(python).resolve()))
     launch = quote(str(root / "bootstrap.py"))
@@ -33,7 +36,7 @@ def unit_files(python: str, root: Path) -> dict[str, str]:
         "Restart=on-failure\nRestartSec=30s\n"
         "UMask=0077\nNoNewPrivileges=true\n"
     )
-    return {
+    units = {
         NAMES[0]: MARKER + "[Unit]\nDescription=Local SearXNG/Crawl4AI MCP bridge\nStartLimitIntervalSec=300\nStartLimitBurst=5\n" +
                   common + f"ExecStart={exe} {launch} --service bridge\n" +
                   "\n[Install]\nWantedBy=default.target\n",
@@ -49,6 +52,25 @@ def unit_files(python: str, root: Path) -> dict[str, str]:
                   "Unit=local-search-mcp-health.service\n"
                   "\n[Install]\nWantedBy=timers.target\n",
     }
+    if auto_restart:
+        if reflog_path is None:
+            from scripts.restart_on_update import reflog
+            reflog_path = reflog(root)
+        checker = quote(str(root / "scripts" / "restart_on_update.py"))
+        units.update({
+            NAMES[4]: MARKER + "[Unit]\\nDescription=Restart local MCP services after local Git updates\\n" +
+                      "\\n[Service]\\nType=oneshot\\nUMask=0077\\nNoNewPrivileges=true\\nTimeoutStartSec=90s\\n" +
+                      f"ExecStart={exe} {checker}\\n",
+            NAMES[5]: MARKER + "[Unit]\\nDescription=Watch local MCP Git HEAD reflog\\n" +
+                      "\\n[Path]\\n" + f"PathChanged={quote(str(reflog_path))}\\n" +
+                      "Unit=local-search-mcp-update.service\\n" +
+                      "\\n[Install]\\nWantedBy=default.target\\n",
+            NAMES[6]: MARKER + "[Unit]\\nDescription=Recheck local MCP Git revision without network access\\n" +
+                      "\\n[Timer]\\nOnStartupSec=1min\\nOnUnitActiveSec=1min\\nAccuracySec=10s\\n" +
+                      "Unit=local-search-mcp-update.service\\n" +
+                      "\\n[Install]\\nWantedBy=timers.target\\n",
+        })
+    return units
 
 
 def destination() -> Path:
@@ -80,18 +102,25 @@ def main(argv: list[str] | None = None) -> int:
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--install", action="store_true")
     modes.add_argument("--remove", action="store_true")
+    modes.add_argument("--remove-auto-restart", action="store_true")
+    parser.add_argument("--auto-restart", action="store_true", help="Include opt-in local Git change watcher and timer")
     args = parser.parse_args(argv)
     if os.geteuid() == 0:
         parser.error("Run as your normal user, not root")
+    if args.auto_restart and (args.remove or args.remove_auto_restart):
+        parser.error("--auto-restart is only valid for preview or --install")
     folder = destination()
-    files = unit_files(sys.executable, ROOT)
+    files = unit_files(sys.executable, ROOT, auto_restart=args.auto_restart)
     if args.install:
+        if args.auto_restart:
+            from scripts.restart_on_update import initialize
+            initialize(ROOT)
         folder.mkdir(parents=True, exist_ok=True)
         for name, content in files.items():
             write_owned(folder / name, content)
         print("Installed user units. Run systemctl --user daemon-reload")
-    elif args.remove:
-        for name in files:
+    elif args.remove or args.remove_auto_restart:
+        for name in (NAMES[4:] if args.remove_auto_restart else NAMES):
             path = folder / name
             if path.is_symlink():
                 raise ValueError(f"Refusing symlink: {path}")
@@ -99,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
                 if not path.read_text().startswith(MARKER):
                     raise ValueError(f"Refusing unmanaged unit: {path}")
                 path.unlink()
-        print("Removed user units. Run systemctl --user daemon-reload")
+        print("Removed requested user units. Run systemctl --user daemon-reload")
     else:
         for name, content in files.items():
             print(f"===== {name} =====\n{content}")
