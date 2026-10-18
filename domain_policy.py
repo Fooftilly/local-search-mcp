@@ -11,6 +11,7 @@ import ipaddress
 import os
 from pathlib import Path
 import re
+import secrets
 import socket
 import sqlite3
 from urllib.parse import urlsplit, urlunsplit
@@ -18,7 +19,7 @@ from public_suffix import is_public_suffix, registrable_domain
 from request_cache import invalidate_fetch
 
 UI_URL = "http://127.0.0.1:8791/"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 # Fixed safeguards for agent-created pending requests (not explicit rules).
 MAX_PENDING_TOTAL = 512
 MAX_NEW_PENDING_GLOBAL_PER_HOUR = 128
@@ -69,7 +70,8 @@ def _db():
                 last_requested_url TEXT NOT NULL DEFAULT '',
                 explicit_rule INTEGER NOT NULL DEFAULT 0 CHECK(explicit_rule IN (0,1)),
                 match_scope TEXT NOT NULL DEFAULT 'subdomains' CHECK(match_scope IN ('exact','subdomains')),
-                expires_at TEXT NOT NULL DEFAULT ''
+                expires_at TEXT NOT NULL DEFAULT '',
+                request_id TEXT NOT NULL DEFAULT ''
             )""")
             if not any(col["name"] == "explicit_rule" for col in conn.execute("PRAGMA table_info(domains)")):
                 conn.execute("""ALTER TABLE domains ADD COLUMN explicit_rule INTEGER
@@ -81,12 +83,26 @@ def _db():
                     CHECK(match_scope IN ('exact','subdomains'))""")
             if "expires_at" not in columns:
                 conn.execute("ALTER TABLE domains ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''")
+            if "request_id" not in columns:
+                conn.execute("ALTER TABLE domains ADD COLUMN request_id TEXT NOT NULL DEFAULT ''")
+            # Preserve the same opaque ID on existing requests across restart.
+            for row in conn.execute("SELECT domain FROM domains WHERE request_id=''"):
+                conn.execute("UPDATE domains SET request_id=? WHERE domain=?",
+                             (secrets.token_hex(12), row["domain"]))
             conn.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             conn.execute("""CREATE TABLE IF NOT EXISTS decisions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 at TEXT NOT NULL, domain TEXT NOT NULL,
-                action TEXT NOT NULL CHECK(action IN ('allow', 'deny', 'delete', 'rename'))
+                action TEXT NOT NULL CHECK(action IN ('allow', 'deny', 'delete', 'rename')),
+                request_id TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT ''
             )""")
+            decision_columns = {col["name"] for col in conn.execute(
+                "PRAGMA table_info(decisions)")}
+            if "request_id" not in decision_columns:
+                conn.execute("ALTER TABLE decisions ADD COLUMN request_id TEXT NOT NULL DEFAULT ''")
+            if "reason" not in decision_columns:
+                conn.execute("ALTER TABLE decisions ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
             # Retain hourly admission history even after an operator resolves
             # or deletes pending domains. A request row is not an audit log.
             conn.execute("""CREATE TABLE IF NOT EXISTS pending_admissions (
@@ -321,9 +337,9 @@ def request(domain: str, safe_url: str):
                     if exact is None:
                         conn.execute("""INSERT INTO domains
                             (domain,status,created_at,updated_at,request_count,
-                             last_requested_at,last_requested_url)
-                            VALUES (?,'pending',?,?,1,?,?)""",
-                            (domain, now, now, now, safe_url[:512]))
+                             last_requested_at,last_requested_url,request_id)
+                            VALUES (?,'pending',?,?,1,?,?,?)""",
+                            (domain, now, now, now, safe_url[:512], secrets.token_hex(12)))
                     else:
                         # Preserve its chosen scope as the default for
                         # local reapproval. _match already ignored the expired
@@ -396,7 +412,8 @@ def expired_grant_without_active_fallback(domain: str) -> bool:
 
 
 def decide(domain: str, action: str, new_domain: str = "",
-           *, scope: str = "subdomains", expires_minutes: int = 0):
+           *, scope: str = "subdomains", expires_minutes: int = 0,
+           reason: str = ""):
     """Only the dashboard can write explicit decisions and their limits.
 
     0 minutes means permanent. Allowed finite durations are deliberately
@@ -411,6 +428,9 @@ def decide(domain: str, action: str, new_domain: str = "",
         raise ValueError('Invalid rule scope')
     if type(expires_minutes) is not int or expires_minutes not in (0, 60, 1440, 10080):
         raise ValueError('Invalid permission duration')
+    if (not isinstance(reason, str) or len(reason) > 160
+            or any(ord(c) < 32 or ord(c) == 127 for c in reason)):
+        raise ValueError("Reason must be at most 160 characters without control characters")
     now = utcnow()
     expires_at = ((datetime.fromisoformat(now.replace('Z', '+00:00')) +
                    timedelta(minutes=expires_minutes)).isoformat(
@@ -420,15 +440,19 @@ def decide(domain: str, action: str, new_domain: str = "",
         _seed(conn)
         conn.execute('BEGIN IMMEDIATE')
         try:
+            existing = conn.execute("SELECT request_id FROM domains WHERE domain=?",
+                                    (domain,)).fetchone()
+            request_id = (existing["request_id"] if existing and existing["request_id"]
+                          else secrets.token_hex(12))
             if action in ('allow','deny'):
                 status = 'allowed' if action == 'allow' else 'denied'
                 conn.execute("""INSERT INTO domains
-                    (domain,status,created_at,updated_at,explicit_rule,match_scope,expires_at)
-                    VALUES(?,?,?,?,1,?,?) ON CONFLICT(domain) DO UPDATE
+                    (domain,status,created_at,updated_at,explicit_rule,match_scope,expires_at,request_id)
+                    VALUES(?,?,?,?,1,?,?,?) ON CONFLICT(domain) DO UPDATE
                     SET status=excluded.status,updated_at=excluded.updated_at,
                         explicit_rule=1,match_scope=excluded.match_scope,
                         expires_at=excluded.expires_at""",
-                    (domain,status,now,now,scope,expires_at))
+                    (domain,status,now,now,scope,expires_at,request_id))
                 # Remove only obsolete auto-queued descendants covered by the
                 # new rule. Exact-host rules must leave children in the queue.
                 if scope == 'subdomains':
@@ -442,7 +466,9 @@ def decide(domain: str, action: str, new_domain: str = "",
                 if domain != new_domain:
                     conn.execute('UPDATE domains SET domain=?,updated_at=? WHERE domain=?',
                                  (new_domain,now,domain))
-            conn.execute('INSERT INTO decisions(at,domain,action) VALUES(?,?,?)',(now,domain,action))
+            conn.execute(
+                "INSERT INTO decisions(at,domain,action,request_id,reason) VALUES(?,?,?,?,?)",
+                (now,domain,action,request_id,reason))
             # As before, invalidate before the write is visible to readers.
             invalidate_fetch()
             conn.commit()
@@ -475,8 +501,8 @@ def clear_pending_requests() -> int:
                 """SELECT 1 FROM domains WHERE status='pending'
                    AND explicit_rule=0 AND expires_at != '' LIMIT 1"""
             ).fetchone() is not None
-            conn.execute("""INSERT INTO decisions(at,domain,action)
-                SELECT ?,domain,'delete' FROM domains
+            conn.execute("""INSERT INTO decisions(at,domain,action,request_id)
+                SELECT ?,domain,'delete',request_id FROM domains
                 WHERE status='pending' AND explicit_rule=0""", (now,))
             result = conn.execute("""DELETE FROM domains
                 WHERE status='pending' AND explicit_rule=0""")
@@ -487,6 +513,16 @@ def clear_pending_requests() -> int:
         except BaseException:
             conn.rollback()
             raise
+
+
+def recent_decisions(limit: int = 25) -> list[dict]:
+    """Return a bounded operator-only decision audit, with no URL or tokens."""
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise ValueError("Invalid decision audit limit")
+    with _db() as conn:
+        return [dict(row) for row in conn.execute(
+            "SELECT at,domain,action,request_id,reason FROM decisions "
+            "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
 
 
 def safe_display_url(url: str) -> str:
