@@ -248,7 +248,9 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn(b'<option value="1" selected>Last hour</option>', page)
         self.assertIn(b'<tbody id="live-history-summary">', page)
         self.assertIn(b'<progress aria-label="fetch blocked count"', page)
-        self.assertIn(b'10', page)
+        self.assertIn(b'<td>10</td>', page)
+        self.assertIn('<td>10</td>', json.loads(self.exchange(
+            "GET", "/live?view=history&hours=1&kind=fetch")[1])["history_html"])
         for secret in (b"PRIVATE_QUERY", b"SECRET", b"HIDDEN"):
             self.assertNotIn(secret, page)
 
@@ -278,6 +280,33 @@ class DashboardHTTPTests(unittest.TestCase):
         # The policy view's live endpoint ignores unrelated history filters.
         self.assertEqual(self.exchange(
             "GET", "/live?view=policy&hours=9999")[0], 200)
+
+    def test_invalid_history_text_filters_keep_escaped_form_and_navigation(self):
+        for key, value in (("domain", "https://docs.example.org/private"),
+                           ("domain", "docs.example.org/"),
+                           ("domain", "docs.example.org "),
+                           ("status", "<img src=x onerror=alert(1)>"),
+                           ("kind", "unsupported")):
+            with self.subTest(key=key, value=value):
+                params = urlencode({key: value, "hours": "24"})
+                status, body, _ = self.exchange("GET", "/history?" + params)
+                self.assertEqual(status, 400)
+                self.assertIn(b'<nav>', body)
+                self.assertIn(b'<form method="get" action="/history">', body)
+                self.assertIn(b'role="alert"', body)
+                self.assertIn(b'Invalid history filter', body)
+                self.assertIn(b'<option value="24" selected>', body)
+                self.assertIn(value.replace("&", "&amp;")
+                                  .replace("<", "&lt;").replace(">", "&gt;")
+                                  .replace('"', "&quot;").encode(), body)
+                self.assertNotIn(b'Indexed history is unavailable', body)
+                if key == "status":
+                    self.assertNotIn(b'<img src=x onerror=', body)
+                # Strict API clients still get a 400, not a misleading empty
+                # success response or an SQL query for unsupported input.
+                code, _, _ = self.exchange("GET",
+                                           "/live?view=history&" + params)
+                self.assertEqual(code, 400)
 
     def test_invalid_retention_configuration_keeps_history_http_response(self):
         with patch.dict(os.environ, {
