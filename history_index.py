@@ -7,6 +7,7 @@ or credentials. Import coordinates with append_history's existing file lock.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from contextlib import closing
 import fcntl
 import ipaddress
 import json
@@ -60,11 +61,11 @@ def _origin_domain(event: dict) -> str:
         host = parsed.hostname
         if parsed.scheme not in ("http", "https") or not host:
             return ""
-        # Do not index private address literals, paths or bearer URL tokens.
         ipaddress.ip_address(host)
-        return ""
     except ValueError:
+        # A normal DNS hostname raises ValueError in ipaddress.ip_address.
         return (host or "")[:253] if "host" in locals() else ""
+    return ""
 
 
 def _safe_event(event: object) -> tuple | None:
@@ -112,9 +113,13 @@ def sync_history() -> None:
         os.fchmod(fd, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
         try:
+            # Reject source symlinks before making a new index file.
+            source_files = _files(target)
+            if any(p.is_symlink() for p in source_files):
+                raise OSError("Refusing symlinked history input")
             if index.is_symlink():
                 raise OSError("Refusing symlinked SQLite history index")
-            with sqlite3.connect(index, timeout=10) as conn:
+            with closing(sqlite3.connect(index, timeout=10)) as conn:
                 os.chmod(index, 0o600)
                 conn.execute("PRAGMA busy_timeout=10000")
                 conn.execute("BEGIN IMMEDIATE")
@@ -137,7 +142,7 @@ def sync_history() -> None:
                 seen: set[tuple[int, int]] = set()
                 cutoff = int((datetime.now(timezone.utc) -
                               timedelta(days=_retention_days())).timestamp() * 1000)
-                for p in _files(target):
+                for p in source_files:
                     if p.is_symlink():
                         raise OSError("Refusing symlinked rotated history")
                     with p.open("rb") as stream:
@@ -207,7 +212,7 @@ def search_history(*, limit: int = 25, kind: str = "", status: str = "",
             where.append(col + "=?")
             args.append(term)
     suffix = (" WHERE " + " AND ".join(where)) if where else ""
-    with sqlite3.connect(index_path(), timeout=10) as conn:
+    with closing(sqlite3.connect(index_path(), timeout=10)) as conn:
         conn.row_factory = sqlite3.Row
         return [dict(r) for r in conn.execute(
             "SELECT at_ms,kind,status,domain,duration_ms,backend FROM history" +
@@ -217,7 +222,7 @@ def search_history(*, limit: int = 25, kind: str = "", status: str = "",
 def summarize_history() -> list[dict]:
     """Grouped operational counts and elapsed-time aggregates."""
     sync_history()
-    with sqlite3.connect(index_path(), timeout=10) as conn:
+    with closing(sqlite3.connect(index_path(), timeout=10)) as conn:
         conn.row_factory = sqlite3.Row
         return [dict(r) for r in conn.execute(
             """SELECT kind,status,count(*) AS count,
