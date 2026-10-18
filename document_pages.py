@@ -19,8 +19,9 @@ MAX_TOTAL_CHARS = 3_000_000
 MAX_DOCUMENTS = 8
 TTL_SECONDS = 900
 
-# token -> (expires_at, approved_final_url, markdown, public_metadata, source_url)
-_CACHE: OrderedDict[str, tuple[float, str, str, dict, str]] = OrderedDict()
+# token -> (expires_at, approved_final_url, markdown, public_metadata,
+#           source_url, PRIVATE one-use proof or None)
+_CACHE: OrderedDict[str, tuple[float, str, str, dict, str, tuple[str, str] | None]] = OrderedDict()
 _LOCK = threading.Lock()
 
 
@@ -32,7 +33,8 @@ def _purge_expired(now: float) -> None:
 
 
 def save(url: str, markdown: str, metadata: dict, *,
-         source_url: str | None = None) -> tuple[str, int]:
+         source_url: str | None = None,
+         once_proof: tuple[str, str] | None = None) -> tuple[str, int]:
     """Cache a bounded document and return an unpredictable read capability.
 
     Small documents need no capability; caller invokes this only for content
@@ -58,6 +60,11 @@ def save(url: str, markdown: str, metadata: dict, *,
             raise ValueError
     except (TypeError, ValueError) as exc:
         raise ValueError("Only approved public source URLs may be saved") from exc
+    if once_proof is not None and (
+            not isinstance(once_proof, tuple) or len(once_proof) != 2
+            or not all(isinstance(v, str) for v in once_proof)
+            or not re.fullmatch(r"[a-f0-9]{32}", once_proof[1])):
+        raise ValueError("Invalid private authorization context")
     now = time.monotonic()
     with _LOCK:
         _purge_expired(now)
@@ -69,12 +76,15 @@ def save(url: str, markdown: str, metadata: dict, *,
         token = secrets.token_urlsafe(24)
         while token in _CACHE:
             token = secrets.token_urlsafe(24)
-        _CACHE[token] = (now + TTL_SECONDS, url, markdown, dict(metadata), source_url)
+        _CACHE[token] = (now + TTL_SECONDS, url, markdown, dict(metadata),
+                         source_url, once_proof)
     return token, (len(markdown) + PAGE_CHARS - 1) // PAGE_CHARS
 
 
-def read_with_context(token: str, page: int) -> tuple[dict, str | None]:
-    """Read a page plus private approval context without exposing it to MCP."""
+def read_with_security_context(
+        token: str, page: int
+) -> tuple[dict, str | None, tuple[str, str] | None]:
+    """Read a page and PRIVATE authorization proof, never returned to MCP."""
     if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
         raise ValueError("Invalid document handle")
     if isinstance(page, bool) or not isinstance(page, int) or page < 2:
@@ -84,8 +94,8 @@ def read_with_context(token: str, page: int) -> tuple[dict, str | None]:
         item = _CACHE.get(token)
         if item is None:
             return ({"success": False, "status": "expired_or_unknown",
-                     "reason": "Temporary document not found or expired; fetch the approved URL again."}, None)
-        expires_at, url, markdown, metadata, source_url = item
+                     "reason": "Temporary document not found or expired; fetch the approved URL again."}, None, None)
+        expires_at, url, markdown, metadata, source_url, once_proof = item
         count = (len(markdown) + PAGE_CHARS - 1) // PAGE_CHARS
         if page > count:
             raise ValueError(f"Page must be between 2 and {count}")
@@ -97,7 +107,13 @@ def read_with_context(token: str, page: int) -> tuple[dict, str | None]:
                   "next_page": page + 1 if page < count else None}
         if metadata:
             result["metadata"] = dict(metadata)
-        return result, source_url
+        return result, source_url, once_proof
+
+
+def read_with_context(token: str, page: int) -> tuple[dict, str | None]:
+    """Compatibility interface: private one-use proof is never returned."""
+    result, source_url, _ = read_with_security_context(token, page)
+    return result, source_url
 
 
 def read(token: str, page: int) -> dict:
