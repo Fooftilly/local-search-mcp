@@ -108,9 +108,22 @@ class AutoRestartTests(unittest.TestCase):
         self.assertEqual(restarted, [])
         self.assertEqual(checked, 0)
         self.assertEqual(self.state.read_text(), original)
-        result, restarted, _ = self.check(dependencies_ready=True)
+        with patch.object(update, "requirements_ready", return_value=True):
+            result, restarted, _ = self.check(dependencies_ready=True)
         self.assertIn("Restart requested", result)
         self.assertEqual(restarted, list(update.SERVICES))
+
+
+    def test_dependency_acknowledgement_still_checks_local_versions(self):
+        update.initialize(self.root, path=self.state)
+        original = self.state.read_text()
+        self.change("requirements.txt", "fastmcp>=4.1,<5\n")
+        self.commit("bump minimum version")
+        with patch.object(update, "requirements_ready", return_value=False):
+            result, restarted, _ = self.check(dependencies_ready=True)
+        self.assertIn("failed offline validation", result)
+        self.assertEqual(restarted, [])
+        self.assertEqual(self.state.read_text(), original)
 
     def test_inactive_services_are_not_started(self):
         update.initialize(self.root, path=self.state)
