@@ -235,7 +235,7 @@ class AutoRestartTests(unittest.TestCase):
         update.initialize(self.root, path=self.state)
         old_state = self.state.read_text()
         self.change("requirements.txt",
-                    "pip @ https://example.invalid/pip-1.0-py3-none-any.whl\\n")
+                    "pip @ https://example.invalid/pip-1.0-py3-none-any.whl\n")
         self.commit("use manually installed wheel URL")
         deferred, restarted, _ = self.check()
         self.assertIn("--dependencies-ready", deferred)
@@ -264,7 +264,7 @@ class AutoRestartTests(unittest.TestCase):
         # A URL entry cannot pass if the named distribution is absent locally.
         self.change("requirements.txt",
                     "definitely-absent-local-mcp-98371 @ "
-                    "https://example.invalid/missing.whl\\n")
+                    "https://example.invalid/missing.whl\n")
         with patch.object(update.subprocess, "run", side_effect=offline_runner):
             self.assertFalse(update.requirements_ready(self.root))
 
