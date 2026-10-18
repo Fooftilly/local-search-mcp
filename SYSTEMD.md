@@ -33,6 +33,74 @@ The optional timer checks local services every approximately two minutes. It pro
 
 **Limitations:** A listening port does not prove MCP tools function or the remote tunnel is actually registered with OpenAI. A healthy report does not prove crawler network isolation. Failures of SearXNG/Crawl4AI are reported as degradation but do not cause the bridge to modify the upstream services. Full end-to-end connection monitoring and firewall startup ordering remain follow-up work on issues #3 and #2.
 
+## Optional automatic restart after local Git updates (no auto-upgrades)
+
+The bridge and tunnel can restart after a **local Git revision change** caused by
+your own `git pull`, checkout, reset, cherry-pick or merge. This feature never
+runs `git fetch`, `git pull`, `pip install`, or downloads anything. GitHub
+updates remain entirely manual. Changes to documentation, tests and CI alone
+do not restart the services.
+
+Install the optional watcher **after** the core user services have been set up:
+
+```sh
+# Preview the additional units (does not modify anything):
+python3 scripts/install_user_services.py --auto-restart
+# Install their unit files and initialize the current checkout as the baseline:
+python3 scripts/install_user_services.py --install --auto-restart
+systemctl --user daemon-reload
+systemctl --user enable --now local-search-mcp-update.path local-search-mcp-update.timer
+```
+
+The `.path` unit watches Git's local HEAD reflog; a one-minute fallback timer
+also checks the local commit in case a filesystem event is missed, including
+while a Git operation is unfinished. The handler waits briefly for the
+checkout to settle, declines to act while Git is merging/rebasing or tracked
+runtime files have uncommitted changes, and syntax-checks changed Python
+files before touching active services. It restarts the bridge first and
+then the tunnel; neither inactive service is started. If the update contains
+only non-runtime files, its revision is recorded without a restart.
+It does **not** watch all working-tree edits; only committed local revision
+changes are eligible.
+
+If `requirements.txt` changed, the restart is **deferred**. Review and
+install the dependencies yourself first (this manual step *may* access the
+package index), then explicitly acknowledge the new dependencies:
+
+```sh
+.venv/bin/python -m pip install -r requirements.txt
+python3 scripts/restart_on_update.py --dependencies-ready
+```
+
+The acknowledgement applies the pending local revision once and will not
+change packages or credentials itself. Missing or invalid Python source
+also blocks the automatic restart. Preflight is not a full integration
+test, so check the health report after significant upgrades. If a restarted
+service subsequently fails, the attempted revision is recorded to prevent
+the timer from causing an endless restart loop. Fix the update or roll
+back manually and restart the systemd services.
+
+The state of the last handled revision is stored in the private
+`~/.local/state/local-search-mcp/last-service-commit` file (or under
+`XDG_STATE_HOME`). The installer preserves an existing baseline; it does
+not overwrite it on reinstallation. This feature only handles local Git
+checkouts with an enabled HEAD reflog and cannot detect source archives.
+
+```sh
+# Observe update activity:
+systemctl --user status local-search-mcp-update.path local-search-mcp-update.timer
+journalctl --user -u local-search-mcp-update.service -n 50 --no-pager
+
+# Disable the option without stopping the bridge/tunnel:
+systemctl --user disable --now local-search-mcp-update.path local-search-mcp-update.timer
+python3 scripts/install_user_services.py --remove-auto-restart
+systemctl --user daemon-reload
+```
+
+Updates to the unit generator or the service paths still require an explicit
+rerun of the installer and `systemctl --user daemon-reload`. The feature
+does not manage upstream SearXNG, Crawl4AI or Docker containers.
+
 ## Disable, remove and return to manual mode
 
 ```sh
