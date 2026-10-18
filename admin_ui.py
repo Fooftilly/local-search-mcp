@@ -155,12 +155,18 @@ def decision_audit_html():
         '<td class="domain">' + esc(r['domain']) + '</td>'
         '<td>' + esc(r['action']) + '</td>'
         '<td class="small">' + esc(r['request_id'] or '—') + '</td>'
-        '<td>' + esc(r['reason'] or '—') + '</td></tr>'
+        '<td>' + esc(r['reason'] or '—') + '</td>'
+        '<td>' + esc(r['requested_url'] or '—') + '</td>'
+        '<td>' + esc(r['first_seen_at'] or '—') + '</td>'
+        '<td>' + esc(r['last_requested_at'] or '—') + '</td>'
+        '<td>' + str(int(r['request_count'])) + '</td></tr>'
         for r in rows)
     return ('<div class="scroll"><table><thead><tr><th>UTC time</th>'
             '<th>Domain</th><th>Action</th><th>Request ID</th>'
-            '<th>Operator reason</th></tr></thead><tbody>' +
-            (cells or '<tr><td colspan="5">No decisions recorded.</td></tr>') +
+            '<th>Operator reason</th><th>Last requested URL</th>'
+            '<th>First seen</th><th>Last request</th><th>Count</th>'
+            '</tr></thead><tbody>' +
+            (cells or '<tr><td colspan="9">No decisions recorded.</td></tr>') +
             '</tbody></table></div>')
 
 
