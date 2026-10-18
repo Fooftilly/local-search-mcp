@@ -575,6 +575,70 @@ class AutoRestartTests(unittest.TestCase):
             update.write_state(self.state, update.head(self.root))
         self.assertEqual(self.state.read_text(), old)
 
+    def test_live_requirements_not_blocked_by_development_includers(self):
+        self.change("requirements.txt", "pip>=0\n")
+        self.change("requirements-dev.txt",
+                    "-r requirements.txt\nmissing-dev-only-xy98371>=1\n")
+        self.commit("add optional development requirements")
+        origins = {}
+        update.referenced_requirement_files(self.root, origins=origins)
+        self.assertIn("requirements-dev.txt", origins["requirements.txt"])
+        interpreter = self.root / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.touch()
+        real_run = subprocess.run
+        def offline_runner(command, **kwargs):
+            if "-c" in command:
+                i = command.index("-c") + 1
+                return real_run([sys.executable, "-I", "-c", *command[i:]], **kwargs)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertTrue(update.requirements_ready(
+                self.root, ["requirements.txt"], origins))
+
+    def test_comment_continuation_does_not_hide_pip_include(self):
+        self.change("requirements.txt",
+                    "pip>=0\n# pinned below \\\n-r pins.txt\n")
+        self.change("pins.txt", "uninstalled-required-xy98371>=1\n")
+        self.commit("comment with a trailing backslash")
+        origins = {}
+        files = update.referenced_requirement_files(self.root, origins=origins)
+        self.assertIn("pins.txt", files)
+        interpreter = self.root / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.touch()
+        real_run = subprocess.run
+        def offline_runner(command, **kwargs):
+            if "-c" in command:
+                i = command.index("-c") + 1
+                return real_run([sys.executable, "-I", "-c", *command[i:]], **kwargs)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertFalse(update.requirements_ready(
+                self.root, ["pins.txt"], origins))
+
+    def test_pip_index_option_aliases_are_accepted_offline(self):
+        self.change(
+            "requirements.txt",
+            "--index-url=https://example.invalid/simple\n"
+            "-i https://example.invalid/simple\n"
+            "--extra-index-url=https://example.invalid/other\n"
+            "-f https://example.invalid/packages\n"
+            "pip>=0\n",
+        )
+        interpreter = self.root / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.touch()
+        real_run = subprocess.run
+        def offline_runner(command, **kwargs):
+            if "-c" in command:
+                i = command.index("-c") + 1
+                return real_run([sys.executable, "-I", "-c", *command[i:]], **kwargs)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertTrue(update.requirements_ready(
+                self.root, ["requirements.txt"]))
+
     def test_pip_replacement_manifest_checks_local_versions(self):
         (self.root / "config").mkdir()
         self.git("mv", "requirements.txt", "config/dependencies.txt")
