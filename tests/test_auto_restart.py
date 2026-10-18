@@ -640,6 +640,35 @@ class AutoRestartTests(unittest.TestCase):
             self.assertTrue(update.requirements_ready(
                 self.root, ["requirements.txt"]))
 
+    def test_shared_pins_with_constraint_and_required_roles(self):
+        self.git("rm", "requirements.txt")
+        self.change("requirements/prod.txt", "pip\n-c pins.txt\n")
+        self.change("requirements/worker.txt", "-r pins.txt\n")
+        self.change("requirements/pins.txt",
+                    "missing-runtime-pkg-xy98371==1.0\n")
+        self.commit("mixed constraint and required include roles")
+        origins, roles = {}, {}
+        update.referenced_requirement_files(self.root, origins=origins, roles=roles)
+        self.assertIn(("requirements/prod.txt", True),
+                      roles["requirements/pins.txt"])
+        self.assertIn(("requirements/worker.txt", False),
+                      roles["requirements/pins.txt"])
+        interpreter = self.root / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.touch()
+        real_run = subprocess.run
+        def offline_runner(command, **kwargs):
+            if "-c" in command:
+                i = command.index("-c") + 1
+                return real_run([sys.executable, "-I", "-c", *command[i:]], **kwargs)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertFalse(update.requirements_ready(
+                self.root, ["requirements/pins.txt"], origins, roles))
+            self.change("requirements/pins.txt", "pip>=0\n")
+            self.assertTrue(update.requirements_ready(
+                self.root, ["requirements/pins.txt"], origins, roles))
+
     def test_shared_constraint_pins_keep_their_c_role(self):
         # Under pip-tools layering a generic pins file is a constraint,
         # even when it also matches the tracked manifest-name heuristic.
