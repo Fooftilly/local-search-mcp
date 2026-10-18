@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import redirect_stdout, redirect_stderr
 import io
+import http.client
 import json
 from pathlib import Path
 import subprocess
@@ -117,6 +118,58 @@ class BridgeVersionCheckTests(unittest.TestCase):
             self.assertEqual(versions.main(["--check-remote"]), 2)
         self.assertIn("unavailable", errors.getvalue())
         self.assertNotIn(versions.REMOTE_URL, errors.getvalue())
+
+    def test_non_git_checkout_fails_without_traceback_or_network(self):
+        wrong = Path(self.tmp.name) / "not-a-repo"
+        wrong.mkdir()
+        stderr = io.StringIO()
+        with patch.object(versions, "ROOT", wrong), \
+             patch.object(versions, "remote_head",
+                          side_effect=AssertionError("must not contact GitHub")), \
+             redirect_stderr(stderr):
+            self.assertEqual(versions.main(["--check-remote"]), 2)
+        message = stderr.getvalue()
+        self.assertIn("Bridge revision check unavailable", message)
+        self.assertIn("CalledProcessError", message)
+        self.assertNotIn("Traceback", message)
+        self.assertNotIn(str(wrong), message)
+
+    def test_interrupted_or_invalid_http_response_fails_without_traceback(self):
+        errors_to_test = (
+            http.client.IncompleteRead(b"some bytes", 10),
+            http.client.BadStatusLine("malformed status"),
+            http.client.LineTooLong("header too long"),
+            subprocess.TimeoutExpired(["git", "rev-parse", "HEAD"], 1),
+        )
+        for failure in errors_to_test:
+            with self.subTest(error=type(failure).__name__):
+                stderr = io.StringIO()
+                # Inject failures at the check boundary to validate CLI
+                # handling without making network requests.
+                with patch.object(versions, "check", side_effect=failure), \
+                     redirect_stderr(stderr):
+                    self.assertEqual(versions.main(["--check-remote"]), 2)
+                output = stderr.getvalue()
+                self.assertIn("unavailable", output)
+                self.assertIn(type(failure).__name__, output)
+                self.assertNotIn("Traceback", output)
+                self.assertNotIn("malformed status", output)
+
+    def test_http_read_incomplete_response_fails_without_traceback(self):
+        fake = FakeOpener(json.dumps({"sha": "a" * 40}).encode())
+
+        class InterruptedResponse(FakeResponse):
+            def read(self, size=-1):
+                raise http.client.IncompleteRead(b"fragment", 7)
+
+        fake.response = InterruptedResponse(b"")
+        stderr = io.StringIO()
+        with patch.object(versions, "ROOT", self.root), \
+             patch.object(versions.urllib.request, "build_opener",
+                          return_value=fake), redirect_stderr(stderr):
+            self.assertEqual(versions.main(["--check-remote"]), 2)
+        self.assertIn("IncompleteRead", stderr.getvalue())
+        self.assertNotIn("fragment", stderr.getvalue())
 
     def test_explicit_cli_matches_pinned_local_checkout(self):
         output = io.StringIO()

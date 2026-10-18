@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import re
 from pathlib import Path
 import sys
+import subprocess
 import urllib.error
 import urllib.request
 
@@ -87,7 +89,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         print(check())
         return 0
-    except (OSError, ValueError, urllib.error.URLError) as exc:
+    except (OSError, ValueError, subprocess.SubprocessError,
+            http.client.HTTPException, urllib.error.URLError) as exc:
         # Never echo remote response bodies, credentials or arbitrary URLs.
         print(f"Bridge revision check unavailable: {type(exc).__name__}",
               file=sys.stderr)
