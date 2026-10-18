@@ -78,6 +78,20 @@ journalctl --user -u local-search-mcp-update.service -n 50 --no-pager
 python3 scripts/restart_on_update.py --state-file '/path/from/checker/journal' --dependencies-ready
 ```
 
+The manual dependency gate also covers conventional replacement manifests
+after migrating away from the root `requirements.txt`, including
+`config/dependencies.txt`, `requirements/base.txt`, `constraints.txt`,
+`pyproject.toml`, `uv.lock`, and other recognized Python dependency files.
+Later commits to those files **still require** `--dependencies-ready`.
+Pip-style `-r` (requirements) and `-c` (constraints) references are followed
+recursively within the checkout and checked against installed distributions
+without downloading packages. Missing, cyclic, or out-of-checkout referenced
+files fail validation. For non-pip formats, the offline check validates the
+existing Python environment with `pip check`; **you** must also review and
+prepare the new lockfile/manifest dependencies before acknowledging. If you
+adopt an unconventional manifest name that the watcher does not recognize,
+restart services manually and update the watcher before relying on this gate.
+
 **Use the path printed by the checker, not the raw unit file.** The user
 manager may have a different `XDG_STATE_HOME` from your current shell.
 `systemctl --user cat local-search-mcp-update.service` displays systemd's
