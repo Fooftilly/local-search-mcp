@@ -6,6 +6,7 @@ These tests do not certify Chromium container/network isolation.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from http.client import HTTPConnection
 import json
 import os
@@ -212,17 +213,32 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertNotIn("new.example.org", after["pending_domains"])
 
         (Path(os.environ["LOCAL_SEARCH_MCP_HISTORY_FILE"])).write_text(
-            json.dumps({"time_utc": "2026-10-17T19:00:00Z",
+            json.dumps({"time_utc": datetime.now(timezone.utc).isoformat(),
                         "kind": "search", "status": "<script>alert(1)</script>",
                         "query": "<img src=x onerror=alert(1)>"}) + "\n",
             encoding="utf-8")
         history = json.loads(self.exchange("GET", "/live?view=history")[1])
         self.assertIn("&lt;script&gt;", history["history_html"])
-        self.assertIn("&lt;img", history["history_html"])
+        # The indexed dashboard intentionally omits raw search-query text.
+        self.assertNotIn("<img", history["history_html"])
+        self.assertNotIn("onerror", history["history_html"])
         self.assertNotIn("<script>", history["history_html"])
         html_page = self.exchange("GET", "/history")[1]
         self.assertIn(b'<tbody id="live-history">', html_page)
         self.assertIn(b'&lt;script&gt;', html_page)
+
+    def test_invalid_retention_configuration_keeps_history_http_response(self):
+        with patch.dict(os.environ, {
+            "LOCAL_SEARCH_MCP_HISTORY_RETENTION_DAYS": "0"
+        }):
+            status, body, _ = self.exchange("GET", "/history")
+            self.assertEqual(status, 200)
+            self.assertIn(b"Indexed history is unavailable", body)
+            self.assertNotIn(b"Traceback", body)
+            live_status, payload, _ = self.exchange("GET", "/live?view=history")
+            self.assertEqual(live_status, 200)
+            self.assertIn("Indexed history is unavailable",
+                          json.loads(payload)["history_html"])
 
     def test_live_endpoints_reject_cross_site_and_invalid_views(self):
         baseline = len(policy.entries())

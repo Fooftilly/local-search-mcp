@@ -354,7 +354,8 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
     if (stopped || generation !== refreshGeneration) return;
     const query = new URLSearchParams(window.location.search).get("q") || "";
     const endpoint = isHistory ?
-      "/live?view=history" : "/live?view=policy&q=" + encodeURIComponent(query.slice(0, 100));
+      "/live?view=history&" + new URLSearchParams(window.location.search).toString() :
+      "/live?view=policy&q=" + encodeURIComponent(query.slice(0, 100));
     try {
       const controller = new AbortController();
       activeController = controller;

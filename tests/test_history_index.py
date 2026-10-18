@@ -1,0 +1,204 @@
+"""Indexed history privacy, migration, rotation, retention, and concurrency."""
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+import json
+import os
+from pathlib import Path
+import sqlite3
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import history_index
+from history_log import append_history, history_path
+
+
+def event(kind="fetch", status="success", *, time_utc=None, **extra):
+    return {"time_utc": time_utc or datetime.now(timezone.utc).isoformat(),
+            "kind": kind, "status": status, "duration_ms": 12.5, **extra}
+
+
+class HistoryIndexTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        env = patch.dict(os.environ, {
+            "XDG_STATE_HOME": tmp.name,
+            "LOCAL_SEARCH_MCP_HISTORY_FILE": str(Path(tmp.name) / "history.jsonl"),
+            "LOCAL_SEARCH_MCP_HISTORY_RETENTION_DAYS": "30",
+        })
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_legacy_jsonl_migrates_idempotently_and_redacts_sensitive_fields(self):
+        append_history(event(url="https://user:password@docs.example.org/INVITE_SECRET"
+                                 "?token=QUERY_SECRET", query="SENSITIVE_QUERY",
+                             markdown="SENSITIVE_BODY"))
+        append_history(event("search", "blocked", query="TOP_SECRET_SEARCH"))
+        once = history_index.search_history()
+        twice = history_index.search_history()
+        self.assertEqual(once, twice)
+        self.assertEqual(len(once), 2)
+        fetch = history_index.search_history(kind="fetch")[0]
+        self.assertEqual(fetch["domain"], "docs.example.org")
+        self.assertEqual(fetch["status"], "success")
+        self.assertEqual(fetch["duration_ms"], 12.5)
+        self.assertEqual(history_index.summarize_history()[0]["count"], 1)
+        stored = history_index.index_path().read_bytes()
+        for secret in (b"INVITE_SECRET", b"QUERY_SECRET", b"TOP_SECRET_SEARCH",
+                       b"SENSITIVE_QUERY", b"SENSITIVE_BODY", b"password"):
+            self.assertNotIn(secret, stored)
+        self.assertEqual(history_index.index_path().stat().st_mode & 0o777, 0o600)
+        self.assertEqual(history_index.index_path().parent.stat().st_mode & 0o777, 0o700)
+
+    def test_domain_status_and_tool_filters(self):
+        append_history(event("fetch", "denied", url="https://docs.example.org/secret"))
+        append_history(event("fetch", "success", url="https://other.example.org/"))
+        append_history(event("search", "success", query="secret query"))
+        result = history_index.search_history(
+            kind="fetch", status="denied", domain="docs.example.org")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["domain"], "docs.example.org")
+        self.assertEqual(len(history_index.search_history(kind="search")), 1)
+        self.assertEqual(len(history_index.search_history(domain="not.example.org")), 0)
+        for filters in ({"kind": "delete"}, {"status": "X" * 100},
+                        {"domain": "x' OR 1=1 --"}, {"limit": 101},
+                        {"limit": 0}, {"limit": True}):
+            with self.subTest(filters=filters), self.assertRaises(ValueError):
+                history_index.search_history(**filters)
+
+    def test_partial_and_malformed_legacy_lines_never_lose_following_event(self):
+        append_history(event("fetch", "success", url="https://one.example.org/"))
+        path = history_path()
+        with path.open("ab") as file:
+            file.write(b'not-json\n')
+            line = (json.dumps(event("fetch", "blocked",
+                                     url="https://two.example.org/")) + "\n").encode()
+            file.write(line[:15])
+        self.assertEqual(len(history_index.search_history()), 1)
+        with path.open("ab") as file:
+            file.write(line[15:])
+        records = history_index.search_history()
+        self.assertEqual(len(records), 2)
+        self.assertEqual(history_index.search_history(status="blocked")[0]["domain"],
+                         "two.example.org")
+
+    def test_oversized_line_is_skipped_and_following_events_are_indexed(self):
+        # An oversized complete line must not poison the incremental offset.
+        path = history_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        good = json.dumps(event(url="https://after.example.org/")).encode()
+        with path.open("wb") as stream:
+            stream.write(b'{"extra":"' + b'X' * (history_index.MAX_EVENT_BYTES + 100)
+                         + b'"}\n')
+            stream.write(good + b"\n")
+        self.assertEqual(history_index.search_history()[0]["domain"],
+                         "after.example.org")
+        self.assertEqual(len(history_index.search_history()), 1)
+
+    def test_reused_inode_and_matching_first_line_preserves_new_events(self):
+        # Truncating/replacing a source simulates an inode recycled by rotation.
+        # Same first event catches implementations which only fingerprint the
+        # first line; the last checkpoint must also be revalidated.
+        path = history_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        first = json.dumps(event(url="https://same.example.org/",
+                                 time_utc="2026-10-18T12:00:00Z"))
+        second = json.dumps(event(url="https://original.example.org/"))
+        with path.open("w") as stream:
+            stream.write(first + "\n" + second + "\n")
+        self.assertEqual(len(history_index.search_history()), 2)
+        original_inode = path.stat().st_ino
+        replacement = json.dumps(event(url="https://replacement.example.org/"))
+        with path.open("w") as stream:
+            stream.write(first + "\n" + replacement + "\n")
+        self.assertEqual(path.stat().st_ino, original_inode)
+        after = history_index.search_history()
+        self.assertEqual(len(after), 4)
+        self.assertEqual({r["domain"] for r in after},
+                         {"same.example.org", "original.example.org",
+                          "replacement.example.org"})
+        self.assertEqual(history_index.search_history(), after)
+
+    def test_rotated_sources_eventually_recycle_inodes_without_skipping(self):
+        with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_HISTORY_MAX_BYTES": "64000"}):
+            for i in range(150):
+                append_history(event(url="https://example.org/",
+                                     data="x" * 1200, serial=i))
+            paths = [history_path().with_name(history_path().name + f".{i}")
+                     for i in (3, 2, 1)] + [history_path()]
+            surviving = sum(len(p.read_text().splitlines())
+                            for p in paths if p.exists())
+            history_index.sync_history()
+            with sqlite3.connect(history_index.index_path()) as db:
+                indexed = db.execute("SELECT count(*) FROM history").fetchone()[0]
+            self.assertEqual(indexed, surviving)
+            for i in range(150, 177):
+                append_history(event(url="https://example.org/",
+                                     data="x" * 1200, serial=i))
+            history_index.sync_history()
+            with sqlite3.connect(history_index.index_path()) as db:
+                total = db.execute("SELECT count(*) FROM history").fetchone()[0]
+            self.assertEqual(total, indexed + 27)
+            history_index.sync_history()
+            with sqlite3.connect(history_index.index_path()) as db:
+                self.assertEqual(
+                    db.execute("SELECT count(*) FROM history").fetchone()[0], total)
+
+    def test_retention_does_not_delete_original_jsonl(self):
+        old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+        append_history(event(time_utc=old, url="https://old.example.org/"))
+        append_history(event(url="https://new.example.org/"))
+        with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_HISTORY_RETENTION_DAYS": "1"}):
+            records = history_index.search_history()
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["domain"], "new.example.org")
+        self.assertIn("old.example.org", history_path().read_text())
+        with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_HISTORY_RETENTION_DAYS": "0"}):
+            with self.assertRaises(ValueError):
+                history_index.search_history()
+
+    def test_rotation_keeps_inodes_and_does_not_duplicate_records(self):
+        with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_HISTORY_MAX_BYTES": "64000"}):
+            for i in range(16):
+                append_history(event(url="https://example.org/",
+                                     filler="x" * 2000, sequence=i))
+            first = len(history_index.search_history(limit=100))
+            self.assertEqual(first, 16)
+            for i in range(16, 40):
+                append_history(event(url="https://example.org/",
+                                     filler="x" * 2000, sequence=i))
+            second = len(history_index.search_history(limit=100))
+            self.assertEqual(second, 40)
+            self.assertEqual(len(history_index.search_history(limit=100)), 40)
+            self.assertTrue(Path(str(history_path()) + ".1").exists())
+
+    def test_simultaneous_reads_and_appends_keep_private_index_consistent(self):
+        def writer():
+            for i in range(16):
+                append_history(event(url="https://docs.example.org/", count=i))
+        def reader():
+            for _ in range(5):
+                history_index.search_history()
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            tasks = [executor.submit(writer), executor.submit(reader),
+                     executor.submit(reader)]
+            for task in tasks:
+                task.result(timeout=15)
+        records = history_index.search_history()
+        self.assertEqual(len(records), 16)
+        with sqlite3.connect(history_index.index_path()) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM history").fetchone()[0], 16)
+
+    def test_refuse_symlink_history_and_index_inputs(self):
+        history_path().symlink_to(Path(tempfile.gettempdir()) / "nonexistent-file")
+        with self.assertRaises(OSError):
+            history_index.sync_history()
+        history_path().unlink()
+        history_index.index_path().symlink_to(history_path())
+        with self.assertRaises(OSError):
+            history_index.sync_history()
+
+
+if __name__ == "__main__":
+    unittest.main()

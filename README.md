@@ -74,6 +74,8 @@ To protect the approval dashboard from agent-generated hostname floods, automati
 
 The dashboard stores permissions in `~/.local/state/local-search-mcp/domains.sqlite3`. History is stored in `~/.local/state/local-search-mcp/history.jsonl`, rotated at 8 MiB by default with three backups; configure the per-file limit via `LOCAL_SEARCH_MCP_HISTORY_MAX_BYTES`. Rotate/archive or delete old history as needed. URL query strings, page contents and credentials are not logged; **search terms can be sensitive**.
 
+The local history dashboard now supports filtered, private indexed SQLite metadata and 30-day default retention. See [HISTORY-INDEX.md](HISTORY-INDEX.md). The original JSONL files and CLI exports remain unchanged.
+
 History commands:
 
 ```bash
