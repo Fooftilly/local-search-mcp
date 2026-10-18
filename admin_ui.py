@@ -281,6 +281,10 @@ def history_page(kind="", status="", domain="", hours=0, filter_error=""):
         metrics = []
     warning = (f'<p class="alert error" role="alert">{esc(filter_error)}</p>'
                if filter_error else '')
+    invalid_kind_option = (
+        f'<option value="{esc(kind)}" selected disabled>'
+        f'Unsupported operation: {esc(kind)}</option>'
+        if filter_error and kind not in ("", "search", "fetch", "page") else '')
     rows = (recent_rows(**filters) if not filter_error
             else '<p class="subtle">Correct the filters above to view history.</p>')
     options = ''.join(
@@ -288,7 +292,7 @@ def history_page(kind="", status="", domain="", hours=0, filter_error=""):
         for n, label in ((0, "All retained"), (1, "Last hour"),
                          (24, "Last 24 hours"), (168, "Last 7 days")))
     return f'''<!doctype html><html lang="en" data-live-view="history"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — History</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a></nav></header><main><h1>Indexed request history</h1><p>Private metadata from existing rotating JSONL files. Filter by operation, outcome, domain, and rolling UTC time window. Search terms, URL paths, tokens and page content are never copied into the SQLite index.</p>
-<form method="get" action="/history"><label>Operation <select name="kind"><option value="">All</option><option value="search"{' selected' if kind == 'search' else ''}>Search</option><option value="fetch"{' selected' if kind == 'fetch' else ''}>Fetch</option><option value="page"{' selected' if kind == 'page' else ''}>Continuation</option></select></label><label>Status <input name="status" value="{esc(status)}" maxlength="48"></label><label>Domain <input name="domain" value="{esc(domain)}" maxlength="253" placeholder="example.org"></label><label>Time <select name="hours">{options}</select></label><button>Filter</button></form>
+<form method="get" action="/history"><label>Operation <select name="kind"><option value="">All</option>{invalid_kind_option}<option value="search"{' selected' if kind == 'search' else ''}>Search</option><option value="fetch"{' selected' if kind == 'fetch' else ''}>Fetch</option><option value="page"{' selected' if kind == 'page' else ''}>Continuation</option></select></label><label>Status <input name="status" value="{esc(status)}" maxlength="48"></label><label>Domain <input name="domain" value="{esc(domain)}" maxlength="253" placeholder="example.org"></label><label>Time <select name="hours">{options}</select></label><button>Filter</button></form>
 {warning}
 {rows}
 <p class="subtle" role="status" id="live-status">Live updates starting · manually reload if needed.</p>
