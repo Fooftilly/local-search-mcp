@@ -234,8 +234,10 @@ def render(query='', message='', kind='success'):
 
 def history_page(kind="", status="", domain=""):
     try:
+        retention_label = str(history_index._retention_days())
         metrics = history_index.summarize_history()
     except (OSError, ValueError, sqlite3.Error):
+        retention_label = "configured"
         metrics = []
     totals = ''.join(
         f'<tr><td>{esc(row["kind"])}</td><td>{esc(row["status"])}</td>'
@@ -247,7 +249,7 @@ def history_page(kind="", status="", domain=""):
 <p class="subtle" role="status" id="live-status">Live updates starting · manually reload if needed.</p>
 <h2>Outcomes and average latency</h2>
 <div class="scroll"><table><thead><tr><th>Operation</th><th>Outcome</th><th>Count</th><th>Average ms</th></tr></thead><tbody>{totals or '<tr><td colspan="4">No retained events yet.</td></tr>'}</tbody></table></div>
-<p class="subtle">Indexed entries expire after {esc(history_index._retention_days())} days by default (configurable 1–365). JSONL rotation and CLI CSV/JSON export remain unchanged; the index is rebuildable. Search queries may contain private terms in the original JSONL—keep that file private.</p><p><a href="/">Return to domain approvals</a></p></main></body></html>'''
+<p class="subtle">Indexed entries expire after {esc(retention_label)} days by default (configurable 1–365). JSONL rotation and CLI CSV/JSON export remain unchanged; the index is rebuildable. Search queries may contain private terms in the original JSONL—keep that file private.</p><p><a href="/">Return to domain approvals</a></p></main></body></html>'''
 
 
 class Handler(BaseHTTPRequestHandler):
