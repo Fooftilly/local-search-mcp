@@ -32,6 +32,11 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
     // Do not destroy a focused Rename input or button. Resume syncing this
     // table on the next poll after the operator moves focus elsewhere.
     if (body.contains(document.activeElement)) return;
+    // Preserve deliberate bulk selections across 10-second live polls. Once
+    // unchecked, the next poll resumes updates; server-side request IDs still
+    // reject any stale selections after another tab has acted.
+    if (body === pendingBody && typeof body.querySelector === "function" &&
+        body.querySelector('input[name="selected"]:checked')) return;
     body.innerHTML = html;
     lastTableHtml.set(body, html);
   }
