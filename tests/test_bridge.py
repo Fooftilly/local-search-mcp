@@ -129,6 +129,115 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(len(seen), 10)
             self.assertEqual(set(self.module.request_cache._CACHE), keys_before)
 
+    def test_document_pages_recheck_expiring_rule_and_reject_old_tokens(self):
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        text = "PAGED_EXPIRED_CONTENT_" * 2000
+        original = httpx.Client
+
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.org/long", "success": True,
+                "markdown": text
+            }]})
+
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns),
+              patch.object(self.module.httpx, "Client", side_effect=client),
+              patch.object(self.module.document_pages, "_CACHE", {})):
+            policy.decide("example.org", "allow", scope="exact",
+                          expires_minutes=60)
+            clock[0] = "2026-10-17T12:59:59Z"
+            first = self.module.web_fetch("https://example.org/long")
+            self.assertTrue(first["success"])
+            token = first["document_id"]
+            self.assertIn("PAGED_EXPIRED_CONTENT", self.module.web_fetch_page(
+                token, 2)["markdown"])
+            clock[0] = "2026-10-17T13:00:00Z"
+            expired = self.module.web_fetch_page(token, 2)
+            self.assertFalse(expired["success"])
+            self.assertNotIn("PAGED_EXPIRED_CONTENT", str(expired))
+            self.assertEqual(policy.request(
+                "example.org", "https://example.org/long")[0], "pending")
+            policy.clear_pending_requests()
+            removed = self.module.web_fetch_page(token, 2)
+            self.assertFalse(removed["success"])
+            self.assertNotIn("PAGED_EXPIRED_CONTENT", str(removed))
+            policy.decide("example.org", "allow", scope="exact")
+            reapproved = self.module.web_fetch_page(token, 2)
+            self.assertEqual(reapproved["status"], "blocked")
+            # Reapprove does not resurrect a bearer handle from an old epoch.
+            fresh = self.module.web_fetch("https://example.org/long")
+            self.assertTrue(self.module.web_fetch_page(
+                fresh["document_id"], 2)["success"])
+
+    def test_document_redirect_rechecks_source_and_final_permission(self):
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        text = "REDIRECT_PAGE_SECRET_" * 2000
+        original = httpx.Client
+
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [{
+                "url": "https://destination.example.net/long", "success": True,
+                "markdown": text
+            }]})
+
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns),
+              patch.object(self.module.httpx, "Client", side_effect=client),
+              patch.object(self.module.document_pages, "_CACHE", {})):
+            policy.decide("source.example.org", "allow", scope="exact",
+                          expires_minutes=60)
+            policy.decide("destination.example.net", "allow", scope="exact")
+            clock[0] = "2026-10-17T12:59:59Z"
+            initial = self.module.web_fetch("https://source.example.org/start")
+            self.assertTrue(initial["success"])
+            token = initial["document_id"]
+            self.assertIn("REDIRECT_PAGE_SECRET",
+                          self.module.web_fetch_page(token, 2)["markdown"])
+            clock[0] = "2026-10-17T13:00:00Z"
+            refused = self.module.web_fetch_page(token, 2)
+            self.assertFalse(refused["success"])
+            self.assertNotIn("REDIRECT_PAGE_SECRET", str(refused))
+            # Final host remains authorized, but expired original host blocks.
+
+    def test_document_pages_reject_old_epoch_and_untrusted_handles(self):
+        import domain_policy as policy
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        with (patch.object(policy.socket, "getaddrinfo", return_value=dns),
+              patch.object(self.module.document_pages, "_CACHE", {})):
+            policy.decide("example.org", "allow")
+            token, _ = self.module.document_pages.save(
+                "https://example.org/doc", "SENSITIVE" * 4000, {})
+            unknown = self.module.web_fetch_page(token, 2)
+            self.assertEqual(unknown["status"], "blocked")
+            valid_token, _ = self.module.document_pages.save(
+                "https://example.org/doc", "SENSITIVE" * 4000, {},
+                source_url="https://example.org/doc",
+                policy_epoch=self.module.request_cache.policy_epoch())
+            self.assertTrue(self.module.web_fetch_page(valid_token, 2)["success"])
+            # An explicit denial invalidates the cached capability immediately.
+            policy.decide("example.org", "deny")
+            denied = self.module.web_fetch_page(valid_token, 2)
+            self.assertEqual(denied["status"], "blocked")
+            self.assertNotIn("SENSITIVE", str(denied))
+
     def test_inflight_fetch_started_before_expiry_cannot_release_content_after(self):
         import domain_policy as policy
         clock = ["2026-10-17T12:00:00Z"]
