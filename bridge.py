@@ -352,7 +352,9 @@ def _run_fetch(url: str, mode: str) -> dict:
     if metadata:
         output["metadata"] = metadata
     if len(markdown) > document_pages.PAGE_CHARS and success is not False:
-        token, page_count = document_pages.save(final_url, markdown, metadata)
+        token, page_count = document_pages.save(
+            final_url, markdown, metadata, source_url=url,
+            policy_epoch=request_cache.policy_epoch())
         output.update({"document_id": token, "page": 1,
                        "page_count": page_count, "next_page": 2})
     elif len(markdown) > document_pages.PAGE_CHARS:
@@ -449,7 +451,28 @@ def web_fetch_page(document_id: str, page: int = 2) -> dict:
     The document_id is an unguessable temporary bearer capability. It is
     never stored in local request history and expires after 15 minutes.
     """
-    return document_pages.read(document_id, page)
+    epoch = request_cache.policy_epoch()
+    result, source_url, granted_epoch = document_pages.read_with_context(
+        document_id, page)
+    if not result.get("success"):
+        return result
+    blocked = {"success": False, "status": "blocked",
+               "reason": "Document permission changed; fetch the approved URL again."}
+    # A bearer token cannot outlive a revocation or local policy update.
+    # The saved source protects redirects, whose final-host rule alone may
+    # still be active after the original host is denied or expires.
+    if granted_epoch is None or granted_epoch != epoch or not source_url:
+        return blocked
+    source_decision = _check_public_target(source_url)
+    if source_decision is not None:
+        return source_decision
+    if urlsplit(source_url).hostname != urlsplit(result["url"]).hostname:
+        final_decision = _check_public_target(result["url"])
+        if final_decision is not None:
+            return final_decision
+    if request_cache.policy_epoch() != epoch:
+        return blocked
+    return result
 
 
 def serve_mcp() -> None:
