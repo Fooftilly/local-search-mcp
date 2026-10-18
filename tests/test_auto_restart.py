@@ -296,8 +296,9 @@ class AutoRestartTests(unittest.TestCase):
             result, restarted, _ = self.check(dependencies_ready=True)
         self.assertIn("Restart requested", result)
         origins = {"config/dependencies.txt": {"config/dependencies.txt"}}
+        roles = {"config/dependencies.txt": {("config/dependencies.txt", False)}}
         check.assert_called_once_with(
-            self.root, ["config/dependencies.txt"], origins,
+            self.root, ["config/dependencies.txt"], origins, roles,
         )
         self.assertEqual(restarted, list(update.SERVICES))
 
@@ -638,6 +639,37 @@ class AutoRestartTests(unittest.TestCase):
         with patch.object(update.subprocess, "run", side_effect=offline_runner):
             self.assertTrue(update.requirements_ready(
                 self.root, ["requirements.txt"]))
+
+    def test_shared_constraint_pins_keep_their_c_role(self):
+        # Under pip-tools layering a generic pins file is a constraint,
+        # even when it also matches the tracked manifest-name heuristic.
+        self.git("rm", "requirements.txt")
+        self.change("requirements/prod.txt", "-r base.txt\n-c pins.txt\n")
+        self.change("requirements/dev.txt",
+                    "-r base.txt\n-c pins.txt\nmissing-dev-only-xy98371>=1\n")
+        self.change("requirements/base.txt", "pip>=0\n")
+        self.change("requirements/pins.txt",
+                    "pip>=0\nmissing-optional-xy98371==1.0\n")
+        self.commit("split prod and dev with a shared constraint lock")
+        origins, roles = {}, {}
+        update.referenced_requirement_files(self.root, origins=origins, roles=roles)
+        self.assertIn(("requirements/prod.txt", True),
+                      roles["requirements/pins.txt"])
+        interpreter = self.root / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.touch()
+        real_run = subprocess.run
+        def offline_runner(command, **kwargs):
+            if "-c" in command:
+                i = command.index("-c") + 1
+                return real_run([sys.executable, "-I", "-c", *command[i:]], **kwargs)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertTrue(update.requirements_ready(
+                self.root, ["requirements/pins.txt"], origins, roles))
+            self.change("requirements/pins.txt", "pip>=999999\n")
+            self.assertFalse(update.requirements_ready(
+                self.root, ["requirements/pins.txt"], origins, roles))
 
     def test_shared_pip_base_does_not_require_dev_only_dependencies(self):
         self.change("requirements/base.txt", "pip>=0\n")
