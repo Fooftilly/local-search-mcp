@@ -324,8 +324,26 @@ def _run_fetch(url: str, mode: str, *,
     final_url = original_url if redirected_url is None else redirected_url
     # Defense in depth: never return content from an unapproved redirect.
     # Browser/container egress controls must independently block unsafe traffic.
-    if final_url != url and _check_public_target(final_url) is not None:
-        return {"url": url, "success": False, "status": "blocked", "reason": "Crawl4AI redirected to a destination that is not approved"}
+    if final_url != url:
+        if once_proof is not None:
+            # A same-host redirect is part of the claimed operation; it must
+            # still resolve exclusively to public unicast addresses and use
+            # a supported URL/port. Different hosts need their own ordinary
+            # (reusable) approval, never a second one-use claim.
+            try:
+                same_host = urlsplit(final_url).hostname == once_proof[0]
+            except ValueError:
+                same_host = False
+            if same_host:
+                destination_ok = (domain_policy._public_url_host(final_url)
+                                  == once_proof[0])
+            else:
+                destination_ok = _check_public_target(final_url) is None
+        else:
+            destination_ok = _check_public_target(final_url) is None
+        if not destination_ok:
+            return {"url": url, "success": False, "status": "blocked",
+                    "reason": "Crawl4AI redirected to a destination that is not approved"}
     markdown_response = page.get("markdown", "")
     if isinstance(markdown_response, dict):
         raw = markdown_response.get("raw_markdown")
