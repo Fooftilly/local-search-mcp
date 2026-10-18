@@ -349,18 +349,19 @@ def requirements_ready(
                         for part in Path(source).parts
                     )
                 }
-                constraint_sources = {
-                    source for source, constrained in (roles or {}).get(name, set())
-                    if constrained and source in runtime_sources
+                included_sources = {
+                    source for source, _constrained in (roles or {}).get(name, set())
+                    if source in runtime_sources
                 }
-                if constraint_sources:
-                    # A shared file used via -c is optional even when its
-                    # basename is generic (requirements/pins.txt).
-                    for source in constraint_sources:
+                if included_sources:
+                    # Preserve every runtime include edge: -c only constrains
+                    # optional distributions, whereas -r requires them.
+                    # A shared input can have BOTH roles in different roots.
+                    for source in included_sources:
                         add(source, constraint_manifest(source))
                 else:
-                    # Otherwise prefer the shared base itself over separate
-                    # dev/prod parents that add unrelated dependencies.
+                    # Without a recorded include edge, validate the shared
+                    # base directly rather than unrelated dev-only parents.
                     add(name, constraint_manifest(name))
             elif sources:
                 runtime_sources = {
