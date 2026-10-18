@@ -13,6 +13,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import safe_settings
 from pathlib import Path
 import re
 import sqlite3
@@ -32,13 +33,9 @@ def index_path() -> Path:
 
 
 def _retention_days() -> int:
-    try:
-        value = int(os.environ.get("LOCAL_SEARCH_MCP_HISTORY_RETENTION_DAYS", "30"))
-    except ValueError as exc:
-        raise ValueError("History retention days must be an integer") from exc
-    if not 1 <= value <= 365:
-        raise ValueError("History retention days must be between 1 and 365")
-    return value
+    # An explicit environment override remains authoritative. Otherwise the
+    # validated local nonsecret setting takes effect on the next index read.
+    return safe_settings.effective_value("retention_days")
 
 
 def _time_ms(text: object) -> int | None:
