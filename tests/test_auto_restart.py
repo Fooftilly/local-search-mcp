@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from scripts import restart_on_update as update
+from scripts import install_user_services as installer
 from scripts.install_user_services import unit_files
 
 
@@ -58,7 +59,53 @@ class AutoRestartTests(unittest.TestCase):
         self.assertIn("%%", extra["local-search-mcp-update.path"])
         self.assertIn("OnUnitActiveSec=1min", extra["local-search-mcp-update.timer"])
         self.assertIn("NoNewPrivileges=true", extra["local-search-mcp-update.service"])
+        self.assertIn("--state-file", extra["local-search-mcp-update.service"])
         self.assertNotIn("git pull", "".join(extra.values()))
+
+    def test_install_pins_xdg_state_file_even_without_manager_environment(self):
+        config_home = Path(self.tmp.name) / "xdg-config"
+        custom_state_home = Path(self.tmp.name) / "xdg-state % custom"
+        with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(config_home),
+                                     "XDG_STATE_HOME": str(custom_state_home)}), \
+             patch.object(installer, "ROOT", self.root), \
+             patch.object(installer.os, "geteuid", return_value=1000):
+            self.assertEqual(installer.main(["--install", "--auto-restart"]), 0)
+            expected_state = update.state_file().absolute()
+            self.assertTrue(expected_state.is_file())
+            self.assertEqual(expected_state.read_text().strip(), update.head(self.root))
+            unit = (config_home / "systemd/user/local-search-mcp-update.service").read_text()
+            self.assertIn("--state-file", unit)
+            self.assertIn(str(expected_state).replace("%", "%%"), unit)
+        # No manager import of XDG_STATE_HOME: the installed unit remains pinned.
+        with patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root / "unrelated")}):
+            self.assertNotEqual(update.state_file(), expected_state)
+            with patch.object(update, "active", return_value=True), \
+                 patch.object(update, "restart") as restart:
+                result = update.apply(self.root, path=expected_state, settle_seconds=0)
+            self.assertIn("No local commit change", result)
+            restart.assert_not_called()
+
+    def test_reset_baseline_needs_exact_reviewed_head_and_is_offline(self):
+        update.write_state(self.state, "f" * 40)
+        result, restarted, _ = self.check()
+        self.assertIn("Previous commit unavailable", result)
+        self.assertEqual(restarted, [])
+        self.assertEqual(self.state.read_text().strip(), "f" * 40)
+        with self.assertRaisesRegex(ValueError, "exact current Git HEAD"):
+            update.reset_baseline("a" * 40, self.root, path=self.state)
+        with patch.object(update, "restart") as restart:
+            response = update.reset_baseline(update.head(self.root), self.root, path=self.state)
+            restart.assert_not_called()
+        self.assertIn("no services were restarted", response)
+        self.assertEqual(self.state.read_text().strip(), update.head(self.root))
+        self.assertIn("No local commit change", self.check()[0])
+
+    def test_reset_baseline_refuses_dirty_git_checkout(self):
+        update.write_state(self.state, "f" * 40)
+        self.change("bridge.py", "print('unreviewed')\\n")
+        with self.assertRaisesRegex(ValueError, "Git operations or tracked runtime edits"):
+            update.reset_baseline(update.head(self.root), self.root, path=self.state)
+        self.assertEqual(self.state.read_text().strip(), "f" * 40)
 
     def test_baseline_is_idempotent_and_no_service_restart(self):
         update.initialize(self.root, path=self.state)
