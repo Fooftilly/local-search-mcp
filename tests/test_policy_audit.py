@@ -68,14 +68,18 @@ class PolicyAuditTests(unittest.TestCase):
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     at TEXT NOT NULL, domain TEXT NOT NULL, action TEXT NOT NULL
                 );
-                INSERT INTO domains(domain,status,created_at,updated_at,explicit_rule)
-                  VALUES('example.org','allowed','2026-01-01','2026-01-01',1);
+                INSERT INTO domains
+                  (domain,status,created_at,updated_at,explicit_rule,
+                   request_count,last_requested_at)
+                  VALUES('example.org','allowed','2026-01-01','2026-01-01',1,
+                         1,'2026-02-01T10:15:00Z');
                 INSERT INTO decisions(at,domain,action)
                   VALUES('2026-01-01','example.org','allow');
             """)
         policy.initialize()
         before = next(r for r in policy.entries() if r["domain"] == "example.org")
         self.assertRegex(before["request_id"], r"^[0-9a-f]{24}$")
+        self.assertEqual(before["first_requested_at"], "2026-02-01T10:15:00Z")
         policy.initialize()
         after = next(r for r in policy.entries() if r["domain"] == "example.org")
         self.assertEqual(before["request_id"], after["request_id"])
