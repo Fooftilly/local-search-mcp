@@ -313,6 +313,7 @@ def import_preview_html(plan: dict) -> str:
     submit = (f'<form method="post" action="/rules/apply">'
               f'<input type="hidden" name="csrf" value="{esc(CSRF)}">'
               f'<input type="hidden" name="state" value="{esc(plan["state"])}">'
+              f'<input type="hidden" name="ticket" value="{esc(plan["ticket"])}">'
               f'<textarea name="rule_doc" hidden>{esc(plan["canonical"])}</textarea>'
               '<label>Type IMPORT to apply '
               '<input name="confirm" required pattern="IMPORT" maxlength="6"></label>'
@@ -585,7 +586,7 @@ class Handler(BaseHTTPRequestHandler):
                 if val('confirm') != 'IMPORT':
                     raise ValueError('Type IMPORT to confirm')
                 amount = policy_transfer.apply_import(
-                    val('rule_doc'), val('state'))
+                    val('rule_doc'), val('state'), val('ticket'))
                 return self._respond(200, render(
                     message=f'Imported {amount} explicit domain rules.'))
             if self.path == '/once':
