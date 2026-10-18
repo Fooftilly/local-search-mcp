@@ -149,6 +149,61 @@ class BridgeTests(unittest.TestCase):
             entry = next(r for r in policy.entries() if r["domain"] == "example.org")
             self.assertEqual(entry["request_count"], 0)
 
+    def test_expired_grant_redacts_failed_crawler_markdown_and_metadata(self):
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns)):
+            policy.decide("example.org", "allow", expires_minutes=60)
+            clock[0] = "2026-10-17T12:59:59Z"
+
+            def failed_crawler(_url, _mode):
+                clock[0] = "2026-10-17T13:00:00Z"
+                return {"url": "https://example.org/fail",
+                        "success": False, "status": "crawl_failed",
+                        "markdown": "FAILED_CRAWL_SECRET",
+                        "metadata": {"title": "FAILED_CRAWL_TITLE"}}
+            with patch.object(self.module, "_run_fetch", side_effect=failed_crawler):
+                result = self.module.web_fetch("https://example.org/fail")
+            self.assertEqual(result["status"], "blocked")
+            self.assertNotIn("FAILED_CRAWL_SECRET", str(result))
+            self.assertNotIn("FAILED_CRAWL_TITLE", str(result))
+
+    def test_batch_redacts_expired_failed_result_with_content(self):
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        early_done = Event()
+
+        def fake_fetch(url, _mode, _fresh):
+            if url.endswith("/failed"):
+                early_done.set()
+                return {"url": url, "success": False,
+                        "status": "crawl_failed",
+                        "markdown": "BATCH_FAILED_SECRET",
+                        "metadata": {"title": "FAILED_TITLE"}}
+            self.assertTrue(early_done.wait(5))
+            clock[0] = "2026-10-17T13:00:00Z"
+            return {"url": url, "success": True, "markdown": "SAFE_RESULT"}
+
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns),
+              patch.object(self.module, "web_fetch", side_effect=fake_fetch)):
+            policy.decide("example.org", "allow", expires_minutes=60)
+            policy.decide("example.net", "allow")
+            clock[0] = "2026-10-17T12:59:59Z"
+            result = asyncio.run(self.module.web_fetch_batch([
+                "https://example.org/failed", "https://example.net/slow"
+            ]))
+            rows = [x["result"] for x in result["results"]]
+            self.assertEqual(rows[0]["status"], "blocked")
+            self.assertNotIn("BATCH_FAILED_SECRET", str(result))
+            self.assertNotIn("FAILED_TITLE", str(result))
+            self.assertEqual(rows[1]["markdown"], "SAFE_RESULT")
+
     def test_batch_wait_for_other_host_does_not_leak_expired_early_result(self):
         import domain_policy as policy
         clock = ["2026-10-17T12:00:00Z"]
