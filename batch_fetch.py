@@ -113,7 +113,8 @@ def _finalize_result(url: str, answer: dict, *, policy_changed: bool) -> dict:
 
 def fetch_many(urls: list[str], mode: str, fresh: bool,
                fetch: Callable[[str, str, bool], dict],
-               *, cancelled: Event | None = None) -> dict:
+               *, cancelled: Event | None = None,
+               authorize_result: Callable[[str, dict], bool] | None = None) -> dict:
     """Map approved single-page fetches to independent ordered results.
 
     At most 3 distinct URL jobs execute at a time. Their existing HTTP timeouts
@@ -169,6 +170,30 @@ def fetch_many(urls: list[str], mode: str, fresh: bool,
             seen.add(url)
         output.append({"index": index, "requested_url": url, "result": result})
     # A second check also covers an edit while the final rows are assembled.
+    if starting_policy_epoch != request_cache.policy_epoch():
+        for row in output:
+            row["result"] = _finalize_result(
+                row["requested_url"], row["result"], policy_changed=True)
+    # A timed rule can expire after one worker returns but before the slowest
+    # worker finishes. The operator may also deny a redirected final host.
+    # Recheck finished content just before assembling the MCP response, and
+    # never expose a previously accepted Markdown/page handle on failure.
+    if authorize_result is not None:
+        valid_by_url: dict[str, bool] = {}
+        for row in output:
+            answer = row["result"]
+            if answer.get("success") is not True:
+                continue
+            url = row["requested_url"]
+            if url not in valid_by_url:
+                try:
+                    valid_by_url[url] = bool(authorize_result(url, answer))
+                except Exception:
+                    valid_by_url[url] = False
+            if not valid_by_url[url]:
+                row["result"] = {"url": url, "success": False, "status": "blocked",
+                                 "reason": "Domain permission is no longer valid. Retry after local approval."}
+    # Revocation during reauthorization must also redact all prior successes.
     if starting_policy_epoch != request_cache.policy_epoch():
         for row in output:
             row["result"] = _finalize_result(
