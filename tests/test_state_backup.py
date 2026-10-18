@@ -5,6 +5,7 @@ from contextlib import closing
 import hashlib
 import os
 from pathlib import Path
+from unittest.mock import patch
 import sqlite3
 import stat
 import tempfile
@@ -125,6 +126,78 @@ class BackupTests(unittest.TestCase):
             backup.restore(self.archive, staged)
         with closing(sqlite3.connect(staged / "domains.sqlite3")) as conn:
             self.assertEqual(conn.execute("SELECT count(*) FROM domains").fetchone()[0], 2)
+
+    def test_custom_history_path_uses_override_not_default(self):
+        elsewhere = self.base / "private-history"
+        elsewhere.mkdir(mode=0o700)
+        custom = elsewhere / "events.private.jsonl"
+        custom.write_bytes(b'{"query":"actual-custom-history"}\n')
+        custom.chmod(0o600)
+        rotated = elsewhere / "events.private.jsonl.1"
+        rotated.write_bytes(b'{"query":"older-custom-history"}\n')
+        rotated.chmod(0o600)
+        with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_HISTORY_FILE": str(custom)}):
+            backup.backup(self.archive, state_dir=self.state)
+        stored = backup.verified_payload(self.archive)
+        self.assertIn(b"actual-custom-history", stored["history.jsonl"])
+        self.assertIn(b"older-custom-history", stored["history.jsonl.1"])
+        self.assertNotIn(b"private", stored["history.jsonl"])
+        with zipfile.ZipFile(self.archive) as container:
+            self.assertFalse(any("events.private.jsonl" in name for name in
+                                 container.namelist()))
+        staged = self.base / "custom-staged"
+        backup.restore(self.archive, staged)
+        self.assertEqual((staged / "history.jsonl").read_bytes(),
+                         custom.read_bytes())
+
+    def test_missing_configured_history_fails_instead_of_silent_db_only_backup(self):
+        outside = self.base / "private-history"
+        outside.mkdir(mode=0o700)
+        missing = outside / "not-created.jsonl"
+        with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_HISTORY_FILE": str(missing)}):
+            with self.assertRaisesRegex(ValueError, "Configured history file is missing"):
+                backup.backup(self.archive, state_dir=self.state)
+        self.assertFalse(self.archive.exists())
+
+    def test_configured_history_must_be_private_and_absolute(self):
+        outside = self.base / "history-readable"
+        outside.mkdir(mode=0o755)
+        current = outside / "events.jsonl"
+        current.write_text("secret history")
+        current.chmod(0o600)
+        with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_HISTORY_FILE": str(current)}):
+            with self.assertRaisesRegex(ValueError, "privately owned"):
+                backup.backup(self.archive, state_dir=self.state)
+        with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_HISTORY_FILE": "relative/events.jsonl"}):
+            with self.assertRaisesRegex(ValueError, "must be absolute"):
+                backup.backup(self.archive, state_dir=self.state)
+        self.assertFalse(self.archive.exists())
+
+    def test_rotated_history_over_db_limit_is_valid_for_backup_and_verify(self):
+        # Reduced test constants exercise multi-generation writer-sized data
+        # without consuming hundreds of megabytes in the CI matrix.
+        db_cap = 16 * 1024
+        history_cap = 6000
+        for name in backup.HISTORY_NAMES:
+            source = self.state / name
+            source.write_bytes(os.urandom(5200))
+            source.chmod(0o600)
+        with (patch.object(backup, "MAX_DB_FILE", db_cap),
+              patch.object(backup, "MAX_HISTORY_FILE", history_cap),
+              patch.object(backup, "MAX_TOTAL", db_cap + 4 * history_cap),
+              patch.object(backup, "MAX_ARCHIVE", db_cap + 4 * history_cap + 4096)):
+            backup.backup(self.archive, state_dir=self.state)
+            self.assertGreater(self.archive.stat().st_size, db_cap)
+            verified = backup.verified_payload(self.archive)
+            self.assertEqual(len(verified), 5)
+            self.assertTrue(all(len(verified[name]) == 5200
+                                for name in backup.HISTORY_NAMES))
+            restored = self.base / "large-staged"
+            backup.restore(self.archive, restored)
+            self.assertEqual((restored / "history.jsonl.3").stat().st_size, 5200)
+        self.assertGreaterEqual(backup.MAX_HISTORY_FILE, 100_000_000)
+        self.assertGreaterEqual(backup.MAX_TOTAL,
+                                backup.MAX_DB_FILE + 4 * 100_000_000)
 
     def test_cli_backup_verify_restore_and_refusal_of_existing_target(self):
         self.assertEqual(backup.main(["backup", str(self.archive),
