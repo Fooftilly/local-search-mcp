@@ -193,12 +193,14 @@ def run(kind: str, key: tuple | None, load, *, ttl: float, fresh: bool = False,
             if not saved:
                 with _LOCK:
                     if _REFRESHING.get(key) is token:
-                        _CACHE.pop(key, None)
+                        if _CACHE.pop(key, None) is not None:
+                            _METRICS[kind]["evictions"] += 1
             return result
         except BaseException:
             with _LOCK:
                 if _REFRESHING.get(key) is token:
-                    _CACHE.pop(key, None)
+                    if _CACHE.pop(key, None) is not None:
+                        _METRICS[kind]["evictions"] += 1
             raise
         finally:
             with _LOCK:
