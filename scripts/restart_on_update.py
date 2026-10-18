@@ -222,7 +222,11 @@ def pip_include_path(raw: str) -> str:
         raise ValueError("Expected a single quoted/unquoted requirement include")
     result = os.path.expandvars(values[0])
     if re.search(r'\$\{[^}]+\}', result):
-        raise ValueError("Unresolved environment variable in pip include")
+        raise ValueError(
+            "Unresolved environment variable in pip include; configure it "
+            "for the systemd user manager (systemctl --user set-environment "
+            "NAME=value or ~/.config/environment.d/) before running the watcher"
+        )
     return result
 
 
@@ -265,7 +269,7 @@ def referenced_requirement_files(
         pending = ""
         for raw in resolved.read_text().splitlines():
             raw = raw.strip()
-            if raw.endswith("\\"):
+            if raw.endswith("\\") and not raw.lstrip().startswith("#"):
                 pending += raw[:-1] + " "
                 continue
             line = (pending + raw).split(" #", 1)[0].strip()
@@ -327,7 +331,12 @@ def requirements_ready(
             add("requirements.txt", False)
         for name in changed_manifests or []:
             sources = (origins or {}).get(name, set())
-            if sources:
+            if name == "requirements.txt" and name in sources:
+                # The live service uses the primary root manifest directly;
+                # do not demand optional dev-only packages from sibling roots
+                # such as requirements-dev.txt that happen to include it.
+                add(name, False)
+            elif sources:
                 for source in sources:
                     if source == name and len(sources) > 1:
                         # This file is also reachable as a -r/-c include.
@@ -371,7 +380,7 @@ def walk(filename, constrained=False):
         pending = ''
         for raw in path.read_text().splitlines():
             raw = raw.strip()
-            if raw.endswith('\\'):
+            if raw.endswith('\\') and not raw.lstrip().startswith('#'):
                 pending += raw[:-1] + ' '
                 continue
             line = (pending + raw).split(' #', 1)[0].strip()
@@ -416,9 +425,11 @@ def walk(filename, constrained=False):
                     continue
                 # These pip configuration directives cannot be verified from
                 # installed distributions. Explicit operator review is required.
-                if line.startswith(('--index-url ', '--extra-index-url ',
-                                    '--find-links ', '--no-index',
-                                    '--trusted-host ')):
+                if re.match(
+                    r'^(?:--index-url|--extra-index-url|--find-links|'
+                    r'--trusted-host|-i|-f)(?:=|\s)|^--no-index(?:\s|$)',
+                    line,
+                ):
                     continue
                 requirement = Requirement(line)
                 if requirement.marker is not None and not requirement.marker.evaluate():
