@@ -639,6 +639,55 @@ class AutoRestartTests(unittest.TestCase):
             self.assertTrue(update.requirements_ready(
                 self.root, ["requirements.txt"]))
 
+    def test_shared_pip_base_does_not_require_dev_only_dependencies(self):
+        self.change("requirements/base.txt", "pip>=0\n")
+        self.change("requirements/prod.txt", "-r base.txt\n")
+        self.change("requirements/dev.txt",
+                    "-r base.txt\nmissing-dev-only-xy98371>=1\n")
+        self.git("rm", "requirements.txt")
+        self.commit("shared base with separate prod and dev roots")
+        origins = {}
+        update.referenced_requirement_files(self.root, origins=origins)
+        self.assertIn("requirements/dev.txt", origins["requirements/base.txt"])
+        self.assertIn("requirements/prod.txt", origins["requirements/base.txt"])
+        interpreter = self.root / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.touch()
+        real_run = subprocess.run
+        def offline_runner(command, **kwargs):
+            if "-c" in command:
+                i = command.index("-c") + 1
+                return real_run([sys.executable, "-I", "-c", *command[i:]], **kwargs)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertTrue(update.requirements_ready(
+                self.root, ["requirements/base.txt"], origins))
+        self.change("requirements/base.txt", "missing-required-xy98371>=1\n")
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertFalse(update.requirements_ready(
+                self.root, ["requirements/base.txt"], origins))
+
+    def test_shared_pip_pin_with_live_root_ignores_dev_requirements(self):
+        self.change("requirements.txt", "-r pins.txt\n")
+        self.change("pins.txt", "pip>=0\n")
+        self.change("requirements-dev.txt",
+                    "-r pins.txt\nmissing-dev-only-xy98371>=1\n")
+        self.commit("share pinned runtime input")
+        origins = {}
+        update.referenced_requirement_files(self.root, origins=origins)
+        interpreter = self.root / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.touch()
+        real_run = subprocess.run
+        def offline_runner(command, **kwargs):
+            if "-c" in command:
+                i = command.index("-c") + 1
+                return real_run([sys.executable, "-I", "-c", *command[i:]], **kwargs)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertTrue(update.requirements_ready(
+                self.root, ["pins.txt"], origins))
+
     def test_pip_replacement_manifest_checks_local_versions(self):
         (self.root / "config").mkdir()
         self.git("mv", "requirements.txt", "config/dependencies.txt")
