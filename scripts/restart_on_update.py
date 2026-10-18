@@ -156,7 +156,14 @@ def validate_python(root: Path, files: list[str]) -> None:
 
 
 def requirements_ready(root: Path) -> bool:
-    """Check installed versions against requirements without downloading anything."""
+    """Check installed versions against requirements without downloading anything.
+
+    If the manifest was removed/renamed, manual --dependencies-ready confirmation
+    is the only available dependency check; do not require a deleted file.
+    """
+    manifest = root / "requirements.txt"
+    if not manifest.is_file():
+        return not manifest.exists()
     interpreter = root / ".venv" / "bin" / "python"
     if not interpreter.is_file():
         return False
@@ -227,8 +234,8 @@ def apply(root: Path = ROOT, *, path: Path | None = None,
         write_state(location, current)
         return "Documentation/test-only commit change; restart not required"
     if "requirements.txt" in changed and not dependencies_ready:
-        return ("Python requirements changed; no automatic package downloads. "
-                "Install/check requirements manually, then run "
+        return ("Python requirements changed, moved or removed; no automatic package downloads. "
+                "Review and prepare dependencies manually, then run "
                 "python3 scripts/restart_on_update.py --dependencies-ready")
     if "requirements.txt" in changed and not requirements_ready(root):
         return ("Installed Python requirements failed offline validation; "
