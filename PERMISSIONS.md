@@ -102,12 +102,42 @@ and explicit deny precedence under a write lock, so concurrent requesters
 cannot reuse one grant. Its return value is a private `(hostname, grant_id)`
 proof; it is **never included in an MCP response, request log, or dashboard**.
 
-**Still inert:** this preflight is not wired to `web_fetch`, `web_fetch_batch`,
+**Preflight itself is internal:** the guarded standalone `web_fetch` flow now uses it; `web_fetch_batch`,
 continuation pages or operator decision forms. In particular, the helper
 alone is *not* a complete authorization: future fetch integration must guard
 final navigation, changing decisions, cache hits, page handles, and late
 batch responses against stale or revoked grants. Browser/container egress
 isolation remains a separate deployment requirement.
+
+## Guarded one-use fetches and private continuation proofs
+
+When an internal one-use grant has been staged by the local authorization
+ledger, a **standalone** `web_fetch` may now claim it once. Standard permanent
+permissions still take precedence. The claim is made **only after** DNS/public
+target validation and an atomic SQLite recheck. No approval mutation is
+exposed as an MCP tool.
+
+The private grant ID remains within the server process and in the
+short-lived, in-memory continuation record; it is **never present** in MCP
+output, dashboard rows, JSONL history, exported records, or response metadata.
+A one-use result bypasses shared fetch caching and request coalescing, and
+checks the grant again immediately before releasing content. Expiry, new
+explicit denial, grant replacement, and revocation redact results, even if
+Crawl4AI finished successfully. Redirects to a distinct hostname additionally
+require that final host to have an independently active regular approval.
+
+A `web_fetch_page` continuation from the original one-use fetch is part of
+**the same authorization**. Its private proof is checked on every follow-up
+read; an expired/revoked proof can never release later document chunks.
+Other documents still use their existing permission checks and page API.
+
+`web_fetch_batch` intentionally **does not claim** single-use permissions:
+multiple worker results, deduplication and late revalidation require regular
+reusable domain approvals. A single-use-only host returns
+`approval_required` in a batch without consuming the grant; fetch it
+individually instead. The dashboard still does **not** offer an Allow once
+button. That is the final UI/audit slice; this code must not be described as
+an operator-complete feature before the local control exists.
 
 ## Remaining work for issue #12
 
