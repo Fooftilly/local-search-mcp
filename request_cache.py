@@ -25,6 +25,23 @@ _CACHE: OrderedDict[tuple, tuple[float, int, object]] = OrderedDict()
 _INFLIGHT: dict[tuple, tuple[Future, int, dict]] = {}
 _REFRESHING: dict[tuple, object] = {}
 _POLICY_EPOCH = 0
+_METRIC_NAMES = ("hits", "misses", "coalesced", "refreshes", "uncacheable",
+                 "stores", "evictions", "policy_invalidations")
+_METRICS = {kind: {metric: 0 for metric in _METRIC_NAMES}
+            for kind in ("search", "fetch")}
+
+
+def metrics_snapshot() -> dict:
+    """Process-lifetime counters only: never reveal cache keys or URL/query text."""
+    with _LOCK:
+        kinds = {}
+        for kind in ("search", "fetch"):
+            counts = dict(_METRICS[kind])
+            entries = [entry[1] for key, entry in _CACHE.items() if key[0] == kind]
+            counts["entries"] = len(entries)
+            counts["bytes"] = sum(entries)
+            kinds[kind] = counts
+        return {"scope": "process_lifetime", "kinds": kinds}
 
 
 def fetch_key(url: str, mode: str) -> tuple | None:
@@ -69,9 +86,11 @@ def invalidate_fetch() -> None:
     global _POLICY_EPOCH
     with _LOCK:
         _POLICY_EPOCH += 1
+        _METRICS["fetch"]["policy_invalidations"] += 1
         for key in list(_CACHE):
             if key[0] == "fetch":
                 del _CACHE[key]
+                _METRICS["fetch"]["evictions"] += 1
         for key in list(_INFLIGHT):
             if key[0] == "fetch":
                 _INFLIGHT[key][2]["superseded"] = True
@@ -92,12 +111,16 @@ def reset_for_test() -> None:
         _INFLIGHT.clear()
         _REFRESHING.clear()
         _POLICY_EPOCH = 0
+        for kind in _METRICS:
+            for name in _METRIC_NAMES:
+                _METRICS[kind][name] = 0
 
 
 def _purge(now: float) -> None:
     for key, (expiry, _size, _value) in list(_CACHE.items()):
         if expiry <= now:
             del _CACHE[key]
+            _METRICS[key[0]]["evictions"] += 1
 
 
 def _cacheable_size(result: object, key: tuple) -> int:
@@ -127,10 +150,12 @@ def _store(kind: str, key: tuple, result, ttl: float, generation: int,
             return False
         _purge(time.monotonic())
         _CACHE[key] = (time.monotonic() + ttl, size, deepcopy(result))
+        _METRICS[kind]["stores"] += 1
         _CACHE.move_to_end(key)
         total = sum(entry[1] for entry in _CACHE.values())
         while _CACHE and (len(_CACHE) > MAX_ITEMS or total > MAX_BYTES):
-            _, removed = _CACHE.popitem(last=False)
+            old_key, removed = _CACHE.popitem(last=False)
+            _METRICS[old_key[0]]["evictions"] += 1
             total -= removed[1]
         return key in _CACHE
 
@@ -143,9 +168,15 @@ def run(kind: str, key: tuple | None, load, *, ttl: float, fresh: bool = False,
     duplicate upstream loads for simultaneous default callers. A failed fresh
     request evicts the old entry. Refresh state lives only while it is active.
     """
+    if kind not in _METRICS:
+        raise ValueError("Unknown cache operation kind")
     if key is None:
+        with _LOCK:
+            _METRICS[kind]["uncacheable"] += 1
         return load()
     if fresh:
+        with _LOCK:
+            _METRICS[kind]["refreshes"] += 1
         token = object()
         with _LOCK:
             _REFRESHING[key] = token
@@ -177,6 +208,7 @@ def run(kind: str, key: tuple | None, load, *, ttl: float, fresh: bool = False,
         _purge(time.monotonic())
         value = _CACHE.get(key)
         if value is not None:
+            _METRICS[kind]["hits"] += 1
             _CACHE.move_to_end(key)
             return deepcopy(value[2])
         prior_flight = _INFLIGHT.get(key)
@@ -186,6 +218,7 @@ def run(kind: str, key: tuple | None, load, *, ttl: float, fresh: bool = False,
             flight = prior_flight
             future = flight[0]
             leader = False
+            _METRICS[kind]["coalesced"] += 1
         else:
             future = Future()
             # An uncached default call may begin while a forced refresh is
@@ -196,6 +229,7 @@ def run(kind: str, key: tuple | None, load, *, ttl: float, fresh: bool = False,
             leader = True
             _INFLIGHT[key] = flight
             generation = _POLICY_EPOCH
+            _METRICS[kind]["misses"] += 1
     if not leader:
         return deepcopy(future.result())
     try:
