@@ -115,7 +115,62 @@ class GuardedOnceFetchTests(unittest.TestCase):
             self.assertTrue(bridge.web_fetch(url)["success"])
             self.assertTrue(bridge.web_fetch(url)["success"])
         crawler.assert_called_once_with(url, "raw")
+        # The ordinary approval leaves the one-use fallback untouched.
+        self.assertIsNone(policy._consume_once_grant("docs.example.org"))
+        with policy._db() as conn:
+            row = conn.execute(
+                "SELECT consumed_at FROM once_grants WHERE domain=?",
+                ("docs.example.org",)).fetchone()
+        self.assertEqual(row["consumed_at"], "")
+        policy.decide("docs.example.org", "delete")
         self.assertEqual(policy._consume_once_grant("docs.example.org"), grant)
+
+    def test_reusable_allow_during_dns_does_not_burn_one_use_grant(self):
+        url = "https://docs.example.org/article"
+        grant = policy._stage_once_grant("docs.example.org")
+        seen = []
+
+        def approve_during_dns(*args, **kwargs):
+            if not seen:
+                # Caller observed no regular approval, but operator approves
+                # while the DNS preflight is in flight. SQLite claim must
+                # check this new approval under its own write lock.
+                policy.decide("docs.example.org", "allow", scope="exact")
+            seen.append(args)
+            return PUBLIC_DNS
+
+        with (
+            patch.object(policy.socket, "getaddrinfo",
+                         side_effect=approve_during_dns),
+            patch.object(bridge, "_run_fetch") as crawler,
+        ):
+            result = bridge.web_fetch(url)
+
+        self.assertTrue(seen)
+        self.assertEqual(result["status"], "blocked")
+        crawler.assert_not_called()  # Policy epoch changed during preflight.
+        with policy._db() as conn:
+            row = conn.execute(
+                "SELECT grant_id, consumed_at FROM once_grants WHERE domain=?",
+                ("docs.example.org",)).fetchone()
+        self.assertEqual(row["grant_id"], grant)
+        self.assertEqual(row["consumed_at"], "")
+        policy.decide("docs.example.org", "delete")
+        self.assertEqual(policy._consume_once_grant("docs.example.org"), grant)
+
+    def test_inherited_reusable_allow_prevents_once_claim(self):
+        grant = policy._stage_once_grant(
+            "example.org", scope="subdomains")
+        policy.decide("sub.example.org", "allow", scope="subdomains")
+        self.assertFalse(policy._once_grant_available("deep.sub.example.org"))
+        self.assertIsNone(policy._consume_once_grant("deep.sub.example.org"))
+        with policy._db() as conn:
+            consumed = conn.execute(
+                "SELECT consumed_at FROM once_grants WHERE domain=?",
+                ("example.org",)).fetchone()["consumed_at"]
+        self.assertEqual(consumed, "")
+        policy.decide("sub.example.org", "delete")
+        self.assertEqual(policy._consume_once_grant("deep.sub.example.org"), grant)
 
     def test_revoke_or_deny_mid_fetch_redacts_every_content_field(self):
         for change in ("revoke", "deny"):
