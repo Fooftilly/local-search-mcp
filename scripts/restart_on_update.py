@@ -111,6 +111,27 @@ def initialize(root: Path = ROOT, *, path: Path | None = None) -> None:
         write_state(location, head(root))
 
 
+def reset_baseline(expected_commit: str, root: Path = ROOT, *,
+                   path: Path | None = None) -> str:
+    """Manually accept an inspected checkout; never restart services.
+
+    Requiring the exact local HEAD makes this an explicit operator action
+    rather than a silent repair when history has been pruned or replaced.
+    """
+    verify_checkout(root)
+    location = path or state_file()
+    if not expected_commit or expected_commit != head(root):
+        raise ValueError("Provide the exact current Git HEAD commit to reset the baseline")
+    if busy(root) or tracked_source_dirty(root):
+        raise ValueError("Cannot reset baseline during Git operations or tracked runtime edits")
+    # Do not advance the baseline across a concurrent checkout.
+    if head(root) != expected_commit or busy(root) or tracked_source_dirty(root):
+        raise ValueError("Git checkout changed while resetting the baseline")
+    write_state(location, expected_commit)
+    return ("Reset local update baseline to reviewed commit " + expected_commit +
+            "; no services were restarted")
+
+
 def busy(root: Path) -> bool:
     return any(git_path(root, name).exists() for name in IN_PROGRESS)
 
@@ -277,11 +298,21 @@ def apply(root: Path = ROOT, *, path: Path | None = None,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dependencies-ready", action="store_true",
-                        help="Acknowledge that changed Python requirements were installed manually")
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument("--dependencies-ready", action="store_true",
+                         help="Acknowledge that changed Python requirements were installed manually")
+    actions.add_argument("--reset-baseline", metavar="COMMIT",
+                         help="After reviewing and preparing the checkout, acknowledge exact Git HEAD without restarting")
+    parser.add_argument("--state-file", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.state_file is not None and not args.state_file.is_absolute():
+        parser.error("--state-file must be an absolute path")
     try:
-        print(apply(dependencies_ready=args.dependencies_ready), flush=True)
+        if args.reset_baseline is not None:
+            message = reset_baseline(args.reset_baseline, path=args.state_file)
+        else:
+            message = apply(path=args.state_file, dependencies_ready=args.dependencies_ready)
+        print(message, flush=True)
         return 0
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"Local auto-restart check failed: {type(exc).__name__}: {exc}",
