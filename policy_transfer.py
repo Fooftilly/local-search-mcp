@@ -109,6 +109,13 @@ def _plan(conn, rules: list[dict]) -> dict:
                 unchanged.append(item["domain"])
             else:
                 conflicts.append(item["domain"])
+        elif (item["status"] == "allowed"
+              and (inherited := policy._match(conn, item["domain"], policy.utcnow()))
+              and inherited["status"] == "denied"):
+            # An explicit child allow would punch a hole through an existing
+            # local parent denial. Require the operator to adjust the denial
+            # manually before importing; never broaden silently.
+            conflicts.append(item["domain"])
         else:
             added.append(item["domain"])
     return {"add": added, "unchanged": unchanged, "conflicts": conflicts}
@@ -148,8 +155,15 @@ def preview_import(payload: str) -> dict:
     rules = _rules_from_text(payload)
     with policy._db() as conn:
         policy._seed(conn)
-        plan = _plan(conn, rules)
-        state = _snapshot(conn)
+        # Both reads share one consistent SQLite snapshot. Without BEGIN,
+        # a policy mutation between classification and fingerprinting could
+        # make a stale preview appear current at apply time.
+        conn.execute("BEGIN")
+        try:
+            plan = _plan(conn, rules)
+            state = _snapshot(conn)
+        finally:
+            conn.rollback()
     # The canonical serialization is safe to round-trip into escaped HTML.
     canonical = _canonical(rules)
     ticket = _ticket(canonical, state, int(time.monotonic()))
@@ -180,8 +194,14 @@ def apply_import(payload: str, expected_state: str,
                 raise ValueError("Domain rules changed since preview; preview again")
             plan = _plan(conn, rules)
             if plan["conflicts"]:
-                raise ValueError("Import conflicts with existing explicit rules")
+                raise ValueError("Import conflicts with existing explicit rules or inherited denials")
+            # Validate AFTER BEGIN IMMEDIATE, not only before opening SQLite:
+            # the database write lock may be held until an imported TTL expires.
+            locked_now = _now_dt()
+            for item in rules:
+                _expiry(item["expires_at"], locked_now)
             now = policy.utcnow()
+            imported_domains = {item["domain"] for item in rules}
             for item in rules:
                 if item["domain"] not in plan["add"]:
                     continue
@@ -205,10 +225,13 @@ def apply_import(payload: str, expected_state: str,
                 # Preserve audit evidence and stable IDs when parent rules
                 # supersede automatically queued child requests.
                 if item["scope"] == "subdomains":
-                    children = conn.execute(
-                        """SELECT * FROM domains WHERE explicit_rule=0
-                           AND domain!=? AND domain LIKE '%.' || ?""",
-                        (domain, domain)).fetchall()
+                    children = [
+                        child for child in conn.execute(
+                            """SELECT * FROM domains WHERE explicit_rule=0
+                               AND domain!=? AND domain LIKE '%.' || ?""",
+                            (domain, domain)).fetchall()
+                        if child["domain"] not in imported_domains
+                    ]
                     for child in children:
                         conn.execute(
                             """INSERT INTO decisions
@@ -221,10 +244,9 @@ def apply_import(payload: str, expected_state: str,
                              if child["last_requested_url"] else "",
                              child["first_requested_at"], child["last_requested_at"],
                              child["request_count"]))
-                    conn.execute(
-                        """DELETE FROM domains WHERE explicit_rule=0
-                           AND domain!=? AND domain LIKE '%.' || ?""",
-                        (domain, domain))
+                    conn.executemany(
+                        "DELETE FROM domains WHERE domain=? AND explicit_rule=0",
+                        [(child["domain"],) for child in children])
                 conn.execute(
                     """INSERT INTO decisions
                        (at,domain,action,request_id,reason)
