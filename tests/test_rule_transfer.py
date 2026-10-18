@@ -23,7 +23,7 @@ class PortableDomainRulesTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         env = patch.dict(os.environ, {"XDG_STATE_HOME": tmp.name,
-                           "ALLOWED_CRAWL_DOMAINS": "example.com"})
+                           "ALLOWED_CRAWL_DOMAINS": ""})
         env.start()
         self.addCleanup(env.stop)
         request_cache.reset_for_test()
