@@ -39,9 +39,13 @@ It removes the temporary directory afterward. Live custom history paths, policy
 seeding configuration, and retention overrides are isolated. The result prints
 only aggregate policy and recent-event counts, not domain names, search terms,
 credentials, or URLs. A missing or corrupt archive fails before initialization.
-The smoke test checks application-level readability; it is **not** a live
-service restart, rollback, or proof that all historical events remain after
-configured retention.
+When an archive includes validated history or upstream timeout settings, the
+smoke test also restores them into a **separate temporary XDG config directory**
+and checks their values through the actual runtime settings readers. It ignores
+the operator's live configuration and environment overrides and never stages
+launcher credentials. The smoke test checks application-level readability;
+it is **not** a live service restart, rollback, or proof that all historical
+events remain after configured retention.
 
 ## Restore safely (never overwrites live state)
 

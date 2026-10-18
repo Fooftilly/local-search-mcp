@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 import sqlite3
@@ -14,6 +15,8 @@ import zipfile
 
 import domain_policy
 import history_index
+import safe_settings
+import upstream_settings
 from history_log import append_history
 from scripts import backup_state, restore_smoke
 
@@ -102,6 +105,80 @@ class FreshRecoveryTests(unittest.TestCase):
                              str(nonexistent))
             self.assertEqual(os.environ["LOCAL_SEARCH_MCP_HISTORY_RETENTION_DAYS"], "1")
         self.assertFalse(nonexistent.exists())
+
+    def test_recovery_reads_archived_settings_only_from_isolated_config(self):
+        config = self.root / "source-config"
+        config.mkdir(mode=0o700)
+        documents = {
+            "history-settings.json": {
+                "schema": safe_settings.SCHEMA,
+                "settings": {"retention_days": 45, "max_bytes": 65536},
+            },
+            "upstream-timeouts.json": {
+                "schema": upstream_settings.SCHEMA,
+                "settings": {"searxng_seconds": 10, "crawl_seconds": 90},
+            },
+        }
+        for name, document in documents.items():
+            path = config / name
+            path.write_text(json.dumps(document))
+            path.chmod(0o600)
+        secret = config / "config.json"
+        secret.write_text('{"token":"NEVER_RESTORE_THIS"}')
+        secret.chmod(0o600)
+        archive = self.root / "with-settings.zip"
+        backup_state.backup(archive, state_dir=domain_policy.storage_dir(),
+                            config_dir=config)
+        self.assertNotIn("config.json", backup_state.verified_payload(archive))
+
+        live = self.root / "live-config"
+        live.mkdir(mode=0o700)
+        (live / "local-search-mcp").mkdir(mode=0o700)
+        # Malformed live configuration and overrides must not leak into
+        # fresh-install recovery or mask the archived values.
+        (live / "local-search-mcp" / "history-settings.json").write_text("invalid")
+        original_history = safe_settings.dashboard_settings
+        original_upstream = upstream_settings.dashboard_settings
+        def check_history():
+            home = Path(os.environ["XDG_CONFIG_HOME"])
+            self.assertNotEqual(home, live)
+            self.assertIn("mcp-fresh-restore-", str(home))
+            self.assertEqual((home / "local-search-mcp" / "history-settings.json").stat().st_mode & 0o777, 0o600)
+            self.assertFalse((home / "local-search-mcp" / "config.json").exists())
+            result = original_history()
+            self.assertEqual(result["values"], documents["history-settings.json"]["settings"])
+            return result
+        def check_upstream():
+            result = original_upstream()
+            self.assertEqual(result["values"], documents["upstream-timeouts.json"]["settings"])
+            return result
+        with patch.dict(os.environ, {
+            "XDG_CONFIG_HOME": str(live),
+            "LOCAL_SEARCH_MCP_HISTORY_RETENTION_DAYS": "1",
+            "LOCAL_SEARCH_MCP_HISTORY_MAX_BYTES": "64000",
+            "LOCAL_SEARCH_MCP_SEARXNG_TIMEOUT": "120",
+            "LOCAL_SEARCH_MCP_CRAWL_TIMEOUT": "300",
+        }), patch.object(safe_settings, "dashboard_settings", side_effect=check_history) as history_reader, patch.object(
+            upstream_settings, "dashboard_settings", side_effect=check_upstream
+        ) as upstream_reader:
+            self.assertEqual(restore_smoke.smoke(archive),
+                             (self.expected_policy_count, 2))
+            history_reader.assert_called_once()
+            upstream_reader.assert_called_once()
+            self.assertEqual(os.environ["XDG_CONFIG_HOME"], str(live))
+            self.assertEqual(os.environ["LOCAL_SEARCH_MCP_SEARXNG_TIMEOUT"], "120")
+        self.assertEqual(secret.read_text(), '{"token":"NEVER_RESTORE_THIS"}')
+
+    def test_without_settings_never_inspects_live_config(self):
+        live = self.root / "live-invalid-config"
+        live.mkdir(mode=0o700)
+        (live / "local-search-mcp").mkdir(mode=0o700)
+        (live / "local-search-mcp" / "upstream-timeouts.json").write_text("{bad")
+        with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(live),
+                                     "LOCAL_SEARCH_MCP_CRAWL_TIMEOUT": "300"}):
+            self.assertEqual(restore_smoke.smoke(self.archive),
+                             (self.expected_policy_count, 2))
+            self.assertEqual(os.environ["XDG_CONFIG_HOME"], str(live))
 
     def test_subprocess_cli_smokes_archive_offline(self):
         result = subprocess.run(
