@@ -17,6 +17,7 @@ import domain_policy as policy
 import policy_transfer
 import service_status
 import safe_settings
+import upstream_settings
 import history_index
 from dashboard_live_script import LIVE_SCRIPT
 
@@ -349,7 +350,7 @@ def render(query='', message='', kind='success'):
     audit_html = decision_audit_html(query)
     once_html = once_grants_html(query)
     once_log = once_audit_html(query)
-    return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="/status">Service status</a><a href="/settings">History settings</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
+    return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="/status">Service status</a><a href="/settings">History settings</a><a href="/upstream-settings">Upstream timeouts</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
 <main><h1>Domain approvals</h1><p>Approve or deny domains requested by agents. Changes apply to the next fetch without restarting MCP. The dashboard is accessible only from this computer.</p>{alert}
 <section class="stats"><div class="stat"><span>Awaiting approval</span><b id="live-count-pending">{c['pending']}</b></div><div class="stat"><span>Allowed</span><b id="live-count-allowed">{c['allowed']}</b></div><div class="stat"><span>Denied</span><b id="live-count-denied">{c['denied']}</b></div><div class="stat"><span>Dashboard</span><b style="font-size:14px">127.0.0.1:{PORT}</b></div></section>
 <div class="panel"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="{esc(CSRF)}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><label>Scope <select name="scope"><option value="subdomains">Host + subdomains</option><option value="exact">Exact host only</option></select></label><label>Duration <select name="expires_minutes"><option value="0">Permanent</option><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label><label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Select exact host to exclude subdomains, and optionally set a 1-hour, 24-hour or 7-day expiry. Older rules remain permanent with subdomains. Never approve private-network addresses.</p></div>
@@ -445,6 +446,50 @@ def history_settings_page(message="", kind="success", submitted=None):
             'Changing retention controls future pruning of the derived index; '
             'changing size affects the next JSONL append/rotation.</p>'
             '<p><a href="/">Return to domain approvals</a></p></main></body></html>')
+
+
+def upstream_settings_page(message="", kind="success", submitted=None):
+    """Strictly nonsecret, operator-only timeout configuration panel."""
+    info = upstream_settings.dashboard_settings()
+    vals = info["values"]
+    shown = ({**vals, "state": info["state"]}
+             if submitted is None else submitted)
+    locked = not info["editable"]
+    alert = ('<p class="alert ' + ('error' if kind == 'error' else 'success') +
+             '">' + esc(message) + '</p>') if message else ''
+    sources = ''.join('<li>' + esc(key) + ': ' +
+                      ('environment override' if info["environment_override"][key]
+                       else 'saved or default') + '</li>' for key in vals)
+    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            f'<meta name="referrer" content="no-referrer">'
+            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<title>Local Search MCP — Upstream timeouts</title><style>{CSS}</style>'
+            '</head><body><main><h1>Upstream request timeouts</h1>' +
+            alert + '<p>Timeouts apply to the next outgoing upstream request '
+            'without restarting the bridge. Requests already running retain '
+            'their original timeout. The Crawl4AI /health safety check keeps '
+            'its own fixed short timeout.</p><ul>' + sources + '</ul>' +
+            ('<p class="alert error">An environment override is present. '
+             'Remove it from the service environment and restart before '
+             'editing these saved settings.</p>' if locked else '') +
+            '<form method="post" action="/upstream-settings">'
+            '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
+            '<input type="hidden" name="state" value="' + esc(shown["state"]) + '">'
+            '<label>SearXNG search timeout (5–120 seconds) '
+            '<input type="number" name="searxng_seconds" min="5" max="120" '
+            'required value="' + esc(shown["searxng_seconds"]) + '"></label>'
+            '<label>Crawl4AI crawl timeout (15–300 seconds) '
+            '<input type="number" name="crawl_seconds" min="15" max="300" '
+            'required value="' + esc(shown["crawl_seconds"]) + '"></label>'
+            '<label>Type APPLY <input name="confirm" required pattern="APPLY" '
+            'maxlength="5"></label><button type="submit"' +
+            (' disabled' if locked else '') + '>Apply upstream timeouts</button>'
+            '</form><p class="subtle">This separate owner-only file stores '
+            'only two validated integers. It never reads or changes credentials, '
+            'domain permissions, history data, endpoint URLs or service ports. '
+            'Existing cached responses may still be served until their TTL expires.</p>'
+            '<p><a href="/settings">History settings</a> · '
+            '<a href="/">Return to domain approvals</a></p></main></body></html>')
 
 
 def status_page():
@@ -576,6 +621,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._respond(200,history_settings_page())
             except (ValueError, OSError):
                 return self._respond(400,'Nonsecret settings unavailable; inspect permissions and file contents')
+        if path.path=='/upstream-settings':
+            if not self._read_origin_valid():return self._respond(403,'Forbidden')
+            try:
+                return self._respond(200, upstream_settings_page())
+            except (ValueError, OSError):
+                return self._respond(400,
+                    'Upstream settings unavailable; inspect permissions and file contents')
         if path.path=='/status':
             if not self._read_origin_valid():return self._respond(403,'Forbidden')
             return self._respond(200,status_page())
@@ -641,7 +693,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._post_origin_valid():
             return self._respond(403,'Invalid origin')
         if self.path not in ('/domain', '/pending/clear', '/bulk', '/once',
-                             '/rules/preview', '/rules/apply', '/settings'):
+                             '/rules/preview', '/rules/apply', '/settings',
+                             '/upstream-settings'):
             return self._respond(404,'Not found')
         try:
             length=int(self.headers.get('Content-Length','-1'))
@@ -667,6 +720,30 @@ class Handler(BaseHTTPRequestHandler):
             removed = policy.clear_pending_requests()
             return self._respond(200,render(message=f"Cleared {removed} pending requests."))
         try:
+            if self.path == '/upstream-settings':
+                submitted = {
+                    'searxng_seconds': val('searxng_seconds'),
+                    'crawl_seconds': val('crawl_seconds'),
+                    'state': val('state'),
+                }
+                try:
+                    if val('confirm') != 'APPLY':
+                        raise ValueError('Type APPLY to confirm the timeout update')
+                    upstream_settings.update_settings({
+                        'searxng_seconds': submitted['searxng_seconds'],
+                        'crawl_seconds': submitted['crawl_seconds'],
+                    }, submitted['state'])
+                except (ValueError, OSError) as exc:
+                    message = ('Cannot safely save upstream settings'
+                               if isinstance(exc, OSError) else str(exc))
+                    try:
+                        return self._respond(400, upstream_settings_page(
+                            message=message, kind='error', submitted=submitted))
+                    except (ValueError, OSError):
+                        return self._respond(400,
+                            'Upstream settings unavailable; inspect permissions and file contents')
+                return self._respond(200, upstream_settings_page(
+                    message='Upstream timeouts saved; applied to subsequent requests.'))
             if self.path == '/settings':
                 submitted = {
                     'retention_days': val('retention_days'),
