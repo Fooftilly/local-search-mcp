@@ -19,8 +19,8 @@ MAX_TOTAL_CHARS = 3_000_000
 MAX_DOCUMENTS = 8
 TTL_SECONDS = 900
 
-# token -> (expires_at, approved_final_url, markdown, public_metadata, source_url, policy_epoch)
-_CACHE: OrderedDict[str, tuple[float, str, str, dict, str, int | None]] = OrderedDict()
+# token -> (expires_at, approved_final_url, markdown, public_metadata, source_url)
+_CACHE: OrderedDict[str, tuple[float, str, str, dict, str]] = OrderedDict()
 _LOCK = threading.Lock()
 
 
@@ -32,7 +32,7 @@ def _purge_expired(now: float) -> None:
 
 
 def save(url: str, markdown: str, metadata: dict, *,
-         source_url: str | None = None, policy_epoch: int | None = None) -> tuple[str, int]:
+         source_url: str | None = None) -> tuple[str, int]:
     """Cache a bounded document and return an unpredictable read capability.
 
     Small documents need no capability; caller invokes this only for content
@@ -69,11 +69,11 @@ def save(url: str, markdown: str, metadata: dict, *,
         token = secrets.token_urlsafe(24)
         while token in _CACHE:
             token = secrets.token_urlsafe(24)
-        _CACHE[token] = (now + TTL_SECONDS, url, markdown, dict(metadata), source_url, policy_epoch)
+        _CACHE[token] = (now + TTL_SECONDS, url, markdown, dict(metadata), source_url)
     return token, (len(markdown) + PAGE_CHARS - 1) // PAGE_CHARS
 
 
-def read_with_context(token: str, page: int) -> tuple[dict, str | None, int | None]:
+def read_with_context(token: str, page: int) -> tuple[dict, str | None]:
     """Read a page plus private approval context without exposing it to MCP."""
     if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
         raise ValueError("Invalid document handle")
@@ -84,8 +84,8 @@ def read_with_context(token: str, page: int) -> tuple[dict, str | None, int | No
         item = _CACHE.get(token)
         if item is None:
             return ({"success": False, "status": "expired_or_unknown",
-                     "reason": "Temporary document not found or expired; fetch the approved URL again."}, None, None)
-        expires_at, url, markdown, metadata, source_url, epoch = item
+                     "reason": "Temporary document not found or expired; fetch the approved URL again."}, None)
+        expires_at, url, markdown, metadata, source_url = item
         count = (len(markdown) + PAGE_CHARS - 1) // PAGE_CHARS
         if page > count:
             raise ValueError(f"Page must be between 2 and {count}")
@@ -97,7 +97,7 @@ def read_with_context(token: str, page: int) -> tuple[dict, str | None, int | No
                   "next_page": page + 1 if page < count else None}
         if metadata:
             result["metadata"] = dict(metadata)
-        return result, source_url, epoch
+        return result, source_url
 
 
 def read(token: str, page: int) -> dict:
