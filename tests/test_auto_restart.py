@@ -139,9 +139,39 @@ class AutoRestartTests(unittest.TestCase):
         self.change("bridge.py", "print('new')\n")
         self.commit("change")
         result, restarted, _ = self.check(active=(False, True))
-        self.assertIn("skipped tunnel restart", result)
+        self.assertIn("restart deferred", result)
         self.assertEqual(restarted, [])
+        self.assertNotEqual(self.state.read_text().strip(), update.head(self.root))
+        # Starting the bridge later allows both services to be reconciled
+        # without requiring a new commit or activating a stopped unit.
+        result, restarted, _ = self.check(active=(True, True))
+        self.assertIn("Restart requested", result)
+        self.assertEqual(restarted, list(update.SERVICES))
         self.assertEqual(self.state.read_text().strip(), update.head(self.root))
+
+    def test_committed_rename_from_runtime_into_docs_remains_relevant(self):
+        update.initialize(self.root, path=self.state)
+        (self.root / "docs").mkdir()
+        self.git("mv", "bridge.py", "docs/bridge.md")
+        self.commit("move runtime file to documentation")
+        changed = update.changed_files(
+            self.root, self.state.read_text().strip(), update.head(self.root))
+        self.assertIn("bridge.py", changed)
+        self.assertIn("docs/bridge.md", changed)
+        self.assertTrue(any(update.affects_runtime(name) for name in changed))
+
+    def test_staged_rename_does_not_bypass_dirty_runtime_guard(self):
+        update.initialize(self.root, path=self.state)
+        self.change("bridge.py", "print('updated')\\n")
+        self.commit("new runtime")
+        old_baseline = self.state.read_text()
+        (self.root / "docs").mkdir()
+        self.git("mv", "bridge.py", "docs/bridge.md")
+        self.assertTrue(update.tracked_source_dirty(self.root))
+        result, restarted, _ = self.check()
+        self.assertIn("will retry", result)
+        self.assertEqual(restarted, [])
+        self.assertEqual(self.state.read_text(), old_baseline)
 
     def test_dirty_runtime_source_defers_without_marking_commit(self):
         update.initialize(self.root, path=self.state)
