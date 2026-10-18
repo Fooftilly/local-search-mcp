@@ -294,7 +294,10 @@ class AutoRestartTests(unittest.TestCase):
         with patch.object(update, "requirements_ready", return_value=True) as check:
             result, restarted, _ = self.check(dependencies_ready=True)
         self.assertIn("Restart requested", result)
-        check.assert_called_once_with(self.root, ["config/dependencies.txt"])
+        origins = {"config/dependencies.txt": {"config/dependencies.txt"}}
+        check.assert_called_once_with(
+            self.root, ["config/dependencies.txt"], origins,
+        )
         self.assertEqual(restarted, list(update.SERVICES))
 
     def test_transitive_pip_includes_are_gated_independent_of_filename(self):
@@ -347,6 +350,88 @@ class AutoRestartTests(unittest.TestCase):
         message, restarted, _ = self.check()
         self.assertIn("--dependencies-ready", message)
         self.assertEqual(restarted, [])
+
+    def test_moved_manifest_include_validates_arbitrary_changed_pin(self):
+        update.initialize(self.root, path=self.state)
+        self.change("requirements/base.txt", "-r ../pins.txt\n")
+        self.change("pins.txt", "pip>=0\n")
+        self.git("rm", "requirements.txt")
+        self.commit("migrate to included root")
+        with patch.object(update, "requirements_ready", return_value=True):
+            self.check(dependencies_ready=True)
+        interpreter = self.root / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.touch()
+        actual_run = subprocess.run
+
+        def offline_runner(command, **kwargs):
+            if "-c" in command:
+                i = command.index("-c") + 1
+                return actual_run([sys.executable, "-I", "-c",
+                                   *command[i:]], **kwargs)
+            return subprocess.CompletedProcess(command, 0)
+
+        self.change("pins.txt", "missing-package-xy98371>=1\n")
+        self.commit("uninstalled pinned package")
+        before = self.state.read_text()
+        message, restarted, _ = self.check()
+        self.assertIn("--dependencies-ready", message)
+        self.assertEqual(restarted, [])
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertFalse(update.requirements_ready(
+                self.root, ["pins.txt"],
+                {"pins.txt": {"requirements/base.txt"}},
+            ))
+        self.assertEqual(before, self.state.read_text())
+
+    def test_standalone_constraints_do_not_require_optional_packages(self):
+        self.change("constraints.txt", "uninstalled-optional-xy98371>=1\n")
+        interpreter = self.root / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.touch()
+        actual_run = subprocess.run
+        seen = []
+        def offline_runner(command, **kwargs):
+            seen.append(command)
+            if "-c" in command:
+                i = command.index("-c") + 1
+                return actual_run([sys.executable, "-I", "-c",
+                                   *command[i:]], **kwargs)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertTrue(update.requirements_ready(
+                self.root, ["constraints.txt"]))
+        self.assertIn("C:constraints.txt", seen[0])
+        # If the optional distribution happens to be installed, a violated
+        # constraint must still fail the offline check.
+        self.change("constraints.txt", "pip>=999999\n")
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertFalse(update.requirements_ready(
+                self.root, ["constraints.txt"]))
+
+    def test_approved_editable_and_multiline_hash_inputs(self):
+        self.change("requirements.txt",
+                    "-e .\npip>=0 \\\n  --hash=sha256:" + "0" * 64 + "\n")
+        self.change("pyproject.toml",
+                    "[project]\nname = 'pip'\nversion = '1.0'\n")
+        interpreter = self.root / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.touch()
+        actual_run = subprocess.run
+        def offline_runner(command, **kwargs):
+            if "-c" in command:
+                i = command.index("-c") + 1
+                return actual_run([sys.executable, "-I", "-c",
+                                   *command[i:]], **kwargs)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertTrue(update.requirements_ready(
+                self.root, ["requirements.txt"]))
+        self.change("requirements.txt",
+                    "-e missing-local-project\n")
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertFalse(update.requirements_ready(
+                self.root, ["requirements.txt"]))
 
     def test_other_dependency_formats_are_gated_for_manual_review(self):
         self.assertTrue(update.dependency_manifest("pyproject.toml"))
