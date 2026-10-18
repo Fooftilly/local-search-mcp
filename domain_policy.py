@@ -466,7 +466,7 @@ def decide(domain: str, action: str, new_domain: str = "",
                                     (domain,)).fetchone()
             request_id = (existing["request_id"] if existing and existing["request_id"]
                           else secrets.token_hex(12))
-            snapshot_url = (safe_display_url(existing["last_requested_url"])
+            snapshot_url = (safe_request_origin(existing["last_requested_url"])
                             if existing and existing["last_requested_url"] else "")
             first_requested_at = existing["first_requested_at"] if existing else ""
             last_requested_at = existing["last_requested_at"] if existing else ""
@@ -485,6 +485,21 @@ def decide(domain: str, action: str, new_domain: str = "",
                 # Remove only obsolete auto-queued descendants covered by the
                 # new rule. Exact-host rules must leave children in the queue.
                 if scope == 'subdomains':
+                    # Reconcile covered pending children without erasing their
+                    # stable request IDs or sanitized decision evidence.
+                    children = conn.execute("""SELECT * FROM domains
+                        WHERE explicit_rule=0 AND domain != ?
+                          AND domain LIKE '%.' || ?""",
+                        (domain, domain)).fetchall()
+                    conn.executemany("""INSERT INTO decisions
+                        (at,domain,action,request_id,reason,requested_url,
+                         first_requested_at,last_requested_at,request_count)
+                        VALUES(?,?,'delete',?,?,?,?,?,?)""",
+                        [(now, row["domain"], row["request_id"], reason,
+                          safe_request_origin(row["last_requested_url"])
+                          if row["last_requested_url"] else "",
+                          row["first_requested_at"], row["last_requested_at"],
+                          row["request_count"]) for row in children])
                     conn.execute("""DELETE FROM domains WHERE explicit_rule=0
                         AND domain != ? AND domain LIKE '%.' || ?""", (domain,domain))
             elif action == 'delete':
@@ -534,12 +549,17 @@ def clear_pending_requests() -> int:
                 """SELECT 1 FROM domains WHERE status='pending'
                    AND explicit_rule=0 AND expires_at != '' LIMIT 1"""
             ).fetchone() is not None
-            conn.execute("""INSERT INTO decisions
+            pending = conn.execute("""SELECT * FROM domains
+                WHERE status='pending' AND explicit_rule=0""").fetchall()
+            conn.executemany("""INSERT INTO decisions
                 (at,domain,action,request_id,requested_url,
                  first_requested_at,last_requested_at,request_count)
-                SELECT ?,domain,'delete',request_id,last_requested_url,
-                       first_requested_at,last_requested_at,request_count FROM domains
-                WHERE status='pending' AND explicit_rule=0""", (now,))
+                VALUES (?,?,'delete',?,?,?,?,?)""",
+                [(now, row["domain"], row["request_id"],
+                  safe_request_origin(row["last_requested_url"])
+                  if row["last_requested_url"] else "",
+                  row["first_requested_at"], row["last_requested_at"],
+                  row["request_count"]) for row in pending])
             result = conn.execute("""DELETE FROM domains
                 WHERE status='pending' AND explicit_rule=0""")
             if drops_expiry_evidence:
@@ -564,6 +584,17 @@ def recent_decisions(limit: int = 25, search: str = "") -> list[dict]:
                       first_requested_at,last_requested_at,request_count FROM decisions
                WHERE domain LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT ?""",
             (term, limit)).fetchall()]
+
+
+def safe_request_origin(url: str) -> str:
+    """Render only scheme and hostname: both paths and queries may be secrets."""
+    try:
+        p = urlsplit(url)
+        if p.scheme not in ("http", "https") or not p.hostname:
+            return "[invalid URL]"
+        return urlunsplit((p.scheme, p.hostname, "", "", ""))
+    except (ValueError, TypeError):
+        return "[invalid URL]"
 
 
 def safe_display_url(url: str) -> str:
