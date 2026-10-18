@@ -31,7 +31,8 @@ def _endpoint(raw: str) -> tuple[str, int] | None:
                 parsed.username is not None or parsed.password is not None or
                 not 1 <= port <= 65535):
             return None
-        return host, port
+        # Never resolve localhost via DNS or /etc/hosts: pin it to loopback.
+        return ("127.0.0.1" if host == "localhost" else host), port
     except (ValueError, TypeError):
         return None
 
