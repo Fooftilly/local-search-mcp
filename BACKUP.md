@@ -54,3 +54,30 @@ python3 scripts/backup_state.py restore "$HOME/local-search-state-2026.zip" \
 The target directory **must not already exist**. Restore verifies the complete archive before writing, creates a private `0700` staging directory containing `0600` files, and does not touch your existing state directory, live bridge/tunnel, or credentials. Inspect the restored files and test the application separately before deciding whether to install them. **This CLI intentionally does not automate a live swap, rollback, or destructive replacement**; those steps require a future migration and recovery design. If restoring to a fresh machine, configure tunnel/Crawl4AI credentials separately using the launcher. Restarting services and verifying effective policies after a manual migration are operator tasks.
 
 This is a first maintenance slice, **not completion of issue #15**. Automated live-state restore, rollback of updates and comprehensive fresh-install recovery still need independent testing and design.
+
+## Optional validated nonsecret settings in the archive
+
+The default `backup` command also includes existing **nonsecret** validated
+`history-settings.json` and `upstream-timeouts.json`, when present, from
+`${XDG_CONFIG_HOME:-$HOME/.config}/local-search-mcp/`. Each is a bounded
+versioned document containing only allowlisted integers. The archive verifier
+revalidates both schemas and rejects unexpected keys, unsupported versions,
+invalid values, unsafe file permissions and symlinks. A malformed settings
+file causes the backup to **fail**, rather than silently skip it or export
+arbitrary data. The private launcher `config.json`, environment secrets,
+tunnel credentials and arbitrary JSON files are never included.
+
+For isolated test or migration backup of another state tree, `--state-dir`
+**does not** read the currently logged-in user's configuration directory.
+Use an explicit `--config-dir /path/to/private/config-dir` with it to
+include verified nonsecret settings. An explicit but missing directory fails.
+
+Verified staged restores place these two files alongside staged state files
+rather than installing them under `$XDG_CONFIG_HOME`. After checking the
+staging directory, move each file to your private configuration directory
+manually only after stopping services and reviewing the running environment.
+The command never overwrites live settings, the domain policy DB, or secrets.
+Older archives without these optional files remain accepted.
+
+These additions do not implement live rollback, automatically change
+installed services, or download software updates; issue #15 remains open.
