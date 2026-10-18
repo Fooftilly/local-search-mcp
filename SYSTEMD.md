@@ -208,6 +208,27 @@ Updates to the unit generator or the service paths still require an explicit
 rerun of the installer and `systemctl --user daemon-reload`. The feature
 does not manage upstream SearXNG, Crawl4AI or Docker containers.
 
+## Optional public bridge revision check (no automatic upgrades)
+
+The manually requested command compares local Git HEAD against the public GitHub
+master commit, without downloading source code:
+
+```sh
+python3 scripts/check_bridge_version.py --check-remote
+```
+
+It makes one bounded HTTPS request to a pinned public GitHub API endpoint,
+bypasses proxies, rejects redirects and sends no runtime credentials or
+configuration. It never runs Git fetch/pull, installs packages, changes the
+checkout, writes the update baseline, or restarts services.
+
+A differing SHA **does not prove an update is available**: local commits,
+divergence and force-pushes are possible. Inspect history, release notes,
+dependencies and backups before any manual update. Rate limits, network
+failures and malformed responses produce a safe unavailable result. The
+command is not scheduled or enabled by the installer. Dependency, Crawl4AI
+and tunnel-client update checks remain separate issue #15 work.
+
 ## Disable, remove and return to manual mode
 
 ```sh
