@@ -297,6 +297,7 @@ def request(domain: str, safe_url: str):
     decision. Only a local user's explicit decision can create a child rule.
     """
     domain = normalize_domain(domain)
+    safe_url = safe_display_url(safe_url)
     with _db() as conn:
         _seed(conn)
         conn.execute('BEGIN IMMEDIATE')
@@ -542,15 +543,19 @@ def clear_pending_requests() -> int:
             raise
 
 
-def recent_decisions(limit: int = 25) -> list[dict]:
+def recent_decisions(limit: int = 25, search: str = "") -> list[dict]:
     """Return a bounded operator-only decision audit, with no URL or tokens."""
     if type(limit) is not int or not 1 <= limit <= 100:
         raise ValueError("Invalid decision audit limit")
+    if not isinstance(search, str) or len(search) > 100:
+        raise ValueError("Invalid decision audit filter")
+    term = "%" + search.lower().replace("%", "\\%").replace("_", "\\_") + "%"
     with _db() as conn:
         return [dict(row) for row in conn.execute(
             """SELECT at,domain,action,request_id,reason,requested_url,
-                      first_seen_at,last_requested_at,request_count FROM decisions """
-            "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
+                      first_seen_at,last_requested_at,request_count FROM decisions
+               WHERE domain LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT ?""",
+            (term, limit)).fetchall()]
 
 
 def safe_display_url(url: str) -> str:
