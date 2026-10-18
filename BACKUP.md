@@ -23,6 +23,26 @@ The history writer supports up to **100,000,000 bytes per generation** (with up 
 
 Archives have fixed, bounded file names. Backup and verification reject unsafe symlinks, unexpectedly large contents, corrupt SQLite, archive traversal entries, duplicate names, and hash mismatches. The archive stores no original absolute host paths.
 
+## Fresh-install functional smoke test
+
+After creating and verifying an archive, run:
+
+```sh
+python3 scripts/restore_smoke.py "$HOME/local-search-state-2026.zip"
+```
+
+The smoke command **never overwrites or modifies live state**. It verifies the
+archive, copies only the allowlisted policy and history files into a new private
+temporary XDG state directory, initializes the actual domain-policy reader, and
+rebuilds the indexed history sidecar using the normal history indexing code.
+It removes the temporary directory afterward. Live custom history paths, policy
+seeding configuration, and retention overrides are isolated. The result prints
+only aggregate policy and recent-event counts, not domain names, search terms,
+credentials, or URLs. A missing or corrupt archive fails before initialization.
+The smoke test checks application-level readability; it is **not** a live
+service restart, rollback, or proof that all historical events remain after
+configured retention.
+
 ## Restore safely (never overwrites live state)
 
 ```sh
