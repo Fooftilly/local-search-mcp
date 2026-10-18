@@ -134,6 +134,15 @@ class AutoRestartTests(unittest.TestCase):
         self.assertEqual(restarted, [])
         self.assertEqual(self.state.read_text().strip(), update.head(self.root))
 
+    def test_tunnel_only_does_not_start_inactive_bridge_as_dependency(self):
+        update.initialize(self.root, path=self.state)
+        self.change("bridge.py", "print('new')\n")
+        self.commit("change")
+        result, restarted, _ = self.check(active=(False, True))
+        self.assertIn("skipped tunnel restart", result)
+        self.assertEqual(restarted, [])
+        self.assertEqual(self.state.read_text().strip(), update.head(self.root))
+
     def test_dirty_runtime_source_defers_without_marking_commit(self):
         update.initialize(self.root, path=self.state)
         original = self.state.read_text()
