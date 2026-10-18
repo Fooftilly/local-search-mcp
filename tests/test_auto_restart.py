@@ -94,7 +94,7 @@ class AutoRestartTests(unittest.TestCase):
                       update.inspect_status(self.root, path=self.state))
         update.write_state(self.state, "f" * 40)
         before = self.state.read_bytes()
-        self.assertIn("baseline commit is unavailable",
+        self.assertIn("Git objects are unavailable locally",
                       update.inspect_status(self.root, path=self.state))
         self.assertEqual(self.state.read_bytes(), before)
         self.state.unlink()
@@ -114,6 +114,62 @@ class AutoRestartTests(unittest.TestCase):
         self.assertIn("tracked runtime edits",
                       update.inspect_status(self.root, path=self.state))
         self.assertEqual(self.state.read_bytes(), baseline)
+
+    def test_status_reports_matching_head_even_with_dirty_runtime(self):
+        update.initialize(self.root, path=self.state)
+        baseline = self.state.read_bytes()
+        self.change("bridge.py", "print('dirty, same commit')\n")
+        self.assertIn("No local commit change",
+                      update.inspect_status(self.root, path=self.state))
+        self.assertEqual(self.state.read_bytes(), baseline)
+
+    def test_status_git_subprocesses_are_offline_and_have_no_optional_locks(self):
+        update.initialize(self.root, path=self.state)
+        self.change("requirements.txt", "fastmcp>=4,<6\n")
+        self.commit("dependency update")
+        real_run = subprocess.run
+        inspected = []
+
+        def watch(args, **kwargs):
+            if args and args[0] == "git" and kwargs.get("cwd") == self.root:
+                environment = kwargs.get("env")
+                self.assertIsNotNone(environment, args)
+                for key, expected in (
+                    ("GIT_NO_LAZY_FETCH", "1"),
+                    ("GIT_OPTIONAL_LOCKS", "0"),
+                    ("GIT_TERMINAL_PROMPT", "0"),
+                ):
+                    self.assertEqual(environment.get(key), expected,
+                                     f"{args}: missing {key}")
+                inspected.append(tuple(args))
+            return real_run(args, **kwargs)
+
+        with patch.object(update.subprocess, "run", side_effect=watch):
+            status = update.inspect_status(self.root, path=self.state)
+        self.assertIn("explicit --dependencies-ready", status)
+        self.assertTrue(any("status" in args for args in inspected))
+        self.assertTrue(any("cat-file" in args for args in inspected))
+        self.assertTrue(any("diff" in args for args in inspected))
+        self.assertTrue(any("ls-files" in args for args in inspected))
+        self.assertTrue(any("rev-parse" in args for args in inspected))
+
+    def test_status_does_not_use_network_for_missing_objects(self):
+        update.initialize(self.root, path=self.state)
+        self.change("bridge.py", "print('updated')\n")
+        self.commit("local change")
+        original_git = update.git
+
+        def missing_object(root, *args, **kwargs):
+            if args and args[0] == "cat-file":
+                self.assertTrue(kwargs.get("read_only"))
+                raise subprocess.CalledProcessError(1, ["git", *args])
+            return original_git(root, *args, **kwargs)
+
+        with patch.object(update, "git", side_effect=missing_object):
+            result = update.inspect_status(self.root, path=self.state)
+        self.assertIn("Git objects are unavailable locally", result)
+        self.assertNotEqual(self.state.read_text().strip(),
+                            self.git("rev-parse", "HEAD"))
 
     def test_status_cli_is_read_only_and_incompatible_with_apply_flags(self):
         import io

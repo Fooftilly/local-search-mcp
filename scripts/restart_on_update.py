@@ -26,26 +26,37 @@ IN_PROGRESS = (
 )
 
 
-def run(args: list[str], *, root: Path = ROOT, timeout: int = 15) -> subprocess.CompletedProcess[str]:
+def _inspection_env() -> dict[str, str]:
+    """Disable implicit Git writes, promisor fetches and network prompts."""
+    return {**os.environ, "GIT_NO_LAZY_FETCH": "1",
+            "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"}
+
+
+def run(args: list[str], *, root: Path = ROOT, timeout: int = 15,
+        read_only: bool = False) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, cwd=root, text=True, capture_output=True,
-                          check=True, timeout=timeout)
+                          check=True, timeout=timeout,
+                          env=_inspection_env() if read_only else None)
 
 
-def git(root: Path, *args: str) -> str:
-    return run(["git", *args], root=root).stdout.strip()
+def git(root: Path, *args: str, read_only: bool = False) -> str:
+    return run(["git", *args], root=root, read_only=read_only).stdout.strip()
 
 
-def verify_checkout(root: Path) -> None:
+def verify_checkout(root: Path, *, read_only: bool = False) -> None:
     """Never run a service-update action outside this exact Git worktree."""
-    top = Path(git(root, "rev-parse", "--show-toplevel")).resolve()
+    top = Path(git(root, "rev-parse", "--show-toplevel",
+                   read_only=read_only)).resolve()
     if top != root.resolve():
         raise ValueError("Script root does not match the Git worktree")
-    if git(root, "rev-parse", "--is-inside-work-tree") != "true":
+    if git(root, "rev-parse", "--is-inside-work-tree",
+           read_only=read_only) != "true":
         raise ValueError("Not a Git worktree")
 
 
-def git_path(root: Path, name: str) -> Path:
-    value = Path(git(root, "rev-parse", "--git-path", name))
+def git_path(root: Path, name: str, *, read_only: bool = False) -> Path:
+    value = Path(git(root, "rev-parse", "--git-path", name,
+                     read_only=read_only))
     return (root / value).resolve() if not value.is_absolute() else value.resolve()
 
 
@@ -57,8 +68,9 @@ def reflog(root: Path = ROOT) -> Path:
     return path
 
 
-def head(root: Path) -> str:
-    return git(root, "rev-parse", "--verify", "HEAD^{commit}")
+def head(root: Path, *, read_only: bool = False) -> str:
+    return git(root, "rev-parse", "--verify", "HEAD^{commit}",
+               read_only=read_only)
 
 
 def state_file() -> Path:
@@ -141,13 +153,17 @@ def reset_baseline(expected_commit: str, root: Path = ROOT, *,
             "; no services were restarted")
 
 
-def busy(root: Path) -> bool:
-    return any(git_path(root, name).exists() for name in IN_PROGRESS)
+def busy(root: Path, *, read_only: bool = False) -> bool:
+    return any(git_path(root, name, read_only=read_only).exists()
+               for name in IN_PROGRESS)
 
 
-def checkout_stable(root: Path, commit: str) -> bool:
+def checkout_stable(root: Path, commit: str, *,
+                    read_only: bool = False) -> bool:
     """Recheck both revision and worktree at the point of applying an update."""
-    return head(root) == commit and not busy(root) and not tracked_source_dirty(root)
+    return (head(root, read_only=read_only) == commit
+            and not busy(root, read_only=read_only)
+            and not tracked_source_dirty(root, read_only=read_only))
 
 
 def state_argument(path: Path) -> str:
@@ -155,12 +171,14 @@ def state_argument(path: Path) -> str:
     return "--state-file " + shlex.quote(str(path))
 
 
-def changed_files(root: Path, old: str, new: str) -> list[str]:
+def changed_files(root: Path, old: str, new: str, *,
+                  read_only: bool = False) -> list[str]:
     # Disabling rename detection surfaces both a removed runtime source and
     # its new documentation destination, so neither is silently ignored.
     output = subprocess.run(
         ["git", "diff", "--no-renames", "--name-only", "--no-ext-diff", "-z", old, new, "--"],
         cwd=root, capture_output=True, check=True, timeout=15,
+        env=_inspection_env() if read_only else None,
     ).stdout
     return [os.fsdecode(name) for name in output.split(b"\0") if name]
 
@@ -174,13 +192,14 @@ def affects_runtime(name: str) -> bool:
     return True
 
 
-def tracked_source_dirty(root: Path) -> bool:
+def tracked_source_dirty(root: Path, *, read_only: bool = False) -> bool:
     """Do not restart with partially checked-out or locally edited tracked code."""
     # --no-renames emits individual add/delete paths rather than an R/C record
     # with an extra NUL-delimited source name (which cannot be sliced as XY path).
     result = subprocess.run(
         ["git", "status", "--porcelain=v1", "--no-renames", "-z", "--untracked-files=no", "--"],
         cwd=root, capture_output=True, check=True, timeout=15,
+        env=_inspection_env() if read_only else None,
     )
     names = [os.fsdecode(item[3:]) for item in result.stdout.split(b"\0") if item]
     return any(affects_runtime(name) for name in names)
@@ -233,6 +252,7 @@ def pip_include_path(raw: str) -> str:
 def referenced_requirement_files(
     root: Path, *, origins: dict[str, set[str]] | None = None,
     roles: dict[str, set[tuple[str, bool]]] | None = None,
+    read_only: bool = False,
 ) -> set[str]:
     """Find pip -r/-c closure and, optionally, each file's source manifest.
 
@@ -242,6 +262,7 @@ def referenced_requirement_files(
     tracked = subprocess.run(
         ["git", "ls-files", "-z", "--"], cwd=root,
         capture_output=True, check=True, timeout=15,
+        env=_inspection_env() if read_only else None,
     ).stdout
     tracked_names = [os.fsdecode(item) for item in tracked.split(b"\0") if item]
     found: set[str] = set()
@@ -604,29 +625,31 @@ def inspect_status(root: Path = ROOT, *, path: Path | None = None) -> str:
     This is a comparison, not a package audit, update fetch, restart/rollback,
     or approval to change the running configuration.
     """
-    verify_checkout(root)
+    verify_checkout(root, read_only=True)
     location = path or state_file()
     previous = read_state(location)
-    current = head(root)
+    current = head(root, read_only=True)
     if previous is None:
         return ("No local update baseline; check the pinned --state-file path "
                 "or install the opt-in watcher. Nothing changed.")
-    if busy(root) or tracked_source_dirty(root):
-        return ("Git operation or tracked runtime edits in progress; cannot "
-                "classify local update. Nothing changed.")
+    # Match apply(): unchanged HEAD is meaningful even if the worktree has
+    # unrelated edits. Do not inspect or refresh the index unnecessarily.
     if previous == current:
         return "No local commit change since saved baseline; nothing changed."
+    if busy(root, read_only=True) or tracked_source_dirty(root, read_only=True):
+        return ("Git operation or tracked runtime edits in progress; cannot "
+                "classify local update. Nothing changed.")
     try:
-        git(root, "cat-file", "-e", previous + "^{commit}")
+        git(root, "cat-file", "-e", previous + "^{commit}", read_only=True)
+        changed = changed_files(root, previous, current, read_only=True)
+        dependency_paths = referenced_requirement_files(root, read_only=True)
     except subprocess.CalledProcessError:
-        return ("Saved baseline commit is unavailable locally; manual revision "
+        return ("Required Git objects are unavailable locally; manual revision "
                 "and service review required. Nothing changed.")
-    changed = changed_files(root, previous, current)
-    dependency_paths = referenced_requirement_files(root)
     manifests = [name for name in changed
                  if dependency_manifest(name) or name in dependency_paths]
     runtime = [name for name in changed if affects_runtime(name)]
-    if not checkout_stable(root, current):
+    if not checkout_stable(root, current, read_only=True):
         return "Git checkout changed during inspection; retry. Nothing changed."
     prefix = ("Local revision differs from saved baseline "
               f"({previous[:12]} -> {current[:12]}). ")
