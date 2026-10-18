@@ -122,10 +122,10 @@ def row_html(r):
             '<option value="1440">24 hours</option>'
             '<option value="10080">7 days</option></select></label>')
     def action(name, label, cls=''):
-        controls = (opts + '<label class="small">Reason (optional) '
+        controls = ((opts if name in ('allow', 'deny') else '') +
+                    '<label class="small">Reason (optional) '
                     '<input name="reason" maxlength="160" '
-                    'placeholder="Short local note"></label>'
-                    if name in ('allow', 'deny') else '')
+                    'placeholder="Short local note"></label>')
         return (f'<form method="post" action="/domain">'
                 f'<input type="hidden" name="csrf" value="{token}">'
                 f'<input type="hidden" name="domain" value="{dom}">'
@@ -137,6 +137,8 @@ def row_html(r):
     edit = (f'<form method="post" action="/domain">'
             f'<input type="hidden" name="csrf" value="{token}">'
             f'<input type="hidden" name="domain" value="{dom}">'
+            f'<label class="small">Reason (optional) '
+            f'<input name="reason" maxlength="160" placeholder="Short local note"></label>'
             f'<input aria-label="Rename {dom}" name="new_domain" value="{dom}"'
             f' style="width:195px"><button name="action" value="rename">'
             f'Rename</button></form>')
