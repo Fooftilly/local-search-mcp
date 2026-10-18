@@ -84,9 +84,11 @@ after migrating away from the root `requirements.txt`, including
 `pyproject.toml`, `uv.lock`, and other recognized Python dependency files.
 Later commits to those files **still require** `--dependencies-ready`.
 Pip-style `-r` (requirements) and `-c` (constraints) references are followed
-recursively within the checkout and checked against installed distributions
-without downloading packages. Missing, cyclic, or out-of-checkout referenced
-files fail validation. For non-pip formats, the offline check validates the
+recursively within the checkout. **All referenced files remain dependency-gated
+on future commits**, even if called `pins.txt` or `locks/prod.txt` rather than
+`requirements*.txt`, or stored in a documentation directory. The offline
+validator checks these files against installed distributions without downloading
+packages. Missing, cyclic, or out-of-checkout referenced files fail validation. For non-pip formats, the offline check validates the
 existing Python environment with `pip check`; **you** must also review and
 prepare the new lockfile/manifest dependencies before acknowledging. If you
 adopt an unconventional manifest name that the watcher does not recognize,
