@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import domain_policy as policy
 import policy_transfer
+import service_status
 import history_index
 from dashboard_live_script import LIVE_SCRIPT
 
@@ -347,7 +348,7 @@ def render(query='', message='', kind='success'):
     audit_html = decision_audit_html(query)
     once_html = once_grants_html(query)
     once_log = once_audit_html(query)
-    return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
+    return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="/status">Service status</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
 <main><h1>Domain approvals</h1><p>Approve or deny domains requested by agents. Changes apply to the next fetch without restarting MCP. The dashboard is accessible only from this computer.</p>{alert}
 <section class="stats"><div class="stat"><span>Awaiting approval</span><b id="live-count-pending">{c['pending']}</b></div><div class="stat"><span>Allowed</span><b id="live-count-allowed">{c['allowed']}</b></div><div class="stat"><span>Denied</span><b id="live-count-denied">{c['denied']}</b></div><div class="stat"><span>Dashboard</span><b style="font-size:14px">127.0.0.1:{PORT}</b></div></section>
 <div class="panel"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="{esc(CSRF)}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><label>Scope <select name="scope"><option value="subdomains">Host + subdomains</option><option value="exact">Exact host only</option></select></label><label>Duration <select name="expires_minutes"><option value="0">Permanent</option><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label><label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Select exact host to exclude subdomains, and optionally set a 1-hour, 24-hour or 7-day expiry. Older rules remain permanent with subdomains. Never approve private-network addresses.</p></div>
@@ -396,6 +397,27 @@ def render(query='', message='', kind='success'):
 <button type="submit">Validate and preview import</button></form>
 <p class="subtle">Imports are atomic, add only missing decisions, and reject conflicting explicit rules. Existing rules, expired grants or a stale preview cannot be silently overwritten. Preview never changes your database. A local confirmation is required before applying.</p></div>
 <div class="panel"><h2 style="margin-top:0">Configuration and safety</h2><p>Search endpoint: <code>127.0.0.1:8888</code> · Crawl endpoint: <code>127.0.0.1:11235</code> · MCP: <code>127.0.0.1:8790/mcp</code> · Dashboard: <code>127.0.0.1:{PORT}</code>.</p><p>Domains are stored in <code>{esc(policy.database_path())}</code>. Your existing credentials stay in the launcher’s private configuration and are not displayed here.</p><p class="small">Unknown domains generate a pending request rather than a Python traceback. Only the user can approve them here; agents cannot invoke a tool to grant access. A domain's DNS is also checked for public addresses before an allowed fetch. Crawl4AI should still be isolated from your local network to guard against redirects and DNS rebinding.</p></div></main></body></html>'''
+
+
+def status_page():
+    """Read-only local TCP diagnostics; no mutation or privileged probes."""
+    rows = ''.join(
+        '<tr><td>' + esc(x['service']) + '</td><td>' +
+        esc(x['status']) + '</td><td>' + esc(x['source']) +
+        '</td></tr>' for x in service_status.probe_services())
+    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            f'<meta name="referrer" content="no-referrer">'
+            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<title>Local Search MCP — Service status</title><style>{CSS}</style>'
+            '</head><body><main><h1>Local service status</h1>'
+            '<p>Read-only TCP availability on loopback endpoints; reachability '
+            'does not prove application health, credentials, or network isolation. '
+            'No start or restart actions are available.</p>'
+            '<div class="scroll"><table><thead><tr><th>Service</th>'
+            '<th>Transport</th><th>Configuration source</th></tr></thead>'
+            '<tbody>' + rows + '</tbody></table></div>'
+            '<p><a href="/status">Refresh</a> · '
+            '<a href="/">Return to domain approvals</a></p></main></body></html>')
 
 
 def history_page(kind="", status="", domain="", hours=0, filter_error=""):
@@ -500,6 +522,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._respond(400, 'Invalid history filter')
             return self._respond(200,json.dumps(live_snapshot(q,view,filters)),
                                  'application/json; charset=utf-8')
+        if path.path=='/status':
+            if not self._read_origin_valid():return self._respond(403,'Forbidden')
+            return self._respond(200,status_page())
         if path.path=='/rules/export':
             if not self._read_origin_valid():return self._respond(403,'Forbidden')
             try:
