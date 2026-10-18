@@ -86,6 +86,25 @@ class AutoRestartTests(unittest.TestCase):
             self.assertIn("No local commit change", result)
             restart.assert_not_called()
 
+    def test_reset_baseline_rejects_missing_or_mistyped_state_file(self):
+        # Do not falsely report recovery while the service still uses its
+        # original baseline: a mistyped --state-file must never be created.
+        update.write_state(self.state, "f" * 40)
+        wrong_state = Path(self.tmp.name) / "wrong state" / "last-service-commit"
+        with self.assertRaisesRegex(ValueError, "systemctl --user cat"):
+            update.reset_baseline(update.head(self.root), self.root, path=wrong_state)
+        self.assertFalse(wrong_state.exists())
+        self.assertEqual(self.state.read_text().strip(), "f" * 40)
+        result = update.apply(self.root, path=self.state, settle_seconds=0)
+        self.assertIn("Previous commit unavailable", result)
+        with self.assertRaisesRegex(ValueError, "No update baseline"):
+            update.reset_baseline(update.head(self.root), self.root,
+                                  path=Path(self.tmp.name) / "new-state")
+        self.assertIn(
+            "no services were restarted",
+            update.reset_baseline(update.head(self.root), self.root, path=self.state),
+        )
+
     def test_reset_baseline_needs_exact_reviewed_head_and_is_offline(self):
         update.write_state(self.state, "f" * 40)
         result, restarted, _ = self.check()
