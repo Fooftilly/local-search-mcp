@@ -108,9 +108,9 @@ def row_html(r):
               f'{esc(expires)}</div>')
     request_meta = (
         f'<div class="subtle">ID: {esc(r.get("request_id") or "—")}</div>'
-        f'<div class="subtle">First: {esc(r.get("created_at") or "—")}</div>'
+        f'<div class="subtle">First request: {esc(r.get("first_requested_at") or "—")}</div>'
         f'<div class="subtle">Last: {esc(r.get("last_requested_at") or "—")}</div>'
-        f'<div class="subtle">{esc(r.get("last_requested_url") or "—")}</div>')
+        f'<div class="subtle">{esc(policy.safe_display_url(r["last_requested_url"]) if r.get("last_requested_url") else "—")}</div>')
     opts = ('<label class="small">Scope <select name="scope">'
             + '<option value="subdomains"' + (' selected' if scope != 'exact' else '') +
             '>Host + subdomains</option><option value="exact"' +
@@ -156,15 +156,15 @@ def decision_audit_html(search=""):
         '<td>' + esc(r['action']) + '</td>'
         '<td class="small">' + esc(r['request_id'] or '—') + '</td>'
         '<td>' + esc(r['reason'] or '—') + '</td>'
-        '<td>' + esc(r['requested_url'] or '—') + '</td>'
-        '<td>' + esc(r['first_seen_at'] or '—') + '</td>'
+        '<td>' + esc(policy.safe_display_url(r['requested_url']) if r['requested_url'] else '—') + '</td>'
+        '<td>' + esc(r['first_requested_at'] or '—') + '</td>'
         '<td>' + esc(r['last_requested_at'] or '—') + '</td>'
         '<td>' + str(int(r['request_count'])) + '</td></tr>'
         for r in rows)
     return ('<div class="scroll"><table><thead><tr><th>UTC time</th>'
             '<th>Domain</th><th>Action</th><th>Request ID</th>'
             '<th>Operator reason</th><th>Last requested URL</th>'
-            '<th>First seen</th><th>Last request</th><th>Count</th>'
+            '<th>First request</th><th>Last request</th><th>Count</th>'
             '</tr></thead><tbody>' +
             (cells or '<tr><td colspan="9">No decisions recorded.</td></tr>') +
             '</tbody></table></div>')
