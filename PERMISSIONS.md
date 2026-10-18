@@ -69,12 +69,35 @@ Bulk mutations use the existing loopback-only Host/Origin/CSRF boundary and
 **are not MCP tools or remote APIs**. Existing single-domain controls remain
 available and unchanged.
 
+## Inert single-use authorization ledger (preparatory slice)
+
+The policy database now has a separately stored, **inert** one-use ledger.
+Internal transaction primitives can stage an exact-host or subdomain-scoped
+single-use grant, atomically claim it once across concurrent SQLite connections,
+verify a private proof against expiry/deny/replacement/revocation, and explicitly
+revoke it. Grant IDs are random internal correlators and are **never exposed to
+an MCP tool, local dashboard, or existing request/decision API** in this slice.
+
+**Critical:** Staging a grant does **not** make a host effectively allowed,
+and no new `Allow once` option is available to the operator yet. Existing
+`request()`, `evaluate_fetch_url()`, `web_fetch`, cached fetches, redirects,
+batch fetches and continuation pages retain their existing permissions, because
+there is no safe grant propagation through all these paths yet. The next slice
+must hold private one-use proof data through authorization and result release;
+redirects must check both source and final hosts, and batch/page results must
+not bypass the consumed grant. This distinction prevents a half-implemented
+feature from becoming an implicit blanket allow.
+
+Unit tests exercise inert behavior, concurrent single-claim, expiry/restart,
+exact/subdomain boundaries, explicit-deny precedence, replacement/revocation
+and invalid input without enabling authorization through MCP.
+
 ## Remaining work for issue #12
 
 Scoped and expiring rules were delivered in PR #36; request IDs, origin-only
-URL snapshots and decision reasons were delivered in PR #38. This slice adds
-operator-only bulk decisions. **Allow once** with atomic single-use
-authorization remains unimplemented. Do not mark issue #12 complete until
+URL snapshots and decision reasons were delivered in PR #38. PR #39 adds operator-only bulk decisions. A later preparatory slice adds the
+inert one-use ledger. **Allow once** in the operator UI and guarded fetch
+pipeline remains unimplemented. Do not mark issue #12 complete until
 allow-once and its concurrency and post-fetch privacy tests have merged.
 
 The tests cover legacy schema migration, scope boundaries, explicit child
