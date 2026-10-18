@@ -81,6 +81,32 @@ class PolicyAuditTests(unittest.TestCase):
         self.assertEqual(policy.recent_decisions()[-1]["reason"], "")
         self.assertEqual(policy.request("example.org", "https://example.org/")[0], "denied")
 
+    def test_first_request_not_confused_with_import_or_creation(self):
+        with patch.object(policy, "utcnow", return_value="2026-10-18T05:00:00Z"):
+            policy.decide("example.org", "allow", reason="Manual approval")
+        before = next(r for r in policy.entries() if r["domain"] == "example.org")
+        self.assertEqual(before["first_requested_at"], "")
+        self.assertEqual(policy.recent_decisions()[0]["first_requested_at"], "")
+        with patch.object(policy, "utcnow", return_value="2026-10-18T06:00:00Z"):
+            self.assertEqual(policy.request(
+                "example.org", "https://example.org/first")[0], "allowed")
+        with patch.object(policy, "utcnow", return_value="2026-10-18T07:00:00Z"):
+            self.assertEqual(policy.request(
+                "example.org", "https://example.org/second")[0], "allowed")
+            policy.decide("example.org", "deny", reason="Reviewed")
+        row = next(r for r in policy.entries() if r["domain"] == "example.org")
+        self.assertEqual(row["first_requested_at"], "2026-10-18T06:00:00Z")
+        last = policy.recent_decisions()[0]
+        self.assertEqual(last["first_requested_at"], "2026-10-18T06:00:00Z")
+        self.assertEqual(last["last_requested_at"], "2026-10-18T07:00:00Z")
+        self.assertEqual(last["request_count"], 2)
+
+    def test_raw_request_is_sanitized_even_outside_url_validator(self):
+        policy.request("example.org", "https://example.org/a?secret=REDACTrMe#part")
+        row = next(r for r in policy.entries() if r["domain"] == "example.org")
+        self.assertEqual(row["last_requested_url"], "https://example.org/a")
+        self.assertNotIn("REDACTrMe", admin_ui.render())
+
     def test_rejects_bad_reasons_before_changing_permission(self):
         for reason in ("x" * 161, "newline\nsecret", "tab\tsecret", 1, None):
             with self.subTest(reason=repr(reason)), self.assertRaises(ValueError):
