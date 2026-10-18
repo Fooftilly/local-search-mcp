@@ -183,8 +183,27 @@ def row_html(r):
                 + controls +
                 f'<button class="{cls}" type="submit" name="action" value="{name}">'
                 f'{label}</button></form>')
+    # Only pending requests offer a contextual one-use control. The opaque
+    # request ID protects against accepting a stale browser tab.
+    once = (
+        f'<form method="post" action="/once">'
+        f'<input type="hidden" name="csrf" value="{token}">'
+        f'<input type="hidden" name="domain" value="{dom}">'
+        f'<input type="hidden" name="request_id" value="{esc(r.get("request_id") or "")}">'
+        '<label class="small">One-use scope <select name="scope">'
+        '<option value="exact">Exact host</option>'
+        '<option value="subdomains">Host + subdomains</option></select></label>'
+        '<label class="small">Valid for <select name="expires_minutes">'
+        '<option value="60">1 hour</option><option value="1440">24 hours</option>'
+        '<option value="10080">7 days</option></select></label>'
+        '<label class="small">Reason (optional) '
+        '<input name="reason" maxlength="160" placeholder="Short local note"></label>'
+        '<button class="allow" name="action" value="stage">Allow once</button></form>'
+        if r['status'] == 'pending' and not r.get('explicit_rule') and r.get('request_id')
+        else ''
+    )
     actions = (action('allow', 'Allow', 'allow') +
-               action('deny', 'Deny', 'deny') + action('delete', 'Remove', 'delete'))
+               action('deny', 'Deny', 'deny') + action('delete', 'Remove', 'delete') + once)
     edit = (f'<form method="post" action="/domain">'
             f'<input type="hidden" name="csrf" value="{token}">'
             f'<input type="hidden" name="domain" value="{dom}">'
@@ -231,6 +250,51 @@ def decision_audit_html(search=""):
             decision_audit_rows(search) + '</tbody></table></div>')
 
 
+def once_grants_html(search=""):
+    """Escaped, bounded local status; never expose bearer grant IDs."""
+    rows = policy.once_grant_entries(search=search)
+    cells = ''.join(
+        '<tr><td class="domain">' + esc(r['domain']) + '</td>'
+        '<td>' + esc(r['state']) + '</td>'
+        '<td>' + esc('Exact host' if r['match_scope'] == 'exact'
+                   else 'Host + subdomains') + '</td>'
+        '<td>' + esc(r['expires_at'] or 'Never') + '</td>'
+        '<td><form method="post" action="/once">'
+        '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
+        '<input type="hidden" name="domain" value="' + esc(r['domain']) + '">'
+        '<label class="small">Reason (optional) <input name="reason" '
+        'maxlength="160" placeholder="Short local note"></label>'
+        '<button class="delete" name="action" value="revoke">Revoke</button>'
+        '</form></td></tr>' for r in rows
+    )
+    return ('<div class="scroll"><table><thead><tr><th>Domain</th>'
+            '<th>Use</th><th>Scope</th><th>Expiry (UTC)</th><th>Manage</th>'
+            '</tr></thead><tbody id="once-grants">' +
+            (cells or '<tr><td colspan="5">No single-use grants stored.</td></tr>') +
+            '</tbody></table></div>')
+
+
+def once_audit_html(search=""):
+    """Separate action log avoids changing the old decisions CHECK schema."""
+    rows = policy.recent_once_events(search=search)
+    cells = ''.join(
+        '<tr><td>' + esc(r['at']) + '</td><td class="domain">' +
+        esc(r['domain']) + '</td><td>' + esc(r['action']) +
+        '</td><td>' + esc(r['scope'] or '—') +
+        '</td><td>' + esc(r['expires_at'] or 'Never') +
+        '</td><td>' + esc(r['request_id'] or '—') +
+        '</td><td>' + esc(r['reason'] or '—') +
+        '</td><td>' + esc(r['requested_url'] or '—') +
+        '</td></tr>' for r in rows
+    )
+    return ('<div class="scroll"><table><thead><tr><th>UTC</th>'
+            '<th>Domain</th><th>Action</th><th>Scope</th><th>Expiry</th>'
+            '<th>Request ID</th><th>Reason</th><th>Request origin</th>'
+            '</tr></thead><tbody id="once-audit">' +
+            (cells or '<tr><td colspan="8">No single-use events.</td></tr>') +
+            '</tbody></table></div>')
+
+
 def render(query='', message='', kind='success'):
     c=policy.counts()
     # Separate independent limits: pending floods cannot hide stored decisions.
@@ -240,10 +304,25 @@ def render(query='', message='', kind='success'):
     table_head='<div class="scroll"><table><thead><tr><th>Domain</th><th>Decision / scope / expiry</th><th>Requests / latest</th><th>Manage</th></tr></thead>'
     query_escaped=esc(query)
     audit_html = decision_audit_html(query)
+    once_html = once_grants_html(query)
+    once_log = once_audit_html(query)
     return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
 <main><h1>Domain approvals</h1><p>Approve or deny domains requested by agents. Changes apply to the next fetch without restarting MCP. The dashboard is accessible only from this computer.</p>{alert}
 <section class="stats"><div class="stat"><span>Awaiting approval</span><b id="live-count-pending">{c['pending']}</b></div><div class="stat"><span>Allowed</span><b id="live-count-allowed">{c['allowed']}</b></div><div class="stat"><span>Denied</span><b id="live-count-denied">{c['denied']}</b></div><div class="stat"><span>Dashboard</span><b style="font-size:14px">127.0.0.1:{PORT}</b></div></section>
 <div class="panel"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="{esc(CSRF)}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><label>Scope <select name="scope"><option value="subdomains">Host + subdomains</option><option value="exact">Exact host only</option></select></label><label>Duration <select name="expires_minutes"><option value="0">Permanent</option><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label><label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Select exact host to exclude subdomains, and optionally set a 1-hour, 24-hour or 7-day expiry. Older rules remain permanent with subdomains. Never approve private-network addresses.</p></div>
+<div class="panel"><h2 style="margin-top:0">Single-use domain permission</h2>
+<p>Allow exactly one standalone fetch after public DNS validation. Does not grant permanent access, cannot be consumed by a batch fetch, and a long-document continuation is part of the same authorization. Denied domains cannot be granted.</p>
+<form method="post" action="/once">
+<input type="hidden" name="csrf" value="{esc(CSRF)}">
+<input name="domain" class="wide" placeholder="example.org" maxlength="253" required aria-label="One-use domain">
+<label>Scope <select name="scope"><option value="exact">Exact host</option><option value="subdomains">Host + subdomains</option></select></label>
+<label>Valid for <select name="expires_minutes"><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label>
+<label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label>
+<button name="action" value="stage" class="allow">Allow once</button></form>
+<p class="subtle">Single-use grants are stored separately from ordinary rules. Replacing or revoking a grant invalidates in-flight one-use content. The private authorization token is never shown or exported.</p>
+{once_html}
+<h2>Recent single-use activity</h2><p class="subtle">Last 25 staging, consumption and revocation events; only URL origins are retained.</p>
+{once_log}</div>
 <div class="row" style="justify-content:space-between"><h2>Requests awaiting review</h2><div><button type="button" id="notification-toggle">Enable desktop notifications</button> <a href="/">Refresh requests</a></div></div>
 <p class="subtle" role="status" id="live-status">Live updates starting · manual refresh works without JavaScript.</p>
 <p class="subtle">Showing at most 200 pending entries (filter to find specific hosts). Agent-created queue entries are limited to {policy.MAX_PENDING_TOTAL} total, {policy.MAX_NEW_PENDING_GLOBAL_PER_HOUR} globally per hour, {policy.MAX_PENDING_PER_SITE} per registrable domain and {policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR} new hosts per site per hour. Manual allow/deny remains available even when the queue is full. Existing entries are never silently removed.</p>
@@ -417,7 +496,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_valid():return self._respond(403,'Forbidden')
         if not self._post_origin_valid():
             return self._respond(403,'Invalid origin')
-        if self.path not in ('/domain', '/pending/clear', '/bulk'):return self._respond(404,'Not found')
+        if self.path not in ('/domain', '/pending/clear', '/bulk', '/once'):return self._respond(404,'Not found')
         try:
             length=int(self.headers.get('Content-Length','-1'))
         except ValueError:return self._respond(400,'Invalid size')
@@ -436,6 +515,25 @@ class Handler(BaseHTTPRequestHandler):
             removed = policy.clear_pending_requests()
             return self._respond(200,render(message=f"Cleared {removed} pending requests."))
         try:
+            if self.path == '/once':
+                action = val('action')
+                domain = val('domain')
+                reason = val('reason')
+                if action == 'stage':
+                    duration = int(val('expires_minutes'))
+                    if duration not in (60, 1440, 10080):
+                        raise ValueError('Choose a bounded one-use expiry')
+                    policy._stage_once_grant(
+                        domain, scope=val('scope'), expires_minutes=duration,
+                        reason=reason,
+                        expected_request_id=val('request_id') or None)
+                    return self._respond(200, render(
+                        message=f'One-time grant staged for {domain[:253]}.'))
+                if action == 'revoke':
+                    policy._revoke_once_grant(domain, reason=reason)
+                    return self._respond(200, render(
+                        message=f'One-time grant revoked for {domain[:253]}.'))
+                raise ValueError('Unrecognized one-use action')
             if self.path == '/bulk':
                 amount = policy.bulk_decide(vals.get('selected', []), val('action'),
                     scope=val('scope'), expires_minutes=int(val('expires_minutes')),

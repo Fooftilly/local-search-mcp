@@ -82,8 +82,8 @@ permission/decision records.
 PR #44 added an internal preflight that verifies a normalized HTTP(S) host,
 standard public port and all resolved DNS records (no private or multicast
 addresses) **before** claiming once. DNS failure does not consume the grant.
-The guarded standalone fetch flow described below now uses that preflight;
-there is still no operator-facing staging control.
+The guarded standalone fetch flow described below uses that preflight, and
+PR #47 supplies the loopback-only operator controls to stage and revoke grants.
 
 ## Guarded one-use fetches and private continuation proofs
 
@@ -111,18 +111,49 @@ Other documents still use their existing permission checks and page API.
 multiple worker results, deduplication and late revalidation require regular
 reusable domain approvals. A single-use-only host returns
 `approval_required` in a batch without consuming the grant; fetch it
-individually instead. The dashboard still does **not** offer an Allow once
-button. That is the final UI/audit slice; this code must not be described as
-an operator-complete feature before the local control exists.
+individually instead. The dashboard's **Allow once** control applies only
+to standalone fetches, not batches or general-purpose domain authorization.
 
-## Remaining work for issue #12
+## Local Allow once controls and audit
 
-Scoped and expiring rules were delivered in PR #36; request IDs and
-origin-only auditing in PR #38; bulk local decisions in PR #39; and the
-private ledger/DNS preflight in PRs #43–#44. The guarded direct-fetch proof
-path has tests, but **the operator-only Allow once UI and decision audit are
-not yet implemented**. Keep issue #12 open until the final integration is
-reviewed, merged and validated.
+From the **loopback-only dashboard** (127.0.0.1:8791), use **Allow once**
+beside a pending request or in the dedicated single-use domain panel. Choose
+exact-host (the default) or host-and-subdomains, and a finite expiration
+of 1 hour, 24 hours or 7 days. An optional local reason is recorded. A
+pending-row action includes its stable request ID and rejects stale rows.
+Ordinary allow and deny decisions remain separate; an explicit deny or
+existing reusable allow takes precedence.
+
+The dashboard displays each grant's domain, scope, expiry, and
+available/consumed/expired status **without exposing its bearer ID**. Use
+**Revoke** to invalidate a staged or already-consumed grant and all subsequent
+long-document continuation reads tied to it. Replacing an older one-use grant
+also invalidates the previous proof. Batch fetches cannot consume a one-use
+grant. The statuses and events are updated when the dashboard page is
+refreshed.
+
+The **Recent single-use activity** table records staged, consumed and revoked
+events transactionally in a separate append-only table. It stores a UTC
+timestamp, scope, expiry, local reason, request ID and sanitized request
+*origin* when available; it never stores the private grant identifier or URL
+path/query, credentials or page text. This avoids modifying the legacy
+decision table's action CHECK constraint on existing installs. Existing
+requests and permissions survive restart.
+
+Only the local dashboard POST endpoint can stage or revoke grants; it
+enforces the existing localhost Host/Origin/Fetch-Metadata/CSRF protection.
+No MCP tool has been added that can mutate approvals. As always, crawler
+container egress restrictions must be enabled separately.
+
+## Issue #12 implementation references
+
+Scoped and expiring rules were delivered in PR #36, stable request IDs and
+origin-only auditing in PR #38, bulk local decisions in PR #39, and the
+private ledger and public-DNS preflight in PRs #43–#44. PR #46 implements
+proof-guarded standalone fetches and document continuations. PR #47 adds
+the operator-only **Allow once** and revoke controls, along with the
+sanitized transactional stage/consume/revoke audit. Issue #12 tracks
+overall acceptance and any outstanding deployment validation.
 
 The tests cover legacy schema migration, scope boundaries, explicit child
 exceptions, expiry across restart, concurrent expired requests, and HTTP
