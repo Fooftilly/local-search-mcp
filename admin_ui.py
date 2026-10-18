@@ -298,14 +298,19 @@ def once_audit_html(search=""):
 
 def import_preview_html(plan: dict) -> str:
     """Read-only validated preview with explicit, stale-state-checked apply."""
+    new = set(plan["add"])
+    unchanged = set(plan["unchanged"])
     rows = ''.join(
         '<tr><td class="domain">' + esc(x["domain"]) + '</td><td>' +
-        esc(x["status"]) + '</td><td>' + esc(x["scope"]) +
+        esc("New" if x["domain"] in new else
+            "Unchanged" if x["domain"] in unchanged else "Conflict") +
+        '</td><td>' + esc(x["status"]) + '</td><td>' + esc(x["scope"]) +
         '</td><td>' + esc(x["expires_at"] or "Permanent") + '</td></tr>'
         for x in plan["rules"])
     conflicts = plan["conflicts"]
     notice = (f'<p class="alert error">Conflicts with {len(conflicts)} existing '
-              'explicit rules; resolve them locally before retrying. No '
+              'explicit rules or inherited denials (marked Conflict below); '
+              'resolve them locally before retrying. No '
               'changes have been made.</p>' if conflicts else
               '<p class="subtle">No changes yet. The import will add only '
               'missing decisions and retain identical rules. A changed '
@@ -325,8 +330,8 @@ def import_preview_html(plan: dict) -> str:
             f'<style>{CSS}</style></head><body><main><h1>Domain rule import preview</h1>'
             f'<p>New: {len(plan["add"])} · Unchanged: {len(plan["unchanged"])}'
             f' · Conflicts: {len(conflicts)}</p>{notice}'
-            '<div class="scroll"><table><thead><tr><th>Domain</th><th>Decision</th>'
-            '<th>Scope</th><th>Expiration (UTC)</th></tr></thead><tbody>' +
+            '<div class="scroll"><table><thead><tr><th>Domain</th><th>Preview</th>'
+            '<th>Decision</th><th>Scope</th><th>Expiration (UTC)</th></tr></thead><tbody>' +
             rows + '</tbody></table></div>' + submit +
             '<p><a href="/">Return without applying</a></p></main></body></html>')
 
