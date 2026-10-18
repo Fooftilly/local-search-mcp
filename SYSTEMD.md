@@ -91,7 +91,11 @@ The acknowledgement applies the pending local revision once and will not
 change packages or credentials itself. A removed manifest is accepted only
 after that explicit acknowledgement and an offline `pip check` of the existing
 virtual environment; a replacement manifest's dependency constraints must be
-verified manually. Missing or invalid Python source
+verified manually. For PEP 508 direct-URL requirements, the offline validation
+checks that the named distribution is installed and that `pip check` passes,
+but cannot verify the original download URL or code provenance. Inspect and
+install such dependencies yourself before `--dependencies-ready`; the watcher
+never downloads them. Missing or invalid Python source
 also blocks the automatic restart. Preflight is not a full integration
 test, so check the health report after significant upgrades. If a restarted
 service subsequently fails, the attempted revision is recorded to prevent
