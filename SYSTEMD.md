@@ -104,7 +104,7 @@ does not manage upstream SearXNG, Crawl4AI or Docker containers.
 ## Disable, remove and return to manual mode
 
 ```sh
-systemctl --user disable --now local-search-mcp-health.timer local-search-mcp-tunnel.service local-search-mcp-bridge.service
+systemctl --user disable --now local-search-mcp-update.path local-search-mcp-update.timer local-search-mcp-health.timer local-search-mcp-tunnel.service local-search-mcp-bridge.service
 python3 scripts/install_user_services.py --remove
 systemctl --user daemon-reload
 ./start.sh
