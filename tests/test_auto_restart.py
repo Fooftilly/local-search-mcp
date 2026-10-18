@@ -63,10 +63,11 @@ class AutoRestartTests(unittest.TestCase):
         self.assertIn("--state-file", extra["local-search-mcp-update.service"])
         self.assertNotIn("git pull", "".join(extra.values()))
 
-    def test_percent_escaped_systemd_path_decodes_for_manual_commands(self):
-        # systemctl cat shows the raw ExecStart ('%%'), but a manual command
-        # must pass the decoded literal '%' state path.
-        state = Path(self.tmp.name) / "xdg%state %% with spaces" / "last-service-commit"
+    def test_systemd_escaped_path_requires_journal_manual_argument(self):
+        # Raw systemd ExecStart text requires three distinct escaping rules:
+        # literal %, backslash, and double quote. Never copy it as a CLI path.
+        state = (Path(self.tmp.name) /
+                 'xdg%state "quoted" \\ with spaces' / "last-service-commit")
         units = unit_files(
             "/usr/bin/python3", self.root, auto_restart=True,
             reflog_path=self.root / ".git/logs/HEAD", state_path=state,
@@ -74,12 +75,15 @@ class AutoRestartTests(unittest.TestCase):
         raw = next(line.split("=", 1)[1] for line in
                    units["local-search-mcp-update.service"].splitlines()
                    if line.startswith("ExecStart="))
-        argv = shlex.split(raw)
-        self.assertEqual(argv[-2], "--state-file")
-        self.assertNotEqual(argv[-1], str(state))
-        self.assertEqual(argv[-1].replace("%%", "%"), str(state))
-        self.assertEqual(update.state_argument(state),
-                         "--state-file " + shlex.quote(str(state)))
+        self.assertIn("%%", raw)
+        self.assertIn(r"\\", raw)
+        self.assertIn(r'\"', raw)
+        # The journal's explicit state_argument() returns a shell-ready token
+        # that round-trips without systemd decoding or guessing the path.
+        manual = update.state_argument(state)
+        self.assertEqual(shlex.split(manual), ["--state-file", str(state)])
+        self.assertEqual(manual, "--state-file " + shlex.quote(str(state)))
+        self.assertNotEqual(shlex.split(raw)[-1], str(state))
 
     def test_install_pins_xdg_state_file_even_without_manager_environment(self):
         config_home = Path(self.tmp.name) / "xdg-config"
