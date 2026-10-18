@@ -475,7 +475,11 @@ def _consume_once_grant(domain: str) -> str | None:
         try:
             now = utcnow()  # After lock acquisition, not before.
             active = _match(conn, domain, now)
-            if active and active["status"] == "denied":
+            # Recheck *both* decisions after BEGIN IMMEDIATE. An operator
+            # may have approved the host after the caller's read-only hint;
+            # never consume its one-use fallback when reusable permission
+            # already exists (or an explicit deny has taken precedence).
+            if active and active["status"] in ("allowed", "denied"):
                 conn.commit()
                 return None
             grant = _matching_once_grant(conn, domain, now)
@@ -494,13 +498,26 @@ def _consume_once_grant(domain: str) -> str | None:
 
 
 
-def _claim_once_for_public_url(url: str) -> tuple[str, str] | None:
-    """Preflight a one-time claim after verifying a public HTTP(S) destination.
+def _once_grant_available(domain: str) -> bool:
+    """Read-only hint: avoid DNS preflights for hosts without one-use grants.
 
-    This is an INTERNAL operation primitive, not a tool authorization result:
-    callers must keep the returned (hostname, grant_id) private and enforce
-    final URL checks, cache bypass, policy epochs, and content release guards.
-    It MUST NOT be wired to web_fetch until those paths are implemented.
+    This is not an authorization decision. The atomic claim still rechecks
+    active explicit denials, validity, scope and expiration under a write lock.
+    """
+    domain = normalize_domain(domain)
+    with _db() as conn:
+        _seed(conn)
+        now = utcnow()
+        active = _match(conn, domain, now)
+        if active and active["status"] in ("allowed", "denied"):
+            return False
+        return _matching_once_grant(conn, domain, now) is not None
+
+
+def _public_url_host(url: str) -> str | None:
+    """Validate a public unicast HTTP(S) target without changing permissions.
+
+    Internal-only: use for redirect safety; it is not a reusable approval.
     """
     if not isinstance(url, str):
         return None
@@ -513,22 +530,29 @@ def _claim_once_for_public_url(url: str) -> tuple[str, str] | None:
             return None
     except (ValueError, TypeError):
         return None
-    # Do NOT burn a one-use grant if DNS fails, resolves to loopback/private
-    # IP, or returns no address records. These are the same public-address
-    # requirements as the ordinary fetch authorization path.
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     try:
         records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         if not records:
             return None
-        # Python's ipaddress marks some multicast addresses as is_global.
-        # Multicast is never a public unicast destination; reject it before
-        # an irreversible single-use claim, including mixed DNS answers.
+        # is_global alone includes multicast in Python's ipaddress library.
         addresses = [ipaddress.ip_address(rec[4][0]) for rec in records]
         if not all(addr.is_global and not addr.is_multicast
                    for addr in addresses):
             return None
     except (socket.gaierror, ValueError, IndexError, TypeError):
+        return None
+    return host
+
+
+def _claim_once_for_public_url(url: str) -> tuple[str, str] | None:
+    """Return a private atomic once-claim only after public-target validation.
+
+    This internal primitive never returns a tool-visible policy decision.
+    The caller must revalidate the proof and final redirect at content release.
+    """
+    host = _public_url_host(url)
+    if host is None:
         return None
     # _consume_once_grant takes BEGIN IMMEDIATE, rechecks live explicit denials
     # and expiration AFTER locking, and marks one winner atomically.

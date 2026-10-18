@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 from typing import Literal
 import os
 import re
@@ -11,6 +12,7 @@ import httpx
 from fastmcp import FastMCP
 from domain_policy import (evaluate_fetch_url, expired_grant_without_active_fallback,
                            is_domain_currently_allowed)
+import domain_policy
 from admin_ui import create_dashboard_server
 from crawler_security import local_container_warning, verify_health
 import threading
@@ -25,6 +27,9 @@ SEARXNG_URL = os.getenv("SEARXNG_URL", "http://127.0.0.1:8888").rstrip("/")
 CRAWL4AI_URL = os.getenv("CRAWL4AI_URL", "http://127.0.0.1:11235").rstrip("/")
 CRAWL4AI_TOKEN = os.getenv("CRAWL4AI_API_TOKEN", "")
 mcp = FastMCP("Local SearXNG and Crawl4AI")
+# Worker-local guard: batch calls never consume the operator's one-use grant.
+# ContextVar is reset in each worker even after errors/cancellation.
+_BATCH_PERMANENT_ONLY = ContextVar("local_search_batch_permanent_only", default=False)
 # This unauthenticated endpoint is deliberately loopback-only. Validate both
 # request authority and browser Origin: binding localhost alone cannot prevent
 # a DNS-rebinding attack from an untrusted browser tab.
@@ -245,7 +250,8 @@ def _crawl_metadata(page: dict, final_url: str) -> dict:
     return result
 
 
-def _run_fetch(url: str, mode: str) -> dict:
+def _run_fetch(url: str, mode: str, *,
+               once_proof: tuple[str, str] | None = None) -> dict:
     """Crawl only after the caller has passed current local policy checks."""
     headers = {"Authorization": f"Bearer {CRAWL4AI_TOKEN}"} if CRAWL4AI_TOKEN else {}
     crawler_params = {"stream": False}
@@ -318,8 +324,27 @@ def _run_fetch(url: str, mode: str) -> dict:
     final_url = original_url if redirected_url is None else redirected_url
     # Defense in depth: never return content from an unapproved redirect.
     # Browser/container egress controls must independently block unsafe traffic.
-    if final_url != url and _check_public_target(final_url) is not None:
-        return {"url": url, "success": False, "status": "blocked", "reason": "Crawl4AI redirected to a destination that is not approved"}
+    if final_url != url:
+        if once_proof is not None:
+            # A same-host redirect is part of the claimed operation; it must
+            # still resolve exclusively to public unicast addresses and use
+            # a supported URL/port. Different hosts need their own ordinary
+            # (reusable) approval, never a second one-use claim.
+            try:
+                same_host = (domain_policy.normalize_domain(
+                    urlsplit(final_url).hostname or "") == once_proof[0])
+            except (ValueError, TypeError):
+                same_host = False
+            if same_host:
+                destination_ok = (domain_policy._public_url_host(final_url)
+                                  == once_proof[0])
+            else:
+                destination_ok = _check_public_target(final_url) is None
+        else:
+            destination_ok = _check_public_target(final_url) is None
+        if not destination_ok:
+            return {"url": url, "success": False, "status": "blocked",
+                    "reason": "Crawl4AI redirected to a destination that is not approved"}
     markdown_response = page.get("markdown", "")
     if isinstance(markdown_response, dict):
         raw = markdown_response.get("raw_markdown")
@@ -354,7 +379,7 @@ def _run_fetch(url: str, mode: str) -> dict:
         output["metadata"] = metadata
     if len(markdown) > document_pages.PAGE_CHARS and success is not False:
         token, page_count = document_pages.save(
-            final_url, markdown, metadata, source_url=url)
+            final_url, markdown, metadata, source_url=url, once_proof=once_proof)
         output.update({"document_id": token, "page": 1,
                        "page_count": page_count, "next_page": 2})
     elif len(markdown) > document_pages.PAGE_CHARS:
@@ -376,33 +401,79 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False) -> dict:
     if not isinstance(fresh, bool):
         raise ValueError("fresh must be a boolean")
     before = request_cache.policy_epoch()
-    policy_result = _check_public_target(url)
-    if policy_result is not None:
-        return policy_result
+    once_proof = None
+    # Ordinary permanent grants take precedence: a one-use grant must not be
+    # burned for a request that was already authorized. Never use single-use
+    # capabilities from a batch worker: its later aggregation requires
+    # independently reusable permission for every result.
+    if not _BATCH_PERMANENT_ONLY.get() and not CRAWLER_SECURITY_WARNING:
+        try:
+            hostname = urlsplit(url).hostname if isinstance(url, str) else None
+            if (hostname and not is_domain_currently_allowed(hostname)
+                    and domain_policy._once_grant_available(hostname)):
+                once_proof = domain_policy._claim_once_for_public_url(url)
+        except (TypeError, ValueError):
+            once_proof = None
+    if once_proof is None:
+        policy_result = _check_public_target(url)
+        if policy_result is not None:
+            return policy_result
+    else:
+        # Staging the claimed grant may have invalidated the cache/policy epoch
+        # after this request began but before the atomic claim. A successful
+        # claim establishes a new authorization boundary: use its current
+        # epoch, then still fail closed on later mutations and on any expired,
+        # replaced, revoked or denied proof at final content release.
+        before = request_cache.policy_epoch()
     if before != request_cache.policy_epoch():
         return {"url": url, "success": False, "status": "blocked",
                 "reason": "Domain approval changed during the request. Retry after reviewing permissions."}
     if CRAWLER_SECURITY_WARNING:
         return {"url": url, "success": False, "status": "blocked",
                 "reason": CRAWLER_SECURITY_WARNING}
-    key = request_cache.fetch_key(url, mode)
-    response = request_cache.run(
-        "fetch", key, lambda: _run_fetch(url, mode),
-        ttl=request_cache.FETCH_TTL, fresh=fresh,
-        should_store=lambda r: (
-            isinstance(r, dict) and r.get("success") is True
-            and r.get("truncated") is False
-            and "document_id" not in r
-            and request_cache.fetch_key(r.get("url", ""), mode) is not None
-            # A cross-host redirect depends on the target host's approval.
-            # Never serve it later from the original host's cache key after
-            # the target's time-limited rule expires.
-            and urlsplit(r["url"]).hostname == urlsplit(url).hostname
-        ),
-    )
+    if once_proof is not None:
+        # One-use access never reads, stores, refreshes or coalesces a reusable
+        # fetch cache entry. Proof stays local to this invocation.
+        response = _run_fetch(url, mode, once_proof=once_proof)
+    else:
+        key = request_cache.fetch_key(url, mode)
+        response = request_cache.run(
+            "fetch", key, lambda: _run_fetch(url, mode),
+            ttl=request_cache.FETCH_TTL, fresh=fresh,
+            should_store=lambda r: (
+                isinstance(r, dict) and r.get("success") is True
+                and r.get("truncated") is False
+                and "document_id" not in r
+                and request_cache.fetch_key(r.get("url", ""), mode) is not None
+                # A cross-host redirect depends on the target host's approval.
+                # Never serve it later from the original host's cache key after
+                # the target's time-limited rule expires.
+                and urlsplit(r["url"]).hostname == urlsplit(url).hostname
+            ),
+        )
     if before != request_cache.policy_epoch():
         return {"url": url, "success": False, "status": "blocked",
                 "reason": "Domain approval changed during the request. Retry after reviewing permissions."}
+    if once_proof is not None:
+        # A consumed private grant authorizes this *one* fetch, not a policy
+        # rule. Verify it again after the crawl and before releasing ANY page
+        # text or continuation handle. Redirects must still have an independently
+        # approved destination if they cross the original hostname.
+        blocked = {"url": url, "success": False, "status": "blocked",
+                   "reason": "Single-use authorization is no longer valid."}
+        try:
+            source = domain_policy.normalize_domain(urlsplit(url).hostname or "")
+            target = domain_policy.normalize_domain(
+                urlsplit(response.get("url", url)).hostname or "")
+            if (source != once_proof[0] or
+                    not domain_policy._once_proof_current(*once_proof) or
+                    (source != target and not is_domain_currently_allowed(target))):
+                return blocked
+        except (ValueError, TypeError, AttributeError):
+            return blocked
+        if before != request_cache.policy_epoch():
+            return blocked
+        return response
     if (isinstance(response, dict) and
             any(k in response for k in ("markdown", "metadata", "document_id"))):
         # Failed crawls can still contain Markdown or metadata. Never release
@@ -454,6 +525,15 @@ def _batch_currently_authorized(requested_url: str, result: dict) -> bool:
     return _current_permissions_for_fetched_urls(requested_url, result.get("url"))
 
 
+def _batch_fetch_without_once(url: str, mode: str, fresh: bool) -> dict:
+    """Preserve web_fetch logging, but prohibit one-use grants in batch workers."""
+    token = _BATCH_PERMANENT_ONLY.set(True)
+    try:
+        return web_fetch(url, mode, fresh)
+    finally:
+        _BATCH_PERMANENT_ONLY.reset(token)
+
+
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
 async def web_fetch_batch(urls: list[str], mode: str = "raw",
                           fresh: bool = False) -> dict:
@@ -466,7 +546,8 @@ async def web_fetch_batch(urls: list[str], mode: str = "raw",
     cancelled = threading.Event()
     try:
         return await asyncio.to_thread(
-            fetch_many, urls, mode, fresh, web_fetch, cancelled=cancelled,
+            fetch_many, urls, mode, fresh, _batch_fetch_without_once,
+            cancelled=cancelled,
             authorize_result=_batch_currently_authorized)
     except asyncio.CancelledError:
         cancelled.set()
@@ -482,7 +563,7 @@ def web_fetch_page(document_id: str, page: int = 2) -> dict:
     never stored in local request history and expires after 15 minutes.
     """
     epoch = request_cache.policy_epoch()
-    result, source_url = document_pages.read_with_context(
+    result, source_url, once_proof = document_pages.read_with_security_context(
         document_id, page)
     if not result.get("success"):
         return result
@@ -493,7 +574,25 @@ def web_fetch_page(document_id: str, page: int = 2) -> dict:
     # Still fail closed if permissions change during the validation below.
     if not source_url:
         return blocked
-    if not _current_permissions_for_fetched_urls(source_url, result["url"]):
+    if once_proof is not None:
+        # This is the same fetched document's private bearer handle, not a
+        # second grant consumption. Proof remains valid only until expiry,
+        # revocation, replacement or a new explicit denial.
+        try:
+            source_host = domain_policy.normalize_domain(
+                urlsplit(source_url).hostname or "")
+            target_host = domain_policy.normalize_domain(
+                urlsplit(result["url"]).hostname or "")
+            valid = (source_host == once_proof[0]
+                     and domain_policy._once_proof_current(*once_proof)
+                     and bool(target_host)
+                     and (target_host == source_host
+                          or is_domain_currently_allowed(target_host)))
+        except (TypeError, ValueError, AttributeError):
+            valid = False
+        if not valid:
+            return blocked
+    elif not _current_permissions_for_fetched_urls(source_url, result["url"]):
         return {"success": False, "status": "blocked",
                 "reason": "The original or final domain is no longer approved. "
                           "Request local approval and retry this page."}
