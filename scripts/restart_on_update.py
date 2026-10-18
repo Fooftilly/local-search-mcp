@@ -162,11 +162,20 @@ def requirements_ready(root: Path) -> bool:
     is the only available dependency check; do not require a deleted file.
     """
     manifest = root / "requirements.txt"
-    if not manifest.is_file():
-        return not manifest.exists()
     interpreter = root / ".venv" / "bin" / "python"
-    if not interpreter.is_file():
+    if not interpreter.is_file() or manifest.is_symlink():
         return False
+    if not manifest.is_file() and manifest.exists():
+        return False
+    if not manifest.exists():
+        # No manifest remains to parse. The operator must explicitly approve
+        # this migration; the virtualenv must still pass an offline pip check.
+        try:
+            result = subprocess.run([str(interpreter), "-I", "-m", "pip", "check"],
+                                    cwd=root, capture_output=True, timeout=15)
+            return result.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
     probe = """
 from importlib.metadata import version
 from pathlib import Path
