@@ -425,6 +425,21 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False) -> dict:
     return response
 
 
+def _batch_currently_authorized(requested_url: str, result: dict) -> bool:
+    """Revalidate source and redirect destination when the whole batch finishes."""
+    if _check_public_target(requested_url) is not None:
+        return False
+    final_url = result.get("url")
+    if not isinstance(final_url, str):
+        return False
+    try:
+        if urlsplit(requested_url).hostname != urlsplit(final_url).hostname:
+            return _check_public_target(final_url) is None
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
 async def web_fetch_batch(urls: list[str], mode: str = "raw",
                           fresh: bool = False) -> dict:
@@ -437,7 +452,8 @@ async def web_fetch_batch(urls: list[str], mode: str = "raw",
     cancelled = threading.Event()
     try:
         return await asyncio.to_thread(
-            fetch_many, urls, mode, fresh, web_fetch, cancelled=cancelled)
+            fetch_many, urls, mode, fresh, web_fetch, cancelled=cancelled,
+            authorize_result=_batch_currently_authorized)
     except asyncio.CancelledError:
         cancelled.set()
         raise
