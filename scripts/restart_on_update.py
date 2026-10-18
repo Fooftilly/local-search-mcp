@@ -232,6 +232,7 @@ def pip_include_path(raw: str) -> str:
 
 def referenced_requirement_files(
     root: Path, *, origins: dict[str, set[str]] | None = None,
+    roles: dict[str, set[tuple[str, bool]]] | None = None,
 ) -> set[str]:
     """Find pip -r/-c closure and, optionally, each file's source manifest.
 
@@ -244,17 +245,19 @@ def referenced_requirement_files(
     ).stdout
     tracked_names = [os.fsdecode(item) for item in tracked.split(b"\0") if item]
     found: set[str] = set()
-    visited: set[tuple[str, str]] = set()
+    visited: set[tuple[str, str, bool]] = set()
     base = root.resolve()
 
-    def visit(name: str, source: str) -> None:
+    def visit(name: str, source: str, constrained: bool = False) -> None:
         if origins is not None:
             origins.setdefault(name, set()).add(source)
-        if (name, source) in visited:
+        if roles is not None:
+            roles.setdefault(name, set()).add((source, constrained))
+        if (name, source, constrained) in visited:
             return
         if len(visited) >= 512:
             raise ValueError("Too many included requirement files")
-        visited.add((name, source))
+        visited.add((name, source, constrained))
         found.add(name)
         original = root / name
         if original.is_symlink():
@@ -284,7 +287,8 @@ def referenced_requirement_files(
                     included = (resolved.parent / target).resolve()
                     if not included.is_relative_to(base):
                         raise ValueError("Requirements include escapes Git checkout")
-                    visit(included.relative_to(base).as_posix(), source)
+                    visit(included.relative_to(base).as_posix(), source,
+                          prefix.startswith(("--constraint", "-c")))
                     break
 
     for name in tracked_names:
@@ -302,6 +306,7 @@ def constraint_manifest(name: str) -> bool:
 def requirements_ready(
     root: Path, changed_manifests: list[str] | None = None,
     origins: dict[str, set[str]] | None = None,
+    roles: dict[str, set[tuple[str, bool]]] | None = None,
 ) -> bool:
     """Validate manually acknowledged pip requirements entirely offline.
 
@@ -336,10 +341,27 @@ def requirements_ready(
                 # not optional dev roots that share an included file.
                 add("requirements.txt", False)
             elif name in sources:
-                # Layered deployments may have no root requirements.txt.
-                # A shared base manifest is the appropriate check root
-                # rather than every unrelated dev/prod includer.
-                add(name, constraint_manifest(name))
+                runtime_sources = {
+                    source for source in sources
+                    if source != name and not any(
+                        part.startswith(("dev", "test")) or
+                        part.endswith(("-dev.txt", "-test.txt"))
+                        for part in Path(source).parts
+                    )
+                }
+                constraint_sources = {
+                    source for source, constrained in (roles or {}).get(name, set())
+                    if constrained and source in runtime_sources
+                }
+                if constraint_sources:
+                    # A shared file used via -c is optional even when its
+                    # basename is generic (requirements/pins.txt).
+                    for source in constraint_sources:
+                        add(source, constraint_manifest(source))
+                else:
+                    # Otherwise prefer the shared base itself over separate
+                    # dev/prod parents that add unrelated dependencies.
+                    add(name, constraint_manifest(name))
             elif sources:
                 runtime_sources = {
                     source for source in sources
@@ -520,7 +542,10 @@ def apply(root: Path = ROOT, *, path: Path | None = None,
     # Follow -r/-c includes even when their filenames are otherwise ordinary
     # or their parent directory would normally be ignored as documentation.
     manifest_origins: dict[str, set[str]] = {}
-    dependency_paths = referenced_requirement_files(root, origins=manifest_origins)
+    manifest_roles: dict[str, set[tuple[str, bool]]] = {}
+    dependency_paths = referenced_requirement_files(
+        root, origins=manifest_origins, roles=manifest_roles,
+    )
     changed_manifests = [
         name for name in changed
         if dependency_manifest(name) or name in dependency_paths
@@ -537,7 +562,9 @@ def apply(root: Path = ROOT, *, path: Path | None = None,
                 "package downloads. Review and prepare dependencies manually, "
                 "then run python3 scripts/restart_on_update.py " +
                 state_argument(location) + " --dependencies-ready")
-    if changed_manifests and not requirements_ready(root, changed_manifests, manifest_origins):
+    if changed_manifests and not requirements_ready(
+        root, changed_manifests, manifest_origins, manifest_roles,
+    ):
         return ("Installed Python requirements failed offline validation; "
                 "fix the environment manually; running services left untouched")
     try:
