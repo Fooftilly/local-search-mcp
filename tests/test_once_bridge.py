@@ -61,6 +61,48 @@ class GuardedOnceFetchTests(unittest.TestCase):
         self.assertEqual(request_cache.metrics_snapshot()["kinds"]["fetch"]["entries"], 0)
         self.assertFalse(policy.is_domain_currently_allowed("docs.example.org"))
 
+    def test_restage_while_claiming_rebases_epoch_without_losing_once(self):
+        url = "https://docs.example.org/just-approved"
+        policy._stage_once_grant("docs.example.org")
+        initial_epoch = request_cache.policy_epoch()
+        actual_claim = policy._claim_once_for_public_url
+        updated_grant = []
+
+        def claim_after_local_reapproval(address):
+            # Deterministic race: web_fetch captured its epoch and observed
+            # the earlier grant; the operator replaces that grant immediately
+            # before this request atomically claims the new one.
+            updated_grant.append(policy._stage_once_grant("docs.example.org"))
+            return actual_claim(address)
+
+        payload = {"url": url, "success": True, "markdown": "AUTHORIZED",
+                   "truncated": False}
+        with patch.object(policy, "_claim_once_for_public_url",
+                          side_effect=claim_after_local_reapproval), \\
+             patch.object(bridge, "_run_fetch", return_value=payload) as crawler:
+            result = bridge.web_fetch(url)
+
+        self.assertGreater(request_cache.policy_epoch(), initial_epoch)
+        self.assertEqual(result["markdown"], "AUTHORIZED")
+        crawler.assert_called_once_with(
+            url, "raw", once_proof=("docs.example.org", updated_grant[0]))
+        self.assertIsNone(policy._consume_once_grant("docs.example.org"))
+        self.assertNotIn(updated_grant[0], repr(result))
+
+    def test_epoch_mutation_after_one_use_claim_still_blocks_release(self):
+        url = "https://docs.example.org/operation"
+        policy._stage_once_grant("docs.example.org")
+
+        def change_unrelated_policy(raw, mode, *, once_proof=None):
+            policy.decide("other.example.net", "deny")
+            return {"url": raw, "success": True, "markdown": "REVOKED_CONTENT",
+                    "truncated": False}
+
+        with patch.object(bridge, "_run_fetch", side_effect=change_unrelated_policy):
+            result = bridge.web_fetch(url)
+        self.assertEqual(result["status"], "blocked")
+        self.assertNotIn("REVOKED_CONTENT", repr(result))
+
     def test_permanent_approval_works_normally_and_does_not_burn_once(self):
         grant = policy._stage_once_grant("docs.example.org")
         policy.decide("docs.example.org", "allow", scope="exact")
