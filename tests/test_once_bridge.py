@@ -111,7 +111,7 @@ class GuardedOnceFetchTests(unittest.TestCase):
 
     def test_real_crawl_same_host_redirect_uses_original_once_proof(self):
         url = "https://docs.example.org/start"
-        target = "https://docs.example.org/final"
+        target = "https://docs.example.org./final"
         grant = policy._stage_once_grant("docs.example.org")
         def handler(request):
             if request.url.path == "/health":
@@ -153,6 +153,42 @@ class GuardedOnceFetchTests(unittest.TestCase):
         self.assertEqual(response["status"], "blocked")
         self.assertNotIn("PRIVATE_TEXT", repr(response))
         self.assertIsNone(policy._consume_once_grant("docs.example.org"))
+
+    def test_normalized_international_and_trailing_dot_hostnames_keep_proof(self):
+        for original in ("https://docs.example.org./article",
+                         "https://bücher.example.org/article"):
+            with self.subTest(original=original):
+                name = policy.normalize_domain(
+                    __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit(
+                        original).hostname)
+                policy._stage_once_grant(name)
+                body = {"url": original, "success": True,
+                        "markdown": "VISIBLE", "truncated": False}
+                with patch.object(bridge, "_run_fetch", return_value=body):
+                    output = bridge.web_fetch(original)
+                self.assertTrue(output["success"])
+                self.assertEqual(output["markdown"], "VISIBLE")
+                self.assertIsNone(policy._consume_once_grant(name))
+                policy._revoke_once_grant(name)
+
+    def test_trailing_dot_document_continuation_checks_normalized_proof(self):
+        url = "https://docs.example.org./long"
+        normalized = "docs.example.org"
+        claim = policy._stage_once_grant(normalized)
+        text = "x" * document_pages.PAGE_CHARS + "FOLLOWUP"
+        def crawler(raw, mode, *, once_proof=None):
+            self.assertEqual(once_proof, (normalized, claim))
+            token, count = document_pages.save(
+                raw, text, {}, source_url=raw, once_proof=once_proof)
+            return {"url": raw, "success": True,
+                    "markdown": text[:document_pages.PAGE_CHARS],
+                    "document_id": token, "truncated": True, "page": 1,
+                    "page_count": count, "next_page": 2}
+        with patch.object(bridge, "_run_fetch", side_effect=crawler):
+            first = bridge.web_fetch(url)
+        self.assertTrue(first["success"])
+        second = bridge.web_fetch_page(first["document_id"], 2)
+        self.assertEqual(second["markdown"], "FOLLOWUP")
 
     def test_continuation_proof_bound_to_original_fetch_and_revocation(self):
         grant = policy._stage_once_grant("docs.example.org", expires_minutes=60)
