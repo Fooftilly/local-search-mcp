@@ -129,7 +129,8 @@ class PolicyAuditTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
         self.assertNotIn("<script>alert(1)</script>", html)
         self.assertNotIn("HIDDEN", html)
-        self.assertIn("https://example.org/p", html)
+        self.assertIn("https://example.org", html)
+        self.assertNotIn("https://example.org/p", html)
         row = next(r for r in policy.entries() if r["domain"] == "example.org")
         self.assertIn(row["request_id"], html)
 
