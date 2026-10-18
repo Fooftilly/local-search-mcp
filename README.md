@@ -94,6 +94,8 @@ For operators using a dedicated Crawl4AI Docker bridge, see [EGRESS-ISOLATION.md
 
 For independently supervised bridge/tunnel processes and periodic health diagnostics, see [SYSTEMD.md](SYSTEMD.md). These are opt-in and not installed by `./start.sh`; run `./start.sh --setup-only` before installing. The foreground launcher remains available.
 
+Optional offline auto-restart after **locally performed** `git pull`/checkout/merge is available with `python3 scripts/install_user_services.py --install --auto-restart`. Enable the installed `local-search-mcp-update.path` and `local-search-mcp-update.timer` user units as described in [SYSTEMD.md](SYSTEMD.md). No Git fetching, downloads or dependency installations occur automatically; runtime code changes restart active services only, documentation-only changes do not, and changed Python requirements require explicit manual preparation.
+
 ## Connecting through OpenAI tunnel
 
 Read `./tunnel-client help quickstart` and configure a profile referencing `http://127.0.0.1:8790/mcp`. Store runtime key outside Git. See the [official Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels). The tunnel does not expose the dashboard or native Crawl4AI endpoints.
