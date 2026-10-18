@@ -54,7 +54,7 @@ defaults are used and a warning is logged; the unsafe file is not overwritten.
 
 Timeout changes apply to the next outgoing request without a restart; in-flight
 requests and previously cached results are not changed. Crawl4AI's short
-`/health` validation timeout is intentionally **not** configurable. Existing
+`/health` validation timeout is intentionally **not** configurable. Optional
 `LOCAL_SEARCH_MCP_SEARXNG_TIMEOUT` and
 `LOCAL_SEARCH_MCP_CRAWL_TIMEOUT` environment variables, when set, have
 precedence and disable all changes on the timeout form. Remove the overrides
