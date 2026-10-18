@@ -510,10 +510,10 @@ def cache_settings_page(message="", kind="success", submitted=None):
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>Local Search MCP — Cache lifetimes</title><style>{CSS}</style>'
             '</head><body><main><h1>Cache lifetimes</h1>' +
-            alert + '<p>Cache lifetimes apply to new cached results '
-            'without restarting the bridge. Requests already running retain '
-            'their original TTL. The Crawl4AI /health safety check keeps '
-            'its own fixed short TTL.</p><ul>' + sources + '</ul>' +
+            alert + '<p>Changes apply to new cache entries without restarting '
+            'the bridge. Existing entries keep their original expiration. '
+            'Cache size limits and domain authorization are unchanged; '
+            'cached responses remain in memory only.</p><ul>' + sources + '</ul>' +
             ('<p class="alert error">An environment override is present. '
              'Remove it from the service environment and restart before '
              'editing these saved settings.</p>' if locked else '') +
