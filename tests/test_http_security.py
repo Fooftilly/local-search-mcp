@@ -227,6 +227,19 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn(b'<tbody id="live-history">', html_page)
         self.assertIn(b'&lt;script&gt;', html_page)
 
+    def test_invalid_retention_configuration_keeps_history_http_response(self):
+        with patch.dict(os.environ, {
+            "LOCAL_SEARCH_MCP_HISTORY_RETENTION_DAYS": "0"
+        }):
+            status, body, _ = self.exchange("GET", "/history")
+            self.assertEqual(status, 200)
+            self.assertIn(b"Indexed history is unavailable", body)
+            self.assertNotIn(b"Traceback", body)
+            live_status, payload, _ = self.exchange("GET", "/live?view=history")
+            self.assertEqual(live_status, 200)
+            self.assertIn("Indexed history is unavailable",
+                          json.loads(payload)["history_html"])
+
     def test_live_endpoints_reject_cross_site_and_invalid_views(self):
         baseline = len(policy.entries())
         for endpoint in ("/live?view=policy", "/live?view=history",
