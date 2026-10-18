@@ -65,35 +65,27 @@ changes are eligible.
 
 If `requirements.txt` changed, was renamed, or was removed, the restart is
 **deferred**. Review and prepare the dependencies yourself first (this manual
-step *may* access the package index), then explicitly acknowledge the change:
+step *may* access the package index). The checker prints the exact, already
+decoded `--state-file` argument required for manual acknowledgement. Read it
+from the service journal:
 
 ```sh
-# When requirements.txt still exists:
+journalctl --user -u local-search-mcp-update.service -n 50 --no-pager
+# When requirements.txt still exists, install dependencies manually:
 .venv/bin/python -m pip install -r requirements.txt
-# For removed/renamed manifests, prepare the replacement dependencies manually.
-# Inspect the installed unit and copy the --state-file path.
-# IMPORTANT: decode systemd's %% to a single literal % in the copied path.
-systemctl --user cat local-search-mcp-update.service
-STATE_FILE='/absolute/decoded/path/from/ExecStart/--state-file'
-# Then, in either case:
-python3 scripts/restart_on_update.py --state-file "$STATE_FILE" --dependencies-ready
+# For removed/renamed manifests, prepare replacement dependencies manually.
+# Copy the exact shell-quoted --state-file argument from the journal:
+python3 scripts/restart_on_update.py --state-file '/path/from/checker/journal' --dependencies-ready
 ```
 
-Use the **installed service's state-file path**, not a path derived from the
-current shell's `XDG_STATE_HOME`: they may differ. **`systemctl --user cat`
-shows the raw unit file, not systemd's decoded command arguments.** The unit
-generator escapes each literal percent sign (`%`) as `%%` in `ExecStart`.
-When manually copying the path from that unit, change each `%%` back to a
-single `%`; for example, the unit path
-`/home/me/state%%backup/local-search-mcp/last-service-commit` means
-`/home/me/state%backup/local-search-mcp/last-service-commit` in your shell.
-Keep the resulting path quoted, especially when it contains spaces.
-
-**Prefer the checker's journal output when available:** its deferral and
-unavailable-baseline messages already include a correctly decoded,
-shell-quoted `--state-file` argument that can be reused directly with
-`--dependencies-ready` or `--reset-baseline`, without copying the raw
-`ExecStart` value.
+**Use the path printed by the checker, not the raw unit file.** The user
+manager may have a different `XDG_STATE_HOME` from your current shell.
+`systemctl --user cat local-search-mcp-update.service` displays systemd's
+unexpanded `ExecStart` text, which escapes percent signs (`%` as `%%`),
+backslashes and quotes. Copying its raw argument into a shell command can
+refer to the wrong file. The checker's journal message provides the actual
+path, correctly shell-quoted, even when it contains these characters or
+spaces. Do not substitute a guessed state-file location.
 
 The acknowledgement applies the pending local revision once and will not
 change packages or credentials itself. A removed manifest is accepted only
@@ -119,15 +111,15 @@ If an older saved commit is unavailable after pruning history, replacing
 the checkout, or installing a shallow clone, the checker **does not** silently
 accept the new checkout or restart services. First manually inspect and
 prepare the checked-out code, dependencies, and currently running services.
-Then explicitly acknowledge the **exact** reviewed commit:
+Then acknowledge the **exact** reviewed commit using the shell-quoted
+`--state-file` argument from the checker's journal message:
 
 ```sh
+journalctl --user -u local-search-mcp-update.service -n 50 --no-pager
 git rev-parse HEAD
-systemctl --user cat local-search-mcp-update.service
-STATE_FILE='/absolute/path/from/the/ExecStart/--state-file/argument'
-# Only after reviewing this commit and manually preparing/restarting
-# affected services as appropriate:
-python3 scripts/restart_on_update.py --state-file "$STATE_FILE" \
+# After reviewing this commit and preparing/restarting affected services:
+# Copy the exact --state-file argument from the "Previous commit unavailable" journal message:
+python3 scripts/restart_on_update.py --state-file '/path/from/checker/journal' \
   --reset-baseline "$(git rev-parse HEAD)"
 ```
 
@@ -135,10 +127,8 @@ This command only updates the saved baseline. It refuses a mismatched HEAD,
 an in-progress Git operation, or tracked runtime edits; it does not start or
 restart services and it does not download updates. The error message for an
 unavailable old commit also includes the exact `--state-file` argument.
-Always use the **decoded** path pinned into the installed unit for both
-manual commands, even if the install-time `XDG_STATE_HOME` is no longer set
-in your shell. Do not paste the systemd-escaped `%%` spelling into the
-manual command.
+For both manual commands, use the **shell-quoted argument from the checker
+journal**, not the unexpanded, systemd-escaped spelling in `ExecStart`.
 
 This feature only handles local Git checkouts with an enabled HEAD reflog
 and cannot detect source archives.
