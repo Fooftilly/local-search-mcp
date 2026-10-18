@@ -47,6 +47,26 @@ class StatusTests(unittest.TestCase):
         self.assertNotIn("evil.example", repr(report))
         self.assertNotIn("10.0.0.1", repr(report))
 
+    def test_explicit_zero_port_is_invalid_without_any_tcp_probe(self):
+        calls = []
+        for url in ("http://127.0.0.1:0", "https://localhost:0",
+                    "http://[::1]:0"):
+            with self.subTest(url=url):
+                self.assertIsNone(service_status._endpoint(url))
+                with patch.dict(os.environ, {
+                    "SEARXNG_URL": url, "CRAWL4AI_URL": url}, clear=True):
+                    report = service_status.probe_services(
+                        connector=lambda *args, **kwargs: calls.append(args))
+                self.assertEqual([r["status"] for r in report],
+                                 ["configuration invalid"] * 2)
+        self.assertEqual(calls, [])
+
+    def test_missing_port_uses_scheme_default_without_hiding_zero(self):
+        self.assertEqual(service_status._endpoint("http://127.0.0.1"),
+                         ("127.0.0.1", 80))
+        self.assertEqual(service_status._endpoint("https://localhost"),
+                         ("localhost", 443))
+
     def test_down_service_is_not_reported_healthy(self):
         with patch.dict(os.environ, clear=True):
             report = service_status.probe_services(
