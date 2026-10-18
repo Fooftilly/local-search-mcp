@@ -71,9 +71,17 @@ step *may* access the package index), then explicitly acknowledge the change:
 # When requirements.txt still exists:
 .venv/bin/python -m pip install -r requirements.txt
 # For removed/renamed manifests, prepare the replacement dependencies manually.
+# Inspect the installed unit and copy its exact --state-file path:
+systemctl --user cat local-search-mcp-update.service
+STATE_FILE='/absolute/path/from/the/ExecStart/--state-file/argument'
 # Then, in either case:
-python3 scripts/restart_on_update.py --dependencies-ready
+python3 scripts/restart_on_update.py --state-file "$STATE_FILE" --dependencies-ready
 ```
+
+Use the **installed service's state-file path**, not a path derived from the
+current shell's `XDG_STATE_HOME`: they may differ. For a deferred update,
+the checker's journal output includes a shell-quoted `--state-file` argument
+that can be reused directly with `--dependencies-ready`.
 
 The acknowledgement applies the pending local revision once and will not
 change packages or credentials itself. A removed manifest is accepted only
@@ -103,16 +111,20 @@ Then explicitly acknowledge the **exact** reviewed commit:
 
 ```sh
 git rev-parse HEAD
+systemctl --user cat local-search-mcp-update.service
+STATE_FILE='/absolute/path/from/the/ExecStart/--state-file/argument'
 # Only after reviewing this commit and manually preparing/restarting
 # affected services as appropriate:
-python3 scripts/restart_on_update.py --reset-baseline "$(git rev-parse HEAD)"
+python3 scripts/restart_on_update.py --state-file "$STATE_FILE" \
+  --reset-baseline "$(git rev-parse HEAD)"
 ```
 
 This command only updates the saved baseline. It refuses a mismatched HEAD,
 an in-progress Git operation, or tracked runtime edits; it does not start or
-restart services and it does not download updates. If a custom
-`XDG_STATE_HOME` was set when the watcher was installed, use that same
-environment when running this manual command.
+restart services and it does not download updates. The error message for an
+unavailable old commit also includes the exact `--state-file` argument.
+Always use the path pinned into the installed unit for both manual commands,
+even if the install-time `XDG_STATE_HOME` is no longer set in your shell.
 
 This feature only handles local Git checkouts with an enabled HEAD reflog
 and cannot detect source archives.
