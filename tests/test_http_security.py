@@ -248,9 +248,11 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn(b'<option value="1" selected>Last hour</option>', page)
         self.assertIn(b'<tbody id="live-history-summary">', page)
         self.assertIn(b'<progress aria-label="fetch blocked count"', page)
-        self.assertIn(b'<td>10</td>', page)
-        self.assertIn('<td>10</td>', json.loads(self.exchange(
-            "GET", "/live?view=history&hours=1&kind=fetch")[1])["history_html"])
+        self.assertIn(b'<td class="domain">docs.example.org</td><td>10.0</td>', page)
+        self.assertIn('<td class="domain">docs.example.org</td><td>10.0</td>',
+                      json.loads(self.exchange(
+                          "GET", "/live?view=history&hours=1&kind=fetch")[1]
+                      )["history_html"])
         for secret in (b"PRIVATE_QUERY", b"SECRET", b"HIDDEN"):
             self.assertNotIn(secret, page)
 
