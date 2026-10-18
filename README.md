@@ -86,6 +86,10 @@ python history_cli.py --stats
 python history_cli.py --csv --last 5000 > ~/search-history.csv
 ```
 
+## Optional private state backup and staged restore
+
+For an offline, integrity-checked backup of domain approvals and JSONL history, use `python3 scripts/backup_state.py backup ARCHIVE.zip`. Verify with `python3 scripts/backup_state.py verify ARCHIVE.zip` and stage recovery into a **new directory only** with `python3 scripts/backup_state.py restore ARCHIVE.zip --target-dir DIRECTORY`. Archives are private, may contain sensitive history, exclude credentials, and never overwrite live state. Stop services before backup for coordinated policy/history snapshots. See [BACKUP.md](BACKUP.md) for safety and restoration limitations. Live replacement and rollback are not automated.
+
 ## Optional Docker egress guard (Linux)
 
 For operators using a dedicated Crawl4AI Docker bridge, see [EGRESS-ISOLATION.md](EGRESS-ISOLATION.md) for an **opt-in nftables containment tool**, an example workflow, and live negative/positive probes. This host firewall is **not installed by the launcher**, does not replace Crawl4AI's own protections, and must be re-applied after reboot or Docker network changes. It does not isolate loopback inside the crawler container.
