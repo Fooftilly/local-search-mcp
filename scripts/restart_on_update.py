@@ -85,8 +85,10 @@ def write_state(path: Path, value: str) -> None:
     if folder.is_symlink():
         raise ValueError("Refusing symlinked update-state directory")
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if folder.is_symlink() or folder.stat().st_uid != os.getuid():
-        raise ValueError("Update-state directory is not owned by this user")
+    info = folder.stat()
+    if (folder.is_symlink() or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.getuid() or info.st_mode & 0o077):
+        raise ValueError("Update-state directory must be private and owned by this user")
     # Re-check before atomic replacement to avoid following a link or overwriting
     # a different user's file.
     read_state(path)
@@ -211,6 +213,19 @@ def dependency_manifest(name: str) -> bool:
                 for part in path.parts[:-1]) and leaf.endswith((".txt", ".in", ".pip")))
 
 
+def pip_include_path(raw: str) -> str:
+    """Decode a local pip -r/-c path without executing it or accessing network."""
+    import re
+
+    values = shlex.split(raw)
+    if len(values) != 1:
+        raise ValueError("Expected a single quoted/unquoted requirement include")
+    result = os.path.expandvars(values[0])
+    if re.search(r'\$\{[^}]+\}', result):
+        raise ValueError("Unresolved environment variable in pip include")
+    return result
+
+
 def referenced_requirement_files(
     root: Path, *, origins: dict[str, set[str]] | None = None,
 ) -> set[str]:
@@ -261,9 +276,7 @@ def referenced_requirement_files(
                            "--constraint=", "--constraint ", "-r ", "-c ",
                            "-r", "-c"):
                 if line.startswith(prefix):
-                    target = line[len(prefix):].strip()
-                    if not target:
-                        raise ValueError("Empty requirement include")
+                    target = pip_include_path(line[len(prefix):].strip())
                     included = (resolved.parent / target).resolve()
                     if not included.is_relative_to(base):
                         raise ValueError("Requirements include escapes Git checkout")
@@ -336,7 +349,9 @@ def requirements_ready(
         return False
 
     probe = r"""
+import os
 import re
+import shlex
 import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -369,10 +384,15 @@ def walk(filename, constrained=False):
                 ('-r ', False), ('-c ', True), ('-r', False), ('-c', True),
             ):
                 if line.startswith(option):
-                    included = line[len(option):].strip()
-                    if not included:
-                        raise ValueError('Empty requirement include')
-                    walk(path.parent / included, constrained or is_constraint)
+                    tokens = shlex.split(line[len(option):].strip())
+                    if len(tokens) != 1:
+                        raise ValueError('Expected one pip include path')
+                    included = os.path.expandvars(tokens[0])
+                    if re.search(r'\$\{[^}]+\}', included):
+                        raise ValueError('Unresolved include environment variable')
+                    # Pip -r switches back to requirement semantics even if
+                    # encountered within a constraint file (-c).
+                    walk(path.parent / included, is_constraint)
                     break
             else:
                 if line.startswith(('-e ', '-e=', '--editable ', '--editable=')):
