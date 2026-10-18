@@ -88,9 +88,34 @@ back manually and restart the systemd services.
 
 The state of the last handled revision is stored in the private
 `~/.local/state/local-search-mcp/last-service-commit` file (or under
-`XDG_STATE_HOME`). The installer preserves an existing baseline; it does
-not overwrite it on reinstallation. This feature only handles local Git
-checkouts with an enabled HEAD reflog and cannot detect source archives.
+`XDG_STATE_HOME`). The installer pins the resolved state-file path into the
+generated user service so it remains the same even if the systemd user manager
+does not inherit the shell's `XDG_STATE_HOME`. Changing that variable or
+relocating the state file requires reinstalling the optional units and
+running `systemctl --user daemon-reload`. The installer preserves an
+existing baseline; it does not overwrite it on reinstallation.
+
+If an older saved commit is unavailable after pruning history, replacing
+the checkout, or installing a shallow clone, the checker **does not** silently
+accept the new checkout or restart services. First manually inspect and
+prepare the checked-out code, dependencies, and currently running services.
+Then explicitly acknowledge the **exact** reviewed commit:
+
+```sh
+git rev-parse HEAD
+# Only after reviewing this commit and manually preparing/restarting
+# affected services as appropriate:
+python3 scripts/restart_on_update.py --reset-baseline "$(git rev-parse HEAD)"
+```
+
+This command only updates the saved baseline. It refuses a mismatched HEAD,
+an in-progress Git operation, or tracked runtime edits; it does not start or
+restart services and it does not download updates. If a custom
+`XDG_STATE_HOME` was set when the watcher was installed, use that same
+environment when running this manual command.
+
+This feature only handles local Git checkouts with an enabled HEAD reflog
+and cannot detect source archives.
 
 ```sh
 # Observe update activity:
