@@ -22,12 +22,29 @@ import zipfile
 VERSION = 1
 DB_NAME = "domains.sqlite3"
 HISTORY_NAMES = ("history.jsonl", "history.jsonl.1", "history.jsonl.2", "history.jsonl.3")
-ALLOWED_FILES = (DB_NAME, *HISTORY_NAMES)
+# Nonsecret files are explicit schemas with bounded integers only. Never
+# archive config.json or an arbitrary JSON file from the private config dir.
+SETTINGS_SCHEMAS = {
+    "history-settings.json": {
+        "local-search-mcp/nonsecret-history/v1": {
+            "retention_days": (1, 365), "max_bytes": (64_000, 100_000_000),
+        },
+    },
+    "upstream-timeouts.json": {
+        "local-search-mcp/upstream-timeouts/v1": {
+            "searxng_seconds": (5, 120), "crawl_seconds": (15, 300),
+        },
+    },
+}
+SETTINGS_NAMES = tuple(SETTINGS_SCHEMAS)
+MAX_SETTINGS_FILE = 1024
+ALLOWED_FILES = (DB_NAME, *HISTORY_NAMES, *SETTINGS_NAMES)
 # history_log.append_history allows 100,000,000 bytes per generation,
 # plus the last bounded record that may cross the rotation threshold.
 MAX_DB_FILE = 64 * 1024 * 1024
 MAX_HISTORY_FILE = 110_000_000
-MAX_TOTAL = MAX_DB_FILE + len(HISTORY_NAMES) * MAX_HISTORY_FILE
+MAX_TOTAL = (MAX_DB_FILE + len(HISTORY_NAMES) * MAX_HISTORY_FILE
+             + len(SETTINGS_NAMES) * MAX_SETTINGS_FILE)
 MAX_ARCHIVE = MAX_TOTAL + 8 * 1024 * 1024
 MANIFEST = "manifest.json"
 
@@ -36,6 +53,33 @@ def state_directory() -> Path:
     xdg = os.environ.get("XDG_STATE_HOME")
     base = Path(xdg).expanduser() if xdg else Path.home() / ".local/state"
     return base / "local-search-mcp"
+
+
+def settings_directory() -> Path:
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".config"
+    return base / "local-search-mcp"
+
+
+def _verify_nonsecret_setting(name: str, raw: bytes) -> None:
+    """Reject every field not explicitly sanctioned as a bounded integer."""
+    if not raw or len(raw) > MAX_SETTINGS_FILE:
+        raise ValueError(f"Invalid nonsecret settings size: {name}")
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeError) as exc:
+        raise ValueError(f"Malformed nonsecret settings: {name}") from exc
+    allowed = SETTINGS_SCHEMAS[name]
+    if not isinstance(doc, dict) or set(doc) != {"schema", "settings"}:
+        raise ValueError(f"Unexpected nonsecret settings structure: {name}")
+    spec = allowed.get(doc["schema"]) if isinstance(doc["schema"], str) else None
+    fields = doc["settings"]
+    if spec is None or not isinstance(fields, dict) or set(fields) != set(spec):
+        raise ValueError(f"Unsupported or unsafe nonsecret settings: {name}")
+    for key, (low, high) in spec.items():
+        value = fields[key]
+        if type(value) is not int or not low <= value <= high:
+            raise ValueError(f"Invalid nonsecret setting: {key}")
 
 
 def _private_file(path: Path, *, max_size: int = MAX_DB_FILE) -> None:
@@ -87,7 +131,8 @@ def _sqlite_snapshot(source: Path) -> bytes:
         return snapshot
 
 
-def _source_files(directory: Path) -> dict[str, bytes]:
+def _source_files(directory: Path, *, config_dir: Path | None = None,
+                  explicit_config_dir: bool = False) -> dict[str, bytes]:
     if directory.is_symlink() or not directory.is_dir():
         raise ValueError("State directory is missing or symlinked")
     st = directory.stat()
@@ -128,6 +173,29 @@ def _source_files(directory: Path) -> dict[str, bytes]:
         total += len(content)
         if total > MAX_TOTAL:
             raise ValueError("State archive exceeds total limit")
+    if config_dir is not None:
+        if config_dir.is_symlink():
+            raise ValueError("Refusing symlinked settings directory")
+        if not config_dir.exists():
+            if explicit_config_dir:
+                raise ValueError("Explicit settings directory is missing")
+        else:
+            if not config_dir.is_dir():
+                raise ValueError("Settings directory must be a real directory")
+            info = config_dir.stat()
+            if info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise ValueError("Settings directory must be privately owned (0700)")
+            for name in SETTINGS_NAMES:
+                path = config_dir / name
+                if not path.exists() and not path.is_symlink():
+                    continue
+                _private_file(path, max_size=MAX_SETTINGS_FILE)
+                raw = path.read_bytes()
+                _verify_nonsecret_setting(name, raw)
+                payload[name] = raw
+                total += len(raw)
+                if total > MAX_TOTAL:
+                    raise ValueError("State archive exceeds total limit")
     return payload
 
 
@@ -145,13 +213,22 @@ def _manifest(payload: dict[str, bytes]) -> bytes:
     return (json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
-def backup(destination: Path, *, state_dir: Path | None = None) -> None:
-    """Atomically publish a private archive, never replacing existing files."""
+def backup(destination: Path, *, state_dir: Path | None = None,
+           config_dir: Path | None = None) -> None:
+    """Atomically publish a private archive, never replacing existing files.
+
+    Explicit alternate state-dir intentionally does not read the operator's
+    default config directory. Pass config-dir to include matching settings.
+    """
     if destination.is_symlink() or destination.exists():
         raise ValueError("Backup destination already exists")
     if not destination.parent.is_dir() or destination.parent.is_symlink():
         raise ValueError("Backup parent must be a real existing directory")
-    contents = _source_files(state_dir or state_directory())
+    selected_config = (config_dir if config_dir is not None else
+                       settings_directory() if state_dir is None else None)
+    contents = _source_files(state_dir or state_directory(),
+                             config_dir=selected_config,
+                             explicit_config_dir=config_dir is not None)
     fd, tmp = tempfile.mkstemp(
         prefix=".mcp-backup-", suffix=".zip", dir=destination.parent
     )
@@ -191,6 +268,7 @@ def verified_payload(archive_path: Path) -> dict[str, bytes]:
                 mode = entry.external_attr >> 16
                 limit = (1024 * 1024 if entry.filename == MANIFEST else
                          MAX_DB_FILE if entry.filename == DB_NAME else
+                         MAX_SETTINGS_FILE if entry.filename in SETTINGS_NAMES else
                          MAX_HISTORY_FILE)
                 if (entry.is_dir() or stat.S_IFMT(mode) == stat.S_IFLNK or
                         entry.file_size > limit or entry.flag_bits & 1):
@@ -215,7 +293,9 @@ def verified_payload(archive_path: Path) -> dict[str, bytes]:
                         set(record) != {"size", "sha256"} or
                         type(record["size"]) is not int or
                         not 0 <= record["size"] <= (
-                            MAX_DB_FILE if name == DB_NAME else MAX_HISTORY_FILE
+                            MAX_DB_FILE if name == DB_NAME else
+                            MAX_SETTINGS_FILE if name in SETTINGS_NAMES else
+                            MAX_HISTORY_FILE
                         ) or
                         not isinstance(record["sha256"], str)):
                     raise ValueError("Malformed backup file metadata")
@@ -223,6 +303,8 @@ def verified_payload(archive_path: Path) -> dict[str, bytes]:
                 if (len(content) != record["size"] or
                         hashlib.sha256(content).hexdigest() != record["sha256"]):
                     raise ValueError(f"Integrity mismatch: {name}")
+                if name in SETTINGS_NAMES:
+                    _verify_nonsecret_setting(name, content)
                 payload[name] = content
             _verify_sqlite(payload[DB_NAME])
             return payload
@@ -259,6 +341,8 @@ def main(argv: list[str] | None = None) -> int:
     create = modes.add_parser("backup", help="Create a private, no-clobber archive")
     create.add_argument("archive", type=Path)
     create.add_argument("--state-dir", type=Path, help="Override source state directory")
+    create.add_argument("--config-dir", type=Path,
+                        help="Explicit private nonsecret settings directory (for --state-dir)")
     check = modes.add_parser("verify", help="Verify hashes and SQLite integrity")
     check.add_argument("archive", type=Path)
     stage = modes.add_parser("restore", help="Restore to a new staging directory")
@@ -267,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.action == "backup":
-            backup(args.archive, state_dir=args.state_dir)
+            backup(args.archive, state_dir=args.state_dir, config_dir=args.config_dir)
             print("Private state archive created (contains sensitive approvals/history)")
         elif args.action == "verify":
             data = verified_payload(args.archive)
