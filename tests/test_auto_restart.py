@@ -125,6 +125,51 @@ class AutoRestartTests(unittest.TestCase):
         self.assertEqual(restarted, [])
         self.assertEqual(self.state.read_text(), original)
 
+    def test_removed_requirements_manifest_needs_explicit_acknowledgement(self):
+        update.initialize(self.root, path=self.state)
+        original = self.state.read_text()
+        (self.root / "requirements.txt").unlink()
+        self.commit("remove requirements manifest")
+        result, restarted, _ = self.check()
+        self.assertIn("Python requirements changed", result)
+        self.assertEqual(restarted, [])
+        self.assertEqual(self.state.read_text(), original)
+        with patch.object(update, "requirements_ready", return_value=True):
+            result, restarted, _ = self.check(dependencies_ready=True)
+        self.assertIn("Restart requested", result)
+        self.assertEqual(restarted, list(update.SERVICES))
+
+    def test_renamed_requirements_manifest_needs_explicit_acknowledgement(self):
+        update.initialize(self.root, path=self.state)
+        (self.root / "config").mkdir()
+        self.git("mv", "requirements.txt", "config/dependencies.txt")
+        self.commit("move requirements manifest")
+        result, restarted, _ = self.check()
+        self.assertIn("Python requirements changed", result)
+        self.assertEqual(restarted, [])
+        with patch.object(update, "requirements_ready", return_value=True):
+            result, restarted, _ = self.check(dependencies_ready=True)
+        self.assertIn("Restart requested", result)
+        self.assertEqual(restarted, list(update.SERVICES))
+
+    def test_removed_manifest_offline_check_requires_valid_environment(self):
+        # An explicit acknowledgment does not bypass virtualenv/pip integrity.
+        (self.root / "requirements.txt").unlink()
+        self.assertFalse(update.requirements_ready(self.root))
+        interpreter = self.root / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.write_text("#!/usr/bin/env python3\\n")
+        success = subprocess.CompletedProcess([], 0)
+        failure = subprocess.CompletedProcess([], 1)
+        with patch.object(update.subprocess, "run", return_value=success) as probe:
+            self.assertTrue(update.requirements_ready(self.root))
+        self.assertIn("pip", probe.call_args.args[0])
+        self.assertIn("check", probe.call_args.args[0])
+        with patch.object(update.subprocess, "run", return_value=failure):
+            self.assertFalse(update.requirements_ready(self.root))
+        with patch.object(update.subprocess, "run", side_effect=OSError("no pip")):
+            self.assertFalse(update.requirements_ready(self.root))
+
     def test_inactive_services_are_not_started(self):
         update.initialize(self.root, path=self.state)
         self.change("bridge.py", "print('new')\n")
