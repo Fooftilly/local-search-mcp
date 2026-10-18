@@ -530,6 +530,114 @@ def decide(domain: str, action: str, new_domain: str = "",
             raise
 
 
+
+MAX_BULK_DECISIONS = 25
+
+
+def bulk_decide(selected: list[str], action: str, *,
+                scope: str = "subdomains", expires_minutes: int = 0,
+                reason: str = "") -> int:
+    """Atomically decide on 1-25 selected *pending* requests from the local UI.
+
+    Each selection carries the opaque request ID displayed with its domain.
+    A stale/recreated request, missing row or changed decision aborts the whole
+    transaction instead of granting access based on an obsolete browser tab.
+    """
+    if not isinstance(selected, list) or not 1 <= len(selected) <= MAX_BULK_DECISIONS:
+        raise ValueError("Select between 1 and 25 pending requests")
+    if action not in ("allow", "deny"):
+        raise ValueError("Bulk action must be Allow or Deny")
+    if scope not in ("exact", "subdomains"):
+        raise ValueError("Invalid rule scope")
+    if type(expires_minutes) is not int or expires_minutes not in (0, 60, 1440, 10080):
+        raise ValueError("Invalid permission duration")
+    if (not isinstance(reason, str) or len(reason) > 160
+            or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in reason)):
+        raise ValueError("Reason must be at most 160 characters without control characters")
+
+    selections: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for item in selected:
+        if not isinstance(item, str) or item.count("|") != 1:
+            raise ValueError("Invalid pending request selection")
+        raw_domain, request_id = item.split("|", 1)
+        domain = normalize_domain(raw_domain)
+        if (domain != raw_domain or not re.fullmatch(r"[a-f0-9]{24}", request_id)
+                or domain in seen):
+            raise ValueError("Invalid or duplicate pending request selection")
+        selections.append((domain, request_id))
+        seen.add(domain)
+
+    with _db() as conn:
+        _seed(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Check the complete selection before applying ANY permission.
+            rows = {}
+            for domain, request_id in selections:
+                row = conn.execute(
+                    "SELECT * FROM domains WHERE domain=?", (domain,)
+                ).fetchone()
+                if (row is None or row["status"] != "pending"
+                        or row["explicit_rule"] != 0
+                        or row["request_id"] != request_id):
+                    raise ValueError("Selection is stale; refresh the dashboard")
+                rows[domain] = row
+
+            now = utcnow()
+            expires_at = ((datetime.fromisoformat(now.replace("Z", "+00:00")) +
+                           timedelta(minutes=expires_minutes)).isoformat(
+                               timespec="seconds").replace("+00:00", "Z")
+                          if expires_minutes else "")
+            status = "allowed" if action == "allow" else "denied"
+            # Process children before ancestors. An explicitly selected child
+            # remains its own rule when a selected parent covers subdomains.
+            for domain, request_id in sorted(
+                    selections, key=lambda pair: (-pair[0].count("."), pair[0])):
+                row = rows[domain]
+                conn.execute(
+                    """UPDATE domains SET status=?,explicit_rule=1,
+                       match_scope=?,expires_at=?,updated_at=?
+                       WHERE domain=? AND request_id=?""",
+                    (status, scope, expires_at, now, domain, request_id))
+                if scope == "subdomains":
+                    children = conn.execute(
+                        """SELECT * FROM domains WHERE explicit_rule=0
+                           AND domain != ? AND domain LIKE '%.' || ?""",
+                        (domain, domain)).fetchall()
+                    conn.executemany(
+                        """INSERT INTO decisions
+                           (at,domain,action,request_id,reason,requested_url,
+                            first_requested_at,last_requested_at,request_count)
+                           VALUES (?,?,'delete',?,?,?,?,?,?)""",
+                        [(now, child["domain"], child["request_id"], reason,
+                          safe_request_origin(child["last_requested_url"])
+                          if child["last_requested_url"] else "",
+                          child["first_requested_at"], child["last_requested_at"],
+                          child["request_count"]) for child in children])
+                    conn.execute(
+                        """DELETE FROM domains WHERE explicit_rule=0
+                           AND domain != ? AND domain LIKE '%.' || ?""",
+                        (domain, domain))
+                conn.execute(
+                    """INSERT INTO decisions
+                       (at,domain,action,request_id,reason,requested_url,
+                        first_requested_at,last_requested_at,request_count)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (now, domain, action, request_id, reason,
+                     safe_request_origin(row["last_requested_url"])
+                     if row["last_requested_url"] else "",
+                     row["first_requested_at"], row["last_requested_at"],
+                     row["request_count"]))
+            # One global invalidation before committing an atomic policy change.
+            invalidate_fetch()
+            conn.commit()
+            return len(selections)
+        except BaseException:
+            conn.rollback()
+            raise
+
+
 def clear_pending_requests() -> int:
     """Delete pending queue entries only, preserving explicit decisions.
 
