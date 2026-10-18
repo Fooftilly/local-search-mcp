@@ -13,6 +13,7 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   const decidedBody = document.getElementById("live-decided");
   const auditBody = document.getElementById("live-audit");
   const historyBody = document.getElementById("live-history");
+  const historySummaryBody = document.getElementById("live-history-summary");
   const status = document.getElementById("live-status");
   const notice = document.getElementById("notification-toggle");
   const storageKey = "local-search-mcp.desktop-notifications.v1";
@@ -381,6 +382,7 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
       if (stopped || generation !== refreshGeneration) return;
       if (isHistory) {
         updateTable(historyBody, data.history_html);
+        updateTable(historySummaryBody, data.history_summary_html);
       } else {
         updateTable(pendingBody, data.pending_html);
         updateTable(decidedBody, data.decided_html);

@@ -1,10 +1,13 @@
-# Indexed private request history (issue #14, first slice)
+# Indexed private request history (issue #14)
 
 The local history dashboard at `http://127.0.0.1:8791/history` now reads
 an indexed SQLite sidecar, built from the existing JSONL history and its three
-rotated files. It supports exact **operation**, **status**, and **domain** filters,
-shows the most recent 25 matching events, and includes grouped counts and
-average duration (ms). Only the loopback-only dashboard exposes this view;
+rotated files. It supports exact **operation**, **status**, and **domain** filters plus a
+rolling UTC time window (**all retained**, last **1 hour**, **24 hours**, or
+**7 days**). The most recent 25 matching events appear above an accessible,
+no-JavaScript-required bar visualization of counts by operation and outcome,
+including average duration in milliseconds. Both tables use the same filters
+and update via same-origin live polling. Only the loopback-only dashboard exposes this view;
 there is no permission-changing MCP tool.
 
 ## Storage, migration and privacy
@@ -27,14 +30,16 @@ there is no permission-changing MCP tool.
   100,000 newest rows is enforced. Expiry purges the sidecar, **not the
   JSONL originals**. Existing JSONL rotation still determines how far back
   the index can be rebuilt after deleting it.
-- The filter only matches full hostnames and statuses; it does not do
-  substring searches over potentially sensitive source text.
+- Filters only match exact hostnames/statuses and bounded time windows; they do
+  not search potentially sensitive source text. The bars show counts for **all**
+  matching retained events, not only the 25 most recent table rows.
 
 ## Operational notes
 
-This is the first observability slice. MCP-native metrics, finer-grained
-cache/error counters, and optional enhanced CLI indexing remain tracked by
-[issue #14](https://github.com/Fooftilly/local-search-mcp/issues/14).
+The indexed view and read-only MCP metrics address the roadmap's basic
+observability scope. The current cache counters cover the bridge process, not
+Crawl4AI's separate internal cache. The history SQLite sidecar is rebuildable,
+while the original JSONL CLI CSV/JSON exports remain available.
 No live firewalling or crawler egress isolation is implied by the dashboard.
 
 ## Read-only MCP operational metrics

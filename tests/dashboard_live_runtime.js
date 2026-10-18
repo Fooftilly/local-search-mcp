@@ -36,9 +36,10 @@ function Notification(name, options) {
 Notification.permission = "granted";
 Notification.requestPermission = async () => "granted";
 
-function createTab(initialDomains) {
+function createTab(initialDomains, view = "policy", query = "") {
   const state = { domains: [...initialDomains], timers: [], handlers: {},
-                  nextSnapshotUs: null, nextSnapshotRun: null, pendingOverride: null };
+                  nextSnapshotUs: null, nextSnapshotRun: null, pendingOverride: null,
+                  historyRows: "history: before", historyBars: "bars: before", lastEndpoint: null };
   const targets = new Map();
   function element(id) {
     if (!targets.has(id)) {
@@ -55,13 +56,13 @@ function createTab(initialDomains) {
     return targets.get(id);
   }
   const document = {
-    documentElement: { dataset: { liveView: "policy" } },
+    documentElement: { dataset: { liveView: view } },
     activeElement: null,
     getElementById: element
   };
   const window = {
     isSecureContext: true, Notification, crypto: webcrypto, localStorage,
-    location: { search: "" },
+    location: { search: query },
     addEventListener(kind, fn) { state.handlers[kind] = fn; },
     setTimeout(fn, ms) {
       const timer = { fn, ms, cancelled: false };
@@ -70,7 +71,8 @@ function createTab(initialDomains) {
     },
     clearTimeout(timer) { timer.cancelled = true; }
   };
-  const fetch = async () => {
+  const fetch = async (endpoint) => {
+    state.lastEndpoint = endpoint;
     const domains = [...state.domains];
     const snapshot = state.nextSnapshotUs ?? ++serverSnapshot;
     const run = state.nextSnapshotRun ?? serverRun;
@@ -84,7 +86,9 @@ function createTab(initialDomains) {
         pending_domains: domains,
         counts: { pending: domains.length, allowed: 0, denied: 0 },
         pending_html: state.pendingOverride ?? "pending: " + domains.join(","),
-        decided_html: "decided: " + domains.join(",")
+        decided_html: "decided: " + domains.join(","),
+        history_html: state.historyRows,
+        history_summary_html: state.historyBars
       })
     };
   };
@@ -329,6 +333,21 @@ async function main() {
     assert.ok(!persisted.includes(secret), "private domain leaked to storage: " + secret);
     assert.ok(!popupText.includes(secret), "private domain leaked to popup: " + secret);
   }
+  // The history tab must refresh both filtered records and summary bars
+  // with the same URL parameters; no policy notification data is involved.
+  const historyTab = createTab([], "history", "?kind=fetch&hours=24&domain=example.org");
+  await settle();
+  assert.match(historyTab.state.lastEndpoint,
+               /^\/live\?view=history&kind=fetch&hours=24&domain=example\.org$/);
+  assert.equal(historyTab.element("live-history").innerHTML, "history: before");
+  assert.equal(historyTab.element("live-history-summary").innerHTML, "bars: before");
+  historyTab.state.historyRows = "history: updated";
+  historyTab.state.historyBars = "bars: updated";
+  await poll(historyTab, 550000);
+  assert.equal(historyTab.element("live-history").innerHTML, "history: updated");
+  assert.equal(historyTab.element("live-history-summary").innerHTML, "bars: updated");
+  historyTab.close();
+
   console.log("dashboard live browser state tests passed");
 }
 main().catch(error => {
