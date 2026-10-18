@@ -26,7 +26,8 @@ def quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
 
 
-def unit_files(python: str, root: Path, *, auto_restart: bool = False, reflog_path: Path | None = None) -> dict[str, str]:
+def unit_files(python: str, root: Path, *, auto_restart: bool = False,
+               reflog_path: Path | None = None, state_path: Path | None = None) -> dict[str, str]:
     """Generate secrets-free unit content with absolute paths."""
     exe = quote(str(Path(python).resolve()))
     launch = quote(str(root / "bootstrap.py"))
@@ -62,11 +63,20 @@ def unit_files(python: str, root: Path, *, auto_restart: bool = False, reflog_pa
         watch_path = str(reflog_path)
         if "\n" in watch_path or "\r" in watch_path:
             raise ValueError("Refusing newline in systemd path")
+        if state_path is None:
+            if __package__:
+                from .restart_on_update import state_file
+            else:
+                from restart_on_update import state_file
+            state_path = state_file().absolute()
+        if not state_path.is_absolute():
+            raise ValueError("Auto-restart state path must be absolute")
         checker = quote(str(root / "scripts" / "restart_on_update.py"))
+        state_argument = quote(str(state_path))
         units.update({
             NAMES[4]: MARKER + "[Unit]\nDescription=Restart local MCP services after local Git updates\n" +
                       "\n[Service]\nType=oneshot\nUMask=0077\nNoNewPrivileges=true\nTimeoutStartSec=90s\n" +
-                      f"ExecStart={exe} {checker}\n",
+                      f"ExecStart={exe} {checker} --state-file {state_argument}\n",
             NAMES[5]: MARKER + "[Unit]\nDescription=Watch local MCP Git HEAD reflog\n" +
                       "\n[Path]\n" + f"PathChanged={watch_path.replace('%', '%%')}\n" +
                       "Unit=local-search-mcp-update.service\n" +
@@ -116,14 +126,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.auto_restart and (args.remove or args.remove_auto_restart):
         parser.error("--auto-restart is only valid for preview or --install")
     folder = destination()
-    files = unit_files(sys.executable, ROOT, auto_restart=args.auto_restart)
+    pinned_state = None
+    if args.auto_restart:
+        if __package__:
+            from .restart_on_update import state_file
+        else:
+            from restart_on_update import state_file
+        pinned_state = state_file().absolute()
+    files = unit_files(sys.executable, ROOT, auto_restart=args.auto_restart,
+                       state_path=pinned_state)
     if args.install:
         if args.auto_restart:
             if __package__:
                 from .restart_on_update import initialize
             else:
                 from restart_on_update import initialize
-            initialize(ROOT)
+            initialize(ROOT, path=pinned_state)
         folder.mkdir(parents=True, exist_ok=True)
         for name, content in files.items():
             write_owned(folder / name, content)
