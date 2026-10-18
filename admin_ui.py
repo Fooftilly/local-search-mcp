@@ -567,7 +567,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length=int(self.headers.get('Content-Length','-1'))
         except ValueError:return self._respond(400,'Invalid size')
-        limit = (128000 if self.path in ('/rules/preview', '/rules/apply')
+        # Form encoding can triple each UTF-8 byte (%HH) before the JSON
+        # parser checks its 48 KB *decoded* limit. Include bounded headroom
+        # for CSRF, preview ticket/state and form field names.
+        limit = (3 * policy_transfer.MAX_JSON_BYTES + 4096
+                 if self.path in ('/rules/preview', '/rules/apply')
                  else 8192 if self.path == '/bulk' else 4096)
         if length < 0 or length > limit:
             return self._respond(413,'Request too large')
