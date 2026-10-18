@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlsplit
 import domain_policy as policy
 import policy_transfer
 import service_status
+import safe_settings
 import history_index
 from dashboard_live_script import LIVE_SCRIPT
 
@@ -348,7 +349,7 @@ def render(query='', message='', kind='success'):
     audit_html = decision_audit_html(query)
     once_html = once_grants_html(query)
     once_log = once_audit_html(query)
-    return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="/status">Service status</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
+    return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="/status">Service status</a><a href="/settings">History settings</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
 <main><h1>Domain approvals</h1><p>Approve or deny domains requested by agents. Changes apply to the next fetch without restarting MCP. The dashboard is accessible only from this computer.</p>{alert}
 <section class="stats"><div class="stat"><span>Awaiting approval</span><b id="live-count-pending">{c['pending']}</b></div><div class="stat"><span>Allowed</span><b id="live-count-allowed">{c['allowed']}</b></div><div class="stat"><span>Denied</span><b id="live-count-denied">{c['denied']}</b></div><div class="stat"><span>Dashboard</span><b style="font-size:14px">127.0.0.1:{PORT}</b></div></section>
 <div class="panel"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="{esc(CSRF)}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><label>Scope <select name="scope"><option value="subdomains">Host + subdomains</option><option value="exact">Exact host only</option></select></label><label>Duration <select name="expires_minutes"><option value="0">Permanent</option><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label><label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Select exact host to exclude subdomains, and optionally set a 1-hour, 24-hour or 7-day expiry. Older rules remain permanent with subdomains. Never approve private-network addresses.</p></div>
@@ -397,6 +398,49 @@ def render(query='', message='', kind='success'):
 <button type="submit">Validate and preview import</button></form>
 <p class="subtle">Imports are atomic, add only missing decisions, and reject conflicting explicit rules. Existing rules, expired grants or a stale preview cannot be silently overwritten. Preview never changes your database. A local confirmation is required before applying.</p></div>
 <div class="panel"><h2 style="margin-top:0">Configuration and safety</h2><p>Search endpoint: <code>127.0.0.1:8888</code> · Crawl endpoint: <code>127.0.0.1:11235</code> · MCP: <code>127.0.0.1:8790/mcp</code> · Dashboard: <code>127.0.0.1:{PORT}</code>.</p><p>Domains are stored in <code>{esc(policy.database_path())}</code>. Your existing credentials stay in the launcher’s private configuration and are not displayed here.</p><p class="small">Unknown domains generate a pending request rather than a Python traceback. Only the user can approve them here; agents cannot invoke a tool to grant access. A domain's DNS is also checked for public addresses before an allowed fetch. Crawl4AI should still be isolated from your local network to guard against redirects and DNS rebinding.</p></div></main></body></html>'''
+
+
+def history_settings_page(message="", kind="success"):
+    """Owner-only local settings page; fields are allowlisted, never secrets."""
+    info = safe_settings.dashboard_settings()
+    vals = info["values"]
+    locked = not info["editable"]
+    note = ('An environment override is present. Saved values below are '
+            'inactive for overridden fields; remove the override and restart '
+            'before editing settings in this dashboard.'
+            if locked else
+            'Changes apply to the next history operation in the running '
+            'process, without restarting. Older records already deleted '
+            'by retention cannot be recovered.')
+    alerts = ('<p class="alert ' + ("error" if kind == "error" else "success") +
+              '">' + esc(message) + '</p>') if message else ''
+    override = ''.join('<li>' + esc(key) + ': ' +
+                       ("environment override" if info["environment_override"][key]
+                        else "saved or default") + '</li>' for key in vals)
+    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            f'<meta name="referrer" content="no-referrer">'
+            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<title>Local Search MCP — History settings</title><style>{CSS}</style>'
+            '</head><body><main><h1>Nonsecret history settings</h1>' +
+            alerts + '<p>' + esc(note) + '</p><ul>' + override + '</ul>'
+            '<form method="post" action="/settings">'
+            '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
+            '<input type="hidden" name="state" value="' + esc(info["state"]) + '">'
+            '<label>Indexed history retention (1–365 days) '
+            '<input type="number" name="retention_days" min="1" max="365" '
+            'required value="' + str(vals["retention_days"]) + '"></label>'
+            '<label>JSONL rotation size (64,000–100,000,000 bytes) '
+            '<input type="number" name="max_bytes" min="64000" '
+            'max="100000000" required value="' + str(vals["max_bytes"]) + '"></label>'
+            '<label>Type APPLY <input name="confirm" required pattern="APPLY" '
+            'maxlength="5"></label><button type="submit"' +
+            (' disabled' if locked else '') + '>Apply history settings</button>'
+            '</form><p class="subtle">The values are stored in a separate '
+            'owner-only file; this panel never displays or modifies API keys, '
+            'tunnel credentials, private configuration, domain rules or paths. '
+            'Changing retention controls future pruning of the derived index; '
+            'changing size affects the next JSONL append/rotation.</p>'
+            '<p><a href="/">Return to domain approvals</a></p></main></body></html>')
 
 
 def status_page():
@@ -522,6 +566,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._respond(400, 'Invalid history filter')
             return self._respond(200,json.dumps(live_snapshot(q,view,filters)),
                                  'application/json; charset=utf-8')
+        if path.path=='/settings':
+            if not self._read_origin_valid():return self._respond(403,'Forbidden')
+            try:
+                return self._respond(200,history_settings_page())
+            except (ValueError, OSError):
+                return self._respond(400,'Nonsecret settings unavailable; inspect permissions and file contents')
         if path.path=='/status':
             if not self._read_origin_valid():return self._respond(403,'Forbidden')
             return self._respond(200,status_page())
@@ -587,7 +637,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._post_origin_valid():
             return self._respond(403,'Invalid origin')
         if self.path not in ('/domain', '/pending/clear', '/bulk', '/once',
-                             '/rules/preview', '/rules/apply'):
+                             '/rules/preview', '/rules/apply', '/settings'):
             return self._respond(404,'Not found')
         try:
             length=int(self.headers.get('Content-Length','-1'))
@@ -613,6 +663,15 @@ class Handler(BaseHTTPRequestHandler):
             removed = policy.clear_pending_requests()
             return self._respond(200,render(message=f"Cleared {removed} pending requests."))
         try:
+            if self.path == '/settings':
+                if val('confirm') != 'APPLY':
+                    raise ValueError('Type APPLY to confirm the settings update')
+                safe_settings.update_settings({
+                    'retention_days': val('retention_days'),
+                    'max_bytes': val('max_bytes'),
+                }, val('state'))
+                return self._respond(200,history_settings_page(
+                    message='History settings saved; effective for subsequent history operations.'))
             if self.path == '/rules/preview':
                 plan = policy_transfer.preview_import(val('rule_doc'))
                 return self._respond(200, import_preview_html(plan))
