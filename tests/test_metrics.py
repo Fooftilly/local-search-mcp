@@ -73,6 +73,17 @@ class MetricsTests(unittest.IsolatedAsyncioTestCase):
                        "PRIVATE_DOCUMENT", "password=PRIVATE", "safe.example.org"):
             self.assertNotIn(secret, repr(response))
 
+    async def test_untrusted_historical_status_is_not_exposed_to_mcp(self):
+        append_history({
+            "time_utc": datetime.now(timezone.utc).isoformat(),
+            "kind": "fetch", "status": "Bearer_PRIVATE_STATUS_VALUE",
+            "duration_ms": 1, "url": "https://example.org/secret",
+        })
+        stats = bridge.web_metrics()
+        self.assertTrue(stats["success"])
+        self.assertEqual(stats["history"]["outcomes"][0]["status"], "other")
+        self.assertNotIn("PRIVATE_STATUS_VALUE", repr(stats))
+
     async def test_time_windows_retain_only_recent_events(self):
         now = datetime.now(timezone.utc)
         append_history({
