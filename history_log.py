@@ -48,9 +48,15 @@ def append_history(event: dict) -> None:
         raise OSError("Refusing symlink in history directory/file")
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(directory, 0o700)
-    # Validated nonsecret local setting; environment overrides keep their
-    # historical precedence and clamp behavior.
-    max_bytes = safe_settings.effective_value("max_bytes")
+    # A damaged/unsafe settings file must not disable all audit logging.
+    # Keep the file untouched and use the original bounded default for
+    # this append; subsequent operations will retry the saved setting.
+    try:
+        max_bytes = safe_settings.effective_value("max_bytes")
+    except (ValueError, OSError) as exc:
+        logging.warning("History rotation setting unavailable (%s); using default",
+                        type(exc).__name__)
+        max_bytes = safe_settings.DEFAULTS["max_bytes"]
     keep = 3
     line = (json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
     lock_path = directory / ".history.lock"

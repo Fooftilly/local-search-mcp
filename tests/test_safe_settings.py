@@ -108,11 +108,40 @@ class HistorySettingsTests(unittest.TestCase):
             safe_settings.dashboard_settings()
 
     def test_old_jsonl_writer_picks_up_rotation_size_setting(self):
+        target = self.tmp / "state" / "history.jsonl"
+        rotated = target.with_name(target.name + ".1")
+        first = {"kind": "search", "time_utc": "2026-10-18T01:00:00Z",
+                 "query": "a" * 40_000}
+        second = {**first, "query": "b" * 40_000}
+        history_log.append_history(first)
+        self.assertFalse(rotated.exists())
         state = safe_settings.dashboard_settings()["state"]
         safe_settings.update_settings(self.fields(size="64000"), state)
         self.assertEqual(safe_settings.effective_value("max_bytes"), 64000)
-        history_log.append_history({"kind": "search", "time_utc": "2026-10-18T01:00:00Z"})
-        self.assertTrue((self.tmp / "state" / "history.jsonl").exists())
+        # Two 40 KB events are below the old 8 MB default but exceed 64 KB.
+        history_log.append_history(second)
+        self.assertTrue(rotated.exists())
+        self.assertEqual(json.loads(rotated.read_text())["query"], first["query"])
+        self.assertEqual(json.loads(target.read_text())["query"], second["query"])
+
+    def test_audit_writes_survive_invalid_nonsecret_settings(self):
+        directory = self.tmp / "config" / "local-search-mcp"
+        directory.mkdir(parents=True, mode=0o700)
+        settings = directory / safe_settings.FILENAME
+        settings.write_text("invalid-json")
+        settings.chmod(0o600)
+        for index, permission in enumerate((0o600, 0o644)):
+            settings.chmod(permission)
+            with self.subTest(permission=permission), self.assertLogs(level="WARNING") as logs:
+                history_log.append_history({
+                    "kind": "search", "time_utc": "2026-10-18T01:00:00Z",
+                    "query": f"fallback-{index}",
+                })
+            self.assertIn("using default", " ".join(logs.output))
+        target = self.tmp / "state" / "history.jsonl"
+        self.assertEqual([json.loads(line)["query"] for line in target.read_text().splitlines()],
+                         ["fallback-0", "fallback-1"])
+        self.assertEqual(settings.read_text(), "invalid-json")
 
 
 class HistorySettingsHTTPTests(HistorySettingsTests):
@@ -155,13 +184,43 @@ class HistorySettingsHTTPTests(HistorySettingsTests):
         self.assertEqual(self.request("POST", "/settings", data=form)[0], 200)
         self.assertEqual(history_index._retention_days(), 10)
         self.assertEqual(safe_settings.effective_value("max_bytes"), 64000)
-        self.assertEqual(self.request("POST", "/settings", data=form)[0], 400)
+        status, page = self.request("POST", "/settings", data=form)
+        self.assertEqual(status, 400)
+        self.assertIn("History settings", page)
+        self.assertIn("Settings changed", page)
+        # Preserve the stale CAS token so another click cannot silently
+        # overwrite the intervening update; a refresh is required.
+        self.assertIn(f'name="state" value="{form["state"]}"', page)
+        self.assertNotIn("Domain approvals", page)
+        status, page = self.request("POST", "/settings", data={
+            **form, "confirm": "apply", "max_bytes": "65000"})
+        self.assertEqual(status, 400)
+        self.assertIn("Type APPLY", page)
+        self.assertIn('value="65000"', page)
         self.assertEqual(self.request("POST", "/settings", data={
             **form, "csrf": "wrong"})[0], 403)
-        self.assertEqual(self.request("POST", "/settings", data={
+        status, page = self.request("POST", "/settings", data={
             **form, "state": safe_settings.dashboard_settings()["state"],
-            "retention_days": "366"})[0], 400)
+            "retention_days": "366"})
+        self.assertEqual(status, 400)
+        self.assertIn("History settings", page)
+        self.assertIn("retention_days must be between", page)
+        self.assertIn('value="366"', page)
         self.assertEqual(history_index._retention_days(), 10)
+
+    def test_corrupt_settings_document_post_returns_safe_error(self):
+        directory = self.tmp / "config" / "local-search-mcp"
+        directory.mkdir(parents=True, mode=0o700)
+        settings = directory / safe_settings.FILENAME
+        settings.write_text("not-json")
+        settings.chmod(0o600)
+        status, page = self.request("POST", "/settings", data={
+            "csrf": admin_ui.CSRF, "state": "0" * 64,
+            "retention_days": "10", "max_bytes": "64000",
+            "confirm": "APPLY"})
+        self.assertEqual(status, 400)
+        self.assertIn("Nonsecret settings unavailable", page)
+        self.assertEqual(settings.read_text(), "not-json")
 
     def test_cross_origin_get_and_post_blocked(self):
         for headers in ({"Host": "evil.example"},
@@ -185,10 +244,13 @@ class HistorySettingsHTTPTests(HistorySettingsTests):
             self.assertIn("disabled", page)
             self.assertIn("environment override", page)
             state = safe_settings.dashboard_settings()["state"]
-            self.assertEqual(self.request("POST", "/settings", data={
+            status, page = self.request("POST", "/settings", data={
                 "csrf": admin_ui.CSRF, "state": state,
                 "retention_days": "10", "max_bytes": "64000",
-                "confirm": "APPLY"})[0], 400)
+                "confirm": "APPLY"})
+            self.assertEqual(status, 400)
+            self.assertIn("History settings", page)
+            self.assertIn("Environment overrides are active", page)
         self.assertEqual(safe_settings.dashboard_settings()["values"],
                          safe_settings.DEFAULTS)
 

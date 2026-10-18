@@ -400,10 +400,14 @@ def render(query='', message='', kind='success'):
 <div class="panel"><h2 style="margin-top:0">Configuration and safety</h2><p>Search endpoint: <code>127.0.0.1:8888</code> · Crawl endpoint: <code>127.0.0.1:11235</code> · MCP: <code>127.0.0.1:8790/mcp</code> · Dashboard: <code>127.0.0.1:{PORT}</code>.</p><p>Domains are stored in <code>{esc(policy.database_path())}</code>. Your existing credentials stay in the launcher’s private configuration and are not displayed here.</p><p class="small">Unknown domains generate a pending request rather than a Python traceback. Only the user can approve them here; agents cannot invoke a tool to grant access. A domain's DNS is also checked for public addresses before an allowed fetch. Crawl4AI should still be isolated from your local network to guard against redirects and DNS rebinding.</p></div></main></body></html>'''
 
 
-def history_settings_page(message="", kind="success"):
+def history_settings_page(message="", kind="success", submitted=None):
     """Owner-only local settings page; fields are allowlisted, never secrets."""
     info = safe_settings.dashboard_settings()
     vals = info["values"]
+    # Keep a rejected form intact, including its stale version: never silently
+    # upgrade the CAS token and risk overwriting a concurrent settings change.
+    displayed = ({**vals, "state": info["state"]}
+                 if submitted is None else submitted)
     locked = not info["editable"]
     note = ('An environment override is present. Saved values below are '
             'inactive for overridden fields; remove the override and restart '
@@ -425,13 +429,13 @@ def history_settings_page(message="", kind="success"):
             alerts + '<p>' + esc(note) + '</p><ul>' + override + '</ul>'
             '<form method="post" action="/settings">'
             '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
-            '<input type="hidden" name="state" value="' + esc(info["state"]) + '">'
+            '<input type="hidden" name="state" value="' + esc(displayed["state"]) + '">'
             '<label>Indexed history retention (1–365 days) '
             '<input type="number" name="retention_days" min="1" max="365" '
-            'required value="' + str(vals["retention_days"]) + '"></label>'
+            'required value="' + esc(displayed["retention_days"]) + '"></label>'
             '<label>JSONL rotation size (64,000–100,000,000 bytes) '
             '<input type="number" name="max_bytes" min="64000" '
-            'max="100000000" required value="' + str(vals["max_bytes"]) + '"></label>'
+            'max="100000000" required value="' + esc(displayed["max_bytes"]) + '"></label>'
             '<label>Type APPLY <input name="confirm" required pattern="APPLY" '
             'maxlength="5"></label><button type="submit"' +
             (' disabled' if locked else '') + '>Apply history settings</button>'
@@ -664,18 +668,31 @@ class Handler(BaseHTTPRequestHandler):
             return self._respond(200,render(message=f"Cleared {removed} pending requests."))
         try:
             if self.path == '/settings':
-                if val('confirm') != 'APPLY':
-                    raise ValueError('Type APPLY to confirm the settings update')
+                submitted = {
+                    'retention_days': val('retention_days'),
+                    'max_bytes': val('max_bytes'),
+                    'state': val('state'),
+                }
                 try:
+                    if val('confirm') != 'APPLY':
+                        raise ValueError('Type APPLY to confirm the settings update')
                     safe_settings.update_settings({
-                        'retention_days': val('retention_days'),
-                        'max_bytes': val('max_bytes'),
-                    }, val('state'))
-                except OSError as exc:
-                    # File and permission errors must not disclose private
-                    # paths or escape as a dropped HTTP connection.
-                    raise ValueError('Cannot safely save nonsecret settings') from exc
-                return self._respond(200,history_settings_page(
+                        'retention_days': submitted['retention_days'],
+                        'max_bytes': submitted['max_bytes'],
+                    }, submitted['state'])
+                except (ValueError, OSError) as exc:
+                    # Keep a rejected edit on the settings page, not the domain
+                    # approvals page. Never expose filesystem paths in errors.
+                    message = ('Cannot safely save nonsecret settings'
+                               if isinstance(exc, OSError) else str(exc))
+                    try:
+                        return self._respond(400, history_settings_page(
+                            message=message, kind='error', submitted=submitted))
+                    except (ValueError, OSError):
+                        # The saved document itself may be malformed/unsafe.
+                        return self._respond(400,
+                            'Nonsecret settings unavailable; inspect permissions and file contents')
+                return self._respond(200, history_settings_page(
                     message='History settings saved; effective for subsequent history operations.'))
             if self.path == '/rules/preview':
                 plan = policy_transfer.preview_import(val('rule_doc'))
