@@ -14,6 +14,7 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 import domain_policy as policy
+import history_index
 from dashboard_live_script import LIVE_SCRIPT
 
 HOST='127.0.0.1'
@@ -52,21 +53,32 @@ def recent_history(n=25):
     except (ImportError,OSError):return []
 
 
-def history_items_html():
-    items = recent_history()
+def history_items_html(kind="", status="", domain=""):
+    try:
+        items = history_index.search_history(kind=kind, status=status, domain=domain)
+    except (OSError, ValueError, sqlite3.Error):
+        return '<tr><td colspan="5">Indexed history is unavailable; check local configuration.</td></tr>'
     out = []
-    for e in items:
-        term = e.get('query', e.get('url', ''))
-        out.append(f'<tr><td class="small">{esc(e.get("time_utc",""))}</td><td>{esc(e.get("kind",""))}</td><td>{esc(e.get("status",""))}</td><td class="domain">{esc(str(term)[:180])}</td></tr>')
-    return ''.join(out) or '<tr><td colspan="4">No MCP history yet.</td></tr>'
+    for event in items:
+        stamp = datetime.fromtimestamp(
+            event["at_ms"] / 1000, timezone.utc).isoformat().replace("+00:00", "Z")
+        elapsed = (str(event["duration_ms"]) if event["duration_ms"] is not None else "—")
+        out.append(
+            f'<tr><td class="small">{esc(stamp)}</td><td>{esc(event["kind"])}</td>'
+            f'<td>{esc(event["status"])}</td><td class="domain">{esc(event["domain"])}</td>'
+            f'<td>{esc(elapsed)}</td></tr>')
+    return ''.join(out) or '<tr><td colspan="5">No matching MCP history.</td></tr>'
 
 
-def recent_rows():
-    return ('<div class="scroll"><table><thead><tr><th>UTC time</th><th>Operation</th><th>Status</th><th>Query or URL</th></tr></thead>'
-            '<tbody id="live-history">' + history_items_html() + '</tbody></table></div>')
+def recent_rows(kind="", status="", domain=""):
+    return ('<div class="scroll"><table><thead><tr><th>UTC time</th>'
+            '<th>Operation</th><th>Status</th><th>Domain</th>'
+            '<th>Duration (ms)</th></tr></thead>'
+            '<tbody id="live-history">' +
+            history_items_html(kind, status, domain) + '</tbody></table></div>')
 
 
-def live_snapshot(query='', view='policy'):
+def live_snapshot(query='', view='policy', history_filters=None):
     """Order loopback snapshots across threads, including out-of-order delivery.
 
     Each policy snapshot has a strictly increasing, safely representable
@@ -74,7 +86,7 @@ def live_snapshot(query='', view='policy'):
     than regressing a newer shared pending-queue baseline.
     """
     if view == 'history':
-        return {'history_html': history_items_html()}
+        return {'history_html': history_items_html(**(history_filters or {}))}
     global _LAST_LIVE_SNAPSHOT_US
     with _LIVE_SNAPSHOT_LOCK:
         pending_rows = policy.entries(query, limit=200, status='pending')
@@ -220,8 +232,22 @@ def render(query='', message='', kind='success'):
 <div class="panel"><h2 style="margin-top:0">Configuration and safety</h2><p>Search endpoint: <code>127.0.0.1:8888</code> · Crawl endpoint: <code>127.0.0.1:11235</code> · MCP: <code>127.0.0.1:8790/mcp</code> · Dashboard: <code>127.0.0.1:{PORT}</code>.</p><p>Domains are stored in <code>{esc(policy.database_path())}</code>. Your existing credentials stay in the launcher’s private configuration and are not displayed here.</p><p class="small">Unknown domains generate a pending request rather than a Python traceback. Only the user can approve them here; agents cannot invoke a tool to grant access. A domain's DNS is also checked for public addresses before an allowed fetch. Crawl4AI should still be isolated from your local network to guard against redirects and DNS rebinding.</p></div></main></body></html>'''
 
 
-def history_page():
-    return f'<!doctype html><html lang="en" data-live-view="history"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — History</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a></nav></header><main><h1>Recent MCP requests</h1><p>The last 25 entries from your existing JSONL history. No API secrets or full fetched page contents are stored here.</p>{recent_rows()}<p class="subtle" role="status" id="live-status">Live updates starting · manually reload if needed.</p><p><a href="/">Return to domain approvals</a></p></main></body></html>'
+def history_page(kind="", status="", domain=""):
+    try:
+        metrics = history_index.summarize_history()
+    except (OSError, ValueError, sqlite3.Error):
+        metrics = []
+    totals = ''.join(
+        f'<tr><td>{esc(row["kind"])}</td><td>{esc(row["status"])}</td>'
+        f'<td>{int(row["count"])}</td><td>{esc(row["avg_duration_ms"])}</td></tr>'
+        for row in metrics)
+    return f'''<!doctype html><html lang="en" data-live-view="history"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — History</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a></nav></header><main><h1>Indexed request history</h1><p>Private metadata from the existing rotating JSONL files. Filter by operation, outcome, or domain. Search terms, URL paths, tokens and page content are never copied into the SQLite index.</p>
+<form method="get" action="/history"><label>Operation <select name="kind"><option value="">All</option><option value="search"{' selected' if kind == 'search' else ''}>Search</option><option value="fetch"{' selected' if kind == 'fetch' else ''}>Fetch</option><option value="page"{' selected' if kind == 'page' else ''}>Continuation</option></select></label><label>Status <input name="status" value="{esc(status)}" maxlength="48"></label><label>Domain <input name="domain" value="{esc(domain)}" maxlength="253" placeholder="example.org"></label><button>Filter</button></form>
+{recent_rows(kind, status, domain)}
+<p class="subtle" role="status" id="live-status">Live updates starting · manually reload if needed.</p>
+<h2>Outcomes and average latency</h2>
+<div class="scroll"><table><thead><tr><th>Operation</th><th>Outcome</th><th>Count</th><th>Average ms</th></tr></thead><tbody>{totals or '<tr><td colspan="4">No retained events yet.</td></tr>'}</tbody></table></div>
+<p class="subtle">Indexed entries expire after {esc(history_index._retention_days())} days by default (configurable 1–365). JSONL rotation and CLI CSV/JSON export remain unchanged; the index is rebuildable. Search queries may contain private terms in the original JSONL—keep that file private.</p><p><a href="/">Return to domain approvals</a></p></main></body></html>'''
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -283,9 +309,15 @@ class Handler(BaseHTTPRequestHandler):
             view=query.get('view',['policy'])[0]
             if view not in ('policy','history'):return self._respond(400,'Invalid view')
             q=query.get('q',[''])[0][:100]
-            return self._respond(200,json.dumps(live_snapshot(q,view)),
+            filters = {key: query.get(key, [''])[0][:253 if key == 'domain' else 48]
+                       for key in ('kind', 'status', 'domain')} if view == 'history' else None
+            return self._respond(200,json.dumps(live_snapshot(q,view,filters)),
                                  'application/json; charset=utf-8')
-        if path.path=='/history':return self._respond(200,history_page())
+        if path.path=='/history':
+            query=parse_qs(path.query)
+            filters={key: query.get(key, [''])[0][:253 if key == 'domain' else 48]
+                     for key in ('kind', 'status', 'domain')}
+            return self._respond(200,history_page(**filters))
         if path.path!='/':return self._respond(404,'Not found')
         q=parse_qs(path.query).get('q',[''])[0][:100]
         return self._respond(200,render(q))
