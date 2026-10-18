@@ -19,6 +19,9 @@ import tempfile
 if __package__:
     from . import backup_state
 else:
+    # Direct script invocation otherwise puts only scripts/ on sys.path,
+    # hiding the application's policy and history modules.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     import backup_state
 
 
