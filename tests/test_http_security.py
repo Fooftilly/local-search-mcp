@@ -253,6 +253,63 @@ class DashboardHTTPTests(unittest.TestCase):
                 self.assertNotIn(domain, {r["domain"] for r in policy.entries()})
 
 
+    def test_bulk_operator_post_requires_csrf_origin_and_fresh_request_id(self):
+        policy.request("new.example.org",
+                       "https://new.example.org/private/TOKEN?password=PRIVATE")
+        policy.request("other.example.org", "https://other.example.org/")
+        selected = next(row for row in policy.entries()
+                        if row["domain"] == "new.example.org")
+        token = selected["domain"] + "|" + selected["request_id"]
+        status, page, _ = self.exchange("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn(b'action="/bulk"', page)
+        self.assertIn(b'form="bulk-form"', page)
+        self.assertIn(token.encode(), page)
+        self.assertNotIn(b"TOKEN", page)
+        self.assertNotIn(b"PRIVATE", page)
+        request = {"csrf": admin_ui.CSRF, "selected": token, "action": "allow",
+                   "scope": "exact", "expires_minutes": "60",
+                   "reason": "Approved locally"}
+
+        self.assertEqual(self.exchange("GET", "/bulk")[0], 404)
+        self.assertEqual(self.exchange("POST", "/bulk",
+                                       request | {"csrf": "wrong"})[0], 403)
+        self.assertEqual(self.exchange("POST", "/bulk", request,
+                                       {"Origin": "http://evil.example"})[0], 403)
+        self.assertEqual(self.exchange("POST", "/bulk", request,
+                                       {"Sec-Fetch-Site": "cross-site"})[0], 403)
+        self.assertEqual(next(r["status"] for r in policy.entries()
+                              if r["domain"] == "new.example.org"), "pending")
+        self.assertEqual(self.exchange("POST", "/bulk", request)[0], 200)
+        row = next(r for r in policy.entries() if r["domain"] == "new.example.org")
+        self.assertEqual(row["status"], "allowed")
+        self.assertEqual(row["match_scope"], "exact")
+        self.assertTrue(row["expires_at"])
+        audit = policy.recent_decisions(search="new.example.org")[0]
+        self.assertEqual(audit["request_id"], selected["request_id"])
+        self.assertEqual(audit["reason"], "Approved locally")
+        self.assertEqual(audit["requested_url"], "https://new.example.org")
+        self.assertEqual(self.exchange("POST", "/bulk", request)[0], 400)
+
+    def test_bulk_rejects_missing_and_invalid_payload_without_grant(self):
+        policy.request("one.example.org", "https://one.example.org/")
+        row = next(r for r in policy.entries() if r["domain"] == "one.example.org")
+        fields = {"csrf": admin_ui.CSRF, "action": "allow",
+                  "scope": "subdomains", "expires_minutes": "0",
+                  "selected": row["domain"] + "|" + row["request_id"]}
+        for bad in (fields | {"selected": ""},
+                    fields | {"scope": "wrong"},
+                    fields | {"reason": "bad\u0085control"},
+                    fields | {"action": "delete"},
+                    fields | {"expires_minutes": "9999"},
+                    fields | {"selected": "one.example.org|" + "f" * 24}):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.exchange("POST", "/bulk", bad)[0], 400)
+                self.assertEqual(next(r["status"] for r in policy.entries()
+                                      if r["domain"] == "one.example.org"), "pending")
+        self.assertEqual(policy.recent_decisions(search="one.example.org"), [])
+
+
 class DNSBoundaryTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
