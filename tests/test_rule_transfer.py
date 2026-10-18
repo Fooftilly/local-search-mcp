@@ -303,6 +303,37 @@ class TransferHTTPTests(PortableDomainRulesTests):
             "csrf": admin_ui.CSRF, "state": state, "ticket": ticket,
             "rule_doc": new, "confirm": "IMPORT"})[0], 400)
 
+    def test_http_accepts_valid_48kb_json_after_percent_encoding(self):
+        # Newlines are legal JSON whitespace but cost three bytes (%0A)
+        # each in form encoding; a 48 KB document easily exceeds the older
+        # 128 KB Content-Length guard even when decoded size is valid.
+        minimal = self.payload([self.rule("padded.example.net")])
+        doc = minimal + "\n" * (transfer.MAX_JSON_BYTES - len(minimal))
+        self.assertEqual(len(doc.encode("utf-8")), transfer.MAX_JSON_BYTES)
+        encoded = urlencode({"csrf": admin_ui.CSRF, "rule_doc": doc})
+        self.assertGreater(len(encoded.encode("utf-8")), 128_000)
+        preview_status, preview, _ = self.request(
+            "POST", "/rules/preview",
+            data={"csrf": admin_ui.CSRF, "rule_doc": doc})
+        self.assertEqual(preview_status, 200)
+        self.assertIn("New: 1", preview)
+        state = re.search(r'name="state" value="([a-f0-9]{64})"', preview)
+        ticket = re.search(
+            r'name="ticket" value="([0-9]+\\.[a-f0-9]{64})"', preview)
+        self.assertIsNotNone(state)
+        self.assertIsNotNone(ticket)
+        status, _, _ = self.request("POST", "/rules/apply", data={
+            "csrf": admin_ui.CSRF, "rule_doc": doc,
+            "state": state.group(1), "ticket": ticket.group(1),
+            "confirm": "IMPORT"})
+        self.assertEqual(status, 200)
+        self.assertTrue(policy.is_domain_currently_allowed("padded.example.net"))
+        # The larger *decoded* document remains rejected by the JSON limit.
+        oversize, _, _ = self.request(
+            "POST", "/rules/preview",
+            data={"csrf": admin_ui.CSRF, "rule_doc": doc + "\n"})
+        self.assertEqual(oversize, 400)
+
     def test_http_origin_and_csrf_protections_and_no_get_mutations(self):
         doc = self.payload([self.rule()])
         for headers in ({"Origin": "http://evil.invalid"},
