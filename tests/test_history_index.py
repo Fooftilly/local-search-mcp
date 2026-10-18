@@ -67,6 +67,36 @@ class HistoryIndexTests(unittest.TestCase):
             with self.subTest(filters=filters), self.assertRaises(ValueError):
                 history_index.search_history(**filters)
 
+    def test_rolling_time_filters_match_rows_and_summary(self):
+        now = datetime.now(timezone.utc)
+        old = (now - timedelta(hours=3)).isoformat()
+        append_history(event("fetch", "success", time_utc=old,
+                             url="https://docs.example.org/old"))
+        append_history(event("fetch", "blocked", time_utc=now.isoformat(),
+                             url="https://docs.example.org/new"))
+        append_history(event("search", "success", time_utc=now.isoformat(),
+                             query="private search"))
+        hour = history_index.search_history(hours=1)
+        self.assertEqual(len(hour), 2)
+        self.assertEqual(len(history_index.search_history(hours=24)), 3)
+        self.assertEqual(len(history_index.search_history(hours=0)), 3)
+        self.assertEqual(
+            [row["status"] for row in history_index.search_history(
+                hours=1, kind="fetch", domain="docs.example.org")],
+            ["blocked"])
+        summary = history_index.summarize_history(
+            hours=1, kind="fetch", domain="docs.example.org")
+        self.assertEqual([(row["kind"], row["status"], row["count"])
+                          for row in summary], [("fetch", "blocked", 1)])
+        all_summary = history_index.summarize_history(hours=24)
+        self.assertEqual(sum(row["count"] for row in all_summary), 3)
+        for invalid in (-1, 2, True, "24", 10000):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    history_index.search_history(hours=invalid)
+                with self.assertRaises(ValueError):
+                    history_index.summarize_history(hours=invalid)
+
     def test_partial_and_malformed_legacy_lines_never_lose_following_event(self):
         append_history(event("fetch", "success", url="https://one.example.org/"))
         path = history_path()
