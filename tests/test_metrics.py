@@ -19,6 +19,7 @@ class MetricsTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
+        self.tempdir = Path(temp.name)
         environment = patch.dict(os.environ, {
             "XDG_STATE_HOME": temp.name,
             "LOCAL_SEARCH_MCP_HISTORY_FILE": str(Path(temp.name) / "events.jsonl"),
@@ -52,11 +53,15 @@ class MetricsTests(unittest.IsolatedAsyncioTestCase):
         async with Client(bridge.mcp) as client:
             names = {x.name for x in await client.list_tools()}
             self.assertIn("web_metrics", names)
+            metrics_tool = next(t for t in await client.list_tools()
+                                if t.name == "web_metrics")
+            self.assertEqual(set(metrics_tool.inputSchema["properties"]
+                                 ["hours"]["enum"]), {1, 24, 168})
             result = await client.call_tool("web_metrics", {"hours": 24})
             self.assertFalse(result.is_error)
             response = result.data
             self.assertTrue(response["success"])
-            with self.assertRaisesRegex(ToolError, "hours must be"):
+            with self.assertRaises(ToolError):
                 await client.call_tool("web_metrics", {"hours": 0})
         counts = {(x["tool"], x["status"]): x["count"]
                   for x in response["history"]["outcomes"]}
@@ -131,12 +136,48 @@ class MetricsTests(unittest.IsolatedAsyncioTestCase):
         cache.reset_for_test()
         self.assertEqual(cache.metrics_snapshot()["kinds"]["fetch"]["hits"], 0)
 
+    async def test_failed_or_unstorable_refresh_counts_evictions_exactly_once(self):
+        key = ("search", "opaque-private-cache-key")
+        original = {"value": "cached"}
+        request_cache.run("search", key, lambda: original, ttl=60)
+
+        def raises():
+            raise RuntimeError("upstream is offline")
+
+        with self.assertRaisesRegex(RuntimeError, "upstream is offline"):
+            request_cache.run("search", key, raises, ttl=60, fresh=True)
+        stats = request_cache.metrics_snapshot()["kinds"]["search"]
+        self.assertEqual(stats["entries"], 0)
+        self.assertEqual(stats["evictions"], 1)
+
+        request_cache.run("search", key, lambda: original, ttl=60)
+        # Failed storage also removes the earlier entry without persisting
+        # anything returned by a declined refresh.
+        result = request_cache.run(
+            "search", key, lambda: {"value": "not cacheable"},
+            ttl=60, fresh=True, should_store=lambda _: False)
+        self.assertEqual(result, {"value": "not cacheable"})
+        stats = request_cache.metrics_snapshot()["kinds"]["search"]
+        self.assertEqual(stats["entries"], 0)
+        self.assertEqual(stats["evictions"], 2)
+
+        # A second failed refresh on an already-empty key cannot increment
+        # the count again.
+        with self.assertRaises(RuntimeError):
+            request_cache.run("search", key, raises, ttl=60, fresh=True)
+        self.assertEqual(
+            request_cache.metrics_snapshot()["kinds"]["search"]["evictions"], 2)
+        self.assertNotIn("opaque-private-cache-key",
+                         repr(request_cache.metrics_snapshot()))
+
     async def test_invalid_history_index_is_degraded_without_leaking_file_paths(self):
         with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_HISTORY_RETENTION_DAYS": "0"}):
             response = bridge.web_metrics()
         self.assertFalse(response["success"])
         self.assertEqual(response["status"], "history_unavailable")
-        self.assertNotIn(self._testMethodName, repr(response))
+        self.assertNotIn(str(self.tempdir), repr(response))
+        self.assertNotIn(str(self.tempdir / "events.jsonl"), repr(response))
+        self.assertNotIn(str(self.tempdir / "events.jsonl.sqlite3"), repr(response))
         self.assertIn("cache", response)
 
 
