@@ -88,7 +88,7 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(service_status._endpoint("http://127.0.0.1"),
                          ("127.0.0.1", 80))
         self.assertEqual(service_status._endpoint("https://localhost"),
-                         ("localhost", 443))
+                         ("127.0.0.1", 443))
 
     def test_down_service_is_not_reported_healthy(self):
         with patch.dict(os.environ, clear=True):
