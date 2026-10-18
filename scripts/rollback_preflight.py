@@ -46,8 +46,10 @@ def _clean_checkout(root: Path) -> bool:
     return not result.stdout
 
 
-def preflight(target: str, archive: Path, *, root: Path = ROOT) -> str:
+def preflight(target: str, archive: Path, *, root: Path | None = None) -> str:
     """Fail closed unless the target, checkout and existing backup pass checks."""
+    if root is None:
+        root = ROOT
     if not _SHA.fullmatch(target):
         raise ValueError("Target must be an exact lowercase full Git commit SHA")
     update.verify_checkout(root, read_only=True)

@@ -1,9 +1,11 @@
 """Offline rollback preflight regression tests using private temporary Git state."""
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, redirect_stdout, redirect_stderr
+import io
 import os
 from pathlib import Path
+import shlex
 import sqlite3
 import subprocess
 import tempfile
@@ -116,6 +118,10 @@ class RollbackPreflightTests(unittest.TestCase):
                 self.assertEqual(env["GIT_NO_LAZY_FETCH"], "1")
                 self.assertEqual(env["GIT_OPTIONAL_LOCKS"], "0")
                 self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+                self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
+                self.assertEqual(env["GIT_CONFIG_KEY_0"], "core.fsmonitor")
+                self.assertEqual(env["GIT_CONFIG_VALUE_0"], "false")
+                self.assertNotIn("GIT_CONFIG_PARAMETERS", env)
                 commands.append(tuple(args))
             return real_run(args, **kwargs)
         with patch.object(rollback.subprocess, "run", side_effect=spy):
@@ -126,6 +132,25 @@ class RollbackPreflightTests(unittest.TestCase):
         self.assertTrue(any("diff" in x for x in commands))
         self.assertTrue(any("ls-files" in x for x in commands))
 
+    def test_fsmonitor_hook_cannot_run_during_offline_preflight(self):
+        marker = Path(self.tmp.name) / "fsmonitor-invoked"
+        hook = Path(self.tmp.name) / "fsmonitor-hook"
+        hook.write_text(
+            "#!/bin/sh\nprintf 'executed' > " + shlex.quote(str(marker)) + "\n"
+        )
+        hook.chmod(0o700)
+        self.git("config", "core.fsmonitor", str(hook))
+        # Demonstrate that Git would execute this hook without the override.
+        self.git("status", "--porcelain=v1")
+        self.assertTrue(marker.exists(), "Fixture must exercise an active hook")
+        marker.unlink()
+        env_override = "'core.fsmonitor=" + str(hook) + "'"
+        with patch.dict(os.environ, {"GIT_CONFIG_PARAMETERS": env_override}):
+            result = rollback.preflight(self.target, self.archive, root=self.root)
+        self.assertIn("Offline rollback preflight passed", result)
+        self.assertFalse(marker.exists(),
+                         "Read-only preflight must not invoke configured hooks")
+
     def test_changes_during_archive_validation_fail_closed(self):
         original = backup_state.verified_payload
         def move_checkout(archive):
@@ -135,12 +160,27 @@ class RollbackPreflightTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "changed during preflight"):
                 rollback.preflight(self.target, self.archive, root=self.root)
 
-    def test_cli_failure_leaves_checkout_unchanged(self):
-        with patch.object(rollback, "ROOT", self.root):
-            # Explicit root for direct function tests; the installed CLI resolves
-            # its own checkout and cannot take a remote worktree path.
-            self.assertEqual(rollback.main(["--target", "invalid",
-                                            "--archive", str(self.archive)]), 1)
+    def test_cli_uses_injected_checkout_and_leaves_it_unchanged(self):
+        output, errors = io.StringIO(), io.StringIO()
+        with patch.object(rollback, "ROOT", self.root), \
+             redirect_stdout(output), redirect_stderr(errors):
+            self.assertEqual(
+                rollback.main(["--target", self.target,
+                               "--archive", str(self.archive)]), 0,
+                errors.getvalue(),
+            )
+        self.assertIn("Offline rollback preflight passed", output.getvalue())
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.current)
+        self.assertEqual(self.archive.read_bytes(), self.initial_archive)
+
+    def test_cli_invalid_target_is_rejected(self):
+        errors = io.StringIO()
+        with patch.object(rollback, "ROOT", self.root), redirect_stderr(errors):
+            self.assertEqual(
+                rollback.main(["--target", "invalid",
+                               "--archive", str(self.archive)]), 1,
+            )
+        self.assertIn("exact lowercase full Git commit SHA", errors.getvalue())
         self.assertEqual(self.git("rev-parse", "HEAD"), self.current)
 
 

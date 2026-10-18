@@ -27,9 +27,20 @@ IN_PROGRESS = (
 
 
 def _inspection_env() -> dict[str, str]:
-    """Disable implicit Git writes, promisor fetches and network prompts."""
-    return {**os.environ, "GIT_NO_LAZY_FETCH": "1",
-            "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"}
+    """Keep inspection offline, no-index-write and free of fsmonitor hooks."""
+    env = dict(os.environ)
+    # Environment-injected -c parameters outrank GIT_CONFIG_COUNT. Remove
+    # them so an inherited core.fsmonitor executable cannot run on git status.
+    env.pop("GIT_CONFIG_PARAMETERS", None)
+    env.update({
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.fsmonitor",
+        "GIT_CONFIG_VALUE_0": "false",
+    })
+    return env
 
 
 def run(args: list[str], *, root: Path = ROOT, timeout: int = 15,
