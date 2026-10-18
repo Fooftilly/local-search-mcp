@@ -6,6 +6,7 @@ import types
 import unittest
 import os
 import socket
+import asyncio
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
@@ -128,6 +129,79 @@ class BridgeTests(unittest.TestCase):
             self.module.web_search("password=secret", fresh=False)
             self.assertEqual(len(seen), 10)
             self.assertEqual(set(self.module.request_cache._CACHE), keys_before)
+
+    def test_batch_wait_for_other_host_does_not_leak_expired_early_result(self):
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        early_done = Event()
+
+        def fake_fetch(url, _mode, _fresh):
+            if url.endswith("/early"):
+                early_done.set()
+                return {"url": url, "success": True,
+                        "markdown": "EARLY_TIMED_SECRET"}
+            self.assertTrue(early_done.wait(5))
+            clock[0] = "2026-10-17T13:00:00Z"
+            return {"url": url, "success": True,
+                    "markdown": "SAFE_SLOW_CONTENT"}
+
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns),
+              patch.object(self.module, "web_fetch", side_effect=fake_fetch)):
+            policy.decide("example.org", "allow", scope="exact",
+                          expires_minutes=60)
+            policy.decide("example.net", "allow")
+            clock[0] = "2026-10-17T12:59:59Z"
+            result = asyncio.run(self.module.web_fetch_batch([
+                "https://example.org/early", "https://example.net/slow"
+            ]))
+            rows = [x["result"] for x in result["results"]]
+            self.assertEqual(rows[0]["status"], "blocked")
+            self.assertNotIn("EARLY_TIMED_SECRET", str(result))
+            self.assertEqual(rows[1]["markdown"], "SAFE_SLOW_CONTENT")
+
+    def test_batch_redirect_final_host_expiry_redacts_paged_handle(self):
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        early_done = Event()
+
+        def fake_fetch(url, _mode, _fresh):
+            if url.endswith("/start"):
+                token, _ = self.module.document_pages.save(
+                    "https://final.example.net/doc",
+                    "REDIRECT_TOKEN_SECRET" * 2000, {},
+                    source_url=url,
+                    policy_epoch=self.module.request_cache.policy_epoch())
+                early_done.set()
+                return {"url": "https://final.example.net/doc",
+                        "success": True, "markdown": "FIRST_PAGE_SECRET",
+                        "truncated": True, "document_id": token}
+            self.assertTrue(early_done.wait(5))
+            clock[0] = "2026-10-17T13:00:00Z"
+            return {"url": url, "success": True, "markdown": "SAFE_CONTENT"}
+
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns),
+              patch.object(self.module, "web_fetch", side_effect=fake_fetch),
+              patch.object(self.module.document_pages, "_CACHE", {})):
+            policy.decide("source.example.org", "allow")
+            policy.decide("final.example.net", "allow", expires_minutes=60)
+            policy.decide("safe.example.com", "allow")
+            clock[0] = "2026-10-17T12:59:59Z"
+            result = asyncio.run(self.module.web_fetch_batch([
+                "https://source.example.org/start",
+                "https://safe.example.com/slow"
+            ]))
+            rows = [x["result"] for x in result["results"]]
+            self.assertEqual(rows[0]["status"], "blocked")
+            self.assertNotIn("REDIRECT_TOKEN_SECRET", str(result))
+            self.assertNotIn("FIRST_PAGE_SECRET", str(result))
+            self.assertNotIn("document_id", str(rows[0]))
+            self.assertEqual(rows[1]["markdown"], "SAFE_CONTENT")
 
     def test_document_pages_recheck_expiring_rule_and_reject_old_tokens(self):
         import domain_policy as policy
