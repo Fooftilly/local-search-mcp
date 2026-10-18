@@ -182,7 +182,9 @@ def fetch_many(urls: list[str], mode: str, fresh: bool,
         valid_by_url: dict[str, bool] = {}
         for row in output:
             answer = row["result"]
-            if answer.get("success") is not True:
+            # Even unsuccessful crawls may carry extracted Markdown, public
+            # metadata or continuation handles. They require the same check.
+            if not any(k in answer for k in ("markdown", "metadata", "document_id")):
                 continue
             url = row["requested_url"]
             if url not in valid_by_url:
