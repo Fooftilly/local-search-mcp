@@ -347,6 +347,7 @@ class AutoRestartTests(unittest.TestCase):
                 self.root, ["requirements.txt"]))
 
     def test_pip_replacement_manifest_checks_local_versions(self):
+        (self.root / "config").mkdir()
         self.git("mv", "requirements.txt", "config/dependencies.txt")
         self.change("config/dependencies.txt", "pip>=0\n")
         interpreter = self.root / ".venv" / "bin" / "python"
