@@ -350,6 +350,20 @@ def request(domain: str, safe_url: str):
 
 
 
+def is_domain_currently_allowed(domain: str) -> bool:
+    """Read-only effective permission for already-fetched document content.
+
+    Unlike request(), this never admits new pending entries, increments
+    request counts, or repeats DNS resolution. The caller separately checks
+    the policy epoch for concurrent dashboard mutations.
+    """
+    domain = normalize_domain(domain)
+    with _db() as conn:
+        _seed(conn)
+        rule = _match(conn, domain, utcnow())
+        return rule is not None and rule["status"] == "allowed"
+
+
 def expired_grant_without_active_fallback(domain: str) -> bool:
     """Read-only post-fetch safeguard for in-flight finite permissions.
 
