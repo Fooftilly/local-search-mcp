@@ -475,7 +475,11 @@ def _consume_once_grant(domain: str) -> str | None:
         try:
             now = utcnow()  # After lock acquisition, not before.
             active = _match(conn, domain, now)
-            if active and active["status"] == "denied":
+            # Recheck *both* decisions after BEGIN IMMEDIATE. An operator
+            # may have approved the host after the caller's read-only hint;
+            # never consume its one-use fallback when reusable permission
+            # already exists (or an explicit deny has taken precedence).
+            if active and active["status"] in ("allowed", "denied"):
                 conn.commit()
                 return None
             grant = _matching_once_grant(conn, domain, now)
@@ -505,7 +509,7 @@ def _once_grant_available(domain: str) -> bool:
         _seed(conn)
         now = utcnow()
         active = _match(conn, domain, now)
-        if active and active["status"] == "denied":
+        if active and active["status"] in ("allowed", "denied"):
             return False
         return _matching_once_grant(conn, domain, now) is not None
 
