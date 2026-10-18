@@ -494,6 +494,22 @@ def _consume_once_grant(domain: str) -> str | None:
 
 
 
+def _once_grant_available(domain: str) -> bool:
+    """Read-only hint: avoid DNS preflights for hosts without one-use grants.
+
+    This is not an authorization decision. The atomic claim still rechecks
+    active explicit denials, validity, scope and expiration under a write lock.
+    """
+    domain = normalize_domain(domain)
+    with _db() as conn:
+        _seed(conn)
+        now = utcnow()
+        active = _match(conn, domain, now)
+        if active and active["status"] == "denied":
+            return False
+        return _matching_once_grant(conn, domain, now) is not None
+
+
 def _claim_once_for_public_url(url: str) -> tuple[str, str] | None:
     """Preflight a one-time claim after verifying a public HTTP(S) destination.
 
