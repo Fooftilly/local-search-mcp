@@ -67,6 +67,7 @@ def _db():
                 updated_at TEXT NOT NULL,
                 request_count INTEGER NOT NULL DEFAULT 0,
                 last_requested_at TEXT NOT NULL DEFAULT '',
+                first_requested_at TEXT NOT NULL DEFAULT '',
                 last_requested_url TEXT NOT NULL DEFAULT '',
                 explicit_rule INTEGER NOT NULL DEFAULT 0 CHECK(explicit_rule IN (0,1)),
                 match_scope TEXT NOT NULL DEFAULT 'subdomains' CHECK(match_scope IN ('exact','subdomains')),
@@ -85,6 +86,8 @@ def _db():
                 conn.execute("ALTER TABLE domains ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''")
             if "request_id" not in columns:
                 conn.execute("ALTER TABLE domains ADD COLUMN request_id TEXT NOT NULL DEFAULT ''")
+            if "first_requested_at" not in columns:
+                conn.execute("ALTER TABLE domains ADD COLUMN first_requested_at TEXT NOT NULL DEFAULT ''")
             # Preserve the same opaque ID on existing requests across restart.
             for row in conn.execute("SELECT domain FROM domains WHERE request_id=''").fetchall():
                 conn.execute("UPDATE domains SET request_id=? WHERE domain=?",
@@ -97,7 +100,7 @@ def _db():
                 request_id TEXT NOT NULL DEFAULT '',
                 reason TEXT NOT NULL DEFAULT '',
                 requested_url TEXT NOT NULL DEFAULT '',
-                first_seen_at TEXT NOT NULL DEFAULT '',
+                first_requested_at TEXT NOT NULL DEFAULT '',
                 last_requested_at TEXT NOT NULL DEFAULT '',
                 request_count INTEGER NOT NULL DEFAULT 0
             )""")
@@ -109,7 +112,7 @@ def _db():
                 conn.execute("ALTER TABLE decisions ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
             for name, sql_type in (
                 ("requested_url", "TEXT NOT NULL DEFAULT ''"),
-                ("first_seen_at", "TEXT NOT NULL DEFAULT ''"),
+                ("first_requested_at", "TEXT NOT NULL DEFAULT ''"),
                 ("last_requested_at", "TEXT NOT NULL DEFAULT ''"),
                 ("request_count", "INTEGER NOT NULL DEFAULT 0"),
             ):
@@ -351,9 +354,11 @@ def request(domain: str, safe_url: str):
                     if exact is None:
                         conn.execute("""INSERT INTO domains
                             (domain,status,created_at,updated_at,request_count,
-                             last_requested_at,last_requested_url,request_id)
-                            VALUES (?,'pending',?,?,1,?,?,?)""",
-                            (domain, now, now, now, safe_url[:512], secrets.token_hex(12)))
+                             last_requested_at,first_requested_at,
+                             last_requested_url,request_id)
+                            VALUES (?,'pending',?,?,1,?,?,?,?)""",
+                            (domain, now, now, now, now, safe_url[:512],
+                             secrets.token_hex(12)))
                     else:
                         # Preserve its chosen scope as the default for
                         # local reapproval. _match already ignored the expired
@@ -370,8 +375,11 @@ def request(domain: str, safe_url: str):
                 # the expired rule cannot be added to the bounded queue.
                 target = domain if exact else matched
                 conn.execute("""UPDATE domains SET request_count=request_count+1,
+                    first_requested_at=CASE
+                        WHEN request_count=0 AND first_requested_at='' THEN ?
+                        ELSE first_requested_at END,
                     last_requested_at=?,last_requested_url=? WHERE domain=?""",
-                    (now, safe_url[:512], target))
+                    (now, now, safe_url[:512], target))
             conn.commit()
             return status, matched
         except BaseException:
@@ -460,7 +468,7 @@ def decide(domain: str, action: str, new_domain: str = "",
                           else secrets.token_hex(12))
             snapshot_url = (safe_display_url(existing["last_requested_url"])
                             if existing and existing["last_requested_url"] else "")
-            first_seen_at = existing["created_at"] if existing else now
+            first_requested_at = existing["first_requested_at"] if existing else ""
             last_requested_at = existing["last_requested_at"] if existing else ""
             request_count = existing["request_count"] if existing else 0
             if action in ('allow','deny'):
@@ -490,10 +498,10 @@ def decide(domain: str, action: str, new_domain: str = "",
             conn.execute(
                 """INSERT INTO decisions
                    (at,domain,action,request_id,reason,requested_url,
-                    first_seen_at,last_requested_at,request_count)
+                    first_requested_at,last_requested_at,request_count)
                    VALUES(?,?,?,?,?,?,?,?,?)""",
                 (now,domain,action,request_id,reason,snapshot_url,
-                 first_seen_at,last_requested_at,request_count))
+                 first_requested_at,last_requested_at,request_count))
             # As before, invalidate before the write is visible to readers.
             invalidate_fetch()
             conn.commit()
@@ -528,9 +536,9 @@ def clear_pending_requests() -> int:
             ).fetchone() is not None
             conn.execute("""INSERT INTO decisions
                 (at,domain,action,request_id,requested_url,
-                 first_seen_at,last_requested_at,request_count)
+                 first_requested_at,last_requested_at,request_count)
                 SELECT ?,domain,'delete',request_id,last_requested_url,
-                       created_at,last_requested_at,request_count FROM domains
+                       first_requested_at,last_requested_at,request_count FROM domains
                 WHERE status='pending' AND explicit_rule=0""", (now,))
             result = conn.execute("""DELETE FROM domains
                 WHERE status='pending' AND explicit_rule=0""")
@@ -553,7 +561,7 @@ def recent_decisions(limit: int = 25, search: str = "") -> list[dict]:
     with _db() as conn:
         return [dict(row) for row in conn.execute(
             """SELECT at,domain,action,request_id,reason,requested_url,
-                      first_seen_at,last_requested_at,request_count FROM decisions
+                      first_requested_at,last_requested_at,request_count FROM decisions
                WHERE domain LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT ?""",
             (term, limit)).fetchall()]
 
