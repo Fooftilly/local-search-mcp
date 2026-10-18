@@ -19,7 +19,7 @@ from public_suffix import is_public_suffix, registrable_domain
 from request_cache import invalidate_fetch
 
 UI_URL = "http://127.0.0.1:8791/"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 # Fixed safeguards for agent-created pending requests (not explicit rules).
 MAX_PENDING_TOTAL = 512
 MAX_NEW_PENDING_GLOBAL_PER_HOUR = 128
@@ -136,6 +136,16 @@ def _db():
             conn.execute("""CREATE INDEX IF NOT EXISTS
                 idx_pending_admissions_time
                 ON pending_admissions(admitted_at)""")
+            # One-use capabilities live apart from effective domain rules.
+            # Staging one must NEVER implicitly make request() return allowed.
+            conn.execute("""CREATE TABLE IF NOT EXISTS once_grants (
+                domain TEXT PRIMARY KEY,
+                grant_id TEXT NOT NULL UNIQUE,
+                match_scope TEXT NOT NULL CHECK(match_scope IN ('exact','subdomains')),
+                expires_at TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                consumed_at TEXT NOT NULL DEFAULT ''
+            )""")
             conn.commit()
         except BaseException:
             conn.rollback()
@@ -391,6 +401,136 @@ def request(domain: str, safe_url: str):
             conn.rollback()
             raise
 
+
+
+
+def _stage_once_grant(domain: str, *, scope: str = "exact",
+                      expires_minutes: int = 60) -> str:
+    """Local-only transaction primitive; NOT wired to dashboard or MCP yet.
+
+    This ledger is inert until the guarded fetch call owns a private proof
+    through DNS validation, redirects and final content release. Staging it
+    must never create an effective allowed rule in the normal policy table.
+    """
+    domain = normalize_domain(domain)
+    if scope not in ("exact", "subdomains"):
+        raise ValueError("Invalid one-use rule scope")
+    if type(expires_minutes) is not int or expires_minutes not in (0, 60, 1440, 10080):
+        raise ValueError("Invalid one-use grant duration")
+    with _db() as conn:
+        _seed(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            now = utcnow()
+            active = _match(conn, domain, now)
+            if active and active["status"] == "denied":
+                raise ValueError("An active explicit denial must be changed first")
+            expires = ((datetime.fromisoformat(now.replace("Z", "+00:00"))
+                        + timedelta(minutes=expires_minutes)).isoformat(
+                            timespec="seconds").replace("+00:00", "Z")
+                       if expires_minutes else "")
+            grant_id = secrets.token_hex(16)
+            conn.execute("""INSERT INTO once_grants
+                (domain,grant_id,match_scope,expires_at,created_at,consumed_at)
+                VALUES(?,?,?,?,?,'') ON CONFLICT(domain) DO UPDATE SET
+                grant_id=excluded.grant_id,
+                match_scope=excluded.match_scope,
+                expires_at=excluded.expires_at,
+                created_at=excluded.created_at,consumed_at=''""",
+                (domain, grant_id, scope, expires, now))
+            invalidate_fetch()
+            conn.commit()
+            return grant_id
+        except BaseException:
+            conn.rollback()
+            raise
+
+
+def _matching_once_grant(conn, domain: str, now: str):
+    """Return most-specific unspent, unexpired grant (read under write lock)."""
+    labels = domain.split(".")
+    for i in range(len(labels) - 1):
+        candidate = ".".join(labels[i:])
+        grant = conn.execute("SELECT * FROM once_grants WHERE domain=?",
+                             (candidate,)).fetchone()
+        if (grant is None or grant["consumed_at"] or
+                (grant["expires_at"] and grant["expires_at"] <= now) or
+                (grant["match_scope"] == "exact" and candidate != domain)):
+            continue
+        return grant
+    return None
+
+
+def _consume_once_grant(domain: str) -> str | None:
+    """One atomic SQLite claim across concurrent connections and processes.
+
+    Return a *private* opaque grant ID, never a tool-visible permission. The
+    caller is responsible for DNS validation before claim, for ensuring a
+    restricted operation context, and for checking the proof at content release.
+    """
+    domain = normalize_domain(domain)
+    with _db() as conn:
+        _seed(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            now = utcnow()  # After lock acquisition, not before.
+            active = _match(conn, domain, now)
+            if active and active["status"] == "denied":
+                conn.commit()
+                return None
+            grant = _matching_once_grant(conn, domain, now)
+            if not grant:
+                conn.commit()
+                return None
+            updated = conn.execute("""UPDATE once_grants SET consumed_at=?
+                WHERE domain=? AND grant_id=? AND consumed_at=''
+                  AND (expires_at='' OR expires_at>?)""",
+                (now, grant["domain"], grant["grant_id"], now)).rowcount
+            conn.commit()
+            return grant["grant_id"] if updated == 1 else None
+        except BaseException:
+            conn.rollback()
+            raise
+
+
+def _once_proof_current(domain: str, grant_id: str) -> bool:
+    """Fail-closed post-fetch check: revoke, replacement, expiry, or deny."""
+    if not isinstance(grant_id, str) or not re.fullmatch(r"[a-f0-9]{32}", grant_id):
+        return False
+    try:
+        domain = normalize_domain(domain)
+    except ValueError:
+        return False
+    with _db() as conn:
+        _seed(conn)
+        now = utcnow()
+        active = _match(conn, domain, now)
+        if active and active["status"] == "denied":
+            return False
+        grant = conn.execute(
+            "SELECT * FROM once_grants WHERE grant_id=?", (grant_id,)
+        ).fetchone()
+        return bool(grant and grant["consumed_at"] and
+                    (not grant["expires_at"] or grant["expires_at"] > now) and
+                    (domain == grant["domain"] or (
+                        grant["match_scope"] == "subdomains" and
+                        domain.endswith("." + grant["domain"]))))
+
+
+def _revoke_once_grant(domain: str) -> None:
+    """Explicit operator primitive. In-flight proof becomes invalid."""
+    domain = normalize_domain(domain)
+    with _db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            removed = conn.execute("DELETE FROM once_grants WHERE domain=?",
+                                   (domain,)).rowcount
+            if removed:
+                invalidate_fetch()
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
 
 def is_domain_currently_allowed(domain: str) -> bool:
