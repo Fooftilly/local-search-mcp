@@ -371,14 +371,12 @@ def walk(filename, constrained=False):
                     break
             else:
                 if line.startswith(('-e ', '-e=', '--editable ', '--editable=')):
-                    # The operator reviewed and installed the editable target.
-                    # Check static local project metadata where available; pip
-                    # check remains mandatory even without metadata.
+                    # Editable paths may include extras, e.g. -e .[dev].
                     editable = line.split(' ', 1)[-1] if ' ' in line else line.split('=', 1)[1]
                     if not editable.startswith(('git+', 'https:', 'http:')):
-                        # Pip editable local paths may specify extras:
-                        # -e .[dev] names the '.' project, not a '.[dev]' dir.
-                        local_path = re.sub(r'\[[^\[\]]+\]
+                        local_path = re.sub(r'\[[^\[\]]+\]$', '', editable)
+                        target = (path.parent / local_path).resolve()
+                        if not target.is_relative_to(root) or not target.exists():
                             raise ValueError('Unsafe or missing editable path')
                         pyproject = target / 'pyproject.toml'
                         if pyproject.is_file():
