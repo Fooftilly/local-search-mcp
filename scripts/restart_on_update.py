@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import ast
 import os
+import re
 import shlex
 from pathlib import Path
 import stat
@@ -22,14 +23,25 @@ SERVICES = ("local-search-mcp-bridge.service", "local-search-mcp-tunnel.service"
 IN_PROGRESS = (
     "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD",
     "rebase-apply", "rebase-merge", "sequencer", "index.lock",
-    "HEAD.lock", "packed-refs.lock",
+    "HEAD.lock", "packed-refs.lock", "BISECT_START", "BISECT_LOG",
 )
 
 
 def _inspection_env() -> dict[str, str]:
-    """Disable implicit Git writes, promisor fetches and network prompts."""
-    return {**os.environ, "GIT_NO_LAZY_FETCH": "1",
-            "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"}
+    """Keep inspection offline, no-index-write and free of fsmonitor hooks."""
+    env = dict(os.environ)
+    # Environment-injected -c parameters outrank GIT_CONFIG_COUNT. Remove
+    # them so an inherited core.fsmonitor executable cannot run on git status.
+    env.pop("GIT_CONFIG_PARAMETERS", None)
+    env.update({
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.fsmonitor",
+        "GIT_CONFIG_VALUE_0": "false",
+    })
+    return env
 
 
 def run(args: list[str], *, root: Path = ROOT, timeout: int = 15,
@@ -192,14 +204,113 @@ def affects_runtime(name: str) -> bool:
     return True
 
 
+# Git status / diff-files / ls-files -m can invoke configured clean/process
+# filters when a tracked file has stale index stats, even with no optional
+# locks or textconv. Only use index metadata and staged diff plumbing while
+# inspecting: never open tracked file contents or invoke filter drivers.
+_INDEX_STAT = re.compile(
+    rb"  ctime: (\d+):(\d+)\n"
+    rb"  mtime: (\d+):(\d+)\n"
+    rb"  dev: (\d+)\tino: (\d+)\n"
+    rb"  uid: (\d+)\tgid: (\d+)\n"
+    rb"  size: (\d+)\tflags: ([0-9a-fA-F]+)\n"
+)
+
+
+def _git_index_stat(info: os.stat_result) -> tuple[int, ...]:
+    """Normalize lstat fields to Git's 32-bit unsigned index representation.
+
+    Git's fill_stat_data() truncates seconds, dev/inode, uid/gid and size
+    to unsigned int. For a nonzero size divisible by 2**32 it stores
+    0x80000000 instead of zero (munge_st_size). Avoid false dirty reports
+    on filesystems with 64-bit inode numbers or large sparse files.
+    """
+    u32 = 0xFFFFFFFF
+    size = info.st_size & u32
+    if info.st_size and not size:
+        size = 0x80000000
+    values = (
+        *divmod(info.st_ctime_ns, 1_000_000_000),
+        *divmod(info.st_mtime_ns, 1_000_000_000),
+        info.st_dev, info.st_ino, info.st_uid, info.st_gid, size,
+    )
+    return tuple(int(value) & u32 for value in values)
+
+
+def _tracked_metadata_dirty(root: Path, *, include_untracked: bool = False,
+                            runtime_only: bool = False) -> bool:
+    """Fail closed on any mismatched index stat, without running Git filters.
+
+    A touched-but-unchanged file is conservatively treated as modified.
+    This is a no-hook metadata guard, not a cryptographic content comparison.
+    """
+    env = _inspection_env()
+
+    def run_git(*args: str) -> bytes:
+        return subprocess.run(
+            ["git", *args], cwd=root, capture_output=True, check=True,
+            timeout=15, env=env,
+        ).stdout
+
+    staged = run_git(
+        "diff-index", "--cached", "--name-only", "-z", "--no-ext-diff",
+        "--no-textconv", "HEAD", "--",
+    )
+    if any(not runtime_only or affects_runtime(os.fsdecode(name))
+           for name in staged.split(b"\0") if name):
+        return True
+    # The parent index only records a gitlink commit (mode 160000).
+    # It cannot detect changes *inside* a submodule from top-level metadata.
+    # Conservatively reject any tracked gitlink instead of incorrectly
+    # declaring a dirty/nested worktree clean. This also avoids running
+    # submodule Git commands, hooks, filters, or accessing remotes.
+    gitlinks = run_git("ls-files", "--stage", "-z", "--")
+    for item in gitlinks.split(b"\0"):
+        if not item.startswith(b"160000 "):
+            continue
+        try:
+            submodule = os.fsdecode(item.split(b"\t", 1)[1])
+        except IndexError as exc:
+            raise ValueError("Invalid gitlink metadata") from exc
+        if not runtime_only or affects_runtime(submodule):
+            return True
+    records = run_git("ls-files", "--debug", "-z", "--")
+    pos = 0
+    while pos < len(records):
+        end = records.find(b"\0", pos)
+        if end < 0:
+            raise ValueError("Invalid Git index metadata")
+        name = os.fsdecode(records[pos:end])
+        match = _INDEX_STAT.match(records, end + 1)
+        if match is None:
+            raise ValueError("Cannot safely interpret Git index metadata")
+        pos = match.end()
+        if runtime_only and not affects_runtime(name):
+            continue
+        path = root / name
+        try:
+            info = path.lstat()
+        except OSError:
+            return True
+        # Compare both ctime/mtime and stat identity: this detects touched
+        # files even when Git filters would normalize them to index content.
+        indexed = tuple(int(x) for x in match.groups()[:9])
+        actual = _git_index_stat(info)
+        if indexed != actual or match.group(10) != b"0":
+            return True
+    if include_untracked:
+        return bool(run_git("ls-files", "--others", "--exclude-standard", "-z", "--"))
+    return False
+
+
 def tracked_source_dirty(root: Path, *, read_only: bool = False) -> bool:
     """Do not restart with partially checked-out or locally edited tracked code."""
-    # --no-renames emits individual add/delete paths rather than an R/C record
-    # with an extra NUL-delimited source name (which cannot be sliced as XY path).
+    if read_only:
+        return _tracked_metadata_dirty(root, runtime_only=True)
+    # The mutating update watcher retains its original worktree comparison.
     result = subprocess.run(
         ["git", "status", "--porcelain=v1", "--no-renames", "-z", "--untracked-files=no", "--"],
         cwd=root, capture_output=True, check=True, timeout=15,
-        env=_inspection_env() if read_only else None,
     )
     names = [os.fsdecode(item[3:]) for item in result.stdout.split(b"\0") if item]
     return any(affects_runtime(name) for name in names)

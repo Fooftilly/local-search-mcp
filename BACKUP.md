@@ -85,3 +85,34 @@ Older archives without these optional files remain accepted.
 
 These additions do not implement live rollback, automatically change
 installed services, or download software updates; issue #15 remains open.
+
+## Offline rollback preflight (does not perform a rollback)
+
+Before attempting to return to an older *local ancestor commit*, take and
+verify an owner-only backup of current state using the instructions above.
+The following command confirms that a specified **full Git commit SHA** is
+available locally, is an ancestor of HEAD, that the Git checkout is clean,
+and that the provided private backup passes integrity/schema checks:
+
+```sh
+python3 scripts/rollback_preflight.py --target YOUR_FULL_LOCAL_COMMIT_SHA \
+  --archive "$HOME/local-search-state-2026.zip"
+```
+
+Preflight is opt-in, **offline**, and **non-mutating to live state**:
+Git commands disable optional index writes and partial-clone lazy fetching.
+It refuses staged, unstaged or untracked files, a missing/nonancestor target,
+an invalid or insecure archive, or a checkout that changes while validating.
+The archive verifier temporarily copies SQLite contents for integrity checks;
+no restored files are installed. Never paste a shortened commit ID.
+
+Passing preflight **does not mean rollback is safe**. A previous release may
+not understand current state/database schemas, dependencies, credentials,
+systemd units or tunnel configuration. The tool cannot validate compatibility
+with the selected old commit and never stops services, changes the checkout,
+resets the restart-watcher baseline, or invokes a rollback. Manually stop the
+optional update watcher and affected services; review the Git diff and
+dependencies, check version-specific migration/restore requirements, and use
+a separately reviewed operator-controlled recovery procedure. Do not
+automatically swap a live database based only on this result. Full rollback
+implementation remains tracked under issue #15.
