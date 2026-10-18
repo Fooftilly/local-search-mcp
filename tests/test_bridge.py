@@ -14,6 +14,13 @@ from unittest.mock import patch
 
 import httpx
 
+# The isolated bridge loader temporarily patches sys.modules. Preload these
+# shared singletons before the patch so standalone test execution uses the
+# same policy/cache/document modules as the bridge under test.
+import domain_policy
+import document_pages
+import request_cache
+
 class FakeFastMCP:
     def __init__(self, *_args, **_kwargs):pass
     def tool(self, **_kwargs):
