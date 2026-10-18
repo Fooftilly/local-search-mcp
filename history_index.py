@@ -309,10 +309,17 @@ def operational_metrics(hours: int = 24) -> dict:
                      timedelta(hours=hours)).timestamp() * 1000)
     with closing(sqlite3.connect(index_path(), timeout=10)) as conn:
         rows = conn.execute(
-            """SELECT kind,status,count(*) AS n,
-                      round(avg(duration_ms),1) AS avg_ms
+            """SELECT kind,
+                      CASE WHEN status IN (
+                        'success', 'pending', 'denied', 'blocked', 'error',
+                        'expired_or_unknown', 'approval_queue_full',
+                        'upstream_unavailable', 'invalid_response',
+                        'unavailable_extraction', 'continuation_evicted',
+                        'crawl_failed', 'fetch_error', 'cancelled'
+                      ) THEN status ELSE 'other' END AS safe_status,
+                      count(*) AS n, round(avg(duration_ms),1) AS avg_ms
                FROM history WHERE at_ms>=?
-               GROUP BY kind,status ORDER BY kind,status""",
+               GROUP BY kind,safe_status ORDER BY kind,safe_status""",
             (cutoff_ms,)
         ).fetchall()
     # Keep the output schema fixed: no hostnames, URLs or search terms.
