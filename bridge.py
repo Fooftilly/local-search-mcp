@@ -503,7 +503,7 @@ def web_fetch_page(document_id: str, page: int = 2) -> dict:
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
-def web_metrics(hours: int = 24) -> dict:
+def web_metrics(hours: Literal[1, 24, 168] = 24) -> dict:
     """Read private-text-free operation and cache statistics (last 1/24/168h).
 
     Operation outcomes come from the local, retention-controlled history index.
