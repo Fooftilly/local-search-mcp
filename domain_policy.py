@@ -146,6 +146,21 @@ def _db():
                 created_at TEXT NOT NULL,
                 consumed_at TEXT NOT NULL DEFAULT ''
             )""")
+            # Separate append-only audit because old decisions table has a
+            # CHECK constraint limiting its action names. No bearer IDs here.
+            conn.execute("""CREATE TABLE IF NOT EXISTS once_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                at TEXT NOT NULL, domain TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('stage','consume','revoke')),
+                scope TEXT NOT NULL DEFAULT '',
+                expires_at TEXT NOT NULL DEFAULT '',
+                request_id TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                requested_url TEXT NOT NULL DEFAULT '',
+                first_requested_at TEXT NOT NULL DEFAULT '',
+                last_requested_at TEXT NOT NULL DEFAULT '',
+                request_count INTEGER NOT NULL DEFAULT 0
+            )""")
             conn.commit()
         except BaseException:
             conn.rollback()
@@ -404,19 +419,91 @@ def request(domain: str, safe_url: str):
 
 
 
-def _stage_once_grant(domain: str, *, scope: str = "exact",
-                      expires_minutes: int = 60) -> str:
-    """Local-only transaction primitive; NOT wired to dashboard or MCP yet.
 
-    This ledger is inert until the guarded fetch call owns a private proof
-    through DNS validation, redirects and final content release. Staging it
-    must never create an effective allowed rule in the normal policy table.
+def _validate_once_reason(reason: str) -> None:
+    if (not isinstance(reason, str) or len(reason) > 160
+            or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in reason)):
+        raise ValueError("Reason must be at most 160 characters without control characters")
+
+
+def _record_once_event(conn, domain: str, action: str, now: str, *,
+                       scope: str = "", expires_at: str = "",
+                       reason: str = "") -> None:
+    """Append a sanitized operator/consumption event inside the same DB txn.
+
+    Private grant IDs, URL paths, queries and page content are never stored.
+    """
+    row = conn.execute("SELECT * FROM domains WHERE domain=?", (domain,)).fetchone()
+    conn.execute("""INSERT INTO once_events
+        (at,domain,action,scope,expires_at,request_id,reason,requested_url,
+         first_requested_at,last_requested_at,request_count)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (now, domain, action, scope, expires_at,
+         row["request_id"] if row else "", reason,
+         safe_request_origin(row["last_requested_url"])
+         if row and row["last_requested_url"] else "",
+         row["first_requested_at"] if row else "",
+         row["last_requested_at"] if row else "",
+         row["request_count"] if row else 0))
+
+
+def once_grant_entries(search: str = "", limit: int = 200) -> list[dict]:
+    """Local dashboard status; never reveal private one-use grant IDs."""
+    if not isinstance(search, str) or len(search) > 100:
+        raise ValueError("Invalid one-use filter")
+    if type(limit) is not int or not 1 <= limit <= 500:
+        raise ValueError("Invalid one-use list limit")
+    with _db() as conn:
+        _seed(conn)
+        now = utcnow()
+        rows = conn.execute("""SELECT domain,match_scope,expires_at,created_at,
+                                      consumed_at FROM once_grants
+                               WHERE domain LIKE ? ESCAPE '\\'
+                               ORDER BY created_at DESC,domain LIMIT ?""",
+                            ("%" + search.lower().replace("%", "\\%")
+                             .replace("_", "\\_") + "%", limit)).fetchall()
+        return [{**dict(row), "state": (
+            "consumed" if row["consumed_at"] else
+            "expired" if row["expires_at"] and row["expires_at"] <= now
+            else "available")} for row in rows]
+
+
+def recent_once_events(limit: int = 25, search: str = "") -> list[dict]:
+    """Bounded local audit view; excludes bearer grant identifiers."""
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise ValueError("Invalid one-use audit limit")
+    if not isinstance(search, str) or len(search) > 100:
+        raise ValueError("Invalid one-use audit filter")
+    with _db() as conn:
+        _seed(conn)
+        return [dict(r) for r in conn.execute(
+            """SELECT at,domain,action,scope,expires_at,reason,request_id,
+                      requested_url,first_requested_at,last_requested_at,
+                      request_count FROM once_events
+               WHERE domain LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT ?""",
+            ("%" + search.lower().replace("%", "\\%")
+             .replace("_", "\\_") + "%", limit)).fetchall()]
+
+
+def _stage_once_grant(domain: str, *, scope: str = "exact",
+                      expires_minutes: int = 60,
+                      reason: str = "",
+                      expected_request_id: str | None = None) -> str:
+    """Stage a local-only one-use grant; never make a reusable allow rule.
+
+    Only the loopback dashboard exposes this mutation. A stale pending-row
+    request ID aborts rather than granting from an obsolete browser tab.
     """
     domain = normalize_domain(domain)
     if scope not in ("exact", "subdomains"):
         raise ValueError("Invalid one-use rule scope")
     if type(expires_minutes) is not int or expires_minutes not in (0, 60, 1440, 10080):
         raise ValueError("Invalid one-use grant duration")
+    _validate_once_reason(reason)
+    if (expected_request_id is not None and
+            (not isinstance(expected_request_id, str)
+             or not re.fullmatch(r"[0-9a-f]{24}", expected_request_id))):
+        raise ValueError("Invalid pending request ID")
     with _db() as conn:
         _seed(conn)
         conn.execute("BEGIN IMMEDIATE")
@@ -425,6 +512,16 @@ def _stage_once_grant(domain: str, *, scope: str = "exact",
             active = _match(conn, domain, now)
             if active and active["status"] == "denied":
                 raise ValueError("An active explicit denial must be changed first")
+            if active and active["status"] == "allowed":
+                raise ValueError("Domain already has reusable approval")
+            if expected_request_id is not None:
+                pending = conn.execute(
+                    "SELECT status,explicit_rule,request_id FROM domains WHERE domain=?",
+                    (domain,)).fetchone()
+                if (not pending or pending["status"] != "pending"
+                        or pending["explicit_rule"]
+                        or pending["request_id"] != expected_request_id):
+                    raise ValueError("Pending request changed; refresh before approving")
             expires = ((datetime.fromisoformat(now.replace("Z", "+00:00"))
                         + timedelta(minutes=expires_minutes)).isoformat(
                             timespec="seconds").replace("+00:00", "Z")
@@ -438,6 +535,8 @@ def _stage_once_grant(domain: str, *, scope: str = "exact",
                 expires_at=excluded.expires_at,
                 created_at=excluded.created_at,consumed_at=''""",
                 (domain, grant_id, scope, expires, now))
+            _record_once_event(conn, domain, "stage", now, scope=scope,
+                               expires_at=expires, reason=reason)
             invalidate_fetch()
             conn.commit()
             return grant_id
@@ -490,6 +589,10 @@ def _consume_once_grant(domain: str) -> str | None:
                 WHERE domain=? AND grant_id=? AND consumed_at=''
                   AND (expires_at='' OR expires_at>?)""",
                 (now, grant["domain"], grant["grant_id"], now)).rowcount
+            if updated == 1:
+                _record_once_event(conn, domain, "consume", now,
+                                   scope=grant["match_scope"],
+                                   expires_at=grant["expires_at"])
             conn.commit()
             return grant["grant_id"] if updated == 1 else None
         except BaseException:
@@ -584,15 +687,23 @@ def _once_proof_current(domain: str, grant_id: str) -> bool:
                         domain.endswith("." + grant["domain"]))))
 
 
-def _revoke_once_grant(domain: str) -> None:
+def _revoke_once_grant(domain: str, *, reason: str = "") -> None:
     """Explicit operator primitive. In-flight proof becomes invalid."""
     domain = normalize_domain(domain)
+    _validate_once_reason(reason)
     with _db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            previous = conn.execute(
+                "SELECT match_scope,expires_at FROM once_grants WHERE domain=?",
+                (domain,)).fetchone()
             removed = conn.execute("DELETE FROM once_grants WHERE domain=?",
                                    (domain,)).rowcount
             if removed:
+                _record_once_event(conn, domain, "revoke", utcnow(),
+                                   scope=previous["match_scope"],
+                                   expires_at=previous["expires_at"],
+                                   reason=reason)
                 invalidate_fetch()
             conn.commit()
         except BaseException:
