@@ -319,7 +319,7 @@ class TransferHTTPTests(PortableDomainRulesTests):
         self.assertIn("New: 1", preview)
         state = re.search(r'name="state" value="([a-f0-9]{64})"', preview)
         ticket = re.search(
-            r'name="ticket" value="([0-9]+\\.[a-f0-9]{64})"', preview)
+            r'name="ticket" value="([0-9]+\.[a-f0-9]{64})"', preview)
         self.assertIsNotNone(state)
         self.assertIsNotNone(ticket)
         status, _, _ = self.request("POST", "/rules/apply", data={
