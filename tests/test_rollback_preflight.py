@@ -128,9 +128,11 @@ class RollbackPreflightTests(unittest.TestCase):
             rollback.preflight(self.target, self.archive, root=self.root)
         self.assertTrue(any("merge-base" in x for x in commands))
         self.assertTrue(any("cat-file" in x for x in commands))
-        self.assertTrue(any("status" in x for x in commands))
+        self.assertFalse(any("status" in x or "diff-files" in x for x in commands))
+        self.assertTrue(any("diff-index" in x for x in commands))
+        self.assertTrue(any("ls-files" in x and "--debug" in x for x in commands))
+        self.assertTrue(any("ls-files" in x and "--others" in x for x in commands))
         self.assertTrue(any("diff" in x for x in commands))
-        self.assertTrue(any("ls-files" in x for x in commands))
 
     def test_fsmonitor_hook_cannot_run_during_offline_preflight(self):
         marker = Path(self.tmp.name) / "fsmonitor-invoked"
@@ -150,6 +152,36 @@ class RollbackPreflightTests(unittest.TestCase):
         self.assertIn("Offline rollback preflight passed", result)
         self.assertFalse(marker.exists(),
                          "Read-only preflight must not invoke configured hooks")
+
+    def test_rejects_active_git_bisect_without_changes(self):
+        self.git("bisect", "start")
+        try:
+            self.assertTrue(update.busy(self.root, read_only=True))
+            with self.assertRaisesRegex(ValueError, "Git operation in progress"):
+                rollback.preflight(self.target, self.archive, root=self.root)
+        finally:
+            self.git("bisect", "reset")
+
+    def test_clean_filter_never_executes_in_preflight(self):
+        import shlex
+        marker = Path(self.tmp.name) / "filter-ran"
+        hook = Path(self.tmp.name) / "filter-clean.sh"
+        hook.write_text("#!/bin/sh\nprintf 'executed' >> " +
+                        shlex.quote(str(marker)) + "\ncat\n")
+        hook.chmod(0o700)
+        (self.root / ".gitattributes").write_text("*.txt filter=x\n")
+        (self.root / "filtered.txt").write_text("unchanged\n")
+        self.git("config", "filter.x.clean", str(hook))
+        self.commit("configured clean filter")
+        marker.unlink(missing_ok=True)
+        (self.root / "filtered.txt").touch()
+        # Git status really would execute the configured clean filter.
+        self.git("status", "--porcelain=v1")
+        self.assertTrue(marker.exists())
+        marker.unlink()
+        with self.assertRaisesRegex(ValueError, "not clean"):
+            rollback.preflight(self.target, self.archive, root=self.root)
+        self.assertFalse(marker.exists(), "preflight invoked a clean filter")
 
     def test_changes_during_archive_validation_fail_closed(self):
         original = backup_state.verified_payload

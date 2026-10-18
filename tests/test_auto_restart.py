@@ -89,6 +89,28 @@ class AutoRestartTests(unittest.TestCase):
         self.assertIn("1 dependency input(s) changed", result)
         self.assertIn("explicit --dependencies-ready", result)
 
+    def test_read_only_status_never_runs_configured_clean_filter(self):
+        import shlex
+        update.initialize(self.root, path=self.state)
+        self.change("bridge.py", "print('new commit')\n")
+        self.commit("pending update")
+        outside = Path(self.tmp.name)
+        marker = outside / "clean-filter-executed"
+        hook = outside / "clean-filter.sh"
+        hook.write_text("#!/bin/sh\nprintf 'ran' >> " +
+                        shlex.quote(str(marker)) + "\ncat\n")
+        hook.chmod(0o700)
+        self.change(".gitattributes", "*.txt filter=x\n")
+        self.change("fixture.txt", "sample\n")
+        self.git("config", "filter.x.clean", str(hook))
+        self.commit("enable Git clean filter")
+        marker.unlink(missing_ok=True)
+        (self.root / "fixture.txt").touch()
+        # No Git status command may run from the read-only classification.
+        self.assertIn("tracked runtime edits",
+                      update.inspect_status(self.root, path=self.state))
+        self.assertFalse(marker.exists())
+
     def test_status_missing_invalid_or_symlink_baseline(self):
         self.assertIn("No local update baseline",
                       update.inspect_status(self.root, path=self.state))
@@ -147,7 +169,10 @@ class AutoRestartTests(unittest.TestCase):
         with patch.object(update.subprocess, "run", side_effect=watch):
             status = update.inspect_status(self.root, path=self.state)
         self.assertIn("explicit --dependencies-ready", status)
-        self.assertTrue(any("status" in args for args in inspected))
+        self.assertFalse(any("status" in args or "diff-files" in args
+                             for args in inspected))
+        self.assertTrue(any("diff-index" in args for args in inspected))
+        self.assertTrue(any("--debug" in args for args in inspected))
         self.assertTrue(any("cat-file" in args for args in inspected))
         self.assertTrue(any("diff" in args for args in inspected))
         self.assertTrue(any("ls-files" in args for args in inspected))

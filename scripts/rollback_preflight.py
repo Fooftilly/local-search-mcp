@@ -34,16 +34,15 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
 
 
 def _clean_checkout(root: Path) -> bool:
-    """Conservatively reject staged, unstaged and untracked content.
+    """Reject changed index metadata, staged or untracked files without filters.
 
-    Includes untracked files: switching commits could clobber their paths.
-    Git's ignored state (e.g. .venv) is not validated by this report.
+    A touched-but-unchanged file is conservatively treated as dirty. Ignored
+    state (such as .venv) remains outside this preflight's scope.
     """
-    result = _git(root, "status", "--porcelain=v1", "--no-renames", "-z",
-                  "--untracked-files=normal", "--")
-    if result.returncode:
-        raise ValueError("Unable to inspect local Git checkout")
-    return not result.stdout
+    try:
+        return not update._tracked_metadata_dirty(root, include_untracked=True)
+    except (subprocess.CalledProcessError, ValueError) as exc:
+        raise ValueError("Unable to safely inspect local Git checkout") from exc
 
 
 def preflight(target: str, archive: Path, *, root: Path | None = None) -> str:
