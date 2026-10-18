@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import ast
 import os
+import shlex
 from pathlib import Path
 import stat
 import subprocess
@@ -136,6 +137,16 @@ def busy(root: Path) -> bool:
     return any(git_path(root, name).exists() for name in IN_PROGRESS)
 
 
+def checkout_stable(root: Path, commit: str) -> bool:
+    """Recheck both revision and worktree at the point of applying an update."""
+    return head(root) == commit and not busy(root) and not tracked_source_dirty(root)
+
+
+def state_argument(path: Path) -> str:
+    """Provide a shell-safe argument for manual actions on this exact state."""
+    return "--state-file " + shlex.quote(str(path))
+
+
 def changed_files(root: Path, old: str, new: str) -> list[str]:
     # Disabling rename detection surfaces both a removed runtime source and
     # its new documentation destination, so neither is silently ignored.
@@ -244,6 +255,12 @@ def apply(root: Path = ROOT, *, path: Path | None = None,
     original = read_state(location)
     current = head(root)
     if original is None:
+        if dependencies_ready:
+            raise ValueError(
+                "No update baseline at " + str(location) +
+                "; check --state-file against the installed systemd unit before "
+                "acknowledging dependencies"
+            )
         write_state(location, current)
         return "Initialized local update baseline; no restart"
     if original == current:
@@ -252,21 +269,28 @@ def apply(root: Path = ROOT, *, path: Path | None = None,
         git(root, "cat-file", "-e", original + "^{commit}")
     except subprocess.CalledProcessError:
         # A removed or rewritten branch cannot be diffed reliably.
-        return "Previous commit unavailable; manual service review required (baseline unchanged)"
+        return ("Previous commit unavailable; manual service review required "
+                "(baseline unchanged). After inspection and manual service "
+                "preparation, run python3 scripts/restart_on_update.py " +
+                state_argument(location) +
+                ' --reset-baseline "$(git rev-parse HEAD)"')
     if busy(root) or tracked_source_dirty(root):
         return "Git operation or tracked runtime edits in progress; will retry"
     time.sleep(settle_seconds)
-    if head(root) != current or busy(root) or tracked_source_dirty(root):
+    if not checkout_stable(root, current):
         return "Git checkout changed while checking; will retry"
     changed = changed_files(root, original, current)
     relevant = [name for name in changed if affects_runtime(name)]
     if not relevant:
+        if not checkout_stable(root, current):
+            return "Git checkout changed before recording update; will retry"
         write_state(location, current)
         return "Documentation/test-only commit change; restart not required"
     if "requirements.txt" in changed and not dependencies_ready:
-        return ("Python requirements changed, moved or removed; no automatic package downloads. "
-                "Review and prepare dependencies manually, then run "
-                "python3 scripts/restart_on_update.py --dependencies-ready")
+        return ("Python requirements changed, moved or removed; no automatic "
+                "package downloads. Review and prepare dependencies manually, "
+                "then run python3 scripts/restart_on_update.py " +
+                state_argument(location) + " --dependencies-ready")
     if "requirements.txt" in changed and not requirements_ready(root):
         return ("Installed Python requirements failed offline validation; "
                 "fix the environment manually; running services left untouched")
@@ -276,6 +300,10 @@ def apply(root: Path = ROOT, *, path: Path | None = None,
         return f"Changed Python source failed preflight ({type(exc).__name__}); will retry"
     bridge = active(SERVICES[0])
     tunnel = active(SERVICES[1])
+    # Dependencies and Python preflight can take time, as can checking units.
+    # Do not record the commit or restart processes if Git moved during them.
+    if not checkout_stable(root, current):
+        return "Git checkout changed after preflight; will retry"
     if not (bridge or tunnel):
         write_state(location, current)
         return "Updated checkout; both systemd services inactive (not started)"
@@ -303,7 +331,8 @@ def main(argv: list[str] | None = None) -> int:
                          help="Acknowledge that changed Python requirements were installed manually")
     actions.add_argument("--reset-baseline", metavar="COMMIT",
                          help="After reviewing and preparing the checkout, acknowledge exact Git HEAD without restarting")
-    parser.add_argument("--state-file", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--state-file", type=Path,
+                        help="Absolute state-file path from the installed systemd unit")
     args = parser.parse_args(argv)
     if args.state_file is not None and not args.state_file.is_absolute():
         parser.error("--state-file must be an absolute path")
