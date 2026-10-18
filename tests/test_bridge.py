@@ -20,6 +20,7 @@ import httpx
 import domain_policy
 import document_pages
 import request_cache
+import upstream_settings
 
 class FakeFastMCP:
     def __init__(self, *_args, **_kwargs):pass
@@ -50,6 +51,47 @@ class BridgeTests(unittest.TestCase):
         })
         env.start()
         self.addCleanup(env.stop)
+
+
+    def test_saved_upstream_timeouts_reach_live_http_clients(self):
+        with tempfile.TemporaryDirectory() as config_home, patch.dict(os.environ, {
+            "XDG_CONFIG_HOME": config_home,
+        }):
+            state = upstream_settings.dashboard_settings()["state"]
+            upstream_settings.update_settings({
+                "searxng_seconds": "9", "crawl_seconds": "110",
+            }, state)
+            observed = []
+            original = httpx.Client
+
+            def handler(request):
+                if request.url.path == "/search":
+                    return httpx.Response(200, json={"results": []})
+                if request.url.path == "/health":
+                    # Deliberate upstream version failure; do not invoke crawl.
+                    return httpx.Response(200, json={"status": "ok", "version": "0.9.4"})
+                self.fail("Unexpected upstream path: " + request.url.path)
+
+            def factory(**kwargs):
+                observed.append(kwargs["timeout"])
+                return original(transport=httpx.MockTransport(handler), trust_env=False)
+
+            with patch.object(self.module.httpx, "Client", side_effect=factory):
+                self.assertEqual(
+                    self.module._run_search({"q": "test", "format": "json"}, 8), [])
+                result = self.module._run_fetch("https://example.com/a", "raw")
+            self.assertEqual(result["status"], "blocked")
+            self.assertEqual(observed, [9, 110])
+            # Subsequent requests in the same process see updated settings.
+            state = upstream_settings.dashboard_settings()["state"]
+            upstream_settings.update_settings({
+                "searxng_seconds": "12", "crawl_seconds": "90",
+            }, state)
+            observed.clear()
+            with patch.object(self.module.httpx, "Client", side_effect=factory):
+                self.module._run_search({"q": "again", "format": "json"}, 8)
+                self.module._run_fetch("https://example.com/a", "raw")
+            self.assertEqual(observed, [12, 90])
 
     def test_opt_in_search_dedupe_rank_and_cache_isolation(self):
         calls = []

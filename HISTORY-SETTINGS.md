@@ -31,7 +31,37 @@ the dashboard; the saved value does not override the environment. For
 compatibility, the JSONL size environment override retains its historical
 64 KB–100 MB clamping behavior.
 
-This is a partial issue #13 settings slice. Network ports, backend timeouts,
-cache policy and other higher-risk runtime settings still require explicit
-service ownership, safe restart/apply semantics, and a separate review.
-There is no automatic service restart and no new MCP mutation tool.
+This remains a partial issue #13 settings implementation. Network ports,
+backend health-check and other timeouts beyond the SearXNG search and Crawl4AI
+crawl request timeouts documented below, cache policy and other higher-risk
+settings still require explicit service ownership, safe restart/apply semantics
+and a separate review. There is no automatic service restart or new MCP
+mutation tool.
+
+## Live upstream request timeouts (issue #13 follow-up)
+
+The same local dashboard now links to
+`http://127.0.0.1:8791/upstream-settings`, a **separate** nonsecret form:
+
+- **SearXNG search timeout:** 5–120 seconds (default 25).
+- **Crawl4AI crawl timeout:** 15–300 seconds (default 75).
+
+The new `upstream-timeouts.json` is a separate versioned, owner-only file in
+the same private configuration directory. It does not alter the existing
+`history-settings.json` format or the credential-bearing `config.json`.
+The same Host/Origin/Fetch Metadata/CSRF checks, explicit APPLY confirmation,
+full-form validation, stale form rejection and atomic no-follow writes apply.
+Invalid or insecure timeout settings never block search/fetch: the original
+defaults are used and a warning is logged; the unsafe file is not overwritten.
+
+Timeout changes apply to the next outgoing request without a restart; in-flight
+requests and previously cached results are not changed. Crawl4AI's short
+`/health` validation timeout is intentionally **not** configurable. Optional
+`LOCAL_SEARCH_MCP_SEARXNG_TIMEOUT` and
+`LOCAL_SEARCH_MCP_CRAWL_TIMEOUT` environment variables, when set, have
+precedence and disable all changes on the timeout form. Remove the overrides
+from the service environment and restart that service before editing.
+Invalid overrides are safely ignored in favor of the original defaults.
+
+This remains a partial #13 slice. Ports, cache-policy tuning, and disruptive
+restart controls are deliberately excluded.

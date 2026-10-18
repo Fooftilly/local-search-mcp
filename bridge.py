@@ -20,6 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 from history_log import logged_tool
 import document_pages
 import request_cache
+import upstream_settings
 from search_results import enrich_search_results
 from batch_fetch import fetch_many
 
@@ -142,7 +143,8 @@ def _upstream_error(response, backend: str) -> dict:
 def _run_search(params: dict, max_results: int, *,
                 deduplicate: bool = False,
                 ranking: str = "searxng") -> list[dict] | dict:
-    with httpx.Client(timeout=25, trust_env=False) as client:
+    with httpx.Client(timeout=upstream_settings.effective_timeout("searxng_seconds"),
+                      trust_env=False) as client:
         response = _retry_request(lambda: client.get(
             f"{SEARXNG_URL}/search", params=params))
     if response is not None and response.status_code in (400, 422) and len(params) > 2:
@@ -269,7 +271,8 @@ def _run_fetch(url: str, mode: str, *,
         "browser_config": {"type": "BrowserConfig", "params": {"headless": True}},
         "crawler_config": {"type": "CrawlerRunConfig", "params": crawler_params},
     }
-    with httpx.Client(timeout=75, trust_env=False) as client:
+    with httpx.Client(timeout=upstream_settings.effective_timeout("crawl_seconds"),
+                      trust_env=False) as client:
         try:
             health = _retry_request(lambda: client.get(
                 f"{CRAWL4AI_URL}/health", timeout=8))
