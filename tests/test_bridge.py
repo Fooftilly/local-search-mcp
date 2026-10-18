@@ -130,6 +130,25 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(len(seen), 10)
             self.assertEqual(set(self.module.request_cache._CACHE), keys_before)
 
+    def test_post_fetch_authorization_is_read_only_and_requires_no_dns(self):
+        import domain_policy as policy
+        with patch.object(self.module.document_pages, "_CACHE", {}):
+            policy.decide("example.org", "allow")
+            token, _ = self.module.document_pages.save(
+                "https://example.org/long", "READ_ONLY_PAGES" * 2000, {})
+            def fake_fetch(url, _mode, _fresh):
+                return {"url": url, "success": True, "markdown": "READ_ONLY_BATCH"}
+            with (patch.object(policy.socket, "getaddrinfo",
+                               side_effect=AssertionError("unexpected DNS lookup")),
+                  patch.object(self.module, "web_fetch", side_effect=fake_fetch)):
+                result = asyncio.run(self.module.web_fetch_batch(
+                    ["https://example.org/one", "https://example.org/two"]))
+                self.assertTrue(all(row["result"]["success"]
+                                    for row in result["results"]))
+                self.assertTrue(self.module.web_fetch_page(token, 2)["success"])
+            entry = next(r for r in policy.entries() if r["domain"] == "example.org")
+            self.assertEqual(entry["request_count"], 0)
+
     def test_batch_wait_for_other_host_does_not_leak_expired_early_result(self):
         import domain_policy as policy
         clock = ["2026-10-17T12:00:00Z"]
