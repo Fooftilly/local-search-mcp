@@ -92,6 +92,23 @@ Unit tests exercise inert behavior, concurrent single-claim, expiry/restart,
 exact/subdomain boundaries, explicit-deny precedence, replacement/revocation
 and invalid input without enabling authorization through MCP.
 
+## Public-target preflight before single-use claims (preparatory slice)
+
+The private `_claim_once_for_public_url(url)` helper validates an HTTP(S)
+URL, standard public ports, normalized hostname and public DNS results **before**
+consuming a one-use grant. Any malformed or private/mixed DNS answer leaves
+the grant unspent. Once DNS succeeds, an atomic SQLite claim rechecks expiry
+and explicit deny precedence under a write lock, so concurrent requesters
+cannot reuse one grant. Its return value is a private `(hostname, grant_id)`
+proof; it is **never included in an MCP response, request log, or dashboard**.
+
+**Still inert:** this preflight is not wired to `web_fetch`, `web_fetch_batch`,
+continuation pages or operator decision forms. In particular, the helper
+alone is *not* a complete authorization: future fetch integration must guard
+final navigation, changing decisions, cache hits, page handles, and late
+batch responses against stale or revoked grants. Browser/container egress
+isolation remains a separate deployment requirement.
+
 ## Remaining work for issue #12
 
 Scoped and expiring rules were delivered in PR #36; request IDs, origin-only
