@@ -99,7 +99,17 @@ packages that are actually installed, without forcing optional installations.
 Editable requirements and multiline `--hash` forms are accepted after manual
 acknowledgement; `pip check` verifies dependency integrity but cannot verify
 download hashes or provenance. Quoted pip include paths and `${VAR}` environment substitutions are supported,
-provided their resolved files remain within the Git checkout. Inside pip
+provided their resolved files remain within the Git checkout. **Variables
+referenced by pip includes must also exist in the systemd user manager's
+environment**, not only in your interactive shell: for example, use
+`systemctl --user set-environment REQ_DIR=locks` and verify it with
+`systemctl --user show-environment`. For persistence across login sessions,
+configure `~/.config/environment.d/` and reload the user manager. If the
+variable is absent, the watcher fails closed with a diagnostic instead of
+silently treating the dependency graph as complete. Avoid storing secrets in
+a service's environment.
+
+Inside pip
 constraint files, nested `-r` entries are required dependencies, while
 nested `-c` entries remain optional constraints. Missing, cyclic, or
 out-of-checkout referenced files fail validation. For non-pip formats, the offline check validates the
