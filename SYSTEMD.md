@@ -63,17 +63,23 @@ only non-runtime files, its revision is recorded without a restart.
 It does **not** watch all working-tree edits; only committed local revision
 changes are eligible.
 
-If `requirements.txt` changed, the restart is **deferred**. Review and
-install the dependencies yourself first (this manual step *may* access the
-package index), then explicitly acknowledge the new dependencies:
+If `requirements.txt` changed, was renamed, or was removed, the restart is
+**deferred**. Review and prepare the dependencies yourself first (this manual
+step *may* access the package index), then explicitly acknowledge the change:
 
 ```sh
+# When requirements.txt still exists:
 .venv/bin/python -m pip install -r requirements.txt
+# For removed/renamed manifests, prepare the replacement dependencies manually.
+# Then, in either case:
 python3 scripts/restart_on_update.py --dependencies-ready
 ```
 
 The acknowledgement applies the pending local revision once and will not
-change packages or credentials itself. Missing or invalid Python source
+change packages or credentials itself. A removed manifest is accepted only
+after that explicit acknowledgement and an offline `pip check` of the existing
+virtual environment; a replacement manifest's dependency constraints must be
+verified manually. Missing or invalid Python source
 also blocks the automatic restart. Preflight is not a full integration
 test, so check the health report after significant upgrades. If a restarted
 service subsequently fails, the attempted revision is recorded to prevent
