@@ -97,12 +97,47 @@ def live_snapshot(query='', view='policy'):
 
 
 def row_html(r):
-    dom=esc(r['domain']);stat=esc(r['status']);token=esc(CSRF)
-    def action(name,label,cls=''):
-        return f'<form method="post" action="/domain"><input type="hidden" name="csrf" value="{token}"><input type="hidden" name="domain" value="{dom}"><button class="{cls}" type="submit" name="action" value="{name}">{label}</button></form>'
-    actions=action('allow','Allow','allow') + action('deny','Deny','deny')+action('delete','Remove','delete')
-    edit=f'<form method="post" action="/domain"><input type="hidden" name="csrf" value="{token}"><input type="hidden" name="domain" value="{dom}"><input aria-label="Rename {dom}" name="new_domain" value="{dom}" style="width:195px"><button name="action" value="rename">Rename</button></form>'
-    return f'<tr><td class="domain">{dom}</td><td><span class="pill {stat}">{stat}</span></td><td>{int(r["request_count"])}<div class="subtle">{esc(r["last_requested_at"] or "—")}</div></td><td class="actions">{actions}<div style="margin-top:7px">{edit}</div></td></tr>'
+    dom = esc(r['domain'])
+    stat = esc('expired' if r.get('expired') else r['status'])
+    token = esc(CSRF)
+    scope = r.get('match_scope', 'subdomains')
+    scope_label = 'Exact host' if scope == 'exact' else 'Host + subdomains'
+    expires = r.get('expires_at') or 'Never'
+    limits = ('' if r['status'] == 'pending' else
+              f'<div class="subtle">{esc(scope_label)} · Expires: '
+              f'{esc(expires)}</div>')
+    opts = ('<label class="small">Scope <select name="scope">'
+            + '<option value="subdomains"' + (' selected' if scope != 'exact' else '') +
+            '>Host + subdomains</option><option value="exact"' +
+            (' selected' if scope == 'exact' else '') +
+            '>Exact host only</option></select></label>'
+            '<label class="small">Duration <select name="expires_minutes" required>'
+            '<option value="" selected disabled>Choose duration</option>'
+            '<option value="0">Permanent</option><option value="60">1 hour</option>'
+            '<option value="1440">24 hours</option>'
+            '<option value="10080">7 days</option></select></label>')
+    def action(name, label, cls=''):
+        controls = opts if name in ('allow', 'deny') else ''
+        return (f'<form method="post" action="/domain">'
+                f'<input type="hidden" name="csrf" value="{token}">'
+                f'<input type="hidden" name="domain" value="{dom}">'
+                + controls +
+                f'<button class="{cls}" type="submit" name="action" value="{name}">'
+                f'{label}</button></form>')
+    actions = (action('allow', 'Allow', 'allow') +
+               action('deny', 'Deny', 'deny') + action('delete', 'Remove', 'delete'))
+    edit = (f'<form method="post" action="/domain">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            f'<input type="hidden" name="domain" value="{dom}">'
+            f'<input aria-label="Rename {dom}" name="new_domain" value="{dom}"'
+            f' style="width:195px"><button name="action" value="rename">'
+            f'Rename</button></form>')
+    return (f'<tr><td class="domain">{dom}</td>'
+            f'<td><span class="pill {stat}">{stat}</span>{limits}</td>'
+            f'<td>{int(r["request_count"])}'
+            f'<div class="subtle">{esc(r["last_requested_at"] or "—")}</div></td>'
+            f'<td class="actions">{actions}'
+            f'<div style="margin-top:7px">{edit}</div></td></tr>')
 
 
 def render(query='', message='', kind='success'):
@@ -111,12 +146,12 @@ def render(query='', message='', kind='success'):
     pending=''.join(row_html(r) for r in policy.entries(query,limit=200,status='pending'))
     other=''.join(row_html(r) for r in policy.entries(query,limit=2000,status='decided'))
     alert=f'<p class="alert {"error" if kind=="error" else "success"}">{esc(message)}</p>' if message else ''
-    table_head='<div class="scroll"><table><thead><tr><th>Domain (includes subdomains)</th><th>Decision</th><th>Requests / latest</th><th>Manage</th></tr></thead>'
+    table_head='<div class="scroll"><table><thead><tr><th>Domain</th><th>Decision / scope / expiry</th><th>Requests / latest</th><th>Manage</th></tr></thead>'
     query_escaped=esc(query)
     return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
 <main><h1>Domain approvals</h1><p>Approve or deny domains requested by agents. Changes apply to the next fetch without restarting MCP. The dashboard is accessible only from this computer.</p>{alert}
 <section class="stats"><div class="stat"><span>Awaiting approval</span><b id="live-count-pending">{c['pending']}</b></div><div class="stat"><span>Allowed</span><b id="live-count-allowed">{c['allowed']}</b></div><div class="stat"><span>Denied</span><b id="live-count-denied">{c['denied']}</b></div><div class="stat"><span>Dashboard</span><b style="font-size:14px">127.0.0.1:{PORT}</b></div></section>
-<div class="panel"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="{esc(CSRF)}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Rules include subdomains unless overridden by a more specific rule. Never approve private-network addresses.</p></div>
+<div class="panel"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="{esc(CSRF)}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><label>Scope <select name="scope"><option value="subdomains">Host + subdomains</option><option value="exact">Exact host only</option></select></label><label>Duration <select name="expires_minutes"><option value="0">Permanent</option><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Select exact host to exclude subdomains, and optionally set a 1-hour, 24-hour or 7-day expiry. Older rules remain permanent with subdomains. Never approve private-network addresses.</p></div>
 <div class="row" style="justify-content:space-between"><h2>Requests awaiting review</h2><div><button type="button" id="notification-toggle">Enable desktop notifications</button> <a href="/">Refresh requests</a></div></div>
 <p class="subtle" role="status" id="live-status">Live updates starting · manual refresh works without JavaScript.</p>
 <p class="subtle">Showing at most 200 pending entries (filter to find specific hosts). Agent-created queue entries are limited to {policy.MAX_PENDING_TOTAL} total, {policy.MAX_NEW_PENDING_GLOBAL_PER_HOUR} globally per hour, {policy.MAX_PENDING_PER_SITE} per registrable domain and {policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR} new hosts per site per hour. Manual allow/deny remains available even when the queue is full. Existing entries are never silently removed.</p>
@@ -245,7 +280,9 @@ class Handler(BaseHTTPRequestHandler):
             removed = policy.clear_pending_requests()
             return self._respond(200,render(message=f"Cleared {removed} pending requests."))
         try:
-            policy.decide(val('domain'),val('action'),val('new_domain'))
+            policy.decide(val('domain'),val('action'),val('new_domain'),
+                          scope=val('scope') or 'subdomains',
+                          expires_minutes=int(val('expires_minutes') or '0'))
             msg=f"Decision updated for {val('domain')[:253]}"
             return self._respond(200,render(message=msg))
         except (ValueError,sqlite3.IntegrityError) as exc:

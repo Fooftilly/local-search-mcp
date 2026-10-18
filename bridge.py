@@ -9,7 +9,8 @@ import time
 
 import httpx
 from fastmcp import FastMCP
-from domain_policy import evaluate_fetch_url
+from domain_policy import (evaluate_fetch_url, expired_grant_without_active_fallback,
+                           is_domain_currently_allowed)
 from admin_ui import create_dashboard_server
 from crawler_security import local_container_warning, verify_health
 import threading
@@ -352,7 +353,8 @@ def _run_fetch(url: str, mode: str) -> dict:
     if metadata:
         output["metadata"] = metadata
     if len(markdown) > document_pages.PAGE_CHARS and success is not False:
-        token, page_count = document_pages.save(final_url, markdown, metadata)
+        token, page_count = document_pages.save(
+            final_url, markdown, metadata, source_url=url)
         output.update({"document_id": token, "page": 1,
                        "page_count": page_count, "next_page": 2})
     elif len(markdown) > document_pages.PAGE_CHARS:
@@ -392,12 +394,64 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False) -> dict:
             and r.get("truncated") is False
             and "document_id" not in r
             and request_cache.fetch_key(r.get("url", ""), mode) is not None
+            # A cross-host redirect depends on the target host's approval.
+            # Never serve it later from the original host's cache key after
+            # the target's time-limited rule expires.
+            and urlsplit(r["url"]).hostname == urlsplit(url).hostname
         ),
     )
     if before != request_cache.policy_epoch():
         return {"url": url, "success": False, "status": "blocked",
                 "reason": "Domain approval changed during the request. Retry after reviewing permissions."}
+    if (isinstance(response, dict) and
+            any(k in response for k in ("markdown", "metadata", "document_id"))):
+        # Failed crawls can still contain Markdown or metadata. Never release
+        # that content after a timed grant expires.
+        # Expiration is time-based, not an operator mutation, so it must not
+        # bump the global policy epoch and block unrelated batch URLs. Recheck
+        # the original and final host immediately before returning content.
+        # The final host matters for redirects even when their results are
+        # intentionally never cached across domains.
+        try:
+            first_host = urlsplit(url).hostname
+            last_host = urlsplit(response.get("url", url)).hostname
+            if (not first_host or not last_host or
+                    expired_grant_without_active_fallback(first_host) or
+                    (last_host != first_host and
+                     expired_grant_without_active_fallback(last_host))):
+                return {"url": url, "success": False, "status": "blocked",
+                        "reason": "A domain permission expired during the fetch. "
+                                  "Request local approval and retry."}
+        except (ValueError, TypeError):
+            return {"url": url, "success": False, "status": "blocked",
+                    "reason": "Invalid final domain in crawler response."}
     return response
+
+
+def _current_permissions_for_fetched_urls(source_url: str, final_url: str) -> bool:
+    """Check effective domain decisions without resubmitting/recrawling URLs.
+
+    Initial fetch authorization already checked DNS. Subsequent content
+    release needs fresh policy decisions, not additional DNS or new pending
+    queue requests that would inflate usage counts.
+    """
+    try:
+        source = urlsplit(source_url)
+        final = urlsplit(final_url)
+        if (source.scheme not in ("http", "https") or
+                final.scheme not in ("http", "https") or
+                not source.hostname or not final.hostname):
+            return False
+        return (is_domain_currently_allowed(source.hostname) and
+                (source.hostname == final.hostname or
+                 is_domain_currently_allowed(final.hostname)))
+    except (ValueError, TypeError):
+        return False
+
+
+def _batch_currently_authorized(requested_url: str, result: dict) -> bool:
+    """Revalidate effective source and redirect policies after all workers."""
+    return _current_permissions_for_fetched_urls(requested_url, result.get("url"))
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
@@ -412,7 +466,8 @@ async def web_fetch_batch(urls: list[str], mode: str = "raw",
     cancelled = threading.Event()
     try:
         return await asyncio.to_thread(
-            fetch_many, urls, mode, fresh, web_fetch, cancelled=cancelled)
+            fetch_many, urls, mode, fresh, web_fetch, cancelled=cancelled,
+            authorize_result=_batch_currently_authorized)
     except asyncio.CancelledError:
         cancelled.set()
         raise
@@ -426,7 +481,25 @@ def web_fetch_page(document_id: str, page: int = 2) -> dict:
     The document_id is an unguessable temporary bearer capability. It is
     never stored in local request history and expires after 15 minutes.
     """
-    return document_pages.read(document_id, page)
+    epoch = request_cache.policy_epoch()
+    result, source_url = document_pages.read_with_context(
+        document_id, page)
+    if not result.get("success"):
+        return result
+    blocked = {"success": False, "status": "blocked",
+               "reason": "Document permission changed; fetch the approved URL again."}
+    # Check live source/redirect permissions, not the global policy epoch
+    # from initial fetch: an unrelated approval must not kill this handle.
+    # Still fail closed if permissions change during the validation below.
+    if not source_url:
+        return blocked
+    if not _current_permissions_for_fetched_urls(source_url, result["url"]):
+        return {"success": False, "status": "blocked",
+                "reason": "The original or final domain is no longer approved. "
+                          "Request local approval and retry this page."}
+    if request_cache.policy_epoch() != epoch:
+        return blocked
+    return result
 
 
 def serve_mcp() -> None:

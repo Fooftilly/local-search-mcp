@@ -4,9 +4,22 @@ from pathlib import Path
 import sys
 import types
 import unittest
+import os
+import socket
+import asyncio
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from unittest.mock import patch
 
 import httpx
+
+# The isolated bridge loader temporarily patches sys.modules. Preload these
+# shared singletons before the patch so standalone test execution uses the
+# same policy/cache/document modules as the bridge under test.
+import domain_policy
+import document_pages
+import request_cache
 
 class FakeFastMCP:
     def __init__(self, *_args, **_kwargs):pass
@@ -27,6 +40,16 @@ class BridgeTests(unittest.TestCase):
     def setUp(self):
         self.module.request_cache.reset_for_test()
         self.addCleanup(self.module.request_cache.reset_for_test)
+        # Never let a policy check performed by the bridge touch the
+        # developer's real ~/.local/state domain approval database.
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
+        env = patch.dict(os.environ, {
+            "XDG_STATE_HOME": state.name,
+            "ALLOWED_CRAWL_DOMAINS": "example.com",
+        })
+        env.start()
+        self.addCleanup(env.stop)
 
     def test_opt_in_search_dedupe_rank_and_cache_isolation(self):
         calls = []
@@ -113,6 +136,367 @@ class BridgeTests(unittest.TestCase):
             self.module.web_search("password=secret", fresh=False)
             self.assertEqual(len(seen), 10)
             self.assertEqual(set(self.module.request_cache._CACHE), keys_before)
+
+    def test_post_fetch_authorization_is_read_only_and_requires_no_dns(self):
+        import domain_policy as policy
+        with patch.object(self.module.document_pages, "_CACHE", {}):
+            policy.decide("example.org", "allow")
+            token, _ = self.module.document_pages.save(
+                "https://example.org/long", "READ_ONLY_PAGES" * 2000, {})
+            def fake_fetch(url, _mode, _fresh):
+                return {"url": url, "success": True, "markdown": "READ_ONLY_BATCH"}
+            with (patch.object(policy.socket, "getaddrinfo",
+                               side_effect=AssertionError("unexpected DNS lookup")),
+                  patch.object(self.module, "web_fetch", side_effect=fake_fetch)):
+                result = asyncio.run(self.module.web_fetch_batch(
+                    ["https://example.org/one", "https://example.org/two"]))
+                self.assertTrue(all(row["result"]["success"]
+                                    for row in result["results"]))
+                self.assertTrue(self.module.web_fetch_page(token, 2)["success"])
+            entry = next(r for r in policy.entries() if r["domain"] == "example.org")
+            self.assertEqual(entry["request_count"], 0)
+
+    def test_expired_grant_redacts_failed_crawler_markdown_and_metadata(self):
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns)):
+            policy.decide("example.org", "allow", expires_minutes=60)
+            clock[0] = "2026-10-17T12:59:59Z"
+
+            def failed_crawler(_url, _mode):
+                clock[0] = "2026-10-17T13:00:00Z"
+                return {"url": "https://example.org/fail",
+                        "success": False, "status": "crawl_failed",
+                        "markdown": "FAILED_CRAWL_SECRET",
+                        "metadata": {"title": "FAILED_CRAWL_TITLE"}}
+            with patch.object(self.module, "_run_fetch", side_effect=failed_crawler):
+                result = self.module.web_fetch("https://example.org/fail")
+            self.assertEqual(result["status"], "blocked")
+            self.assertNotIn("FAILED_CRAWL_SECRET", str(result))
+            self.assertNotIn("FAILED_CRAWL_TITLE", str(result))
+
+    def test_batch_redacts_expired_failed_result_with_content(self):
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        early_done = Event()
+
+        def fake_fetch(url, _mode, _fresh):
+            if url.endswith("/failed"):
+                early_done.set()
+                return {"url": url, "success": False,
+                        "status": "crawl_failed",
+                        "markdown": "BATCH_FAILED_SECRET",
+                        "metadata": {"title": "FAILED_TITLE"}}
+            self.assertTrue(early_done.wait(5))
+            clock[0] = "2026-10-17T13:00:00Z"
+            return {"url": url, "success": True, "markdown": "SAFE_RESULT"}
+
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns),
+              patch.object(self.module, "web_fetch", side_effect=fake_fetch)):
+            policy.decide("example.org", "allow", expires_minutes=60)
+            policy.decide("example.net", "allow")
+            clock[0] = "2026-10-17T12:59:59Z"
+            result = asyncio.run(self.module.web_fetch_batch([
+                "https://example.org/failed", "https://example.net/slow"
+            ]))
+            rows = [x["result"] for x in result["results"]]
+            self.assertEqual(rows[0]["status"], "blocked")
+            self.assertNotIn("BATCH_FAILED_SECRET", str(result))
+            self.assertNotIn("FAILED_TITLE", str(result))
+            self.assertEqual(rows[1]["markdown"], "SAFE_RESULT")
+
+    def test_batch_wait_for_other_host_does_not_leak_expired_early_result(self):
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        early_done = Event()
+
+        def fake_fetch(url, _mode, _fresh):
+            if url.endswith("/early"):
+                early_done.set()
+                return {"url": url, "success": True,
+                        "markdown": "EARLY_TIMED_SECRET"}
+            self.assertTrue(early_done.wait(5))
+            clock[0] = "2026-10-17T13:00:00Z"
+            return {"url": url, "success": True,
+                    "markdown": "SAFE_SLOW_CONTENT"}
+
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns),
+              patch.object(self.module, "web_fetch", side_effect=fake_fetch)):
+            policy.decide("example.org", "allow", scope="exact",
+                          expires_minutes=60)
+            policy.decide("example.net", "allow")
+            clock[0] = "2026-10-17T12:59:59Z"
+            result = asyncio.run(self.module.web_fetch_batch([
+                "https://example.org/early", "https://example.net/slow"
+            ]))
+            rows = [x["result"] for x in result["results"]]
+            self.assertEqual(rows[0]["status"], "blocked")
+            self.assertNotIn("EARLY_TIMED_SECRET", str(result))
+            self.assertEqual(rows[1]["markdown"], "SAFE_SLOW_CONTENT")
+
+    def test_batch_redirect_final_host_expiry_redacts_paged_handle(self):
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        early_done = Event()
+
+        def fake_fetch(url, _mode, _fresh):
+            if url.endswith("/start"):
+                token, _ = self.module.document_pages.save(
+                    "https://final.example.net/doc",
+                    "REDIRECT_TOKEN_SECRET" * 2000, {},
+                    source_url=url)
+                early_done.set()
+                return {"url": "https://final.example.net/doc",
+                        "success": True, "markdown": "FIRST_PAGE_SECRET",
+                        "truncated": True, "document_id": token}
+            self.assertTrue(early_done.wait(5))
+            clock[0] = "2026-10-17T13:00:00Z"
+            return {"url": url, "success": True, "markdown": "SAFE_CONTENT"}
+
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns),
+              patch.object(self.module, "web_fetch", side_effect=fake_fetch),
+              patch.object(self.module.document_pages, "_CACHE", {})):
+            policy.decide("source.example.org", "allow")
+            policy.decide("final.example.net", "allow", expires_minutes=60)
+            policy.decide("safe.example.com", "allow")
+            clock[0] = "2026-10-17T12:59:59Z"
+            result = asyncio.run(self.module.web_fetch_batch([
+                "https://source.example.org/start",
+                "https://safe.example.com/slow"
+            ]))
+            rows = [x["result"] for x in result["results"]]
+            self.assertEqual(rows[0]["status"], "blocked")
+            self.assertNotIn("REDIRECT_TOKEN_SECRET", str(result))
+            self.assertNotIn("FIRST_PAGE_SECRET", str(result))
+            self.assertNotIn("document_id", str(rows[0]))
+            self.assertEqual(rows[1]["markdown"], "SAFE_CONTENT")
+
+    def test_document_pages_recheck_expiring_rule_and_reapproval(self):
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        text = "PAGED_EXPIRED_CONTENT_" * 2000
+        original = httpx.Client
+
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.org/long", "success": True,
+                "markdown": text
+            }]})
+
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns),
+              patch.object(self.module.httpx, "Client", side_effect=client),
+              patch.object(self.module.document_pages, "_CACHE", {})):
+            policy.decide("example.org", "allow", scope="exact",
+                          expires_minutes=60)
+            clock[0] = "2026-10-17T12:59:59Z"
+            first = self.module.web_fetch("https://example.org/long")
+            self.assertTrue(first["success"])
+            token = first["document_id"]
+            self.assertIn("PAGED_EXPIRED_CONTENT", self.module.web_fetch_page(
+                token, 2)["markdown"])
+            clock[0] = "2026-10-17T13:00:00Z"
+            expired = self.module.web_fetch_page(token, 2)
+            self.assertFalse(expired["success"])
+            self.assertNotIn("PAGED_EXPIRED_CONTENT", str(expired))
+            self.assertEqual(policy.request(
+                "example.org", "https://example.org/long")[0], "pending")
+            policy.clear_pending_requests()
+            removed = self.module.web_fetch_page(token, 2)
+            self.assertFalse(removed["success"])
+            self.assertNotIn("PAGED_EXPIRED_CONTENT", str(removed))
+            policy.decide("example.org", "allow", scope="exact")
+            reapproved = self.module.web_fetch_page(token, 2)
+            # Once the host is authorized again, the still-live process-local
+            # page token works; no unnecessary second Crawl4AI crawl.
+            self.assertTrue(reapproved["success"])
+            self.assertIn("PAGED_EXPIRED_CONTENT", reapproved["markdown"])
+
+    def test_document_redirect_rechecks_source_and_final_permission(self):
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        text = "REDIRECT_PAGE_SECRET_" * 2000
+        original = httpx.Client
+
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [{
+                "url": "https://destination.example.net/long", "success": True,
+                "markdown": text
+            }]})
+
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns),
+              patch.object(self.module.httpx, "Client", side_effect=client),
+              patch.object(self.module.document_pages, "_CACHE", {})):
+            policy.decide("source.example.org", "allow", scope="exact",
+                          expires_minutes=60)
+            policy.decide("destination.example.net", "allow", scope="exact")
+            clock[0] = "2026-10-17T12:59:59Z"
+            initial = self.module.web_fetch("https://source.example.org/start")
+            self.assertTrue(initial["success"])
+            token = initial["document_id"]
+            self.assertIn("REDIRECT_PAGE_SECRET",
+                          self.module.web_fetch_page(token, 2)["markdown"])
+            clock[0] = "2026-10-17T13:00:00Z"
+            refused = self.module.web_fetch_page(token, 2)
+            self.assertFalse(refused["success"])
+            self.assertNotIn("REDIRECT_PAGE_SECRET", str(refused))
+            # Final host remains authorized, but expired original host blocks.
+
+    def test_unrelated_approval_preserves_document_but_source_deny_blocks(self):
+        import domain_policy as policy
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        with (patch.object(policy.socket, "getaddrinfo", return_value=dns),
+              patch.object(self.module.document_pages, "_CACHE", {})):
+            policy.decide("example.org", "allow")
+            token, _ = self.module.document_pages.save(
+                "https://example.org/doc", "SENSITIVE" * 4000, {})
+            self.assertTrue(self.module.web_fetch_page(token, 2)["success"])
+            policy.decide("unrelated.net", "allow", scope="exact")
+            self.assertTrue(self.module.web_fetch_page(token, 2)["success"])
+            policy.decide("example.org", "deny")
+            denied = self.module.web_fetch_page(token, 2)
+            self.assertFalse(denied["success"])
+            self.assertNotIn("SENSITIVE", str(denied))
+
+    def test_inflight_fetch_started_before_expiry_cannot_release_content_after(self):
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns)):
+            policy.decide("example.org", "allow", expires_minutes=60)
+            clock[0] = "2026-10-17T12:59:59Z"
+
+            def slow_crawler(_url, _mode):
+                clock[0] = "2026-10-17T13:00:00Z"
+                return {"url": "https://child.example.org/data", "success": True,
+                        "markdown": "EXPIRED_CONTENT_SENTINEL", "truncated": False}
+
+            old_epoch = self.module.request_cache.policy_epoch()
+            with patch.object(self.module, "_run_fetch", side_effect=slow_crawler):
+                response = self.module.web_fetch("https://child.example.org/data")
+            self.assertEqual(response["status"], "blocked")
+            self.assertNotIn("EXPIRED_CONTENT_SENTINEL", str(response))
+            self.assertEqual(self.module.request_cache.policy_epoch(), old_epoch)
+
+    def test_expired_child_allow_cannot_bypass_active_parent_deny(self):
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns)):
+            policy.decide("example.org", "deny")
+            policy.decide("child.example.org", "allow", scope="exact",
+                          expires_minutes=60)
+            clock[0] = "2026-10-17T12:59:59Z"
+
+            def slow_crawler(_url, _mode):
+                clock[0] = "2026-10-17T13:00:00Z"
+                return {"url": "https://child.example.org/page",
+                        "success": True, "markdown": "DENIED_CONTENT_SENTINEL",
+                        "truncated": False}
+
+            with patch.object(self.module, "_run_fetch", side_effect=slow_crawler):
+                result = self.module.web_fetch("https://child.example.org/page")
+            self.assertEqual(result["status"], "blocked")
+            self.assertNotIn("DENIED_CONTENT_SENTINEL", str(result))
+            self.assertEqual(policy.request(
+                "child.example.org", "https://child.example.org/page")[0],
+                "denied")
+
+    def test_clearing_expired_pending_blocks_inflight_fetch(self):
+        """Clear pending must not erase the expiry evidence for an old crawl."""
+        import domain_policy as policy
+        clock = ["2026-10-17T12:00:00Z"]
+        dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                ("8.8.8.8", 443))]
+        crawled = Event()
+        release = Event()
+
+        def slow_crawler(_url, _mode):
+            crawled.set()
+            self.assertTrue(release.wait(timeout=5))
+            return {"url": "https://example.org/page", "success": True,
+                    "markdown": "EXPIRED_PENDING_SECRET", "truncated": False}
+
+        with (patch.object(policy, "utcnow", side_effect=lambda: clock[0]),
+              patch.object(policy.socket, "getaddrinfo", return_value=dns),
+              patch.object(self.module, "_run_fetch", side_effect=slow_crawler)):
+            policy.decide("example.org", "allow",
+                          scope="exact", expires_minutes=60)
+            clock[0] = "2026-10-17T12:59:59Z"
+            before = self.module.request_cache.policy_epoch()
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                waiting_fetch = executor.submit(
+                    self.module.web_fetch, "https://example.org/page")
+                try:
+                    self.assertTrue(crawled.wait(timeout=5))
+                    clock[0] = "2026-10-17T13:00:00Z"
+                    self.assertEqual(policy.request(
+                        "example.org", "https://example.org/page")[0], "pending")
+                    self.assertEqual(self.module.request_cache.policy_epoch(), before)
+                    self.assertEqual(policy.clear_pending_requests(), 1)
+                    self.assertEqual(self.module.request_cache.policy_epoch(), before + 1)
+                    self.assertNotIn(
+                        "example.org", {row["domain"] for row in policy.entries()})
+                finally:
+                    release.set()
+                result = waiting_fetch.result(timeout=5)
+
+            self.assertFalse(result["success"])
+            self.assertEqual(result["status"], "blocked")
+            self.assertNotIn("EXPIRED_PENDING_SECRET", str(result))
+
+    def test_cross_host_redirect_result_is_not_cached(self):
+        final = {"url": "https://redirect.example.org/landing",
+                 "success": True, "markdown": "public redirect content",
+                 "truncated": False}
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module, "_run_fetch", return_value=final) as crawl):
+            first = self.module.web_fetch("https://example.com/start")
+            second = self.module.web_fetch("https://example.com/start")
+            self.assertEqual(first, second)
+            self.assertEqual(crawl.call_count, 2)
+            self.assertFalse(self.module.request_cache._CACHE)
+
+        # Same-host redirects remain cacheable because the requested host's
+        # approval is rechecked before every cache hit.
+        same_host = dict(final, url="https://example.com/landing")
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module, "_run_fetch", return_value=same_host) as crawl):
+            self.module.web_fetch("https://example.com/start")
+            self.module.web_fetch("https://example.com/start")
+            self.assertEqual(crawl.call_count, 1)
 
     def test_fetch_cache_requires_policy_and_skips_sensitive_urls(self):
         counts = []
