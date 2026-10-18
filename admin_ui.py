@@ -92,6 +92,7 @@ def live_snapshot(query='', view='policy'):
                 or '<tr><td colspan="4">No pending requests.</td></tr>',
             'decided_html': ''.join(row_html(r) for r in decisions)
                 or '<tr><td colspan="4">No matching domains.</td></tr>',
+            'audit_html': decision_audit_rows(query),
             'pending_domains': domains,
         }
 
@@ -149,8 +150,8 @@ def row_html(r):
             f'<div style="margin-top:7px">{edit}</div></td></tr>')
 
 
-def decision_audit_html(search=""):
-    """Render only operator-entered notes and identifiers, HTML escaped."""
+def decision_audit_rows(search=""):
+    """Render escaped, filtered decision rows for initial and live views."""
     rows = policy.recent_decisions(search=search)
     cells = ''.join(
         '<tr><td class="small">' + esc(r['at']) + '</td>'
@@ -163,13 +164,16 @@ def decision_audit_html(search=""):
         '<td>' + esc(r['last_requested_at'] or '—') + '</td>'
         '<td>' + str(int(r['request_count'])) + '</td></tr>'
         for r in rows)
+    return cells or '<tr><td colspan="9">No decisions recorded.</td></tr>'
+
+
+def decision_audit_html(search=""):
     return ('<div class="scroll"><table><thead><tr><th>UTC time</th>'
             '<th>Domain</th><th>Action</th><th>Request ID</th>'
             '<th>Operator reason</th><th>Last requested URL</th>'
             '<th>First request</th><th>Last request</th><th>Count</th>'
-            '</tr></thead><tbody>' +
-            (cells or '<tr><td colspan="9">No decisions recorded.</td></tr>') +
-            '</tbody></table></div>')
+            '</tr></thead><tbody id="live-audit">' +
+            decision_audit_rows(search) + '</tbody></table></div>')
 
 
 def render(query='', message='', kind='success'):
