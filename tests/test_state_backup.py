@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import closing
 import hashlib
+import json
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -198,6 +199,130 @@ class BackupTests(unittest.TestCase):
         self.assertGreaterEqual(backup.MAX_HISTORY_FILE, 100_000_000)
         self.assertGreaterEqual(backup.MAX_TOTAL,
                                 backup.MAX_DB_FILE + 4 * 100_000_000)
+
+
+    def _write_nonsecret_settings(self):
+        private = self.base / "private-settings"
+        private.mkdir(mode=0o700, exist_ok=True)
+        history = private / "history-settings.json"
+        history.write_text(json.dumps({
+            "schema": "local-search-mcp/nonsecret-history/v1",
+            "settings": {"retention_days": 45, "max_bytes": 65536},
+        }))
+        history.chmod(0o600)
+        upstream = private / "upstream-timeouts.json"
+        upstream.write_text(json.dumps({
+            "schema": "local-search-mcp/upstream-timeouts/v1",
+            "settings": {"searxng_seconds": 10, "crawl_seconds": 90},
+        }))
+        upstream.chmod(0o600)
+        secret = private / "config.json"
+        secret.write_text('{"api_key":"MUST-NOT-BACK-UP"}')
+        secret.chmod(0o600)
+        return private
+
+    def test_optional_settings_roundtrip_never_archives_credentials(self):
+        conf = self._write_nonsecret_settings()
+        backup.backup(self.archive, state_dir=self.state, config_dir=conf)
+        payload = backup.verified_payload(self.archive)
+        self.assertEqual(set(payload), {
+            "domains.sqlite3", "history.jsonl",
+            "history-settings.json", "upstream-timeouts.json",
+        })
+        self.assertNotIn(b"MUST-NOT-BACK-UP", self.archive.read_bytes())
+        with zipfile.ZipFile(self.archive) as z:
+            self.assertNotIn("config.json", z.namelist())
+        staged = self.base / "staged-settings"
+        backup.restore(self.archive, staged)
+        for name in ("history-settings.json", "upstream-timeouts.json"):
+            self.assertEqual((staged / name).read_bytes(), (conf / name).read_bytes())
+            self.assertEqual(stat.S_IMODE((staged / name).stat().st_mode), 0o600)
+        # Stage only: source remains unchanged and no live config is rewritten.
+        self.assertTrue((conf / "config.json").is_file())
+
+    def test_schema_is_validated_before_backup_and_again_during_verify(self):
+        conf = self._write_nonsecret_settings()
+        upstream = conf / "upstream-timeouts.json"
+        original = upstream.read_bytes()
+        invalid = (
+            b"not-json",
+            json.dumps({"schema": "unexpected", "settings": {
+                "searxng_seconds": 10, "crawl_seconds": 90}}).encode(),
+            json.dumps({"schema": "local-search-mcp/upstream-timeouts/v1",
+                        "settings": {"searxng_seconds": 10, "crawl_seconds": 90,
+                                     "api_token": "CREDENTIALS"}}).encode(),
+            json.dumps({"schema": "local-search-mcp/upstream-timeouts/v1",
+                        "settings": {"searxng_seconds": True, "crawl_seconds": 90}}).encode(),
+            json.dumps({"schema": "local-search-mcp/upstream-timeouts/v1",
+                        "settings": {"searxng_seconds": 10, "crawl_seconds": 999}}).encode(),
+        )
+        for payload in invalid:
+            with self.subTest(payload=payload[:60]):
+                upstream.write_bytes(payload)
+                with self.assertRaises(ValueError):
+                    backup.backup(self.archive, state_dir=self.state, config_dir=conf)
+                self.assertFalse(self.archive.exists())
+        upstream.write_bytes(original)
+        backup.backup(self.archive, state_dir=self.state, config_dir=conf)
+        # Forge a *consistent* manifest: hashes alone must not be sufficient
+        # to import unsafe settings or smuggled credentials.
+        with zipfile.ZipFile(self.archive) as z:
+            manifest = json.loads(z.read("manifest.json"))
+            files = {name: z.read(name) for name in z.namelist()}
+        files["upstream-timeouts.json"] = invalid[2]
+        manifest["files"]["upstream-timeouts.json"] = {
+            "size": len(invalid[2]), "sha256": hashlib.sha256(invalid[2]).hexdigest(),
+        }
+        files["manifest.json"] = json.dumps(manifest).encode()
+        forged = self.base / "forged-schema.zip"
+        with zipfile.ZipFile(forged, "w") as z:
+            for name, contents in files.items():
+                z.writestr(name, contents)
+        forged.chmod(0o600)
+        with self.assertRaises(ValueError):
+            backup.verified_payload(forged)
+        self.assertFalse((self.base / "bad-restore").exists())
+
+    def test_unsafe_config_sources_fail_closed_and_explicit_isolation(self):
+        conf = self._write_nonsecret_settings()
+        history = conf / "history-settings.json"
+        target = self.base / "outside"
+        target.write_text("NOT-A-SETTING")
+        history.unlink()
+        history.symlink_to(target)
+        with self.assertRaises(ValueError):
+            backup.backup(self.archive, state_dir=self.state, config_dir=conf)
+        self.assertEqual(target.read_text(), "NOT-A-SETTING")
+        history.unlink()
+        history.write_text(json.dumps({
+            "schema": "local-search-mcp/nonsecret-history/v1",
+            "settings": {"retention_days": 10, "max_bytes": 64000},
+        }))
+        history.chmod(0o644)
+        with self.assertRaises(ValueError):
+            backup.backup(self.archive, state_dir=self.state, config_dir=conf)
+        history.chmod(0o600)
+        conf.chmod(0o755)
+        with self.assertRaises(ValueError):
+            backup.backup(self.archive, state_dir=self.state, config_dir=conf)
+        conf.chmod(0o700)
+        with self.assertRaisesRegex(ValueError, "Explicit settings directory is missing"):
+            backup.backup(self.archive, state_dir=self.state,
+                          config_dir=self.base / "missing-config")
+        self.assertFalse(self.archive.exists())
+        # Alternate state roots must not read the operator's default config.
+        with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.base)}):
+            backup.backup(self.archive, state_dir=self.state)
+        self.assertEqual(set(backup.verified_payload(self.archive)),
+                         {"domains.sqlite3", "history.jsonl"})
+
+    def test_default_location_archives_only_validated_nonsecret_settings(self):
+        conf = self._write_nonsecret_settings()
+        with (patch.object(backup, "state_directory", return_value=self.state),
+              patch.object(backup, "settings_directory", return_value=conf)):
+            backup.backup(self.archive)
+        self.assertIn("history-settings.json", backup.verified_payload(self.archive))
+        self.assertIn("upstream-timeouts.json", backup.verified_payload(self.archive))
 
     def test_cli_backup_verify_restore_and_refusal_of_existing_target(self):
         self.assertEqual(backup.main(["backup", str(self.archive),
