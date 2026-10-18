@@ -33,11 +33,11 @@ the rule and a **Rename** preserves its existing limits.
 ## Stable request IDs and local decision audit
 
 The dashboard now shows an opaque stable request ID, the first and most recent
-request times, repeat counts and a queryless last-requested URL. Old SQLite
+request times, repeat counts and the request origin (scheme and host only). Old SQLite
 rows receive IDs during an idempotent migration without changing decisions
 or their scope. Each new pending request is assigned an ID; repeats,
 reapproval and rename retain it. Local decisions, including bulk queue
-deletion records, retain their associated request ID, sanitized source URL
+deletion records, retain their associated request ID, source origin
 and request count at decision time. Historical decisions without identifiers
 remain intact with blank new fields.
 
@@ -46,7 +46,7 @@ Deny. The local dashboard lists the latest 25 decision records, displaying
 time, ID, action, source, request history and the reason. The reason is
 validated server-side and HTML-escaped; never put passwords or secrets into
 operator notes. Decision history is local-only: it is not a remote MCP tool,
-and page bodies and URL query strings are not stored there.
+and page bodies, URL paths, and query strings are not stored there.
 
 ## Remaining work for issue #12
 
