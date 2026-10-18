@@ -61,9 +61,11 @@ class OnceDashboardTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def grant(self, domain="docs.example.org", **kwargs):
+    def grant(self, domain="docs.example.org", *, headers=None,
+              token=None, **kwargs):
         return self.request("/once", {"domain": domain, "action": "stage",
-                    "scope": "exact", "expires_minutes": "60", **kwargs})
+                    "scope": "exact", "expires_minutes": "60", **kwargs},
+                    headers=headers, token=token)
 
     def test_local_staging_and_approval_queue_stays_pending(self):
         original = ("https://docs.example.org/private/path?token=NEVER_RECORD")
