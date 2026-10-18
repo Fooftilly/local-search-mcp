@@ -106,6 +106,11 @@ def row_html(r):
     limits = ('' if r['status'] == 'pending' else
               f'<div class="subtle">{esc(scope_label)} · Expires: '
               f'{esc(expires)}</div>')
+    request_meta = (
+        f'<div class="subtle">ID: {esc(r.get("request_id") or "—")}</div>'
+        f'<div class="subtle">First: {esc(r.get("created_at") or "—")}</div>'
+        f'<div class="subtle">Last: {esc(r.get("last_requested_at") or "—")}</div>'
+        f'<div class="subtle">{esc(r.get("last_requested_url") or "—")}</div>')
     opts = ('<label class="small">Scope <select name="scope">'
             + '<option value="subdomains"' + (' selected' if scope != 'exact' else '') +
             '>Host + subdomains</option><option value="exact"' +
@@ -117,7 +122,10 @@ def row_html(r):
             '<option value="1440">24 hours</option>'
             '<option value="10080">7 days</option></select></label>')
     def action(name, label, cls=''):
-        controls = opts if name in ('allow', 'deny') else ''
+        controls = (opts + '<label class="small">Reason (optional) '
+                    '<input name="reason" maxlength="160" '
+                    'placeholder="Short local note"></label>'
+                    if name in ('allow', 'deny') else '')
         return (f'<form method="post" action="/domain">'
                 f'<input type="hidden" name="csrf" value="{token}">'
                 f'<input type="hidden" name="domain" value="{dom}">'
@@ -134,10 +142,26 @@ def row_html(r):
             f'Rename</button></form>')
     return (f'<tr><td class="domain">{dom}</td>'
             f'<td><span class="pill {stat}">{stat}</span>{limits}</td>'
-            f'<td>{int(r["request_count"])}'
-            f'<div class="subtle">{esc(r["last_requested_at"] or "—")}</div></td>'
+            f'<td>{int(r["request_count"])}{request_meta}</td>'
             f'<td class="actions">{actions}'
             f'<div style="margin-top:7px">{edit}</div></td></tr>')
+
+
+def decision_audit_html():
+    """Render only operator-entered notes and identifiers, HTML escaped."""
+    rows = policy.recent_decisions()
+    cells = ''.join(
+        '<tr><td class="small">' + esc(r['at']) + '</td>'
+        '<td class="domain">' + esc(r['domain']) + '</td>'
+        '<td>' + esc(r['action']) + '</td>'
+        '<td class="small">' + esc(r['request_id'] or '—') + '</td>'
+        '<td>' + esc(r['reason'] or '—') + '</td></tr>'
+        for r in rows)
+    return ('<div class="scroll"><table><thead><tr><th>UTC time</th>'
+            '<th>Domain</th><th>Action</th><th>Request ID</th>'
+            '<th>Operator reason</th></tr></thead><tbody>' +
+            (cells or '<tr><td colspan="5">No decisions recorded.</td></tr>') +
+            '</tbody></table></div>')
 
 
 def render(query='', message='', kind='success'):
@@ -148,10 +172,11 @@ def render(query='', message='', kind='success'):
     alert=f'<p class="alert {"error" if kind=="error" else "success"}">{esc(message)}</p>' if message else ''
     table_head='<div class="scroll"><table><thead><tr><th>Domain</th><th>Decision / scope / expiry</th><th>Requests / latest</th><th>Manage</th></tr></thead>'
     query_escaped=esc(query)
+    audit_html = decision_audit_html()
     return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
 <main><h1>Domain approvals</h1><p>Approve or deny domains requested by agents. Changes apply to the next fetch without restarting MCP. The dashboard is accessible only from this computer.</p>{alert}
 <section class="stats"><div class="stat"><span>Awaiting approval</span><b id="live-count-pending">{c['pending']}</b></div><div class="stat"><span>Allowed</span><b id="live-count-allowed">{c['allowed']}</b></div><div class="stat"><span>Denied</span><b id="live-count-denied">{c['denied']}</b></div><div class="stat"><span>Dashboard</span><b style="font-size:14px">127.0.0.1:{PORT}</b></div></section>
-<div class="panel"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="{esc(CSRF)}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><label>Scope <select name="scope"><option value="subdomains">Host + subdomains</option><option value="exact">Exact host only</option></select></label><label>Duration <select name="expires_minutes"><option value="0">Permanent</option><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Select exact host to exclude subdomains, and optionally set a 1-hour, 24-hour or 7-day expiry. Older rules remain permanent with subdomains. Never approve private-network addresses.</p></div>
+<div class="panel"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="{esc(CSRF)}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><label>Scope <select name="scope"><option value="subdomains">Host + subdomains</option><option value="exact">Exact host only</option></select></label><label>Duration <select name="expires_minutes"><option value="0">Permanent</option><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label><label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Select exact host to exclude subdomains, and optionally set a 1-hour, 24-hour or 7-day expiry. Older rules remain permanent with subdomains. Never approve private-network addresses.</p></div>
 <div class="row" style="justify-content:space-between"><h2>Requests awaiting review</h2><div><button type="button" id="notification-toggle">Enable desktop notifications</button> <a href="/">Refresh requests</a></div></div>
 <p class="subtle" role="status" id="live-status">Live updates starting · manual refresh works without JavaScript.</p>
 <p class="subtle">Showing at most 200 pending entries (filter to find specific hosts). Agent-created queue entries are limited to {policy.MAX_PENDING_TOTAL} total, {policy.MAX_NEW_PENDING_GLOBAL_PER_HOUR} globally per hour, {policy.MAX_PENDING_PER_SITE} per registrable domain and {policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR} new hosts per site per hour. Manual allow/deny remains available even when the queue is full. Existing entries are never silently removed.</p>
@@ -162,6 +187,9 @@ def render(query='', message='', kind='success'):
 </div>
 <div class="row" style="justify-content:space-between"><h2>Allowed and denied domains</h2><form method="get" action="/"><input name="q" value="{query_escaped}" placeholder="Filter by domain"><button type="submit">Filter</button></form></div>
 {table_head}<tbody id="live-decided">{other or '<tr><td colspan="4">No matching domains.</td></tr>'}</tbody></table></div>
+<h2>Recent local decisions</h2>
+<p class="subtle">Only the most recent 25 actions; no page bodies or URL query strings.</p>
+{audit_html}
 <div class="panel"><h2 style="margin-top:0">Configuration and safety</h2><p>Search endpoint: <code>127.0.0.1:8888</code> · Crawl endpoint: <code>127.0.0.1:11235</code> · MCP: <code>127.0.0.1:8790/mcp</code> · Dashboard: <code>127.0.0.1:{PORT}</code>.</p><p>Domains are stored in <code>{esc(policy.database_path())}</code>. Your existing credentials stay in the launcher’s private configuration and are not displayed here.</p><p class="small">Unknown domains generate a pending request rather than a Python traceback. Only the user can approve them here; agents cannot invoke a tool to grant access. A domain's DNS is also checked for public addresses before an allowed fetch. Crawl4AI should still be isolated from your local network to guard against redirects and DNS rebinding.</p></div></main></body></html>'''
 
 
@@ -282,7 +310,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             policy.decide(val('domain'),val('action'),val('new_domain'),
                           scope=val('scope') or 'subdomains',
-                          expires_minutes=int(val('expires_minutes') or '0'))
+                          expires_minutes=int(val('expires_minutes') or '0'),
+                          reason=val('reason'))
             msg=f"Decision updated for {val('domain')[:253]}"
             return self._respond(200,render(message=msg))
         except (ValueError,sqlite3.IntegrityError) as exc:
