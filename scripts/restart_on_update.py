@@ -121,6 +121,12 @@ def reset_baseline(expected_commit: str, root: Path = ROOT, *,
     """
     verify_checkout(root)
     location = path or state_file()
+    if read_state(location) is None:
+        raise ValueError(
+            "No update baseline at " + str(location) +
+            "; check --state-file against the installed unit with "
+            "systemctl --user cat local-search-mcp-update.service"
+        )
     if not expected_commit or expected_commit != head(root):
         raise ValueError("Provide the exact current Git HEAD commit to reset the baseline")
     if busy(root) or tracked_source_dirty(root):
