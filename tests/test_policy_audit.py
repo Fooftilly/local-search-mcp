@@ -41,7 +41,7 @@ class PolicyAuditTests(unittest.TestCase):
         self.assertTrue(all(r["request_id"] == request_id for r in actions[:3]))
         self.assertEqual(actions[2]["reason"], "Article research")
         self.assertEqual(actions[2]["request_count"], 2)
-        self.assertEqual(actions[2]["requested_url"], sanitized)
+        self.assertEqual(actions[2]["requested_url"], "https://docs.example.org")
         self.assertEqual(actions[2]["first_requested_at"],
                          first["first_requested_at"])
         self.assertEqual(actions[2]["last_requested_at"], now["last_requested_at"])
@@ -138,6 +138,35 @@ class PolicyAuditTests(unittest.TestCase):
         self.assertNotIn("OTHER_REASON", admin_ui.render("yes.example.org"))
         script = __import__("dashboard_live_script").LIVE_SCRIPT
         self.assertIn('updateTable(auditBody, data.audit_html)', script)
+
+    def test_parent_decision_records_resolved_child_ids_and_origin(self):
+        policy.request("child.docs.example.org",
+                       "https://child.docs.example.org/invite/PRIVATE_LINK?key=HIDDEN")
+        child = next(r for r in policy.entries()
+                     if r["domain"] == "child.docs.example.org")
+        policy.decide("docs.example.org", "allow", scope="subdomains",
+                      reason="Approve parent after review")
+        rows = policy.recent_decisions(search="child.docs.example.org")
+        self.assertEqual(rows[0]["request_id"], child["request_id"])
+        self.assertEqual(rows[0]["action"], "delete")
+        self.assertEqual(rows[0]["reason"], "Approve parent after review")
+        self.assertEqual(rows[0]["requested_url"], "https://child.docs.example.org")
+        self.assertNotIn("PRIVATE_LINK", str(rows))
+
+    def test_legacy_secret_in_path_never_leaks_to_dashboard_or_audit(self):
+        policy.request("example.org", "https://example.org/invite/PRIVATE_LINK")
+        policy.decide("example.org", "allow")
+        with policy._db() as conn:
+            conn.execute(
+                "UPDATE domains SET last_requested_url=? WHERE domain=?",
+                ("https://example.org/private/LEGACY_TOKEN?key=HIDDEN", "example.org"))
+            conn.commit()
+        html = admin_ui.render()
+        self.assertNotIn("LEGACY_TOKEN", html)
+        self.assertNotIn("PRIVATE_LINK", html)
+        self.assertNotIn("HIDDEN", html)
+        self.assertNotIn("PRIVATE_LINK", str(policy.recent_decisions()))
+        self.assertNotIn("LEGACY_TOKEN", str(admin_ui.live_snapshot()))
 
     def test_clear_pending_keeps_request_id_in_audit(self):
         policy.request("queued.example.org", "https://queued.example.org/path")
