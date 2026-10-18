@@ -96,16 +96,17 @@ def history_summary_html(metrics):
     return ''.join(out) or '<tr><td colspan="5">No matching events.</td></tr>'
 
 
-def _history_filters(query):
-    """Parse bounded same-origin GET filters once, with no implicit fallback."""
+def _history_filters(query, *, validate_text=True):
+    """Parse bounded GET filters; preserve form input on text-validation errors."""
     values = {key: query.get(key, [''])[0][:253 if key == 'domain' else 48]
               for key in ('kind', 'status', 'domain')}
     raw = query.get('hours', ['0'])[0]
     if raw not in ('0', '1', '24', '168'):
         raise ValueError("Invalid history time window")
     values['hours'] = int(raw)
-    # A validated input cannot inject arbitrary SQL or request massive scans.
-    history_index._history_filter(**values)
+    # Invalid text filters may be displayed, but never passed to a query.
+    if validate_text:
+        history_index._history_filter(**values)
     return values
 
 
@@ -269,21 +270,27 @@ def render(query='', message='', kind='success'):
 <div class="panel"><h2 style="margin-top:0">Configuration and safety</h2><p>Search endpoint: <code>127.0.0.1:8888</code> · Crawl endpoint: <code>127.0.0.1:11235</code> · MCP: <code>127.0.0.1:8790/mcp</code> · Dashboard: <code>127.0.0.1:{PORT}</code>.</p><p>Domains are stored in <code>{esc(policy.database_path())}</code>. Your existing credentials stay in the launcher’s private configuration and are not displayed here.</p><p class="small">Unknown domains generate a pending request rather than a Python traceback. Only the user can approve them here; agents cannot invoke a tool to grant access. A domain's DNS is also checked for public addresses before an allowed fetch. Crawl4AI should still be isolated from your local network to guard against redirects and DNS rebinding.</p></div></main></body></html>'''
 
 
-def history_page(kind="", status="", domain="", hours=0):
+def history_page(kind="", status="", domain="", hours=0, filter_error=""):
     filters = {"kind": kind, "status": status, "domain": domain, "hours": hours}
     try:
         retention_label = str(history_index._retention_days())
-        metrics = history_index.summarize_history(**filters)
+        metrics = (history_index.summarize_history(**filters)
+                   if not filter_error else [])
     except (OSError, ValueError, sqlite3.Error):
         retention_label = "configured"
         metrics = []
+    warning = (f'<p class="alert error" role="alert">{esc(filter_error)}</p>'
+               if filter_error else '')
+    rows = (recent_rows(**filters) if not filter_error
+            else '<p class="subtle">Correct the filters above to view history.</p>')
     options = ''.join(
         f'<option value="{n}"{" selected" if hours == n else ""}>{label}</option>'
         for n, label in ((0, "All retained"), (1, "Last hour"),
                          (24, "Last 24 hours"), (168, "Last 7 days")))
     return f'''<!doctype html><html lang="en" data-live-view="history"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — History</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a></nav></header><main><h1>Indexed request history</h1><p>Private metadata from existing rotating JSONL files. Filter by operation, outcome, domain, and rolling UTC time window. Search terms, URL paths, tokens and page content are never copied into the SQLite index.</p>
 <form method="get" action="/history"><label>Operation <select name="kind"><option value="">All</option><option value="search"{' selected' if kind == 'search' else ''}>Search</option><option value="fetch"{' selected' if kind == 'fetch' else ''}>Fetch</option><option value="page"{' selected' if kind == 'page' else ''}>Continuation</option></select></label><label>Status <input name="status" value="{esc(status)}" maxlength="48"></label><label>Domain <input name="domain" value="{esc(domain)}" maxlength="253" placeholder="example.org"></label><label>Time <select name="hours">{options}</select></label><button>Filter</button></form>
-{recent_rows(**filters)}
+{warning}
+{rows}
 <p class="subtle" role="status" id="live-status">Live updates starting · manually reload if needed.</p>
 <h2>Outcome counts and average duration</h2>
 <p class="subtle">The bars summarize all retained matching events in this time window, not just the 25 recent rows.</p>
@@ -361,7 +368,15 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 filters = _history_filters(query)
             except ValueError:
-                return self._respond(400, 'Invalid history filter')
+                try:
+                    # Keep the form and navigation accessible for invalid
+                    # kind/status/domain text; invalid windows still hard-fail.
+                    filters = _history_filters(query, validate_text=False)
+                except ValueError:
+                    return self._respond(400, 'Invalid history time window')
+                return self._respond(400, history_page(
+                    **filters, filter_error="Invalid history filter. Use a "
+                    "hostname (not a URL), and a supported operation/status."))
             return self._respond(200,history_page(**filters))
         if path.path!='/':return self._respond(404,'Not found')
         q=parse_qs(path.query).get('q',[''])[0][:100]
