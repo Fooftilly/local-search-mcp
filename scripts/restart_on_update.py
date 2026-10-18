@@ -150,6 +150,41 @@ def validate_python(root: Path, files: list[str]) -> None:
                 ast.parse(f.read(), filename=name)
 
 
+
+def requirements_ready(root: Path) -> bool:
+    """Check installed versions against requirements without downloading anything."""
+    interpreter = root / ".venv" / "bin" / "python"
+    if not interpreter.is_file():
+        return False
+    probe = """
+from importlib.metadata import version
+from pathlib import Path
+from pip._vendor.packaging.requirements import Requirement
+for raw in Path('requirements.txt').read_text().splitlines():
+    line = raw.split(' #', 1)[0].strip()
+    if not line or line.startswith('#'):
+        continue
+    requirement = Requirement(line)  # Rejects unsupported pip directives.
+    if requirement.url:
+        raise ValueError('Direct URL requirements need manual review')
+    if requirement.marker is not None and not requirement.marker.evaluate():
+        continue
+    if not requirement.specifier.contains(version(requirement.name)):
+        raise ValueError('Unsatisfied local package requirement')
+"""
+    try:
+        check = subprocess.run([str(interpreter), "-I", "-c", probe], cwd=root,
+                               capture_output=True, timeout=15)
+        if check.returncode != 0:
+            return False
+        dependencies = subprocess.run(
+            [str(interpreter), "-I", "-m", "pip", "check"], cwd=root,
+            capture_output=True, timeout=15,
+        )
+        return dependencies.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
 def active(service: str) -> bool:
     return subprocess.run(["systemctl", "--user", "is-active", "--quiet", service],
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -191,6 +226,9 @@ def apply(root: Path = ROOT, *, path: Path | None = None,
         return ("Python requirements changed; no automatic package downloads. "
                 "Install/check requirements manually, then run "
                 "python3 scripts/restart_on_update.py --dependencies-ready")
+    if "requirements.txt" in changed and not requirements_ready(root):
+        return ("Installed Python requirements failed offline validation; "
+                "fix the environment manually; running services left untouched")
     try:
         validate_python(root, relevant)
     except (OSError, SyntaxError, UnicodeError) as exc:
