@@ -331,8 +331,9 @@ def _run_fetch(url: str, mode: str, *,
             # a supported URL/port. Different hosts need their own ordinary
             # (reusable) approval, never a second one-use claim.
             try:
-                same_host = urlsplit(final_url).hostname == once_proof[0]
-            except ValueError:
+                same_host = (domain_policy.normalize_domain(
+                    urlsplit(final_url).hostname or "") == once_proof[0])
+            except (ValueError, TypeError):
                 same_host = False
             if same_host:
                 destination_ok = (domain_policy._public_url_host(final_url)
@@ -454,9 +455,10 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False) -> dict:
         blocked = {"url": url, "success": False, "status": "blocked",
                    "reason": "Single-use authorization is no longer valid."}
         try:
-            source = urlsplit(url).hostname
-            target = urlsplit(response.get("url", url)).hostname
-            if (not source or not target or source != once_proof[0] or
+            source = domain_policy.normalize_domain(urlsplit(url).hostname or "")
+            target = domain_policy.normalize_domain(
+                urlsplit(response.get("url", url)).hostname or "")
+            if (source != once_proof[0] or
                     not domain_policy._once_proof_current(*once_proof) or
                     (source != target and not is_domain_currently_allowed(target))):
                 return blocked
@@ -570,8 +572,10 @@ def web_fetch_page(document_id: str, page: int = 2) -> dict:
         # second grant consumption. Proof remains valid only until expiry,
         # revocation, replacement or a new explicit denial.
         try:
-            source_host = urlsplit(source_url).hostname
-            target_host = urlsplit(result["url"]).hostname
+            source_host = domain_policy.normalize_domain(
+                urlsplit(source_url).hostname or "")
+            target_host = domain_policy.normalize_domain(
+                urlsplit(result["url"]).hostname or "")
             valid = (source_host == once_proof[0]
                      and domain_policy._once_proof_current(*once_proof)
                      and bool(target_host)
