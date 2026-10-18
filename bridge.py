@@ -403,7 +403,10 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False) -> dict:
     if before != request_cache.policy_epoch():
         return {"url": url, "success": False, "status": "blocked",
                 "reason": "Domain approval changed during the request. Retry after reviewing permissions."}
-    if isinstance(response, dict) and response.get("success") is True:
+    if (isinstance(response, dict) and
+            any(k in response for k in ("markdown", "metadata", "document_id"))):
+        # Failed crawls can still contain Markdown or metadata. Never release
+        # that content after a timed grant expires.
         # Expiration is time-based, not an operator mutation, so it must not
         # bump the global policy epoch and block unrelated batch URLs. Recheck
         # the original and final host immediately before returning content.
