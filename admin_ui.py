@@ -143,7 +143,11 @@ def row_html(r):
             f'<input aria-label="Rename {dom}" name="new_domain" value="{dom}"'
             f' style="width:195px"><button name="action" value="rename">'
             f'Rename</button></form>')
-    return (f'<tr><td class="domain">{dom}</td>'
+    select = (f'<label class="small"><input type="checkbox" name="selected" '
+              f'form="bulk-form" aria-label="Select {dom}" '
+              f'value="{dom}|{esc(r.get("request_id") or "")}"> Bulk</label> '
+              if r['status'] == 'pending' and not r.get('explicit_rule') else '')
+    return (f'<tr><td class="domain">{select}{dom}</td>'
             f'<td><span class="pill {stat}">{stat}</span>{limits}</td>'
             f'<td>{int(r["request_count"])}{request_meta}</td>'
             f'<td class="actions">{actions}'
@@ -193,6 +197,16 @@ def render(query='', message='', kind='success'):
 <p class="subtle" role="status" id="live-status">Live updates starting · manual refresh works without JavaScript.</p>
 <p class="subtle">Showing at most 200 pending entries (filter to find specific hosts). Agent-created queue entries are limited to {policy.MAX_PENDING_TOTAL} total, {policy.MAX_NEW_PENDING_GLOBAL_PER_HOUR} globally per hour, {policy.MAX_PENDING_PER_SITE} per registrable domain and {policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR} new hosts per site per hour. Manual allow/deny remains available even when the queue is full. Existing entries are never silently removed.</p>
 {table_head}<tbody id="live-pending">{pending or '<tr><td colspan="4">No pending requests.</td></tr>'}</tbody></table></div>
+<div class="panel"><h2 style="margin-top:0">Decide selected pending requests</h2>
+<p>Check up to {policy.MAX_BULK_DECISIONS} requests above. Decisions are atomic: any stale request invalidates the whole selection. Explicit child exceptions are preserved; scope and duration apply to every selection.</p>
+<form id="bulk-form" method="post" action="/bulk">
+<input type="hidden" name="csrf" value="{esc(CSRF)}">
+<label>Scope <select name="scope" required><option value="exact">Exact host only</option><option value="subdomains">Host + subdomains</option></select></label>
+<label>Duration <select name="expires_minutes" required><option value="" selected disabled>Choose duration</option><option value="0">Permanent</option><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label>
+<label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label>
+<button name="action" value="allow" class="allow">Allow selected</button>
+<button name="action" value="deny" class="deny">Deny selected</button>
+</form></div>
 <div class="panel"><h2 style="margin-top:0">Clear pending requests</h2>
 <p>Removes <strong>all pending requests</strong>, including rows not currently shown or matching the filter. Existing allow/deny rules and the rolling-hour admission limits are not affected. Agents may need to retry after the rate limit expires.</p>
 <form method="post" action="/pending/clear"><input type="hidden" name="csrf" value="{esc(CSRF)}"><label for="clear-confirm">Type CLEAR to confirm</label><input id="clear-confirm" name="confirm" placeholder="CLEAR" pattern="CLEAR" maxlength="5" required><button type="submit" class="delete">Clear all pending</button></form>
@@ -306,12 +320,17 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_valid():return self._respond(403,'Forbidden')
         if not self._post_origin_valid():
             return self._respond(403,'Invalid origin')
-        if self.path not in ('/domain', '/pending/clear'):return self._respond(404,'Not found')
+        if self.path not in ('/domain', '/pending/clear', '/bulk'):return self._respond(404,'Not found')
         try:
             length=int(self.headers.get('Content-Length','-1'))
         except ValueError:return self._respond(400,'Invalid size')
-        if length < 0 or length>4096:return self._respond(413,'Request too large')
-        vals=parse_qs(self.rfile.read(length).decode('utf-8'),keep_blank_values=True)
+        if length < 0 or length>(8192 if self.path == '/bulk' else 4096):
+            return self._respond(413,'Request too large')
+        try:
+            vals=parse_qs(self.rfile.read(length).decode('utf-8'),
+                          keep_blank_values=True, max_num_fields=40)
+        except (ValueError,UnicodeError):
+            return self._respond(400,'Invalid form data')
         def val(key):return vals.get(key,[''])[0]
         if not secrets.compare_digest(val('csrf'),CSRF):return self._respond(403,'Invalid CSRF token')
         if self.path == '/pending/clear':
@@ -320,6 +339,12 @@ class Handler(BaseHTTPRequestHandler):
             removed = policy.clear_pending_requests()
             return self._respond(200,render(message=f"Cleared {removed} pending requests."))
         try:
+            if self.path == '/bulk':
+                amount = policy.bulk_decide(vals.get('selected', []), val('action'),
+                    scope=val('scope'), expires_minutes=int(val('expires_minutes')),
+                    reason=val('reason'))
+                return self._respond(200, render(
+                    message=f"Updated {amount} pending requests."))
             policy.decide(val('domain'),val('action'),val('new_domain'),
                           scope=val('scope') or 'subdomains',
                           expires_minutes=int(val('expires_minutes') or '0'),
