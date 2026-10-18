@@ -115,14 +115,44 @@ individually instead. The dashboard still does **not** offer an Allow once
 button. That is the final UI/audit slice; this code must not be described as
 an operator-complete feature before the local control exists.
 
+## Local Allow once controls and audit
+
+From the **loopback-only dashboard** (127.0.0.1:8791), use **Allow once**
+beside a pending request or in the dedicated single-use domain panel. Choose
+exact-host (the default) or host-and-subdomains, and a finite expiration
+of 1 hour, 24 hours or 7 days. An optional local reason is recorded. A
+pending-row action includes its stable request ID and rejects stale rows.
+Ordinary allow and deny decisions remain separate; an explicit deny or
+existing reusable allow takes precedence.
+
+The dashboard displays each grant's domain, scope, expiry, and
+available/consumed/expired status **without exposing its bearer ID**. Use
+**Revoke** to invalidate a staged or already-consumed grant and all subsequent
+long-document continuation reads tied to it. Replacing an older one-use grant
+also invalidates the previous proof. Batch fetches cannot consume a one-use
+grant. The statuses and events are updated when the dashboard page is
+refreshed.
+
+The **Recent single-use activity** table records staged, consumed and revoked
+events transactionally in a separate append-only table. It stores a UTC
+timestamp, scope, expiry, local reason, request ID and sanitized request
+*origin* when available; it never stores the private grant identifier or URL
+path/query, credentials or page text. This avoids modifying the legacy
+decision table's action CHECK constraint on existing installs. Existing
+requests and permissions survive restart.
+
+Only the local dashboard POST endpoint can stage or revoke grants; it
+enforces the existing localhost Host/Origin/Fetch-Metadata/CSRF protection.
+No MCP tool has been added that can mutate approvals. As always, crawler
+container egress restrictions must be enabled separately.
+
 ## Remaining work for issue #12
 
 Scoped and expiring rules were delivered in PR #36; request IDs and
 origin-only auditing in PR #38; bulk local decisions in PR #39; and the
-private ledger/DNS preflight in PRs #43–#44. The guarded direct-fetch proof
-path has tests, but **the operator-only Allow once UI and decision audit are
-not yet implemented**. Keep issue #12 open until the final integration is
-reviewed, merged and validated.
+private ledger/DNS preflight in PRs #43–#44. The guarded direct-fetch proof path is implemented, and the operator-only
+Allow once UI and decision audit are included in the current PR. Keep issue
+#12 open until this slice has passed review and merged.
 
 The tests cover legacy schema migration, scope boundaries, explicit child
 exceptions, expiry across restart, concurrent expired requests, and HTTP
