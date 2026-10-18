@@ -75,7 +75,8 @@ def _safe_event(event: object) -> tuple | None:
     status = event.get("status")
     if at_ms is None or kind not in ("search", "fetch", "page"):
         return None
-    if not isinstance(status, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,48}", status):
+    if (not isinstance(status, str) or not 1 <= len(status) <= 48
+            or any(ord(char) < 32 or ord(char) == 127 for char in status)):
         return None
     duration = event.get("duration_ms")
     duration = (min(duration, 3600_000) if type(duration) in (int, float)
