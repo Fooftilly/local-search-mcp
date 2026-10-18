@@ -35,6 +35,13 @@ SETTINGS_SCHEMAS = {
             "searxng_seconds": (5, 120), "crawl_seconds": (15, 300),
         },
     },
+    # Optional cache lifetime preferences, introduced separately by issue #13.
+    # The backup CLI validates this schema without importing the UI module.
+    "cache-ttl.json": {
+        "local-search-mcp/cache-ttl/v1": {
+            "search_seconds": (5, 900), "fetch_seconds": (5, 1800),
+        },
+    },
 }
 SETTINGS_NAMES = tuple(SETTINGS_SCHEMAS)
 MAX_SETTINGS_FILE = 1024
