@@ -8,15 +8,19 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from hashlib import sha256
+import hmac
 import json
 import re
 import secrets
+import time
 
 import domain_policy as policy
 
 SCHEMA = "local-search-mcp/domain-rules/v1"
 MAX_RULES = 250
 MAX_JSON_BYTES = 48_000
+PREVIEW_TTL_SECONDS = 600
+_PREVIEW_SECRET = secrets.token_bytes(32)  # Process-local, never persisted.
 REQUIRED = frozenset(("domain", "status", "scope", "expires_at"))
 UTC_SECONDS = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
@@ -128,6 +132,17 @@ def export_rules() -> dict:
             for r in rows]}
 
 
+def _canonical(rules: list[dict]) -> str:
+    return json.dumps({"schema": SCHEMA, "rules": rules},
+                      separators=(",", ":"), ensure_ascii=True)
+
+
+def _ticket(canonical: str, state: str, issued: int) -> str:
+    message = (state + "\n" + str(issued) + "\n" + canonical).encode("ascii")
+    signature = hmac.new(_PREVIEW_SECRET, message, "sha256").hexdigest()
+    return str(issued) + "." + signature
+
+
 def preview_import(payload: str) -> dict:
     """Validated, read-only import plan. Conflicting decisions block apply."""
     rules = _rules_from_text(payload)
@@ -136,16 +151,27 @@ def preview_import(payload: str) -> dict:
         plan = _plan(conn, rules)
         state = _snapshot(conn)
     # The canonical serialization is safe to round-trip into escaped HTML.
-    canonical = json.dumps({"schema": SCHEMA, "rules": rules},
-                           separators=(",", ":"), ensure_ascii=True)
-    return {"state": state, "canonical": canonical, "rules": rules, **plan}
+    canonical = _canonical(rules)
+    ticket = _ticket(canonical, state, int(time.monotonic()))
+    return {"state": state, "ticket": ticket, "canonical": canonical,
+            "rules": rules, **plan}
 
 
-def apply_import(payload: str, expected_state: str) -> int:
-    """Apply an entire previewed ruleset or nothing, under BEGIN IMMEDIATE."""
+def apply_import(payload: str, expected_state: str,
+                 ticket: str) -> int:
+    """Apply exactly the approved preview or nothing, under BEGIN IMMEDIATE."""
     if not isinstance(expected_state, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_state):
         raise ValueError("Missing or invalid import preview")
     rules = _rules_from_text(payload)
+    if not isinstance(ticket, str) or not re.fullmatch(r"[0-9]{1,15}\.[a-f0-9]{64}", ticket):
+        raise ValueError("Missing or invalid import confirmation")
+    issued = int(ticket.split(".", 1)[0])
+    age = int(time.monotonic()) - issued
+    if age < 0 or age > PREVIEW_TTL_SECONDS:
+        raise ValueError("Import preview expired; preview again")
+    expected_ticket = _ticket(_canonical(rules), expected_state, issued)
+    if not hmac.compare_digest(expected_ticket, ticket):
+        raise ValueError("Confirmation does not match the previewed rules")
     with policy._db() as conn:
         policy._seed(conn)
         conn.execute("BEGIN IMMEDIATE")
