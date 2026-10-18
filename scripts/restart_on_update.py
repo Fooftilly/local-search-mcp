@@ -211,26 +211,32 @@ def dependency_manifest(name: str) -> bool:
                 for part in path.parts[:-1]) and leaf.endswith((".txt", ".in", ".pip")))
 
 
-def referenced_requirement_files(root: Path) -> set[str]:
-    """Find tracked pip manifests and every local -r/-c file they reference.
+def referenced_requirement_files(
+    root: Path, *, origins: dict[str, set[str]] | None = None,
+) -> set[str]:
+    """Find pip -r/-c closure and, optionally, each file's source manifest.
 
-    Included files need a dependency gate even if named pins.txt or located
-    under a normally ignored docs directory. Do not access the network.
+    Retain source-manifest context so a changed arbitrary include is validated
+    through its original -r/-c edge, preserving constraint semantics.
     """
     tracked = subprocess.run(
         ["git", "ls-files", "-z", "--"], cwd=root,
         capture_output=True, check=True, timeout=15,
     ).stdout
-    roots = [os.fsdecode(item) for item in tracked.split(b"\0") if item]
-    paths = set()
+    tracked_names = [os.fsdecode(item) for item in tracked.split(b"\0") if item]
+    found: set[str] = set()
+    visited: set[tuple[str, str]] = set()
     base = root.resolve()
 
-    def visit(name: str) -> None:
-        if name in paths:
+    def visit(name: str, source: str) -> None:
+        if origins is not None:
+            origins.setdefault(name, set()).add(source)
+        if (name, source) in visited:
             return
-        if len(paths) >= 256:
+        if len(visited) >= 512:
             raise ValueError("Too many included requirement files")
-        paths.add(name)
+        visited.add((name, source))
+        found.add(name)
         original = root / name
         if original.is_symlink():
             raise ValueError("Refusing symlinked requirements include")
@@ -238,11 +244,17 @@ def referenced_requirement_files(root: Path) -> set[str]:
         if not resolved.is_relative_to(base):
             raise ValueError("Requirements include escapes Git checkout")
         if not resolved.exists():
-            return  # Still gate deleted referenced files.
+            return  # Deletions must still be dependency-gated.
         if not resolved.is_file():
             raise ValueError("Requirements include is not a file")
+        pending = ""
         for raw in resolved.read_text().splitlines():
-            line = raw.split(" #", 1)[0].strip()
+            raw = raw.strip()
+            if raw.endswith("\\"):
+                pending += raw[:-1] + " "
+                continue
+            line = (pending + raw).split(" #", 1)[0].strip()
+            pending = ""
             if not line or line.startswith("#"):
                 continue
             for prefix in ("--requirement=", "--requirement ",
@@ -255,20 +267,30 @@ def referenced_requirement_files(root: Path) -> set[str]:
                     included = (resolved.parent / target).resolve()
                     if not included.is_relative_to(base):
                         raise ValueError("Requirements include escapes Git checkout")
-                    visit(included.relative_to(base).as_posix())
+                    visit(included.relative_to(base).as_posix(), source)
                     break
 
-    for name in roots:
+    for name in tracked_names:
         if dependency_manifest(name) and name.endswith((".txt", ".in", ".pip")):
-            visit(name)
-    return paths
+            visit(name, name)
+    return found
 
 
-def requirements_ready(root: Path, changed_manifests: list[str] | None = None) -> bool:
-    """Offline check of pip-style manifests plus installed dependency integrity.
+def constraint_manifest(name: str) -> bool:
+    """Standalone constraints restrict versions; they don't require installs."""
+    parts = [part.lower() for part in Path(name).parts]
+    return any(p.startswith("constraint") or p == "constraints" for p in parts)
 
-    Used only after explicit operator approval; never fetches or installs.
-    Non-pip formats require manual verification and a passing pip check.
+
+def requirements_ready(
+    root: Path, changed_manifests: list[str] | None = None,
+    origins: dict[str, set[str]] | None = None,
+) -> bool:
+    """Validate manually acknowledged pip requirements entirely offline.
+
+    Use source manifests for changed -r/-c inputs to preserve constraint
+    roles, even when requirements.txt was removed. Other formats rely on
+    manual operator verification plus pip check.
     """
     manifest = root / "requirements.txt"
     interpreter = root / ".venv" / "bin" / "python"
@@ -277,13 +299,35 @@ def requirements_ready(root: Path, changed_manifests: list[str] | None = None) -
     if not manifest.is_file() and manifest.exists():
         return False
 
-    candidates = ["requirements.txt"] if manifest.is_file() else []
-    for name in changed_manifests or []:
-        if (dependency_manifest(name) and name.endswith((".txt", ".in", ".pip"))
-                and (root / name).is_file() and name not in candidates):
-            candidates.append(name)
+    # False (regular requirement) takes precedence over True (constraint).
+    candidates: dict[str, bool] = {}
 
-    probe = """
+    def add(name: str, constrained: bool) -> None:
+        path = root / name
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise ValueError("Unsafe dependency manifest")
+        if path.is_file():
+            candidates[name] = candidates.get(name, True) and constrained
+
+    try:
+        if manifest.is_file():
+            add("requirements.txt", False)
+        for name in changed_manifests or []:
+            sources = (origins or {}).get(name, set())
+            if sources:
+                for source in sources:
+                    add(source, constraint_manifest(source))
+            elif name.endswith((".txt", ".in", ".pip")):
+                # For direct API calls without a graph, validate included files
+                # by their own contents instead of silently running pip check.
+                add(name, constraint_manifest(name))
+            if dependency_manifest(name) and name.endswith((".txt", ".in", ".pip")):
+                add(name, constraint_manifest(name))
+    except (OSError, ValueError):
+        return False
+
+    probe = r"""
+import re
 import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -300,8 +344,14 @@ def walk(filename, constrained=False):
         raise ValueError('Unsafe, absent or cyclic requirement file')
     visiting.add(path)
     try:
+        pending = ''
         for raw in path.read_text().splitlines():
-            line = raw.split(' #', 1)[0].strip()
+            raw = raw.strip()
+            if raw.endswith('\\'):
+                pending += raw[:-1] + ' '
+                continue
+            line = (pending + raw).split(' #', 1)[0].strip()
+            pending = ''
             if not line or line.startswith('#'):
                 continue
             for option, is_constraint in (
@@ -316,6 +366,32 @@ def walk(filename, constrained=False):
                     walk(path.parent / included, constrained or is_constraint)
                     break
             else:
+                if line.startswith(('-e ', '-e=', '--editable ', '--editable=')):
+                    # The operator reviewed and installed the editable target.
+                    # Check static local project metadata where available; pip
+                    # check remains mandatory even without metadata.
+                    editable = line.split(' ', 1)[-1] if ' ' in line else line.split('=', 1)[1]
+                    if not editable.startswith(('git+', 'https:', 'http:')):
+                        target = (path.parent / editable).resolve()
+                        if not target.is_relative_to(root) or not target.exists():
+                            raise ValueError('Unsafe or missing editable path')
+                        pyproject = target / 'pyproject.toml'
+                        if pyproject.is_file():
+                            import tomllib
+                            metadata = tomllib.loads(pyproject.read_text())
+                            name = metadata.get('project', {}).get('name')
+                            if name:
+                                version(name)
+                    continue
+                line = re.sub(r'\s+--hash(?:=|\s+)\S+', '', line).strip()
+                if not line:
+                    continue
+                # These pip configuration directives cannot be verified from
+                # installed distributions. Explicit operator review is required.
+                if line.startswith(('--index-url ', '--extra-index-url ',
+                                    '--find-links ', '--no-index',
+                                    '--trusted-host ')):
+                    continue
                 requirement = Requirement(line)
                 if requirement.marker is not None and not requirement.marker.evaluate():
                     continue
@@ -323,20 +399,26 @@ def walk(filename, constrained=False):
                     installed = version(requirement.name)
                 except PackageNotFoundError:
                     if constrained:
-                        continue  # Constraints need not be installed.
+                        continue
                     raise
                 if not requirement.url and not requirement.specifier.contains(installed):
                     raise ValueError('Unsatisfied local package requirement')
+        if pending:
+            raise ValueError('Unterminated requirement continuation')
     finally:
         visiting.remove(path)
 
-for file in sys.argv[1:]:
-    walk(root / file)
+for entry in sys.argv[1:]:
+    walk(root / entry[2:], constrained=entry.startswith('C:'))
 """
     try:
         if candidates:
-            check = subprocess.run([str(interpreter), "-I", "-c", probe, *candidates],
-                                   cwd=root, capture_output=True, timeout=15)
+            entries = [("C:" if constrained else "R:") + name
+                       for name, constrained in candidates.items()]
+            check = subprocess.run(
+                [str(interpreter), "-I", "-c", probe, *entries],
+                cwd=root, capture_output=True, timeout=15,
+            )
             if check.returncode != 0:
                 return False
         dependencies = subprocess.run(
@@ -393,7 +475,8 @@ def apply(root: Path = ROOT, *, path: Path | None = None,
     changed = changed_files(root, original, current)
     # Follow -r/-c includes even when their filenames are otherwise ordinary
     # or their parent directory would normally be ignored as documentation.
-    dependency_paths = referenced_requirement_files(root)
+    manifest_origins: dict[str, set[str]] = {}
+    dependency_paths = referenced_requirement_files(root, origins=manifest_origins)
     changed_manifests = [
         name for name in changed
         if dependency_manifest(name) or name in dependency_paths
@@ -410,7 +493,7 @@ def apply(root: Path = ROOT, *, path: Path | None = None,
                 "package downloads. Review and prepare dependencies manually, "
                 "then run python3 scripts/restart_on_update.py " +
                 state_argument(location) + " --dependencies-ready")
-    if changed_manifests and not requirements_ready(root, changed_manifests):
+    if changed_manifests and not requirements_ready(root, changed_manifests, manifest_origins):
         return ("Installed Python requirements failed offline validation; "
                 "fix the environment manually; running services left untouched")
     try:
