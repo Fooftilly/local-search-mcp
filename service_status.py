@@ -22,7 +22,10 @@ def _endpoint(raw: str) -> tuple[str, int] | None:
     try:
         parsed = urlsplit(raw)
         host = parsed.hostname
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        # None means absent; an explicit :0 must remain invalid, not fall
+        # back to the default service port.
+        port = (parsed.port if parsed.port is not None
+                else (443 if parsed.scheme == "https" else 80))
         if (parsed.scheme not in ("http", "https") or host not in
                 ("localhost", "127.0.0.1", "::1") or
                 parsed.username is not None or parsed.password is not None or
