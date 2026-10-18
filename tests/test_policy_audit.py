@@ -82,6 +82,7 @@ class PolicyAuditTests(unittest.TestCase):
         policy.decide("example.org", "deny", reason="Reviewed")
         self.assertEqual(policy.recent_decisions()[0]["request_id"], before["request_id"])
         self.assertEqual(policy.recent_decisions()[-1]["reason"], "")
+        self.assertEqual(policy.recent_decisions()[-1]["request_id"], "")  # No reliable legacy correlation
         self.assertEqual(policy.request("example.org", "https://example.org/")[0], "denied")
 
     def test_first_request_not_confused_with_import_or_creation(self):
@@ -111,7 +112,7 @@ class PolicyAuditTests(unittest.TestCase):
         self.assertNotIn("REDACTrMe", admin_ui.render())
 
     def test_rejects_bad_reasons_before_changing_permission(self):
-        for reason in ("x" * 161, "newline\nsecret", "tab\tsecret", 1, None):
+        for reason in ("x" * 161, "newline\nsecret", "tab\tsecret", "bad\u0085control", 1, None):
             with self.subTest(reason=repr(reason)), self.assertRaises(ValueError):
                 policy.decide("example.org", "allow", reason=reason)
         self.assertFalse(any(r["domain"] == "example.org" for r in policy.entries()))
