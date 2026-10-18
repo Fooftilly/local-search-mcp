@@ -72,7 +72,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('name="q" value="trusted.example.net"', filtered)
         self.assertIn('<td class="domain">trusted.example.net</td>', filtered)
         self.assertNotIn('<td class="domain">blocked.example.org</td>', filtered)
-        self.assertNotIn('<td class="domain">r0.flood-example.org</td>', filtered)
+        self.assertNotIn('aria-label="Select r0.flood-example.org"', filtered)
 
     def test_clear_pending_requires_confirmation_and_preserves_decisions(self):
         policy.decide("trusted.example.net", "allow")
