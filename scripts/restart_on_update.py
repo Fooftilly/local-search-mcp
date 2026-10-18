@@ -193,11 +193,29 @@ def validate_python(root: Path, files: list[str]) -> None:
 
 
 
-def requirements_ready(root: Path) -> bool:
-    """Check installed versions against requirements without downloading anything.
+def dependency_manifest(name: str) -> bool:
+    """Recognize conventional Python dependency manifests, including moves."""
+    if name.startswith((".github/", "docs/", "tests/")):
+        return False
+    path = Path(name)
+    leaf = path.name.lower()
+    if leaf in {
+        "pyproject.toml", "poetry.lock", "uv.lock", "pdm.lock",
+        "pipfile", "pipfile.lock", "setup.cfg", "setup.py",
+        "environment.yml", "environment.yaml",
+    }:
+        return True
+    if leaf.startswith(("requirements", "constraints", "dependencies", "deps")):
+        return leaf.endswith((".txt", ".in", ".pip", ".lock", ".toml", ".yml", ".yaml"))
+    return (any(part.lower() in {"requirements", "constraints", "deps", "reqs"}
+                for part in path.parts[:-1]) and leaf.endswith((".txt", ".in", ".pip")))
 
-    If the manifest was removed/renamed, manual --dependencies-ready confirmation
-    is the only available dependency check; do not require a deleted file.
+
+def requirements_ready(root: Path, changed_manifests: list[str] | None = None) -> bool:
+    """Offline check of pip-style manifests plus installed dependency integrity.
+
+    Used only after explicit operator approval; never fetches or installs.
+    Non-pip formats require manual verification and a passing pip check.
     """
     manifest = root / "requirements.txt"
     interpreter = root / ".venv" / "bin" / "python"
@@ -205,40 +223,69 @@ def requirements_ready(root: Path) -> bool:
         return False
     if not manifest.is_file() and manifest.exists():
         return False
-    if not manifest.exists():
-        # No manifest remains to parse. The operator must explicitly approve
-        # this migration; the virtualenv must still pass an offline pip check.
-        try:
-            result = subprocess.run([str(interpreter), "-I", "-m", "pip", "check"],
-                                    cwd=root, capture_output=True, timeout=15)
-            return result.returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            return False
+
+    candidates = ["requirements.txt"] if manifest.is_file() else []
+    for name in changed_manifests or []:
+        if (dependency_manifest(name) and name.endswith((".txt", ".in", ".pip"))
+                and (root / name).is_file() and name not in candidates):
+            candidates.append(name)
+
     probe = """
-from importlib.metadata import version
+import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from pip._vendor.packaging.requirements import Requirement
-for raw in Path('requirements.txt').read_text().splitlines():
-    line = raw.split(' #', 1)[0].strip()
-    if not line or line.startswith('#'):
-        continue
-    requirement = Requirement(line)  # Rejects unsupported pip directives.
-    if requirement.marker is not None and not requirement.marker.evaluate():
-        continue
-    installed_version = version(requirement.name)  # Fails if not installed.
-    if requirement.url:
-        # Operator explicitly acknowledged the dependency change. A direct
-        # URL's provenance cannot be validated offline; ensure that the named
-        # distribution exists and let pip check validate its dependencies.
-        continue
-    if not requirement.specifier.contains(installed_version):
-        raise ValueError('Unsatisfied local package requirement')
+
+root = Path.cwd().resolve()
+visiting = set()
+
+def walk(filename, constrained=False):
+    original = Path(filename)
+    path = original.resolve()
+    if (not path.is_relative_to(root) or original.is_symlink()
+            or not path.is_file() or path in visiting):
+        raise ValueError('Unsafe, absent or cyclic requirement file')
+    visiting.add(path)
+    try:
+        for raw in path.read_text().splitlines():
+            line = raw.split(' #', 1)[0].strip()
+            if not line or line.startswith('#'):
+                continue
+            for option, is_constraint in (
+                ('--requirement=', False), ('--requirement ', False),
+                ('--constraint=', True), ('--constraint ', True),
+                ('-r ', False), ('-c ', True), ('-r', False), ('-c', True),
+            ):
+                if line.startswith(option):
+                    included = line[len(option):].strip()
+                    if not included:
+                        raise ValueError('Empty requirement include')
+                    walk(path.parent / included, constrained or is_constraint)
+                    break
+            else:
+                requirement = Requirement(line)
+                if requirement.marker is not None and not requirement.marker.evaluate():
+                    continue
+                try:
+                    installed = version(requirement.name)
+                except PackageNotFoundError:
+                    if constrained:
+                        continue  # Constraints need not be installed.
+                    raise
+                if not requirement.url and not requirement.specifier.contains(installed):
+                    raise ValueError('Unsatisfied local package requirement')
+    finally:
+        visiting.remove(path)
+
+for file in sys.argv[1:]:
+    walk(root / file)
 """
     try:
-        check = subprocess.run([str(interpreter), "-I", "-c", probe], cwd=root,
-                               capture_output=True, timeout=15)
-        if check.returncode != 0:
-            return False
+        if candidates:
+            check = subprocess.run([str(interpreter), "-I", "-c", probe, *candidates],
+                                   cwd=root, capture_output=True, timeout=15)
+            if check.returncode != 0:
+                return False
         dependencies = subprocess.run(
             [str(interpreter), "-I", "-m", "pip", "check"], cwd=root,
             capture_output=True, timeout=15,
@@ -246,6 +293,7 @@ for raw in Path('requirements.txt').read_text().splitlines():
         return dependencies.returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
+
 
 def active(service: str) -> bool:
     return subprocess.run(["systemctl", "--user", "is-active", "--quiet", service],
@@ -296,12 +344,13 @@ def apply(root: Path = ROOT, *, path: Path | None = None,
             return "Git checkout changed before recording update; will retry"
         write_state(location, current)
         return "Documentation/test-only commit change; restart not required"
-    if "requirements.txt" in changed and not dependencies_ready:
+    changed_manifests = [name for name in changed if dependency_manifest(name)]
+    if changed_manifests and not dependencies_ready:
         return ("Python requirements changed, moved or removed; no automatic "
                 "package downloads. Review and prepare dependencies manually, "
                 "then run python3 scripts/restart_on_update.py " +
                 state_argument(location) + " --dependencies-ready")
-    if "requirements.txt" in changed and not requirements_ready(root):
+    if changed_manifests and not requirements_ready(root, changed_manifests):
         return ("Installed Python requirements failed offline validation; "
                 "fix the environment manually; running services left untouched")
     try:
