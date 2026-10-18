@@ -169,6 +169,61 @@ class PortableDomainRulesTests(unittest.TestCase):
                 transfer.apply_import(source, preview["state"], preview["ticket"])
         self.assertEqual(policy.entries(), [])
 
+    def test_parent_denial_cannot_be_bypassed_by_imported_child_allow(self):
+        policy.decide("example.org", "deny", scope="subdomains")
+        doc = self.payload([self.rule("docs.example.org", status="allowed",
+                                      scope="exact")])
+        preview = transfer.preview_import(doc)
+        self.assertEqual(preview["conflicts"], ["docs.example.org"])
+        self.assertNotIn("docs.example.org", preview["add"])
+        self.assertIn("Conflict", admin_ui.import_preview_html(preview))
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            transfer.apply_import(doc, preview["state"], preview["ticket"])
+        self.assertFalse(policy.is_domain_currently_allowed("docs.example.org"))
+
+    def test_imported_descendant_keeps_pending_request_identity_and_count(self):
+        policy.evaluate_fetch_url("https://z.a.example.org/first?token=PRIVATE")
+        policy.evaluate_fetch_url("https://z.a.example.org/second?token=PRIVATE")
+        before = next(x for x in policy.entries()
+                      if x["domain"] == "z.a.example.org")
+        rules = [self.rule("a.example.org", scope="subdomains"),
+                 self.rule("z.a.example.org", scope="exact")]
+        plan = transfer.preview_import(self.payload(rules))
+        self.assertEqual(transfer.apply_import(plan["canonical"], plan["state"],
+                                               plan["ticket"]), 2)
+        after = next(x for x in policy.entries()
+                     if x["domain"] == "z.a.example.org")
+        self.assertEqual(after["request_id"], before["request_id"])
+        self.assertEqual(after["request_count"], before["request_count"])
+        self.assertEqual(after["last_requested_url"], before["last_requested_url"])
+        self.assertTrue(after["explicit_rule"])
+        self.assertNotIn("PRIVATE", repr(transfer.export_rules()))
+
+    def test_expiration_rechecked_after_import_write_lock(self):
+        start = datetime.now(timezone.utc).replace(microsecond=0)
+        expires = (start + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        doc = self.payload([self.rule(expiry=expires)])
+        plan = transfer.preview_import(doc)
+        # Validation before SQLite succeeds, but the target TTL crosses its
+        # deadline before the write-lock-dependent recheck.
+        with patch.object(transfer, "_now_dt", side_effect=[
+                start, start + timedelta(days=3)]):
+            with self.assertRaisesRegex(ValueError, "expired"):
+                transfer.apply_import(doc, plan["state"], plan["ticket"])
+        self.assertEqual(policy.entries(), [])
+
+    def test_preview_explicit_statuses_name_conflict_domains(self):
+        policy.decide("docs.example.org", "deny")
+        doc = self.payload([self.rule("docs.example.org"),
+                            self.rule("new.example.net")])
+        preview = transfer.preview_import(doc)
+        html = admin_ui.import_preview_html(preview)
+        self.assertIn("docs.example.org", html)
+        self.assertIn("new.example.net", html)
+        self.assertIn("Conflict", html)
+        self.assertIn("New", html)
+        self.assertNotIn('action="/rules/apply"', html)
+
     def test_empty_export_is_versioned_and_contains_no_secrets(self):
         self.assertEqual(transfer.export_rules(),
                          {"schema": transfer.SCHEMA, "rules": []})
