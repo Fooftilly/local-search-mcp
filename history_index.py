@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from contextlib import closing
 import fcntl
+import hashlib
 import ipaddress
 import json
 import os
@@ -123,16 +124,27 @@ def sync_history() -> None:
                 os.chmod(index, 0o600)
                 conn.execute("PRAGMA busy_timeout=10000")
                 conn.execute("BEGIN IMMEDIATE")
+                # The index is derived from JSONL: an early pre-release schema
+                # without a source generation ID can be rebuilt safely.
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(history)")}
+                if columns and "generation_id" not in columns:
+                    conn.execute("DROP TABLE IF EXISTS history")
+                    conn.execute("DROP TABLE IF EXISTS sources")
+                conn.execute("""CREATE TABLE IF NOT EXISTS generations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT)""")
                 conn.execute("""CREATE TABLE IF NOT EXISTS history (
-                    source_dev INTEGER NOT NULL, source_ino INTEGER NOT NULL,
+                    generation_id INTEGER NOT NULL,
                     byte_offset INTEGER NOT NULL, at_ms INTEGER NOT NULL,
                     kind TEXT NOT NULL, status TEXT NOT NULL,
                     domain TEXT NOT NULL, duration_ms REAL,
                     backend TEXT NOT NULL,
-                    PRIMARY KEY(source_dev,source_ino,byte_offset))""")
+                    PRIMARY KEY(generation_id,byte_offset))""")
                 conn.execute("""CREATE TABLE IF NOT EXISTS sources (
                     dev INTEGER NOT NULL, ino INTEGER NOT NULL,
+                    fingerprint TEXT NOT NULL, generation_id INTEGER NOT NULL,
                     next_offset INTEGER NOT NULL,
+                    checkpoint_offset INTEGER NOT NULL DEFAULT -1,
+                    checkpoint_hash TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY(dev,ino))""")
                 conn.execute("CREATE INDEX IF NOT EXISTS hist_at ON history(at_ms DESC)")
                 conn.execute("CREATE INDEX IF NOT EXISTS hist_kind_status_at "
@@ -151,17 +163,63 @@ def sync_history() -> None:
                             raise OSError("History input must be a regular file")
                         key = (meta.st_dev, meta.st_ino)
                         seen.add(key)
+                        # Linux may immediately reuse a discarded .3 inode for
+                        # a new active JSONL. Hash its first bounded line so
+                        # a reused inode cannot silently inherit old offsets.
+                        first_line = stream.readline(MAX_EVENT_BYTES + 1)
+                        fingerprint = hashlib.sha256(first_line).hexdigest()
                         previous = conn.execute(
-                            "SELECT next_offset FROM sources WHERE dev=? AND ino=?", key
+                            """SELECT fingerprint,generation_id,next_offset,
+                                      checkpoint_offset,checkpoint_hash
+                               FROM sources WHERE dev=? AND ino=?""", key
                         ).fetchone()
-                        offset = previous[0] if previous and previous[0] <= meta.st_size else 0
+                        same_source = bool(previous and previous[0] == fingerprint
+                                           and previous[2] <= meta.st_size)
+                        if same_source and previous[3] >= 0:
+                            # Also check the last imported line. This detects
+                            # reuse even if a new file begins with identical
+                            # content and happens to grow beyond the old size.
+                            stream.seek(previous[3])
+                            checkpoint = stream.readline(MAX_EVENT_BYTES + 1)
+                            same_source = (
+                                hashlib.sha256(checkpoint).hexdigest() == previous[4])
+                        if same_source:
+                            generation = previous[1]
+                            offset = previous[2]
+                            check_offset, check_hash = previous[3], previous[4]
+                        else:
+                            generation = conn.execute(
+                                "INSERT INTO generations DEFAULT VALUES").lastrowid
+                            offset = 0
+                            check_offset, check_hash = -1, ""
                         stream.seek(offset)
                         while True:
                             pos = stream.tell()
                             line = stream.readline(MAX_EVENT_BYTES + 1)
-                            if not line or not line.endswith(b"\n"):
+                            if not line:
                                 break
+                            if not line.endswith(b"\n"):
+                                if len(line) <= MAX_EVENT_BYTES:
+                                    break  # short, incomplete tail: retry later
+                                # Skip a complete oversized record in bounded
+                                # pieces, without buffering arbitrary content.
+                                complete = False
+                                while True:
+                                    chunk = stream.readline(MAX_EVENT_BYTES + 1)
+                                    if not chunk:
+                                        break
+                                    if chunk.endswith(b"\n"):
+                                        complete = True
+                                        break
+                                if not complete:
+                                    break  # incomplete oversized tail
+                                offset = stream.tell()
+                                check_offset = pos
+                                check_hash = hashlib.sha256(line).hexdigest()
+                                continue
                             offset = stream.tell()
+                            check_offset = pos
+                            check_hash = hashlib.sha256(line).hexdigest()
                             if len(line) > MAX_EVENT_BYTES:
                                 continue
                             try:
@@ -170,13 +228,21 @@ def sync_history() -> None:
                                 continue
                             if data and data[0] >= cutoff:
                                 conn.execute("""INSERT OR IGNORE INTO history
-                                    (source_dev,source_ino,byte_offset,at_ms,
+                                    (generation_id,byte_offset,at_ms,
                                      kind,status,domain,duration_ms,backend)
-                                    VALUES (?,?,?,?,?,?,?,?,?)""", (*key, pos, *data))
-                        conn.execute("""INSERT INTO sources(dev,ino,next_offset)
-                            VALUES(?,?,?) ON CONFLICT(dev,ino)
-                            DO UPDATE SET next_offset=excluded.next_offset""",
-                            (*key, offset))
+                                    VALUES (?,?,?,?,?,?,?,?)""",
+                                    (generation, pos, *data))
+                        conn.execute("""INSERT INTO sources
+                            (dev,ino,fingerprint,generation_id,next_offset,
+                             checkpoint_offset,checkpoint_hash)
+                            VALUES(?,?,?,?,?,?,?) ON CONFLICT(dev,ino)
+                            DO UPDATE SET fingerprint=excluded.fingerprint,
+                              generation_id=excluded.generation_id,
+                              next_offset=excluded.next_offset,
+                              checkpoint_offset=excluded.checkpoint_offset,
+                              checkpoint_hash=excluded.checkpoint_hash""",
+                            (*key, fingerprint, generation, offset,
+                             check_offset, check_hash))
                 # Inode/offset markers survive a rename during rotation, but
                 # disappear when a source is no longer among retained files.
                 for dev, ino in conn.execute("SELECT dev,ino FROM sources").fetchall():
