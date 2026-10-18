@@ -297,6 +297,57 @@ class AutoRestartTests(unittest.TestCase):
         check.assert_called_once_with(self.root, ["config/dependencies.txt"])
         self.assertEqual(restarted, list(update.SERVICES))
 
+    def test_transitive_pip_includes_are_gated_independent_of_filename(self):
+        update.initialize(self.root, path=self.state)
+        self.change("requirements.txt", "-r pins.txt\n-c locks/prod.txt\n")
+        self.change("pins.txt", "fastmcp>=4,<5\n")
+        self.change("locks/prod.txt", "fastmcp<5\n")
+        self.commit("convert to included pins")
+        with patch.object(update, "requirements_ready", return_value=True):
+            self.assertIn("Restart requested", self.check(dependencies_ready=True)[0])
+        self.assertEqual(update.referenced_requirement_files(self.root),
+                         {"requirements.txt", "pins.txt", "locks/prod.txt"})
+
+        for filename in ("pins.txt", "locks/prod.txt"):
+            previous = self.state.read_text()
+            self.change(filename, "fastmcp>=4.1,<5\n")
+            self.commit("modify included dependency input")
+            message, restarted, _ = self.check()
+            self.assertIn("--dependencies-ready", message)
+            self.assertEqual(restarted, [])
+            self.assertEqual(self.state.read_text(), previous)
+            with patch.object(update, "requirements_ready", return_value=True):
+                self.assertIn("Restart requested",
+                              self.check(dependencies_ready=True)[0])
+
+    def test_included_pip_file_under_docs_is_not_ignored(self):
+        update.initialize(self.root, path=self.state)
+        self.change("requirements.txt", "-r docs/pins.txt\n")
+        self.change("docs/pins.txt", "fastmcp>=4,<5\n")
+        self.commit("add included manifest under docs")
+        with patch.object(update, "requirements_ready", return_value=True):
+            self.check(dependencies_ready=True)
+        before = self.state.read_text()
+        self.change("docs/pins.txt", "fastmcp>=4.1,<5\n")
+        self.commit("update included docs manifest")
+        message, restarted, _ = self.check()
+        self.assertIn("--dependencies-ready", message)
+        self.assertEqual(restarted, [])
+        self.assertEqual(self.state.read_text(), before)
+
+    def test_deleted_transitive_manifest_remains_gated(self):
+        update.initialize(self.root, path=self.state)
+        self.change("requirements.txt", "-r pins.txt\n")
+        self.change("pins.txt", "fastmcp>=4,<5\n")
+        self.commit("add arbitrary pip manifest")
+        with patch.object(update, "requirements_ready", return_value=True):
+            self.check(dependencies_ready=True)
+        self.git("rm", "pins.txt")
+        self.commit("delete included requirements")
+        message, restarted, _ = self.check()
+        self.assertIn("--dependencies-ready", message)
+        self.assertEqual(restarted, [])
+
     def test_other_dependency_formats_are_gated_for_manual_review(self):
         self.assertTrue(update.dependency_manifest("pyproject.toml"))
         self.assertTrue(update.dependency_manifest("uv.lock"))
