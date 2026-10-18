@@ -42,6 +42,9 @@ class PolicyAuditTests(unittest.TestCase):
         self.assertEqual(actions[2]["reason"], "Article research")
         self.assertEqual(actions[2]["request_count"], 2)
         self.assertEqual(actions[2]["requested_url"], sanitized)
+        self.assertEqual(actions[2]["first_requested_at"],
+                         first["first_requested_at"])
+        self.assertEqual(actions[2]["last_requested_at"], now["last_requested_at"])
         self.assertNotIn("PRIVATE", str(actions))
         policy.decide("renamed.example.org", "delete")
         self.assertEqual(policy.recent_decisions()[0]["request_id"], request_id)
