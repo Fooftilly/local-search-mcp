@@ -211,6 +211,59 @@ def dependency_manifest(name: str) -> bool:
                 for part in path.parts[:-1]) and leaf.endswith((".txt", ".in", ".pip")))
 
 
+def referenced_requirement_files(root: Path) -> set[str]:
+    """Find tracked pip manifests and every local -r/-c file they reference.
+
+    Included files need a dependency gate even if named pins.txt or located
+    under a normally ignored docs directory. Do not access the network.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z", "--"], cwd=root,
+        capture_output=True, check=True, timeout=15,
+    ).stdout
+    roots = [os.fsdecode(item) for item in tracked.split(b"\0") if item]
+    paths = set()
+    base = root.resolve()
+
+    def visit(name: str) -> None:
+        if name in paths:
+            return
+        if len(paths) >= 256:
+            raise ValueError("Too many included requirement files")
+        paths.add(name)
+        original = root / name
+        if original.is_symlink():
+            raise ValueError("Refusing symlinked requirements include")
+        resolved = original.resolve()
+        if not resolved.is_relative_to(base):
+            raise ValueError("Requirements include escapes Git checkout")
+        if not resolved.exists():
+            return  # Still gate deleted referenced files.
+        if not resolved.is_file():
+            raise ValueError("Requirements include is not a file")
+        for raw in resolved.read_text().splitlines():
+            line = raw.split(" #", 1)[0].strip()
+            if not line or line.startswith("#"):
+                continue
+            for prefix in ("--requirement=", "--requirement ",
+                           "--constraint=", "--constraint ", "-r ", "-c ",
+                           "-r", "-c"):
+                if line.startswith(prefix):
+                    target = line[len(prefix):].strip()
+                    if not target:
+                        raise ValueError("Empty requirement include")
+                    included = (resolved.parent / target).resolve()
+                    if not included.is_relative_to(base):
+                        raise ValueError("Requirements include escapes Git checkout")
+                    visit(included.relative_to(base).as_posix())
+                    break
+
+    for name in roots:
+        if dependency_manifest(name) and name.endswith((".txt", ".in", ".pip")):
+            visit(name)
+    return paths
+
+
 def requirements_ready(root: Path, changed_manifests: list[str] | None = None) -> bool:
     """Offline check of pip-style manifests plus installed dependency integrity.
 
@@ -338,13 +391,20 @@ def apply(root: Path = ROOT, *, path: Path | None = None,
     if not checkout_stable(root, current):
         return "Git checkout changed while checking; will retry"
     changed = changed_files(root, original, current)
-    relevant = [name for name in changed if affects_runtime(name)]
+    # Follow -r/-c includes even when their filenames are otherwise ordinary
+    # or their parent directory would normally be ignored as documentation.
+    dependency_paths = referenced_requirement_files(root)
+    changed_manifests = [
+        name for name in changed
+        if dependency_manifest(name) or name in dependency_paths
+    ]
+    relevant = [name for name in changed
+                if affects_runtime(name) or name in changed_manifests]
     if not relevant:
         if not checkout_stable(root, current):
             return "Git checkout changed before recording update; will retry"
         write_state(location, current)
         return "Documentation/test-only commit change; restart not required"
-    changed_manifests = [name for name in changed if dependency_manifest(name)]
     if changed_manifests and not dependencies_ready:
         return ("Python requirements changed, moved or removed; no automatic "
                 "package downloads. Review and prepare dependencies manually, "
