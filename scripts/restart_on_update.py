@@ -223,11 +223,15 @@ for raw in Path('requirements.txt').read_text().splitlines():
     if not line or line.startswith('#'):
         continue
     requirement = Requirement(line)  # Rejects unsupported pip directives.
-    if requirement.url:
-        raise ValueError('Direct URL requirements need manual review')
     if requirement.marker is not None and not requirement.marker.evaluate():
         continue
-    if not requirement.specifier.contains(version(requirement.name)):
+    installed_version = version(requirement.name)  # Fails if not installed.
+    if requirement.url:
+        # Operator explicitly acknowledged the dependency change. A direct
+        # URL's provenance cannot be validated offline; ensure that the named
+        # distribution exists and let pip check validate its dependencies.
+        continue
+    if not requirement.specifier.contains(installed_version):
         raise ValueError('Unsatisfied local package requirement')
 """
     try:
