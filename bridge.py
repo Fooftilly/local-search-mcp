@@ -418,6 +418,13 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False) -> dict:
         policy_result = _check_public_target(url)
         if policy_result is not None:
             return policy_result
+    else:
+        # Staging the claimed grant may have invalidated the cache/policy epoch
+        # after this request began but before the atomic claim. A successful
+        # claim establishes a new authorization boundary: use its current
+        # epoch, then still fail closed on later mutations and on any expired,
+        # replaced, revoked or denied proof at final content release.
+        before = request_cache.policy_epoch()
     if before != request_cache.policy_epoch():
         return {"url": url, "success": False, "status": "blocked",
                 "reason": "Domain approval changed during the request. Retry after reviewing permissions."}
