@@ -174,8 +174,7 @@ class BridgeTests(unittest.TestCase):
                 token, _ = self.module.document_pages.save(
                     "https://final.example.net/doc",
                     "REDIRECT_TOKEN_SECRET" * 2000, {},
-                    source_url=url,
-                    policy_epoch=self.module.request_cache.policy_epoch())
+                    source_url=url)
                 early_done.set()
                 return {"url": "https://final.example.net/doc",
                         "success": True, "markdown": "FIRST_PAGE_SECRET",
@@ -203,7 +202,7 @@ class BridgeTests(unittest.TestCase):
             self.assertNotIn("document_id", str(rows[0]))
             self.assertEqual(rows[1]["markdown"], "SAFE_CONTENT")
 
-    def test_document_pages_recheck_expiring_rule_and_reject_old_tokens(self):
+    def test_document_pages_recheck_expiring_rule_and_reapproval(self):
         import domain_policy as policy
         clock = ["2026-10-17T12:00:00Z"]
         dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
@@ -246,11 +245,10 @@ class BridgeTests(unittest.TestCase):
             self.assertNotIn("PAGED_EXPIRED_CONTENT", str(removed))
             policy.decide("example.org", "allow", scope="exact")
             reapproved = self.module.web_fetch_page(token, 2)
-            self.assertEqual(reapproved["status"], "blocked")
-            # Reapprove does not resurrect a bearer handle from an old epoch.
-            fresh = self.module.web_fetch("https://example.org/long")
-            self.assertTrue(self.module.web_fetch_page(
-                fresh["document_id"], 2)["success"])
+            # Once the host is authorized again, the still-live process-local
+            # page token works; no unnecessary second Crawl4AI crawl.
+            self.assertTrue(reapproved["success"])
+            self.assertIn("PAGED_EXPIRED_CONTENT", reapproved["markdown"])
 
     def test_document_redirect_rechecks_source_and_final_permission(self):
         import domain_policy as policy
@@ -290,7 +288,7 @@ class BridgeTests(unittest.TestCase):
             self.assertNotIn("REDIRECT_PAGE_SECRET", str(refused))
             # Final host remains authorized, but expired original host blocks.
 
-    def test_document_pages_reject_old_epoch_and_untrusted_handles(self):
+    def test_unrelated_approval_preserves_document_but_source_deny_blocks(self):
         import domain_policy as policy
         dns = [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
                 ("8.8.8.8", 443))]
@@ -299,17 +297,12 @@ class BridgeTests(unittest.TestCase):
             policy.decide("example.org", "allow")
             token, _ = self.module.document_pages.save(
                 "https://example.org/doc", "SENSITIVE" * 4000, {})
-            unknown = self.module.web_fetch_page(token, 2)
-            self.assertEqual(unknown["status"], "blocked")
-            valid_token, _ = self.module.document_pages.save(
-                "https://example.org/doc", "SENSITIVE" * 4000, {},
-                source_url="https://example.org/doc",
-                policy_epoch=self.module.request_cache.policy_epoch())
-            self.assertTrue(self.module.web_fetch_page(valid_token, 2)["success"])
-            # An explicit denial invalidates the cached capability immediately.
+            self.assertTrue(self.module.web_fetch_page(token, 2)["success"])
+            policy.decide("unrelated.net", "allow", scope="exact")
+            self.assertTrue(self.module.web_fetch_page(token, 2)["success"])
             policy.decide("example.org", "deny")
-            denied = self.module.web_fetch_page(valid_token, 2)
-            self.assertEqual(denied["status"], "blocked")
+            denied = self.module.web_fetch_page(token, 2)
+            self.assertFalse(denied["success"])
             self.assertNotIn("SENSITIVE", str(denied))
 
     def test_inflight_fetch_started_before_expiry_cannot_release_content_after(self):
