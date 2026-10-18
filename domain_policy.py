@@ -88,6 +88,11 @@ def _db():
                 conn.execute("ALTER TABLE domains ADD COLUMN request_id TEXT NOT NULL DEFAULT ''")
             if "first_requested_at" not in columns:
                 conn.execute("ALTER TABLE domains ADD COLUMN first_requested_at TEXT NOT NULL DEFAULT ''")
+                # Exactly one historical request has a known first timestamp.
+                # For 2+ older requests the original first time is unknown.
+                conn.execute("""UPDATE domains
+                    SET first_requested_at=last_requested_at
+                    WHERE request_count=1 AND last_requested_at!=''""")
             # Preserve the same opaque ID on existing requests across restart.
             for row in conn.execute("SELECT domain FROM domains WHERE request_id=''").fetchall():
                 conn.execute("UPDATE domains SET request_id=? WHERE domain=?",
@@ -451,7 +456,7 @@ def decide(domain: str, action: str, new_domain: str = "",
     if type(expires_minutes) is not int or expires_minutes not in (0, 60, 1440, 10080):
         raise ValueError('Invalid permission duration')
     if (not isinstance(reason, str) or len(reason) > 160
-            or any(ord(c) < 32 or ord(c) == 127 for c in reason)):
+            or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in reason)):
         raise ValueError("Reason must be at most 160 characters without control characters")
     now = utcnow()
     expires_at = ((datetime.fromisoformat(now.replace('Z', '+00:00')) +
