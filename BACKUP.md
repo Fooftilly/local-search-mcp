@@ -17,6 +17,10 @@ Backup reads the live SQLite database using SQLite's online backup API (includin
 
 For a custom source state directory, pass `--state-dir /absolute/path/to/local-search-mcp` to `backup`. The default is `$XDG_STATE_HOME/local-search-mcp`, or `~/.local/state/local-search-mcp` if unset.
 
+**Custom history locations are supported.** When `LOCAL_SEARCH_MCP_HISTORY_FILE` is set, backup reads the file and its `.1`, `.2`, and `.3` rotations from that location, even if separate from the domain-policy database. The override must be an **absolute path** in a private, user-owned directory. If the configured history file is missing or unsafe, backup **fails** rather than quietly producing an incomplete archive. The archive stores the history under canonical names (`history.jsonl`, etc.), never its source pathname. If you restore to a system using a custom history location, relocate the staged history files to that configured path manually before enabling the application.
+
+The history writer supports up to **100,000,000 bytes per generation** (with up to three rotations). Archive validation accommodates all four full generations and bounded overrun from a final entry, plus the domain-policy SQLite snapshot; individual size caps and a total cap still guard against unexpectedly large files and decompression bombs. A backup archive can thus be several hundred megabytes, so verify sufficient local disk space.
+
 Archives have fixed, bounded file names. Backup and verification reject unsafe symlinks, unexpectedly large contents, corrupt SQLite, archive traversal entries, duplicate names, and hash mismatches. The archive stores no original absolute host paths.
 
 ## Restore safely (never overwrites live state)
