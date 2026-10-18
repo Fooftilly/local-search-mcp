@@ -128,6 +128,17 @@ class PolicyAuditTests(unittest.TestCase):
         row = next(r for r in policy.entries() if r["domain"] == "example.org")
         self.assertIn(row["request_id"], html)
 
+    def test_live_audit_updates_and_respects_domain_filter(self):
+        policy.decide("yes.example.org", "allow", reason="SAFE_REASON")
+        policy.decide("no.example.net", "deny", reason="OTHER_REASON")
+        live = admin_ui.live_snapshot(query="yes.example.org")
+        self.assertIn("SAFE_REASON", live["audit_html"])
+        self.assertNotIn("OTHER_REASON", live["audit_html"])
+        self.assertIn("id=\"live-audit\"", admin_ui.render("yes.example.org"))
+        self.assertNotIn("OTHER_REASON", admin_ui.render("yes.example.org"))
+        script = __import__("dashboard_live_script").LIVE_SCRIPT
+        self.assertIn('updateTable(auditBody, data.audit_html)', script)
+
     def test_clear_pending_keeps_request_id_in_audit(self):
         policy.request("queued.example.org", "https://queued.example.org/path")
         rid = next(r for r in policy.entries() if r["domain"] == "queued.example.org")["request_id"]
