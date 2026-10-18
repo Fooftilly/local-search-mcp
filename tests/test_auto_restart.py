@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -161,6 +162,33 @@ class AutoRestartTests(unittest.TestCase):
         self.assertEqual(restarted, list(update.SERVICES))
 
 
+
+    def test_deferred_dependency_message_contains_exact_pinned_state_path(self):
+        # A custom install-time state path may not be the systemd user's default.
+        special_state = Path(self.tmp.name) / "custom state 'saved'" / "last-service-commit"
+        update.initialize(self.root, path=special_state)
+        self.change("requirements.txt", "fastmcp>=4.1,<5\n")
+        self.commit("change dependencies")
+        response = update.apply(self.root, path=special_state, settle_seconds=0)
+        self.assertIn("--state-file " + shlex.quote(str(special_state)), response)
+        self.assertIn("--dependencies-ready", response)
+        self.assertEqual(special_state.read_text().strip() != update.head(self.root), True)
+
+    def test_manual_acknowledgement_rejects_wrong_empty_state_file(self):
+        # Avoid silently initializing an unrelated baseline and returning 0.
+        with self.assertRaisesRegex(ValueError, "No update baseline"):
+            update.apply(self.root, path=self.state, dependencies_ready=True,
+                         settle_seconds=0)
+        self.assertFalse(self.state.exists())
+
+    def test_unavailable_baseline_explains_exact_recovery_state_path(self):
+        special_state = Path(self.tmp.name) / "custom state 'saved'" / "last-service-commit"
+        update.write_state(special_state, "f" * 40)
+        message = update.apply(self.root, path=special_state, settle_seconds=0)
+        self.assertIn("Previous commit unavailable", message)
+        self.assertIn("--state-file " + shlex.quote(str(special_state)), message)
+        self.assertIn("--reset-baseline", message)
+
     def test_dependency_acknowledgement_still_checks_local_versions(self):
         update.initialize(self.root, path=self.state)
         original = self.state.read_text()
@@ -275,6 +303,56 @@ class AutoRestartTests(unittest.TestCase):
         self.assertIn("will retry", result)
         self.assertEqual(restarted, [])
         self.assertEqual(self.state.read_text(), original)
+
+
+    def test_new_commit_during_preflight_defers_without_marking(self):
+        update.initialize(self.root, path=self.state)
+        old_baseline = self.state.read_text()
+        self.change("bridge.py", "print('updated')\n")
+        self.commit("first change")
+        def advance(*_args):
+            self.change("bridge.py", "print('newer')\n")
+            self.commit("second change")
+        with patch.object(update, "validate_python", side_effect=advance), \
+             patch.object(update, "active", return_value=True), \
+             patch.object(update, "restart") as restart:
+            response = update.apply(self.root, path=self.state, settle_seconds=0)
+        self.assertIn("changed after preflight", response)
+        restart.assert_not_called()
+        self.assertEqual(self.state.read_text(), old_baseline)
+
+    def test_dirty_runtime_during_service_check_defers(self):
+        update.initialize(self.root, path=self.state)
+        old_baseline = self.state.read_text()
+        self.change("bridge.py", "print('updated')\n")
+        self.commit("change runtime")
+        def make_dirty(_service):
+            self.change("bridge.py", "print('incomplete checkout')\n")
+            return True
+        with patch.object(update, "active", side_effect=make_dirty), \
+             patch.object(update, "restart") as restart:
+            response = update.apply(self.root, path=self.state, settle_seconds=0)
+        self.assertIn("changed after preflight", response)
+        restart.assert_not_called()
+        self.assertEqual(self.state.read_text(), old_baseline)
+
+    def test_docs_only_commit_moving_before_record_is_deferred(self):
+        update.initialize(self.root, path=self.state)
+        old_baseline = self.state.read_text()
+        self.change("README.md", "docs v2\n")
+        self.commit("docs only")
+        changed_files = update.changed_files
+        def race(root, old, new):
+            result = changed_files(root, old, new)
+            self.change("bridge.py", "print('new runtime')\n")
+            self.commit("racing runtime change")
+            return result
+        with patch.object(update, "changed_files", side_effect=race), \
+             patch.object(update, "restart") as restart:
+            response = update.apply(self.root, path=self.state, settle_seconds=0)
+        self.assertIn("changed before recording", response)
+        restart.assert_not_called()
+        self.assertEqual(self.state.read_text(), old_baseline)
 
     def test_syntax_error_never_interrupts_running_service(self):
         update.initialize(self.root, path=self.state)
