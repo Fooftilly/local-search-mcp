@@ -83,6 +83,68 @@ class HistoryIndexTests(unittest.TestCase):
         self.assertEqual(history_index.search_history(status="blocked")[0]["domain"],
                          "two.example.org")
 
+    def test_oversized_line_is_skipped_and_following_events_are_indexed(self):
+        # An oversized complete line must not poison the incremental offset.
+        path = history_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        good = json.dumps(event(url="https://after.example.org/")).encode()
+        with path.open("wb") as stream:
+            stream.write(b'{"extra":"' + b'X' * (history_index.MAX_EVENT_BYTES + 100)
+                         + b'"}\n')
+            stream.write(good + b"\n")
+        self.assertEqual(history_index.search_history()[0]["domain"],
+                         "after.example.org")
+        self.assertEqual(len(history_index.search_history()), 1)
+
+    def test_reused_inode_and_matching_first_line_preserves_new_events(self):
+        # Truncating/replacing a source simulates an inode recycled by rotation.
+        # Same first event catches implementations which only fingerprint the
+        # first line; the last checkpoint must also be revalidated.
+        path = history_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        first = json.dumps(event(url="https://same.example.org/",
+                                 time_utc="2026-10-18T12:00:00Z"))
+        second = json.dumps(event(url="https://original.example.org/"))
+        with path.open("w") as stream:
+            stream.write(first + "\n" + second + "\n")
+        self.assertEqual(len(history_index.search_history()), 2)
+        original_inode = path.stat().st_ino
+        replacement = json.dumps(event(url="https://replacement.example.org/"))
+        with path.open("w") as stream:
+            stream.write(first + "\n" + replacement + "\n")
+        self.assertEqual(path.stat().st_ino, original_inode)
+        after = history_index.search_history()
+        self.assertEqual(len(after), 4)
+        self.assertEqual({r["domain"] for r in after},
+                         {"same.example.org", "original.example.org",
+                          "replacement.example.org"})
+        self.assertEqual(history_index.search_history(), after)
+
+    def test_rotated_sources_eventually_recycle_inodes_without_skipping(self):
+        with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_HISTORY_MAX_BYTES": "64000"}):
+            for i in range(150):
+                append_history(event(url="https://example.org/",
+                                     data="x" * 1200, serial=i))
+            paths = [history_path().with_name(history_path().name + f".{i}")
+                     for i in (3, 2, 1)] + [history_path()]
+            surviving = sum(len(p.read_text().splitlines())
+                            for p in paths if p.exists())
+            history_index.sync_history()
+            with sqlite3.connect(history_index.index_path()) as db:
+                indexed = db.execute("SELECT count(*) FROM history").fetchone()[0]
+            self.assertEqual(indexed, surviving)
+            for i in range(150, 177):
+                append_history(event(url="https://example.org/",
+                                     data="x" * 1200, serial=i))
+            history_index.sync_history()
+            with sqlite3.connect(history_index.index_path()) as db:
+                total = db.execute("SELECT count(*) FROM history").fetchone()[0]
+            self.assertEqual(total, indexed + 27)
+            history_index.sync_history()
+            with sqlite3.connect(history_index.index_path()) as db:
+                self.assertEqual(
+                    db.execute("SELECT count(*) FROM history").fetchone()[0], total)
+
     def test_retention_does_not_delete_original_jsonl(self):
         old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
         append_history(event(time_utc=old, url="https://old.example.org/"))
