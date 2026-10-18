@@ -146,7 +146,8 @@ def row_html(r):
     select = (f'<label class="small"><input type="checkbox" name="selected" '
               f'form="bulk-form" aria-label="Select {dom}" '
               f'value="{dom}|{esc(r.get("request_id") or "")}"> Bulk</label> '
-              if r['status'] == 'pending' and not r.get('explicit_rule') else '')
+              if (r['status'] == 'pending' and not r.get('explicit_rule')
+                  and r.get('request_id')) else '')
     return (f'<tr><td class="domain">{select}{dom}</td>'
             f'<td><span class="pill {stat}">{stat}</span>{limits}</td>'
             f'<td>{int(r["request_count"])}{request_meta}</td>'
