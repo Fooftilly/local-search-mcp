@@ -61,6 +61,7 @@ class AutoRestartTests(unittest.TestCase):
         self.assertIn("%%", extra["local-search-mcp-update.path"])
         self.assertIn("OnUnitActiveSec=1min", extra["local-search-mcp-update.timer"])
         self.assertIn("NoNewPrivileges=true", extra["local-search-mcp-update.service"])
+        self.assertIn("TimeoutStartSec=10min", extra["local-search-mcp-update.service"])
         self.assertIn("--state-file", extra["local-search-mcp-update.service"])
         self.assertNotIn("git pull", "".join(extra.values()))
 
@@ -515,6 +516,64 @@ class AutoRestartTests(unittest.TestCase):
             self.assertFalse(update.requirements_ready(
                 self.root, ["requirements/prod.txt"], origins,
             ))
+
+    def test_quoted_and_env_expanded_pip_includes(self):
+        self.change("requirements.txt",
+                    '-r "pins/base file.txt"\n-c ${REQ_DIR}/prod.txt\n')
+        self.change("pins/base file.txt", "pip>=0\n")
+        self.change("locks/prod.txt", "pip>=0\n")
+        self.commit("quoted and interpolated include filenames")
+        with patch.dict(os.environ, {"REQ_DIR": "locks"}):
+            origins = {}
+            found = update.referenced_requirement_files(self.root, origins=origins)
+            self.assertIn("pins/base file.txt", found)
+            self.assertIn("locks/prod.txt", found)
+            self.assertIn("requirements.txt", origins["locks/prod.txt"])
+            interpreter = self.root / ".venv" / "bin" / "python"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.touch()
+            real_run = subprocess.run
+            def offline_runner(command, **kwargs):
+                if "-c" in command:
+                    i = command.index("-c") + 1
+                    return real_run([sys.executable, "-I", "-c",
+                                     *command[i:]], **kwargs)
+                return subprocess.CompletedProcess(command, 0)
+            with patch.object(update.subprocess, "run", side_effect=offline_runner):
+                self.assertTrue(update.requirements_ready(
+                    self.root, ["pins/base file.txt", "locks/prod.txt"], origins,
+                ))
+
+    def test_nested_requirement_resets_parent_constraint_role(self):
+        self.change("requirements.txt", "-c constraints.txt\n")
+        self.change("constraints.txt", "-r required.txt\n")
+        self.change("required.txt", "absent-nested-required-xy98371>=1\n")
+        interpreter = self.root / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.touch()
+        real_run = subprocess.run
+        def offline_runner(command, **kwargs):
+            if "-c" in command:
+                i = command.index("-c") + 1
+                return real_run([sys.executable, "-I", "-c",
+                                 *command[i:]], **kwargs)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertFalse(update.requirements_ready(
+                self.root, ["requirements.txt", "constraints.txt"],
+            ))
+            self.change("constraints.txt", "absent-optional-xy98371>=1\n")
+            self.assertTrue(update.requirements_ready(
+                self.root, ["requirements.txt", "constraints.txt"],
+            ))
+
+    def test_group_writable_state_directory_is_rejected(self):
+        update.initialize(self.root, path=self.state)
+        old = self.state.read_text()
+        self.state.parent.chmod(0o770)
+        with self.assertRaisesRegex(ValueError, "must be private"):
+            update.write_state(self.state, update.head(self.root))
+        self.assertEqual(self.state.read_text(), old)
 
     def test_pip_replacement_manifest_checks_local_versions(self):
         (self.root / "config").mkdir()
