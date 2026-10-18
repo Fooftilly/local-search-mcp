@@ -82,8 +82,8 @@ permission/decision records.
 PR #44 added an internal preflight that verifies a normalized HTTP(S) host,
 standard public port and all resolved DNS records (no private or multicast
 addresses) **before** claiming once. DNS failure does not consume the grant.
-The guarded standalone fetch flow described below now uses that preflight;
-there is still no operator-facing staging control.
+The guarded standalone fetch flow described below uses that preflight, and
+PR #47 supplies the loopback-only operator controls to stage and revoke grants.
 
 ## Guarded one-use fetches and private continuation proofs
 
@@ -111,9 +111,8 @@ Other documents still use their existing permission checks and page API.
 multiple worker results, deduplication and late revalidation require regular
 reusable domain approvals. A single-use-only host returns
 `approval_required` in a batch without consuming the grant; fetch it
-individually instead. The dashboard still does **not** offer an Allow once
-button. That is the final UI/audit slice; this code must not be described as
-an operator-complete feature before the local control exists.
+individually instead. The dashboard's **Allow once** control applies only
+to standalone fetches, not batches or general-purpose domain authorization.
 
 ## Local Allow once controls and audit
 
@@ -146,13 +145,15 @@ enforces the existing localhost Host/Origin/Fetch-Metadata/CSRF protection.
 No MCP tool has been added that can mutate approvals. As always, crawler
 container egress restrictions must be enabled separately.
 
-## Remaining work for issue #12
+## Issue #12 implementation references
 
-Scoped and expiring rules were delivered in PR #36; request IDs and
-origin-only auditing in PR #38; bulk local decisions in PR #39; and the
-private ledger/DNS preflight in PRs #43–#44. The guarded direct-fetch proof path is implemented, and the operator-only
-Allow once UI and decision audit are included in the current PR. Keep issue
-#12 open until this slice has passed review and merged.
+Scoped and expiring rules were delivered in PR #36, stable request IDs and
+origin-only auditing in PR #38, bulk local decisions in PR #39, and the
+private ledger and public-DNS preflight in PRs #43–#44. PR #46 implements
+proof-guarded standalone fetches and document continuations. PR #47 adds
+the operator-only **Allow once** and revoke controls, along with the
+sanitized transactional stage/consume/revoke audit. Issue #12 tracks
+overall acceptance and any outstanding deployment validation.
 
 The tests cover legacy schema migration, scope boundaries, explicit child
 exceptions, expiry across restart, concurrent expired requests, and HTTP
