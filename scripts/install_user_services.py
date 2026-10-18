@@ -54,7 +54,10 @@ def unit_files(python: str, root: Path, *, auto_restart: bool = False, reflog_pa
     }
     if auto_restart:
         if reflog_path is None:
-            from scripts.restart_on_update import reflog
+            if __package__:
+                from .restart_on_update import reflog
+            else:
+                from restart_on_update import reflog
             reflog_path = reflog(root)
         checker = quote(str(root / "scripts" / "restart_on_update.py"))
         units.update({
@@ -113,7 +116,10 @@ def main(argv: list[str] | None = None) -> int:
     files = unit_files(sys.executable, ROOT, auto_restart=args.auto_restart)
     if args.install:
         if args.auto_restart:
-            from scripts.restart_on_update import initialize
+            if __package__:
+                from .restart_on_update import initialize
+            else:
+                from restart_on_update import initialize
             initialize(ROOT)
         folder.mkdir(parents=True, exist_ok=True)
         for name, content in files.items():
