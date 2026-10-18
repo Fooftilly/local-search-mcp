@@ -331,18 +331,23 @@ def requirements_ready(
             add("requirements.txt", False)
         for name in changed_manifests or []:
             sources = (origins or {}).get(name, set())
-            if name == "requirements.txt" and name in sources:
-                # The live service uses the primary root manifest directly;
-                # do not demand optional dev-only packages from sibling roots
-                # such as requirements-dev.txt that happen to include it.
-                add(name, False)
+            if "requirements.txt" in sources and (root / "requirements.txt").is_file():
+                # Validate the primary runtime manifest and its include graph,
+                # not optional dev roots that share an included file.
+                add("requirements.txt", False)
+            elif name in sources:
+                # Layered deployments may have no root requirements.txt.
+                # A shared base manifest is the appropriate check root
+                # rather than every unrelated dev/prod includer.
+                add(name, constraint_manifest(name))
             elif sources:
-                for source in sources:
-                    if source == name and len(sources) > 1:
-                        # This file is also reachable as a -r/-c include.
-                        # Let its referring roots determine the actual role,
-                        # rather than treating a -c target as mandatory.
-                        continue
+                runtime_sources = {
+                    source for source in sources
+                    if not any(part.startswith(("dev", "test")) or
+                               part.endswith(("-dev.txt", "-test.txt"))
+                               for part in Path(source).parts)
+                }
+                for source in (runtime_sources or sources):
                     add(source, constraint_manifest(source))
             elif name.endswith((".txt", ".in", ".pip")):
                 # For direct API calls without a graph, validate included files
