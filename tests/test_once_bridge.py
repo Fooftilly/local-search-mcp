@@ -9,6 +9,7 @@ import socket
 import tempfile
 import unittest
 
+import httpx
 import bridge
 import document_pages
 import domain_policy as policy
@@ -107,6 +108,51 @@ class GuardedOnceFetchTests(unittest.TestCase):
             allowed = bridge.web_fetch(source)
         self.assertTrue(allowed["success"])
         self.assertEqual(allowed["markdown"], "SECRET")
+
+    def test_real_crawl_same_host_redirect_uses_original_once_proof(self):
+        url = "https://docs.example.org/start"
+        target = "https://docs.example.org/final"
+        grant = policy._stage_once_grant("docs.example.org")
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [{
+                "url": url, "redirected_url": target,
+                "success": True, "markdown": {"raw_markdown": "SAFE_MARKDOWN"}
+            }]})
+        original = httpx.Client
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler),
+                            trust_env=False, timeout=kwargs.get("timeout", 75))
+        with patch.object(bridge.httpx, "Client", side_effect=factory), \
+             patch.object(bridge, "_check_public_target",
+                          side_effect=AssertionError("same host must not be reapproved")):
+            response = bridge.web_fetch(url)
+        self.assertTrue(response["success"])
+        self.assertEqual(response["url"], target)
+        self.assertEqual(response["markdown"], "SAFE_MARKDOWN")
+        self.assertNotIn(grant, repr(response))
+        self.assertIsNone(policy._consume_once_grant("docs.example.org"))
+
+    def test_real_crawl_redirect_with_unsafe_port_redacts_page(self):
+        url = "https://docs.example.org/start"
+        policy._stage_once_grant("docs.example.org")
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [{
+                "url": url, "redirected_url": "https://docs.example.org:8080/end",
+                "success": True, "markdown": {"raw_markdown": "PRIVATE_TEXT"}
+            }]})
+        original = httpx.Client
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler),
+                            trust_env=False, timeout=kwargs.get("timeout", 75))
+        with patch.object(bridge.httpx, "Client", side_effect=factory):
+            response = bridge.web_fetch(url)
+        self.assertEqual(response["status"], "blocked")
+        self.assertNotIn("PRIVATE_TEXT", repr(response))
+        self.assertIsNone(policy._consume_once_grant("docs.example.org"))
 
     def test_continuation_proof_bound_to_original_fetch_and_revocation(self):
         grant = policy._stage_once_grant("docs.example.org", expires_minutes=60)
