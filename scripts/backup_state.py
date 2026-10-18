@@ -23,9 +23,12 @@ VERSION = 1
 DB_NAME = "domains.sqlite3"
 HISTORY_NAMES = ("history.jsonl", "history.jsonl.1", "history.jsonl.2", "history.jsonl.3")
 ALLOWED_FILES = (DB_NAME, *HISTORY_NAMES)
-MAX_FILE = 64 * 1024 * 1024
-MAX_TOTAL = 160 * 1024 * 1024
-MAX_ARCHIVE = 170 * 1024 * 1024
+# history_log.append_history allows 100,000,000 bytes per generation,
+# plus the last bounded record that may cross the rotation threshold.
+MAX_DB_FILE = 64 * 1024 * 1024
+MAX_HISTORY_FILE = 110_000_000
+MAX_TOTAL = MAX_DB_FILE + len(HISTORY_NAMES) * MAX_HISTORY_FILE
+MAX_ARCHIVE = MAX_TOTAL + 8 * 1024 * 1024
 MANIFEST = "manifest.json"
 
 
@@ -35,14 +38,14 @@ def state_directory() -> Path:
     return base / "local-search-mcp"
 
 
-def _private_file(path: Path) -> None:
+def _private_file(path: Path, *, max_size: int = MAX_DB_FILE) -> None:
     if path.is_symlink():
         raise ValueError(f"Refusing symbolic link: {path.name}")
     info = path.stat()
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
             or info.st_mode & 0o077):
         raise ValueError(f"Source must be private owned regular file: {path.name}")
-    if info.st_size > MAX_FILE:
+    if info.st_size > max_size:
         raise ValueError(f"Source exceeds size limit: {path.name}")
 
 
@@ -77,7 +80,7 @@ def _sqlite_snapshot(source: Path) -> bytes:
                     conn.backup(output, pages=256, sleep=0.05)
         except sqlite3.DatabaseError as exc:
             raise ValueError("Unable to snapshot domain policy SQLite") from exc
-        if target.stat().st_size > MAX_FILE:
+        if target.stat().st_size > MAX_DB_FILE:
             raise ValueError("Domain policy database exceeds backup limit")
         snapshot = target.read_bytes()
         _verify_sqlite(snapshot)
@@ -96,14 +99,30 @@ def _source_files(directory: Path) -> dict[str, bytes]:
     _private_file(source)
     payload: dict[str, bytes] = {DB_NAME: _sqlite_snapshot(source)}
     total = len(payload[DB_NAME])
+    # Match history_log.history_path()'s override precedence. Store canonical
+    # member names, never the configured absolute path or machine-specific name.
+    override = os.environ.get("LOCAL_SEARCH_MCP_HISTORY_FILE")
+    history = Path(override).expanduser() if override else directory / "history.jsonl"
+    if override and not history.is_absolute():
+        raise ValueError("LOCAL_SEARCH_MCP_HISTORY_FILE must be absolute for backups")
+    if override:
+        parent = history.parent
+        if parent.is_symlink() or not parent.is_dir():
+            raise ValueError("Configured history directory is missing or symlinked")
+        info = parent.stat()
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError("Configured history directory must be privately owned")
+        if not history.exists() and not history.is_symlink():
+            raise ValueError("Configured history file is missing; refusing partial backup")
     for name in HISTORY_NAMES:
-        path = directory / name
+        suffix = name[len("history.jsonl"):]
+        path = history.with_name(history.name + suffix)
         if not path.exists() and not path.is_symlink():
             continue
-        _private_file(path)
+        _private_file(path, max_size=MAX_HISTORY_FILE)
         with path.open("rb") as stream:
-            content = stream.read(MAX_FILE + 1)
-        if len(content) > MAX_FILE:
+            content = stream.read(MAX_HISTORY_FILE + 1)
+        if len(content) > MAX_HISTORY_FILE:
             raise ValueError(f"History exceeds file limit: {name}")
         payload[name] = content
         total += len(content)
@@ -158,7 +177,7 @@ def backup(destination: Path, *, state_dir: Path | None = None) -> None:
 def verified_payload(archive_path: Path) -> dict[str, bytes]:
     if archive_path.is_symlink():
         raise ValueError("Refusing symlinked archive")
-    _private_file(archive_path)
+    _private_file(archive_path, max_size=MAX_ARCHIVE)
     if archive_path.stat().st_size > MAX_ARCHIVE:
         raise ValueError("Archive is too large")
     try:
@@ -170,8 +189,11 @@ def verified_payload(archive_path: Path) -> dict[str, bytes]:
                 raise ValueError("Unexpected, unsafe or duplicate archive entries")
             for entry in entries:
                 mode = entry.external_attr >> 16
+                limit = (1024 * 1024 if entry.filename == MANIFEST else
+                         MAX_DB_FILE if entry.filename == DB_NAME else
+                         MAX_HISTORY_FILE)
                 if (entry.is_dir() or stat.S_IFMT(mode) == stat.S_IFLNK or
-                        entry.file_size > MAX_FILE or entry.flag_bits & 1):
+                        entry.file_size > limit or entry.flag_bits & 1):
                     raise ValueError("Unsafe backup entry")
             if sum(e.file_size for e in entries) > MAX_TOTAL + 1024 * 1024:
                 raise ValueError("Excessive uncompressed archive size")
@@ -192,7 +214,9 @@ def verified_payload(archive_path: Path) -> dict[str, bytes]:
                 if (name not in ALLOWED_FILES or not isinstance(record, dict) or
                         set(record) != {"size", "sha256"} or
                         type(record["size"]) is not int or
-                        not 0 <= record["size"] <= MAX_FILE or
+                        not 0 <= record["size"] <= (
+                            MAX_DB_FILE if name == DB_NAME else MAX_HISTORY_FILE
+                        ) or
                         not isinstance(record["sha256"], str)):
                     raise ValueError("Malformed backup file metadata")
                 content = archive.read(name)
