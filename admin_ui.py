@@ -14,6 +14,7 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 import domain_policy as policy
+import policy_transfer
 import history_index
 from dashboard_live_script import LIVE_SCRIPT
 
@@ -295,6 +296,46 @@ def once_audit_html(search=""):
             '</tbody></table></div>')
 
 
+def import_preview_html(plan: dict) -> str:
+    """Read-only validated preview with explicit, stale-state-checked apply."""
+    new = set(plan["add"])
+    unchanged = set(plan["unchanged"])
+    rows = ''.join(
+        '<tr><td class="domain">' + esc(x["domain"]) + '</td><td>' +
+        esc("New" if x["domain"] in new else
+            "Unchanged" if x["domain"] in unchanged else "Conflict") +
+        '</td><td>' + esc(x["status"]) + '</td><td>' + esc(x["scope"]) +
+        '</td><td>' + esc(x["expires_at"] or "Permanent") + '</td></tr>'
+        for x in plan["rules"])
+    conflicts = plan["conflicts"]
+    notice = (f'<p class="alert error">Conflicts with {len(conflicts)} existing '
+              'explicit rules or inherited denials (marked Conflict below); '
+              'resolve them locally before retrying. No '
+              'changes have been made.</p>' if conflicts else
+              '<p class="subtle">No changes yet. The import will add only '
+              'missing decisions and retain identical rules. A changed '
+              'policy or expired rule invalidates this preview.</p>')
+    submit = (f'<form method="post" action="/rules/apply">'
+              f'<input type="hidden" name="csrf" value="{esc(CSRF)}">'
+              f'<input type="hidden" name="state" value="{esc(plan["state"])}">'
+              f'<input type="hidden" name="ticket" value="{esc(plan["ticket"])}">'
+              f'<textarea name="rule_doc" hidden>{esc(plan["canonical"])}</textarea>'
+              '<label>Type IMPORT to apply '
+              '<input name="confirm" required pattern="IMPORT" maxlength="6"></label>'
+              '<button name="action" value="apply" class="allow">Import rules</button>'
+              '</form>' if not conflicts and plan["add"] else
+              '<p>No changes can be applied from this preview.</p>')
+    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            f'<meta name="referrer" content="no-referrer"><title>Rule import preview</title>'
+            f'<style>{CSS}</style></head><body><main><h1>Domain rule import preview</h1>'
+            f'<p>New: {len(plan["add"])} · Unchanged: {len(plan["unchanged"])}'
+            f' · Conflicts: {len(conflicts)}</p>{notice}'
+            '<div class="scroll"><table><thead><tr><th>Domain</th><th>Preview</th>'
+            '<th>Decision</th><th>Scope</th><th>Expiration (UTC)</th></tr></thead><tbody>' +
+            rows + '</tbody></table></div>' + submit +
+            '<p><a href="/">Return without applying</a></p></main></body></html>')
+
+
 def render(query='', message='', kind='success'):
     c=policy.counts()
     # Separate independent limits: pending floods cannot hide stored decisions.
@@ -346,6 +387,14 @@ def render(query='', message='', kind='success'):
 <h2>Recent local decisions</h2>
 <p class="subtle">Only the most recent 25 actions; no page bodies or URL query strings.</p>
 {audit_html}
+<div class="panel"><h2 style="margin-top:0">Portable domain rules (issue #13)</h2>
+<p><a href="/rules/export">Export active explicit allow/deny rules (JSON v1)</a>. Only domain, decision, scope and UTC expiry are included. Pending requests, single-use grants, history, machine paths and credentials are excluded.</p>
+<form method="post" action="/rules/preview" style="display:flex;align-items:flex-start;flex-direction:column">
+<input type="hidden" name="csrf" value="{esc(CSRF)}">
+<label for="rules-json">Paste an exported domain-rules JSON document (up to 48 KB)</label>
+<textarea id="rules-json" name="rule_doc" rows="6" maxlength="48000" required style="width:min(700px,100%);background:#0f141a;color:#e9edf2;border:1px solid #45515f"></textarea>
+<button type="submit">Validate and preview import</button></form>
+<p class="subtle">Imports are atomic, add only missing decisions, and reject conflicting explicit rules. Existing rules, expired grants or a stale preview cannot be silently overwritten. Preview never changes your database. A local confirmation is required before applying.</p></div>
 <div class="panel"><h2 style="margin-top:0">Configuration and safety</h2><p>Search endpoint: <code>127.0.0.1:8888</code> · Crawl endpoint: <code>127.0.0.1:11235</code> · MCP: <code>127.0.0.1:8790/mcp</code> · Dashboard: <code>127.0.0.1:{PORT}</code>.</p><p>Domains are stored in <code>{esc(policy.database_path())}</code>. Your existing credentials stay in the launcher’s private configuration and are not displayed here.</p><p class="small">Unknown domains generate a pending request rather than a Python traceback. Only the user can approve them here; agents cannot invoke a tool to grant access. A domain's DNS is also checked for public addresses before an allowed fetch. Crawl4AI should still be isolated from your local network to guard against redirects and DNS rebinding.</p></div></main></body></html>'''
 
 
@@ -387,12 +436,17 @@ class Handler(BaseHTTPRequestHandler):
         pass
     def _host_valid(self):
         return self.headers.get('Host','') in (f'127.0.0.1:{PORT}',f'localhost:{PORT}')
-    def _respond(self, status, content, content_type='text/html; charset=utf-8'):
+    def _respond(self, status, content, content_type='text/html; charset=utf-8',
+                 download_name=None):
         data=content.encode('utf-8') if isinstance(content,str) else content
         self.send_response(status)
         self.send_header('Content-Type',content_type)
         self.send_header('Content-Length',str(len(data)))
         self.send_header('Cache-Control','no-store')
+        if download_name is not None:
+            # Fixed in-repository filename only, not request-controlled.
+            self.send_header('Content-Disposition',
+                             'attachment; filename="domain-rules-v1.json"')
         self.send_header('X-Content-Type-Options','nosniff')
         self.send_header('X-Frame-Options','DENY')
         self.send_header('Referrer-Policy','no-referrer')
@@ -446,6 +500,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._respond(400, 'Invalid history filter')
             return self._respond(200,json.dumps(live_snapshot(q,view,filters)),
                                  'application/json; charset=utf-8')
+        if path.path=='/rules/export':
+            if not self._read_origin_valid():return self._respond(403,'Forbidden')
+            try:
+                document = json.dumps(policy_transfer.export_rules(),
+                                      indent=2, ensure_ascii=True)
+                if len(document.encode('utf-8')) > policy_transfer.MAX_JSON_BYTES:
+                    raise ValueError('Rule export exceeds 48 KB limit')
+            except ValueError as exc:
+                return self._respond(400, render(message=str(exc),kind='error'))
+            return self._respond(200, document, 'application/json; charset=utf-8',
+                                 download_name='domain-rules-v1.json')
         if path.path=='/history':
             query=parse_qs(path.query)
             try:
@@ -496,11 +561,19 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_valid():return self._respond(403,'Forbidden')
         if not self._post_origin_valid():
             return self._respond(403,'Invalid origin')
-        if self.path not in ('/domain', '/pending/clear', '/bulk', '/once'):return self._respond(404,'Not found')
+        if self.path not in ('/domain', '/pending/clear', '/bulk', '/once',
+                             '/rules/preview', '/rules/apply'):
+            return self._respond(404,'Not found')
         try:
             length=int(self.headers.get('Content-Length','-1'))
         except ValueError:return self._respond(400,'Invalid size')
-        if length < 0 or length>(8192 if self.path == '/bulk' else 4096):
+        # Form encoding can triple each UTF-8 byte (%HH) before the JSON
+        # parser checks its 48 KB *decoded* limit. Include bounded headroom
+        # for CSRF, preview ticket/state and form field names.
+        limit = (3 * policy_transfer.MAX_JSON_BYTES + 4096
+                 if self.path in ('/rules/preview', '/rules/apply')
+                 else 8192 if self.path == '/bulk' else 4096)
+        if length < 0 or length > limit:
             return self._respond(413,'Request too large')
         try:
             vals=parse_qs(self.rfile.read(length).decode('utf-8'),
@@ -515,6 +588,16 @@ class Handler(BaseHTTPRequestHandler):
             removed = policy.clear_pending_requests()
             return self._respond(200,render(message=f"Cleared {removed} pending requests."))
         try:
+            if self.path == '/rules/preview':
+                plan = policy_transfer.preview_import(val('rule_doc'))
+                return self._respond(200, import_preview_html(plan))
+            if self.path == '/rules/apply':
+                if val('confirm') != 'IMPORT':
+                    raise ValueError('Type IMPORT to confirm')
+                amount = policy_transfer.apply_import(
+                    val('rule_doc'), val('state'), val('ticket'))
+                return self._respond(200, render(
+                    message=f'Imported {amount} explicit domain rules.'))
             if self.path == '/once':
                 action = val('action')
                 domain = val('domain')
