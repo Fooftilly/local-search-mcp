@@ -69,45 +69,21 @@ Bulk mutations use the existing loopback-only Host/Origin/CSRF boundary and
 **are not MCP tools or remote APIs**. Existing single-domain controls remain
 available and unchanged.
 
-## Inert single-use authorization ledger (preparatory slice)
+## Single-use ledger and public-target preflight (PRs #43–#44)
 
-The policy database now has a separately stored, **inert** one-use ledger.
-Internal transaction primitives can stage an exact-host or subdomain-scoped
-single-use grant, atomically claim it once across concurrent SQLite connections,
-verify a private proof against expiry/deny/replacement/revocation, and explicitly
-revoke it. Grant IDs are random internal correlators and are **never exposed to
-an MCP tool, local dashboard, or existing request/decision API** in this slice.
+The private ledger added in PR #43 stores scoped, expiring, single-use
+capabilities apart from the ordinary domain policy table. It atomically
+consumes at most one grant across concurrent SQLite connections and rejects
+expired, replaced, revoked, and explicitly denied grants. Merely staging a
+grant never changes `request()` or `evaluate_fetch_url()` into a permanent
+allow. The private capability ID is not present in the MCP schema or public
+permission/decision records.
 
-**Critical:** Staging a grant does **not** make a host effectively allowed,
-and no new `Allow once` option is available to the operator yet. Existing
-`request()`, `evaluate_fetch_url()`, `web_fetch`, cached fetches, redirects,
-batch fetches and continuation pages retain their existing permissions, because
-there is no safe grant propagation through all these paths yet. The next slice
-must hold private one-use proof data through authorization and result release;
-redirects must check both source and final hosts, and batch/page results must
-not bypass the consumed grant. This distinction prevents a half-implemented
-feature from becoming an implicit blanket allow.
-
-Unit tests exercise inert behavior, concurrent single-claim, expiry/restart,
-exact/subdomain boundaries, explicit-deny precedence, replacement/revocation
-and invalid input without enabling authorization through MCP.
-
-## Public-target preflight before single-use claims (preparatory slice)
-
-The private `_claim_once_for_public_url(url)` helper validates an HTTP(S)
-URL, standard public ports, normalized hostname and public DNS results **before**
-consuming a one-use grant. Any malformed or private/mixed DNS answer leaves
-the grant unspent. Once DNS succeeds, an atomic SQLite claim rechecks expiry
-and explicit deny precedence under a write lock, so concurrent requesters
-cannot reuse one grant. Its return value is a private `(hostname, grant_id)`
-proof; it is **never included in an MCP response, request log, or dashboard**.
-
-**Preflight itself is internal:** the guarded standalone `web_fetch` flow now uses it; `web_fetch_batch`,
-continuation pages or operator decision forms. In particular, the helper
-alone is *not* a complete authorization: future fetch integration must guard
-final navigation, changing decisions, cache hits, page handles, and late
-batch responses against stale or revoked grants. Browser/container egress
-isolation remains a separate deployment requirement.
+PR #44 added an internal preflight that verifies a normalized HTTP(S) host,
+standard public port and all resolved DNS records (no private or multicast
+addresses) **before** claiming once. DNS failure does not consume the grant.
+The guarded standalone fetch flow described below now uses that preflight;
+there is still no operator-facing staging control.
 
 ## Guarded one-use fetches and private continuation proofs
 
@@ -141,11 +117,12 @@ an operator-complete feature before the local control exists.
 
 ## Remaining work for issue #12
 
-Scoped and expiring rules were delivered in PR #36; request IDs, origin-only
-URL snapshots and decision reasons were delivered in PR #38. PR #39 adds operator-only bulk decisions. A later preparatory slice adds the
-inert one-use ledger. **Allow once** in the operator UI and guarded fetch
-pipeline remains unimplemented. Do not mark issue #12 complete until
-allow-once and its concurrency and post-fetch privacy tests have merged.
+Scoped and expiring rules were delivered in PR #36; request IDs and
+origin-only auditing in PR #38; bulk local decisions in PR #39; and the
+private ledger/DNS preflight in PRs #43–#44. The guarded direct-fetch proof
+path has tests, but **the operator-only Allow once UI and decision audit are
+not yet implemented**. Keep issue #12 open until the final integration is
+reviewed, merged and validated.
 
 The tests cover legacy schema migration, scope boundaries, explicit child
 exceptions, expiry across restart, concurrent expired requests, and HTTP
