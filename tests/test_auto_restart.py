@@ -427,6 +427,10 @@ class AutoRestartTests(unittest.TestCase):
         with patch.object(update.subprocess, "run", side_effect=offline_runner):
             self.assertTrue(update.requirements_ready(
                 self.root, ["requirements.txt"]))
+        self.change("requirements.txt", "-e .[dev]\n")
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertTrue(update.requirements_ready(
+                self.root, ["requirements.txt"]))
         self.change("requirements.txt",
                     "-e missing-local-project\n")
         with patch.object(update.subprocess, "run", side_effect=offline_runner):
@@ -481,6 +485,36 @@ class AutoRestartTests(unittest.TestCase):
             self.change("requirements/base.txt", "-r ../outside.txt\n")
             self.assertFalse(update.requirements_ready(
                 self.root, ["requirements.txt"]))
+
+    def test_included_constraints_under_requirements_are_not_mandatory(self):
+        # requirements/prod.txt matches the filename heuristic but its -c
+        # edge makes non-installed packages optional constraints.
+        self.change("requirements.txt", "-c requirements/prod.txt\n")
+        self.change("requirements/prod.txt", "absent-optional-xy98371==1.0\n")
+        self.commit("include optional constraint")
+        origins = {}
+        update.referenced_requirement_files(self.root, origins=origins)
+        self.assertIn("requirements.txt", origins["requirements/prod.txt"])
+        interpreter = self.root / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.touch()
+        actual_run = subprocess.run
+
+        def offline_runner(command, **kwargs):
+            if "-c" in command:
+                pos = command.index("-c") + 1
+                return actual_run([sys.executable, "-I", "-c",
+                                   *command[pos:]], **kwargs)
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(update.subprocess, "run", side_effect=offline_runner):
+            self.assertTrue(update.requirements_ready(
+                self.root, ["requirements/prod.txt"], origins,
+            ))
+            self.change("requirements/prod.txt", "pip>=999999\n")
+            self.assertFalse(update.requirements_ready(
+                self.root, ["requirements/prod.txt"], origins,
+            ))
 
     def test_pip_replacement_manifest_checks_local_versions(self):
         (self.root / "config").mkdir()
