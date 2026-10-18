@@ -14,7 +14,9 @@ scope and permanent grants carefully: if an existing explicit rule differs,
 the entire import is refused. Resolve that conflict with the regular local
 decision controls. Imports never silently replace explicit domain rules.
 
-After a conflict-free preview, type **IMPORT** to apply. The server verifies
+After a conflict-free preview, type **IMPORT** to apply. A process-local,
+10-minute confirmation is bound to the exact reviewed JSON and policy state;
+a swapped payload or expired preview is rejected. The server also verifies
 the preview's policy fingerprint inside an SQLite write transaction,
 rejects stale previews and newly expired imports, and commits all rules or
 none. Existing pending request IDs are preserved; sanitized decision-audit
