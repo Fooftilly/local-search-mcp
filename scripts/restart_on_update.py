@@ -316,6 +316,11 @@ def requirements_ready(
             sources = (origins or {}).get(name, set())
             if sources:
                 for source in sources:
+                    if source == name and len(sources) > 1:
+                        # This file is also reachable as a -r/-c include.
+                        # Let its referring roots determine the actual role,
+                        # rather than treating a -c target as mandatory.
+                        continue
                     add(source, constraint_manifest(source))
             elif name.endswith((".txt", ".in", ".pip")):
                 # For direct API calls without a graph, validate included files
