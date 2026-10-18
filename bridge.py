@@ -9,7 +9,8 @@ import time
 
 import httpx
 from fastmcp import FastMCP
-from domain_policy import evaluate_fetch_url, expired_grant_without_active_fallback
+from domain_policy import (evaluate_fetch_url, expired_grant_without_active_fallback,
+                           is_domain_currently_allowed)
 from admin_ui import create_dashboard_server
 from crawler_security import local_container_warning, verify_health
 import threading
@@ -424,19 +425,30 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False) -> dict:
     return response
 
 
-def _batch_currently_authorized(requested_url: str, result: dict) -> bool:
-    """Revalidate source and redirect destination when the whole batch finishes."""
-    if _check_public_target(requested_url) is not None:
-        return False
-    final_url = result.get("url")
-    if not isinstance(final_url, str):
-        return False
+def _current_permissions_for_fetched_urls(source_url: str, final_url: str) -> bool:
+    """Check effective domain decisions without resubmitting/recrawling URLs.
+
+    Initial fetch authorization already checked DNS. Subsequent content
+    release needs fresh policy decisions, not additional DNS or new pending
+    queue requests that would inflate usage counts.
+    """
     try:
-        if urlsplit(requested_url).hostname != urlsplit(final_url).hostname:
-            return _check_public_target(final_url) is None
+        source = urlsplit(source_url)
+        final = urlsplit(final_url)
+        if (source.scheme not in ("http", "https") or
+                final.scheme not in ("http", "https") or
+                not source.hostname or not final.hostname):
+            return False
+        return (is_domain_currently_allowed(source.hostname) and
+                (source.hostname == final.hostname or
+                 is_domain_currently_allowed(final.hostname)))
     except (ValueError, TypeError):
         return False
-    return True
+
+
+def _batch_currently_authorized(requested_url: str, result: dict) -> bool:
+    """Revalidate effective source and redirect policies after all workers."""
+    return _current_permissions_for_fetched_urls(requested_url, result.get("url"))
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
@@ -478,13 +490,10 @@ def web_fetch_page(document_id: str, page: int = 2) -> dict:
     # Still fail closed if permissions change during the validation below.
     if not source_url:
         return blocked
-    source_decision = _check_public_target(source_url)
-    if source_decision is not None:
-        return source_decision
-    if urlsplit(source_url).hostname != urlsplit(result["url"]).hostname:
-        final_decision = _check_public_target(result["url"])
-        if final_decision is not None:
-            return final_decision
+    if not _current_permissions_for_fetched_urls(source_url, result["url"]):
+        return {"success": False, "status": "blocked",
+                "reason": "The original or final domain is no longer approved. "
+                          "Request local approval and retry this page."}
     if request_cache.policy_epoch() != epoch:
         return blocked
     return result
