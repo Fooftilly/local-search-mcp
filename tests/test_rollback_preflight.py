@@ -217,6 +217,26 @@ class RollbackPreflightTests(unittest.TestCase):
         self.assertEqual(update._git_index_stat(empty)[-1], 0)
         self.assertEqual(update._git_index_stat(sparse)[-1], 0x80000000)
 
+    def test_rejects_submodule_gitlinks_without_running_submodule_code(self):
+        remote = Path(self.tmp.name) / "submodule-source"
+        remote.mkdir()
+        def sub_git(*args):
+            return subprocess.run(["git", *args], cwd=remote,
+                                  capture_output=True, text=True, check=True).stdout
+        sub_git("init", "-q")
+        sub_git("config", "user.email", "fixture@example.invalid")
+        sub_git("config", "user.name", "Fixture")
+        (remote / "file.txt").write_text("nested repository\n")
+        sub_git("add", ".")
+        sub_git("commit", "-qm", "submodule fixture")
+        self.git("-c", "protocol.file.allow=always", "submodule", "add",
+                 "-q", str(remote), "sm")
+        self.commit("track submodule")
+        self.assertTrue(update._tracked_metadata_dirty(
+            self.root, include_untracked=True))
+        with self.assertRaisesRegex(ValueError, "not clean"):
+            rollback.preflight(self.target, self.archive, root=self.root)
+
     def test_clean_filter_never_executes_in_preflight(self):
         import shlex
         marker = Path(self.tmp.name) / "filter-ran"

@@ -259,6 +259,21 @@ def _tracked_metadata_dirty(root: Path, *, include_untracked: bool = False,
     if any(not runtime_only or affects_runtime(os.fsdecode(name))
            for name in staged.split(b"\0") if name):
         return True
+    # The parent index only records a gitlink commit (mode 160000).
+    # It cannot detect changes *inside* a submodule from top-level metadata.
+    # Conservatively reject any tracked gitlink instead of incorrectly
+    # declaring a dirty/nested worktree clean. This also avoids running
+    # submodule Git commands, hooks, filters, or accessing remotes.
+    gitlinks = run_git("ls-files", "--stage", "-z", "--")
+    for item in gitlinks.split(b"\0"):
+        if not item.startswith(b"160000 "):
+            continue
+        try:
+            submodule = os.fsdecode(item.split(b"\t", 1)[1])
+        except IndexError as exc:
+            raise ValueError("Invalid gitlink metadata") from exc
+        if not runtime_only or affects_runtime(submodule):
+            return True
     records = run_git("ls-files", "--debug", "-z", "--")
     pos = 0
     while pos < len(records):
