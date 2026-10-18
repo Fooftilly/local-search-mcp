@@ -11,6 +11,7 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
   const isHistory = document.documentElement.dataset.liveView === "history";
   const pendingBody = document.getElementById("live-pending");
   const decidedBody = document.getElementById("live-decided");
+  const auditBody = document.getElementById("live-audit");
   const historyBody = document.getElementById("live-history");
   const status = document.getElementById("live-status");
   const notice = document.getElementById("notification-toggle");
@@ -377,6 +378,7 @@ LIVE_SCRIPT = r"""/* Same-origin, opt-in live dashboard updates. No inline scrip
       } else {
         updateTable(pendingBody, data.pending_html);
         updateTable(decidedBody, data.decided_html);
+        updateTable(auditBody, data.audit_html);
         for (const type of ["pending", "allowed", "denied"]) {
           const count = document.getElementById("live-count-" + type);
           if (count) count.textContent = String(data.counts[type]);

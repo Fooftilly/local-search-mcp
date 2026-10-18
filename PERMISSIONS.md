@@ -30,12 +30,29 @@ no time-limited rule silently becomes permanent through a default selection. The
 expired rules and shows scope/expiry. As before, a manual **Remove** erases
 the rule and a **Rename** preserves its existing limits.
 
+## Stable request IDs and local decision audit
+
+The dashboard now shows an opaque stable request ID, the first and most recent
+request times, repeat counts and the request origin (scheme and host only). Old SQLite
+rows receive IDs during an idempotent migration without changing decisions
+or their scope. Each new pending request is assigned an ID; repeats,
+reapproval and rename retain it. Local decisions, including bulk queue
+deletion records, retain their associated request ID, source origin
+and request count at decision time. Historical decisions without identifiers
+remain intact with blank new fields.
+
+The operator can enter an optional 160-character reason alongside Allow or
+Deny. The local dashboard lists the latest 25 decision records, displaying
+time, ID, action, source, request history and the reason. The reason is
+validated server-side and HTML-escaped; never put passwords or secrets into
+operator notes. Decision history is local-only: it is not a remote MCP tool,
+and page bodies, URL paths, and query strings are not stored there.
+
 ## Remaining work for issue #12
 
-This is a deliberately scoped first part of the broader permissions and audit
-milestone. **Allow once**, a stable request identifier, richer sanitized
-decision audit with reasons, and operator-only bulk approval/denial are not
-implemented here. Do not mark issue #12 complete until those features and
+The first part delivered scoped and expiring rules. This follow-up adds
+stable IDs and sanitized local decision reasons/auditing. **Allow once** and
+operator-only bulk approval/denial remain separate unimplemented work. Do not mark issue #12 complete until those features and
 their race/privacy tests have also merged.
 
 The tests cover legacy schema migration, scope boundaries, explicit child
