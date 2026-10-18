@@ -218,7 +218,9 @@ class DashboardHTTPTests(unittest.TestCase):
             encoding="utf-8")
         history = json.loads(self.exchange("GET", "/live?view=history")[1])
         self.assertIn("&lt;script&gt;", history["history_html"])
-        self.assertIn("&lt;img", history["history_html"])
+        # The indexed dashboard intentionally omits raw search-query text.
+        self.assertNotIn("<img", history["history_html"])
+        self.assertNotIn("onerror", history["history_html"])
         self.assertNotIn("<script>", history["history_html"])
         html_page = self.exchange("GET", "/history")[1]
         self.assertIn(b'<tbody id="live-history">', html_page)
