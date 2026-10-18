@@ -207,7 +207,7 @@ def apply_import(payload: str, expected_state: str,
                     continue
                 domain = item["domain"]
                 existing = conn.execute(
-                    "SELECT request_id FROM domains WHERE domain=?", (domain,)).fetchone()
+                    "SELECT * FROM domains WHERE domain=?", (domain,)).fetchone()
                 request_id = (existing["request_id"] if existing and existing["request_id"]
                               else secrets.token_hex(12))
                 conn.execute(
@@ -247,13 +247,22 @@ def apply_import(payload: str, expected_state: str,
                     conn.executemany(
                         "DELETE FROM domains WHERE domain=? AND explicit_rule=0",
                         [(child["domain"],) for child in children])
+                # An imported approval of an existing pending request must
+                # retain its original sanitized origin, timestamps and count
+                # in the decision audit, just like a local dashboard decision.
                 conn.execute(
                     """INSERT INTO decisions
-                       (at,domain,action,request_id,reason)
-                       VALUES (?,?,?,?,?)""",
+                       (at,domain,action,request_id,reason,requested_url,
+                        first_requested_at,last_requested_at,request_count)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
                     (now, domain,
                      "allow" if item["status"] == "allowed" else "deny",
-                     request_id, "Imported from validated portable rule file"))
+                     request_id, "Imported from validated portable rule file",
+                     policy.safe_request_origin(existing["last_requested_url"])
+                     if existing and existing["last_requested_url"] else "",
+                     existing["first_requested_at"] if existing else "",
+                     existing["last_requested_at"] if existing else "",
+                     existing["request_count"] if existing else 0))
             if plan["add"]:
                 policy.invalidate_fetch()
             conn.commit()
