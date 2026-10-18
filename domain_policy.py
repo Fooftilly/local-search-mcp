@@ -493,6 +493,43 @@ def _consume_once_grant(domain: str) -> str | None:
             raise
 
 
+
+def _claim_once_for_public_url(url: str) -> tuple[str, str] | None:
+    """Preflight a one-time claim after verifying a public HTTP(S) destination.
+
+    This is an INTERNAL operation primitive, not a tool authorization result:
+    callers must keep the returned (hostname, grant_id) private and enforce
+    final URL checks, cache bypass, policy epochs, and content release guards.
+    It MUST NOT be wired to web_fetch until those paths are implemented.
+    """
+    try:
+        parsed = urlsplit(url)
+        if not isinstance(url, str):
+            return None
+        host = normalize_domain(parsed.hostname or "")
+        if (parsed.scheme not in ("http", "https") or
+                parsed.username is not None or parsed.password is not None or
+                parsed.port not in (None, 80, 443)):
+            return None
+    except (ValueError, TypeError):
+        return None
+    # Do NOT burn a one-use grant if DNS fails, resolves to loopback/private
+    # IP, or returns no address records. These are the same public-address
+    # requirements as the ordinary fetch authorization path.
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        if not records or not all(
+                ipaddress.ip_address(rec[4][0]).is_global for rec in records):
+            return None
+    except (socket.gaierror, ValueError, IndexError, TypeError):
+        return None
+    # _consume_once_grant takes BEGIN IMMEDIATE, rechecks live explicit denials
+    # and expiration AFTER locking, and marks one winner atomically.
+    grant_id = _consume_once_grant(host)
+    return (host, grant_id) if grant_id else None
+
+
 def _once_proof_current(domain: str, grant_id: str) -> bool:
     """Fail-closed post-fetch check: revoke, replacement, expiry, or deny."""
     if not isinstance(grant_id, str) or not re.fullmatch(r"[a-f0-9]{32}", grant_id):
