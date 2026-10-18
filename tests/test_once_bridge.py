@@ -3,6 +3,7 @@ import asyncio
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+from urllib.parse import urlsplit
 from unittest.mock import patch
 import os
 import socket
@@ -158,9 +159,7 @@ class GuardedOnceFetchTests(unittest.TestCase):
         for original in ("https://docs.example.org./article",
                          "https://bücher.example.org/article"):
             with self.subTest(original=original):
-                name = policy.normalize_domain(
-                    __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit(
-                        original).hostname)
+                name = policy.normalize_domain(urlsplit(original).hostname)
                 policy._stage_once_grant(name)
                 body = {"url": original, "success": True,
                         "markdown": "VISIBLE", "truncated": False}
