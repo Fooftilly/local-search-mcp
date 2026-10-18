@@ -238,6 +238,12 @@ def apply(root: Path = ROOT, *, path: Path | None = None,
     if not (bridge or tunnel):
         write_state(location, current)
         return "Updated checkout; both systemd services inactive (not started)"
+    if tunnel and not bridge:
+        # The tunnel unit Wants=bridge; restarting the tunnel would start an
+        # intentionally inactive/failed bridge as an implicit dependency.
+        write_state(location, current)
+        return ("Bridge inactive while tunnel runs; skipped tunnel restart "
+                "to avoid activating the bridge (manual review required)")
     # Record exactly once *before* affecting live processes: a failed restart
     # must not cause an endless restart loop on each timer tick.
     write_state(location, current)
