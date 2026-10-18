@@ -52,6 +52,12 @@ systemctl --user daemon-reload
 systemctl --user enable --now local-search-mcp-update.path local-search-mcp-update.timer
 ```
 
+The update checker oneshot has a ten-minute timeout to accommodate bounded
+serial Git checks, dependency validation, and two potentially slow systemd
+service restarts. The private update-state directory must be owned by the
+current user and inaccessible to group/other users; correct permissive
+permissions manually before restarting the watcher.
+
 The `.path` unit watches Git's local HEAD reflog; a one-minute fallback timer
 also checks the local commit in case a filesystem event is missed, including
 while a Git operation is unfinished. The handler waits briefly for the
@@ -92,8 +98,11 @@ installed distributions; standalone constraints only restrict versions of
 packages that are actually installed, without forcing optional installations.
 Editable requirements and multiline `--hash` forms are accepted after manual
 acknowledgement; `pip check` verifies dependency integrity but cannot verify
-download hashes or provenance. Missing, cyclic, or out-of-checkout referenced
-files fail validation. For non-pip formats, the offline check validates the
+download hashes or provenance. Quoted pip include paths and `${VAR}` environment substitutions are supported,
+provided their resolved files remain within the Git checkout. Inside pip
+constraint files, nested `-r` entries are required dependencies, while
+nested `-c` entries remain optional constraints. Missing, cyclic, or
+out-of-checkout referenced files fail validation. For non-pip formats, the offline check validates the
 existing Python environment with `pip check`; **you** must also review and
 prepare the new lockfile/manifest dependencies before acknowledging. If you
 adopt an unconventional manifest name that the watcher does not recognize,
