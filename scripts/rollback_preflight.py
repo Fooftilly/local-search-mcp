@@ -76,6 +76,11 @@ def preflight(target: str, archive: Path, *, root: Path = ROOT) -> str:
     runtime_changes = [name for name in changed if update.affects_runtime(name)]
     # Even the latest manifest graph cannot establish that dependencies of
     # older commits are installed. Manual environment review is ALWAYS needed.
+    # Surface missing/symlinked input as a validation failure, not an
+    # unhandled FileNotFoundError. Verification still checks owner/perms and
+    # fully validates the manifest and contents independently.
+    if archive.is_symlink() or not archive.is_file():
+        raise ValueError("Private backup archive is missing or symlinked")
     payload = backup_state.verified_payload(archive)
     count = len(payload)
     # Recheck after potentially slow verification. A dirty or changed checkout
