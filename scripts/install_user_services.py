@@ -75,7 +75,7 @@ def unit_files(python: str, root: Path, *, auto_restart: bool = False,
         state_argument = quote(str(state_path))
         units.update({
             NAMES[4]: MARKER + "[Unit]\nDescription=Restart local MCP services after local Git updates\n" +
-                      "\n[Service]\nType=oneshot\nUMask=0077\nNoNewPrivileges=true\nTimeoutStartSec=90s\n" +
+                      "\n[Service]\nType=oneshot\nUMask=0077\nNoNewPrivileges=true\nTimeoutStartSec=10min\n" +
                       f"ExecStart={exe} {checker} --state-file {state_argument}\n",
             NAMES[5]: MARKER + "[Unit]\nDescription=Watch local MCP Git HEAD reflog\n" +
                       "\n[Path]\n" + f"PathChanged={watch_path.replace('%', '%%')}\n" +
