@@ -115,7 +115,7 @@ def update_settings(fields: dict[str, str], expected_state: str) -> None:
     values = {}
     for key, (low, high) in BOUNDS.items():
         raw = fields[key]
-        if not isinstance(raw, str) or not re.fullmatch(r"[0-9]{1,3}", raw):
+        if not isinstance(raw, str) or not re.fullmatch(r"[0-9]{1,4}", raw):
             raise ValueError(f"Invalid {key} setting")
         value = int(raw)
         if not low <= value <= high:
