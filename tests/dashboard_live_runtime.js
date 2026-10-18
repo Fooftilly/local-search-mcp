@@ -38,14 +38,17 @@ Notification.requestPermission = async () => "granted";
 
 function createTab(initialDomains) {
   const state = { domains: [...initialDomains], timers: [], handlers: {},
-                  nextSnapshotUs: null, nextSnapshotRun: null };
+                  nextSnapshotUs: null, nextSnapshotRun: null, pendingOverride: null };
   const targets = new Map();
   function element(id) {
     if (!targets.has(id)) {
       targets.set(id, {
         textContent: "", innerHTML: "server-rendered", disabled: false,
-        focusChild: null,
+        focusChild: null, bulkSelected: false,
         contains(child) { return child !== null && this.focusChild === child; },
+        querySelector(selector) {
+          return selector === 'input[name="selected"]:checked' && this.bulkSelected ? {} : null;
+        },
         addEventListener(kind, fn) { this["on" + kind] = fn; }
       });
     }
@@ -80,7 +83,7 @@ function createTab(initialDomains) {
         snapshot_run: run,
         pending_domains: domains,
         counts: { pending: domains.length, allowed: 0, denied: 0 },
-        pending_html: "pending: " + domains.join(","),
+        pending_html: state.pendingOverride ?? "pending: " + domains.join(","),
         decided_html: "decided: " + domains.join(",")
       })
     };
@@ -219,6 +222,20 @@ async function main() {
   tab.document.activeElement = null;
   await poll(tab, 260000);
   assert.notEqual(decided.innerHTML, original, "updates resume after blur");
+
+  // Checked bulk selections must survive live updates until deselected.
+  const pending = tab.element("live-pending");
+  const beforeSelection = pending.innerHTML;
+  pending.bulkSelected = true;
+  tab.state.pendingOverride = "pending: changed while selecting";
+  await poll(tab, 265000);
+  assert.equal(pending.innerHTML, beforeSelection,
+               "checked bulk selections must not be discarded by polling");
+  pending.bulkSelected = false;
+  await poll(tab, 266000);
+  assert.equal(pending.innerHTML, "pending: changed while selecting",
+               "pending updates must resume after bulk selection clears");
+  tab.state.pendingOverride = null;
 
   // Opening a new tab during a >45-second background throttle must not erase
   // the still-open first tab's owed alerts.
