@@ -77,9 +77,11 @@ class GuardedOnceFetchTests(unittest.TestCase):
 
         payload = {"url": url, "success": True, "markdown": "AUTHORIZED",
                    "truncated": False}
-        with patch.object(policy, "_claim_once_for_public_url",
-                          side_effect=claim_after_local_reapproval), \\
-             patch.object(bridge, "_run_fetch", return_value=payload) as crawler:
+        with (
+            patch.object(policy, "_claim_once_for_public_url",
+                         side_effect=claim_after_local_reapproval),
+            patch.object(bridge, "_run_fetch", return_value=payload) as crawler,
+        ):
             result = bridge.web_fetch(url)
 
         self.assertGreater(request_cache.policy_epoch(), initial_epoch)
