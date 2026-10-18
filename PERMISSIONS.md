@@ -48,12 +48,34 @@ validated server-side and HTML-escaped; never put passwords or secrets into
 operator notes. Decision history is local-only: it is not a remote MCP tool,
 and page bodies, URL paths, and query strings are not stored there.
 
+## Operator-only bulk decisions
+
+The loopback dashboard can now approve or deny **up to 25 selected pending
+requests** in one atomic SQLite transaction. Check the desired hosts in the
+pending table, choose **Exact host** or **Host + subdomains**, explicitly choose
+a duration, optionally enter a 160-character reason, then press **Allow selected**
+or **Deny selected**. Every selection carries its stable request ID: if another
+dashboard tab already decided or replaced one request, the entire submission
+is rejected as stale, with **no partial grants**. Refresh and reselect.
+
+Selected child rules are preserved as explicit decisions even when a selected
+parent covers its subdomains. Automatically cleared, unselected child requests
+are retained as ID-correlated, origin-redacted audit entries. The rolling-hour
+pending admission quotas remain intact. Selection is preserved during live
+updates while checkboxes remain checked; the backend always checks the latest
+request IDs regardless of what is displayed.
+
+Bulk mutations use the existing loopback-only Host/Origin/CSRF boundary and
+**are not MCP tools or remote APIs**. Existing single-domain controls remain
+available and unchanged.
+
 ## Remaining work for issue #12
 
-The first part delivered scoped and expiring rules. This follow-up adds
-stable IDs and sanitized local decision reasons/auditing. **Allow once** and
-operator-only bulk approval/denial remain separate unimplemented work. Do not mark issue #12 complete until those features and
-their race/privacy tests have also merged.
+Scoped and expiring rules were delivered in PR #36; request IDs, origin-only
+URL snapshots and decision reasons were delivered in PR #38. This slice adds
+operator-only bulk decisions. **Allow once** with atomic single-use
+authorization remains unimplemented. Do not mark issue #12 complete until
+allow-once and its concurrency and post-fetch privacy tests have merged.
 
 The tests cover legacy schema migration, scope boundaries, explicit child
 exceptions, expiry across restart, concurrent expired requests, and HTTP

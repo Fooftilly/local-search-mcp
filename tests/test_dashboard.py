@@ -67,12 +67,12 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("trusted.example.net", page)
         self.assertIn("blocked.example.org", page)
         self.assertIn("Showing at most 200 pending entries", page)
-        self.assertEqual(page.count('<tr><td class="domain">r'), 200)
+        self.assertEqual(page.count('form="bulk-form" aria-label="Select r'), 200)
         filtered = admin_ui.render("trusted.example.net")
         self.assertIn('name="q" value="trusted.example.net"', filtered)
         self.assertIn('<td class="domain">trusted.example.net</td>', filtered)
         self.assertNotIn('<td class="domain">blocked.example.org</td>', filtered)
-        self.assertNotIn('<td class="domain">r0.flood-example.org</td>', filtered)
+        self.assertNotIn('aria-label="Select r0.flood-example.org"', filtered)
 
     def test_clear_pending_requires_confirmation_and_preserves_decisions(self):
         policy.decide("trusted.example.net", "allow")
