@@ -47,6 +47,13 @@ class OncePreflightTests(unittest.TestCase):
                 ("docs.example.org",)).fetchone()
         self.assertEqual(row["grant_id"], expected)
         self.assertTrue(row["consumed_at"])
+        # Staging/consuming a private grant must NOT create any domain row.
+        before = policy.entries()
+        self.assertFalse(any(r["domain"] == "docs.example.org" for r in before))
+        self.assertNotIn(expected, repr(before))
+        # Ordinary approval checks create only a PENDING row, not an allow.
+        result = policy.evaluate_fetch_url("https://docs.example.org/article")
+        self.assertEqual(result["status"], "approval_required")
         entries = policy.entries()
         host = next(r for r in entries if r["domain"] == "docs.example.org")
         self.assertEqual(host["status"], "pending")
@@ -54,8 +61,6 @@ class OncePreflightTests(unittest.TestCase):
         self.assertNotIn(expected, repr(entries))
         self.assertNotIn(expected, repr(policy.recent_decisions()))
         self.assertNotIn("PRIVATE", repr(entries))
-        result = policy.evaluate_fetch_url("https://docs.example.org/article")
-        self.assertEqual(result["status"], "approval_required")
         self.assertNotIn(expected, repr(result))  # MCP is still inert.
 
     def test_reject_invalid_public_urls_without_consuming(self):
