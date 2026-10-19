@@ -27,9 +27,11 @@ class GuardSystemdTests(unittest.TestCase):
         rendered = install_user_services.unit_files("/usr/bin/python3", Path("/tmp/project"))
         self.assertNotIn("ExecStartPre", rendered["local-search-mcp-tunnel.service"])
         dropin = DROPIN.read_text()
-        self.assertIn("ExecStartPre=/usr/bin/sudo -n /usr/bin/python3 " + GUARD, dropin)
+        self.assertIn("ExecStartPre=+/usr/bin/sudo -n /usr/bin/python3 " + GUARD, dropin)
         self.assertIn("--container crawl4ai --probe", dropin)
         self.assertNotIn("ExecStartPre=-", dropin)
+        self.assertIn("NoNewPrivileges=true", rendered["local-search-mcp-tunnel.service"])
+        self.assertEqual(dropin.count("ExecStartPre=+"), 1)
         self.assertNotIn(" --apply", dropin)
         self.assertNotIn("git pull", dropin)
 
