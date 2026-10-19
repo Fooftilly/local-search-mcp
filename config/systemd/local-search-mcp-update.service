@@ -1,0 +1,10 @@
+# Managed by local-search-mcp; contains no credentials.
+[Unit]
+Description=Restart local MCP services after local Git updates
+
+[Service]
+Type=oneshot
+UMask=0077
+NoNewPrivileges=true
+TimeoutStartSec=10min
+ExecStart=$EXE $CHECKER --state-file $STATE_ARGUMENT

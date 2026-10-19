@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import bootstrap
 import health_cli
+from scripts import install_user_services as installer
 from scripts.install_user_services import unit_files
 
 
@@ -27,6 +28,41 @@ class ServiceTests(unittest.TestCase):
             self.assertIn("RestartSec=30s", units[name])
         self.assertIn("After=local-search-mcp-bridge.service", units["local-search-mcp-tunnel.service"])
         self.assertIn("OnUnitActiveSec=2min", units["local-search-mcp-health.timer"])
+
+    def test_units_are_rendered_from_version_controlled_templates(self):
+        expected = set(installer.NAMES)
+        self.assertEqual({p.name for p in installer.TEMPLATE_DIR.iterdir()
+                          if p.is_file()}, expected)
+        units = unit_files("/usr/bin/python3", Path("/tmp/demo"),
+                           auto_restart=True,
+                           reflog_path=Path("/tmp/demo/.git/logs/HEAD"),
+                           state_path=Path("/tmp/service-state"))
+        self.assertEqual(set(units), expected)
+        for name in installer.NAMES:
+            template = (installer.TEMPLATE_DIR / name).read_text()
+            self.assertTrue(template.startswith(installer.MARKER))
+            self.assertNotIn("CRAWL4AI_API_TOKEN=", template)
+            self.assertNotIn("CONTROL_PLANE_API_KEY=", template)
+            self.assertTrue(units[name].startswith(installer.MARKER))
+            self.assertNotIn("$EXE", units[name])
+            self.assertNotIn("$LAUNCH", units[name])
+            self.assertNotIn("$WATCH_PATH", units[name])
+
+    def test_template_symlink_or_missing_source_fails_closed(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as dirname:
+            folder = Path(dirname)
+            reference = folder / installer.NAMES[0]
+            target = folder / "elsewhere"
+            target.write_text(installer.MARKER + "[Unit]\n")
+            reference.symlink_to(target)
+            with patch.object(installer, "TEMPLATE_DIR", folder):
+                with self.assertRaisesRegex(ValueError, "linked"):
+                    unit_files("/usr/bin/python3", Path("/tmp/project"))
+            reference.unlink()
+            with patch.object(installer, "TEMPLATE_DIR", folder):
+                with self.assertRaises(FileNotFoundError):
+                    unit_files("/usr/bin/python3", Path("/tmp/project"))
 
     def test_bridge_exec_uses_prepared_private_state(self):
         config = {

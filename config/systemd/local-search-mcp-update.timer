@@ -1,0 +1,12 @@
+# Managed by local-search-mcp; contains no credentials.
+[Unit]
+Description=Recheck local MCP Git revision without network access
+
+[Timer]
+OnStartupSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=local-search-mcp-update.service
+
+[Install]
+WantedBy=timers.target
