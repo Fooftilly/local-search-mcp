@@ -10,7 +10,9 @@ Only two bounded integers are saved to a separate owner-only
 `cache-ttl.json` (0600), under the existing owner-only config directory
 (0700). No queries, URLs, cache responses, credentials or history are saved.
 
-Changes apply to future **new cache entries** without a restart. Existing
+Changes apply to future **new cache entries** without a restart. In-flight
+requests read the latest effective lifetime immediately before cache insertion.
+Existing
 cached responses retain their original expiration; no cache is wiped.
 Cache size limits, privacy safeguards, `fresh=true` and mandatory
 domain authorization are unchanged. This does not persist cache payloads.
