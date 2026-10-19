@@ -6,6 +6,7 @@ in-flight work initiated before the change from populating the cache.
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Callable
 from concurrent.futures import Future
 from copy import deepcopy
 import json
@@ -134,13 +135,17 @@ def _cacheable_size(result: object, key: tuple) -> int:
         return 0
 
 
-def _store(kind: str, key: tuple, result, ttl: float, generation: int,
+def _store(kind: str, key: tuple, result, ttl: float | Callable[[], float], generation: int,
            should_store, *, flight=None, refresh_token=None) -> bool:
     if should_store is not None and not should_store(result):
         return False
     size = _cacheable_size(result, key)
     if not size:
         return False
+    # Read a live setting only after the upstream loader finishes. Never
+    # hold _LOCK during filesystem I/O or retain the pre-request TTL for a
+    # result inserted after an operator changed the saved settings.
+    effective_ttl = ttl() if callable(ttl) else ttl
     with _LOCK:
         if kind == "fetch" and generation != _POLICY_EPOCH:
             return False
@@ -149,7 +154,7 @@ def _store(kind: str, key: tuple, result, ttl: float, generation: int,
         if refresh_token is not None and _REFRESHING.get(key) is not refresh_token:
             return False
         _purge(time.monotonic())
-        _CACHE[key] = (time.monotonic() + ttl, size, deepcopy(result))
+        _CACHE[key] = (time.monotonic() + effective_ttl, size, deepcopy(result))
         _METRICS[kind]["stores"] += 1
         _CACHE.move_to_end(key)
         total = sum(entry[1] for entry in _CACHE.values())
@@ -160,13 +165,14 @@ def _store(kind: str, key: tuple, result, ttl: float, generation: int,
         return key in _CACHE
 
 
-def run(kind: str, key: tuple | None, load, *, ttl: float, fresh: bool = False,
+def run(kind: str, key: tuple | None, load, *, ttl: float | Callable[[], float], fresh: bool = False,
         should_store=None):
     """Coalesce default calls; fresh starts independent work and replaces on completion.
 
     Existing cached content remains available during a fresh request, avoiding
     duplicate upstream loads for simultaneous default callers. A failed fresh
     request evicts the old entry. Refresh state lives only while it is active.
+    A callable TTL is evaluated at successful cache insertion, after loading.
     """
     if kind not in _METRICS:
         raise ValueError("Unknown cache operation kind")
