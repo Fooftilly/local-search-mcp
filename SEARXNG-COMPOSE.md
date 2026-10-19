@@ -2,7 +2,10 @@
 
 Canonical, nonsecret Compose overlay: config/crawler/searxng.compose.yaml.
 Canonical settings template: config/crawler/searxng-settings.yml. The
-installer generates a fresh secret key outside Git (mode 0600).
+installer generates a fresh secret key outside Git. The private parent
+configuration directory is mode 0700; the Compose overlay is mode 0600.
+The bind-mounted settings file is mode 0644 within this inaccessible
+parent so the container's unprivileged SearXNG process can read it.
 
 Create the crawler scaffold first if needed with:
 `./start.sh --setup-only --generate-crawler-compose`
