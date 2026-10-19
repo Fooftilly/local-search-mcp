@@ -93,7 +93,7 @@ The archive verifier also understands the strictly allowlisted
 `cache-ttl.json` schema (two bounded integers). If present in the private
 settings directory, backup includes it without exporting cache **contents**
 or any URL/query/key. Staged restore preserves the same private-file modes.
-Invalid or unsupported cache settings abort backup and archive verification.
+Invalid, unsupported or duplicate-key cache settings abort backup and archive verification.
 The absence of this optional file remains compatible with existing archives.
 
 This is independent of the settings UI under PR #60: on installations that
