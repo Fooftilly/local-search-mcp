@@ -75,3 +75,25 @@ jobs:
               (folder / name).write_text(contents)
           PY
           SYSTEMD_UNIT_PATH="$UNIT_DIR:/usr/lib/systemd/system:/lib/systemd/system" systemd-analyze verify "$UNIT_DIR"/*.service "$UNIT_DIR"/*.timer "$UNIT_DIR"/*.path
+
+  crawler-compose-syntax:
+    name: generated crawler Compose syntax
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate private scaffold with Docker Compose
+        run: |
+          tmp="$(mktemp -d)"
+          chmod 700 "$tmp"
+          export CRAWLER_COMPOSE_TEST_DIR="$tmp"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from scripts.crawler_compose import generate
+          generate(Path(os.environ["CRAWLER_COMPOSE_TEST_DIR"]),
+                   image="unclecode/crawl4ai:0.9.5", token="test-only-value")
+          PY
+          docker compose --project-directory "$tmp/crawler-compose" \
+            -f "$tmp/crawler-compose/compose.yaml" config --quiet

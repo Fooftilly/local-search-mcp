@@ -18,6 +18,13 @@ For a *new* deployment, create a dedicated network:
 docker network create --driver bridge crawler-egress
 ```
 
+Alternatively, generate a private, separate Compose scaffold with
+`./start.sh --setup-only --generate-crawler-compose`. See
+[CRAWLER-COMPOSE.md](CRAWLER-COMPOSE.md). Generation does not inspect or
+migrate existing volumes/services, apply the firewall or start Docker. In
+particular, operators using a shared Hermes Web Compose network must
+review dependent containers before migrating.
+
 Then **recreate** your Crawl4AI container with that sole network, preserving the volume mounts, API token, and other safe settings from your existing deployment. Docker Compose users can give the crawler service its own user-defined bridge network and restrict the published port to `127.0.0.1:11235:11235`. **Do not merely `docker network connect` a second network to the existing container**: the audit refuses multihomed containers. Be sure you know how to restore your existing Compose/run configuration before changing it.
 
 ## Preview, install and validate

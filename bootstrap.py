@@ -27,6 +27,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 import zipfile
 
+from scripts.crawler_compose import ComposeSetupError, generate as generate_crawler_compose, inspect_existing_image
+
 ROOT = Path(__file__).resolve().parent
 CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))).expanduser()
 PRIVATE_DIR = CONFIG_HOME / "local-search-mcp"
@@ -492,6 +494,10 @@ def run_unattended_service(component: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Configure and run local SearXNG/Crawl4AI MCP and OpenAI tunnel")
     parser.add_argument("--setup-only", action="store_true", help="Configure dependencies/credentials but do not start processes")
+    parser.add_argument("--generate-crawler-compose", action="store_true",
+                        help="With --setup-only, create a private Crawl4AI Compose scaffold; never start Docker")
+    parser.add_argument("--crawler-image",
+                        help="Existing verified Crawl4AI image for --generate-crawler-compose (default: inspect crawl4ai)")
     parser.add_argument("--show-config", action="store_true", help="Show redacted configuration sources without starting services")
     parser.add_argument("--service", choices=("bridge", "tunnel"), help=argparse.SUPPRESS)
     parser.add_argument("--refresh-runtime-key", action="store_true", help="Prompt for a new OpenAI runtime key and replace the saved one")
@@ -500,16 +506,40 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if args.show_config:
-            if args.service or args.setup_only or args.refresh_runtime_key or args.refresh_crawl_token or args.domains:
+            if (args.service or args.setup_only or args.refresh_runtime_key or args.refresh_crawl_token
+                    or args.domains or args.generate_crawler_compose or args.crawler_image):
                 raise SetupError("--show-config cannot be combined with setup/service options")
             from config_diagnostics import collect_report
             print(json.dumps(collect_report(read_config(), ROOT, PRIVATE_DIR, read_legacy_env), indent=2))
             return 0
         if args.service:
-            if args.setup_only or args.refresh_runtime_key or args.refresh_crawl_token or args.domains:
+            if (args.setup_only or args.refresh_runtime_key or args.refresh_crawl_token or args.domains
+                    or args.generate_crawler_compose or args.crawler_image):
                 raise SetupError("--service cannot be combined with interactive setup options")
             run_unattended_service(args.service)
             return 0
+        if args.generate_crawler_compose:
+            if (not args.setup_only or args.refresh_runtime_key or args.refresh_crawl_token
+                    or args.domains):
+                raise SetupError("Compose generation requires --setup-only without other setup flags")
+            # Scaffold generation is usable before either backend is running.
+            # Never reuse the tunnel runtime key for Docker and never print the token.
+            existing = read_config()
+            # Avoid inspecting an unrelated Docker container's environment.
+            token = (os.environ.get("CRAWL4AI_API_TOKEN")
+                     or existing.get("CRAWL4AI_API_TOKEN"))
+            if not token:
+                token = prompt_secret("Crawl4AI API token for private Compose scaffold")
+            image = args.crawler_image or inspect_existing_image()
+            _ensure_private_dir_durable()
+            _verify_private_location()
+            folder = generate_crawler_compose(PRIVATE_DIR, image=image, token=token)
+            info(f"Private Compose scaffold created at {folder} (not started).")
+            info("Review the old container's mounts and settings before migration; "
+                 "the existing Compose project was not modified.")
+            return 0
+        if args.crawler_image:
+            raise SetupError("--crawler-image requires --generate-crawler-compose")
         # Do not ask for credentials if basic prerequisites are unavailable.
         check_services()
         venv_python = make_venv()
@@ -527,7 +557,7 @@ def main() -> int:
             return 0
         launch(venv_python, binary, env)
         return 0
-    except SetupError as exc:
+    except (SetupError, ComposeSetupError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
