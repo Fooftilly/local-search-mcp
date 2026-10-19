@@ -27,8 +27,8 @@ class SearxngTests(unittest.TestCase):
         settings = (self.dir / s.NAMES[1]).read_text()
         self.assertRegex(settings, r"secret_key: '[a-f0-9]{64}'")
         self.assertNotIn(s.PLACEHOLDER, settings)
-        for name in s.NAMES:
-            self.assertEqual(stat.S_IMODE((self.dir / name).stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE((self.dir / s.NAMES[0]).stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE((self.dir / s.NAMES[1]).stat().st_mode), 0o644)
         self.assertEqual((self.dir / ".env").read_text(), "CRAWL4AI_API_TOKEN=hidden")
 
     def test_no_overwrite_or_partial_update(self):

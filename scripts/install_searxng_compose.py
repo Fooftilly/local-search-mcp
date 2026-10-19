@@ -48,6 +48,11 @@ def install(folder: Path) -> None:
             path = folder / name
             _write_exclusive(path, content)
             created.append(path)
+            if name == "searxng-settings.yml":
+                # SearXNG's container UID may not match the host UID. The
+                # private (0700) parent keeps this file hidden on the host;
+                # Docker bind-mounts the file read-only for the container.
+                path.chmod(0o644)
     except BaseException:
         for path in reversed(created):
             if path.is_file() and not path.is_symlink():
