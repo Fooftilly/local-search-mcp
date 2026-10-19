@@ -42,7 +42,7 @@ class ImagePinTests(unittest.TestCase):
         (self.path / "searxng.compose.yaml").write_text("services: {}")
         dig = "unclecode/crawl4ai@sha256:" + "1" * 64
         with patch.object(pins.subprocess, "run",
-                          return_value=subprocess.CompletedProcess([], 0, dig + "\\n", "")):
+                          return_value=subprocess.CompletedProcess([], 0, dig + "\n", "")):
             with self.assertRaisesRegex(ValueError, "Incomplete"):
                 pins.report(self.path)
 
