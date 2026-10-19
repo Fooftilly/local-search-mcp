@@ -45,6 +45,16 @@ systemctl --user daemon-reload
 systemctl --user enable --now local-search-mcp-tunnel.service
 ```
 
+The drop-in uses `ExecStartPre=+` so that the **pre-start probe only**
+bypasses `NoNewPrivileges=true` and can use the narrowly authorized
+`sudo -n` elevation. The long-lived tunnel's `ExecStart` keeps
+`NoNewPrivileges=true`. This distinction is essential: removing the plus
+prefix leaves `sudo` unable to elevate, blocking every tunnel start.
+After installation, inspect the combined user unit with
+`systemctl --user cat local-search-mcp-tunnel.service` and verify the
+live start and journal; offline tests and systemd-analyze verify alone cannot
+prove the host-specific sudo policy and privileges.
+
 The noninteractive `ExecStartPre` runs the **live negative/private and
 positive/public probes before each tunnel startup**. Failure or absent
 permissions blocks tunnel startup. It cannot create firewall privileges.

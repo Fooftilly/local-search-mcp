@@ -32,6 +32,9 @@ class GuardSystemdTests(unittest.TestCase):
         self.assertNotIn("ExecStartPre=-", dropin)
         self.assertIn("NoNewPrivileges=true", rendered["local-search-mcp-tunnel.service"])
         self.assertEqual(dropin.count("ExecStartPre=+"), 1)
+        self.assertNotIn("NoNewPrivileges=false", dropin)
+        self.assertNotIn("ExecStart=", dropin)
+        self.assertIn("sudo -n", dropin)
         self.assertNotIn(" --apply", dropin)
         self.assertNotIn("git pull", dropin)
 

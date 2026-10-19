@@ -75,6 +75,11 @@ jobs:
               (folder / name).write_text(contents)
           PY
           SYSTEMD_UNIT_PATH="$UNIT_DIR:/usr/lib/systemd/system:/lib/systemd/system" systemd-analyze verify "$UNIT_DIR"/*.service "$UNIT_DIR"/*.timer "$UNIT_DIR"/*.path
+          mkdir -p "$UNIT_DIR/local-search-mcp-tunnel.service.d"
+          cp config/systemd/guards/10-crawler-egress.conf "$UNIT_DIR/local-search-mcp-tunnel.service.d/10-crawler-egress.conf"
+          cp config/systemd-system/local-search-mcp-crawler-egress.service "$UNIT_DIR/"
+          sudo install -D -m 0755 scripts/crawler_egress_guard.py /usr/local/libexec/local-search-mcp/crawler_egress_guard.py
+          SYSTEMD_UNIT_PATH="$UNIT_DIR:/usr/lib/systemd/system:/lib/systemd/system" systemd-analyze verify "$UNIT_DIR/local-search-mcp-tunnel.service" "$UNIT_DIR/local-search-mcp-crawler-egress.service"
 
   crawler-compose-syntax:
     name: generated crawler Compose syntax
