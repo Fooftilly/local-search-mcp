@@ -1,6 +1,7 @@
 """No-network regressions for manual dependency release checks."""
 import json
 from email.message import Message
+from http.client import BadStatusLine, IncompleteRead, LineTooLong
 import unittest
 from unittest.mock import patch
 
@@ -68,6 +69,33 @@ class VersionCheckTests(unittest.TestCase):
                 check._pypi_version("httpx")
         with self.assertRaises(ValueError):
             check._pypi_version("some-other-package")
+
+    def test_http_protocol_errors_are_reported_not_tracebacks(self):
+        """Malformed headers, status lines and truncated bodies fail closed."""
+        for failure in (BadStatusLine("broken response"),
+                        LineTooLong("header"),
+                        IncompleteRead(b"part", 7)):
+            with self.subTest(error=type(failure).__name__):
+                with patch.object(check, "_installed_version", return_value="2.0"):
+                    with patch.object(check, "build_opener") as opener:
+                        opener.return_value.open.side_effect = failure
+                        report = check.version_report(check_remote=True)
+                        self.assertEqual(len(report), len(check.PACKAGES))
+                        self.assertTrue(all("error" in row for row in report))
+                        self.assertTrue(all("pypi" not in row for row in report))
+                        self.assertEqual(check.main(["--check-remote"]), 1)
+
+    def test_truncated_body_exception_also_becomes_error_field(self):
+        class IncompleteResponse(Response):
+            def read(self, size):
+                raise IncompleteRead(b"partial", 128)
+
+        with patch.object(check, "_installed_version", return_value="2.0"):
+            with patch.object(check, "build_opener",
+                              return_value=Opener(IncompleteResponse(b""))):
+                self.assertEqual(check.main(["--check-remote"]), 1)
+                self.assertTrue(all("error" in result for result in
+                                    check.version_report(check_remote=True)))
 
     def test_fail_closed_and_differences_have_no_upgrade_verdict(self):
         with patch.object(check, "_installed_version", return_value="2.0"):
