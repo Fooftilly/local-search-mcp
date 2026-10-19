@@ -32,15 +32,35 @@ class CrawlerComposeTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE((root / name).stat().st_mode), 0o600)
         config = (root / "compose.yaml").read_text()
         env = (root / ".env").read_text()
+        self.assertEqual((root / "compose.yaml").read_bytes(),
+                         compose.COMPOSE_SOURCE.read_bytes())
         self.assertIn("127.0.0.1:11235:11235", config)
         self.assertIn("dns:\n      - 1.1.1.1\n      - 9.9.9.9", config)
         self.assertIn("enable_ipv6: false", config)
+        self.assertIn("com.docker.network.bridge.name: lsm-crawler0", config)
         self.assertIn("container_name: crawl4ai", config)
         self.assertIn("networks:\n      - crawler-egress", config)
         self.assertNotIn("hermes-web_default", config)
         self.assertNotIn("literal$VAR#value", config)
         self.assertIn("CRAWL4AI_API_TOKEN='literal$VAR#value'", env)
         self.assertNotIn("CONTROL_PLANE_API_KEY", env + config)
+
+    def test_missing_saved_token_prompts_instead_of_inspecting_docker_env(self):
+        with patch.object(bootstrap, "PRIVATE_DIR", self.private), \
+             patch.object(bootstrap, "PRIVATE_CONFIG", self.private / "config.json"), \
+             patch.object(bootstrap, "read_config", return_value={}), \
+             patch.dict(os.environ, {"CRAWL4AI_API_TOKEN": ""}), \
+             patch.object(bootstrap, "docker_token",
+                          side_effect=AssertionError("container environment accessed")), \
+             patch.object(bootstrap, "prompt_secret", return_value="prompted-token") as prompt, \
+             patch("sys.argv", ["bootstrap.py", "--setup-only",
+                                "--generate-crawler-compose", "--crawler-image",
+                                "unclecode/crawl4ai:0.9.5"]):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(bootstrap.main(), 0)
+        prompt.assert_called_once()
+        self.assertIn("CRAWL4AI_API_TOKEN='prompted-token'",
+                      (self.private / "crawler-compose" / ".env").read_text())
 
     def test_never_replaces_existing_compose_or_external_deployment(self):
         external = self.home / "hermes-web" / "docker-compose.yml"

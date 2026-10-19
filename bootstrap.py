@@ -525,8 +525,9 @@ def main() -> int:
             # Scaffold generation is usable before either backend is running.
             # Never reuse the tunnel runtime key for Docker and never print the token.
             existing = read_config()
+            # Avoid inspecting an unrelated Docker container's environment.
             token = (os.environ.get("CRAWL4AI_API_TOKEN")
-                     or existing.get("CRAWL4AI_API_TOKEN") or docker_token())
+                     or existing.get("CRAWL4AI_API_TOKEN"))
             if not token:
                 token = prompt_secret("Crawl4AI API token for private Compose scaffold")
             image = args.crawler_image or inspect_existing_image()

@@ -42,6 +42,10 @@ ${XDG_CONFIG_HOME:-~/.config}/local-search-mcp/crawler-compose/
 ```
 
 The directory is owner-only (0700); both files are owner-only (0600).
+The canonical, secret-free `config/crawler/compose.yaml` lives in Git and is
+copied unchanged into the private directory. Only the adjacent private
+`.env` is generated with installation-specific values. Edit the reviewed
+repository file to change networking, rather than a Python string.
 The YAML contains **no secrets**, while the adjacent private `.env` contains
 the selected image name and Crawl4AI token, in Compose's literal quoted format.
 The OpenAI tunnel runtime key is never copied. Keep the .env file out of
@@ -57,7 +61,9 @@ after saving anything you need from it.
 ## What the scaffold configures
 
 - Exactly one container, `crawl4ai`, on a dedicated, non-internal
-  `crawler-egress` Docker bridge with IPv6 disabled.
+  `crawler-egress` Docker bridge with IPv6 disabled, with the stable
+  `lsm-crawler0` interface name for the nftables guard. Recheck interface
+  ownership and firewall rules before deploying.
 - Only the host-side loopback port `127.0.0.1:11235:11235`.
 - Explicit public IPv4 DNS entries `1.1.1.1` and `9.9.9.9`.
 - The existing Crawl4AI API token and selected image reference.
