@@ -43,9 +43,12 @@ class OptionalCacheSettingsBackupTests(unittest.TestCase):
         payload = backup.verified_payload(self.archive)
         self.assertEqual(set(payload), {"domains.sqlite3", "cache-ttl.json"})
         self.assertEqual(payload["cache-ttl.json"], self.cache.read_bytes())
-        self.assertNotIn(b"NEVER-BACK-UP", self.archive.read_bytes())
+        # Inspect DECOMPRESSED members, not the compressed archive bytes.
         with zipfile.ZipFile(self.archive) as z:
             self.assertNotIn("config.json", z.namelist())
+            for name in z.namelist():
+                self.assertNotIn(b"NEVER-BACK-UP", z.read(name))
+
         staged = self.root / "staged"
         backup.restore(self.archive, staged)
         self.assertEqual((staged / "cache-ttl.json").read_bytes(), self.cache.read_bytes())
@@ -66,6 +69,19 @@ class OptionalCacheSettingsBackupTests(unittest.TestCase):
                 "search_seconds":True,"fetch_seconds":120}}).encode(),
             json.dumps({"schema":"local-search-mcp/cache-ttl/v1","settings":{
                 "search_seconds":45,"fetch_seconds":1801}}).encode(),
+            # Duplicate top-level settings allow a secret-bearing first object
+            # to be hidden from a last-wins parser while retaining raw bytes.
+            (b'{"schema":"local-search-mcp/cache-ttl/v1",'
+             b'"settings":{"api_token":"SECRET-LEAK"},'
+             b'"settings":{"search_seconds":45,"fetch_seconds":120}}'),
+            # Duplicate nested field could mask an earlier sensitive value.
+            (b'{"schema":"local-search-mcp/cache-ttl/v1",'
+             b'"settings":{"search_seconds":"PRIVATE-QUERY",'
+             b'"search_seconds":45,"fetch_seconds":120}}'),
+            # Duplicates must also reject escaped spelling of the same key.
+            (b'{"schema":"local-search-mcp/cache-ttl/v1",'
+             b'"settings":{"search_seconds":45,"fetch_seconds":120,'
+             b'"fetch_\\u0073econds":120}}'),
         ]
         for document in bad:
             with self.subTest(document=document[:50]):
@@ -83,6 +99,30 @@ class OptionalCacheSettingsBackupTests(unittest.TestCase):
             backup.backup(self.archive, state_dir=self.state,
                           config_dir=self.config)
         self.assertEqual(other.read_text(), "safe")
+
+    def test_forged_hash_cannot_hide_secret_in_duplicate_settings(self):
+        backup.backup(self.archive, state_dir=self.state, config_dir=self.config)
+        with zipfile.ZipFile(self.archive) as z:
+            members = {name: z.read(name) for name in z.namelist()}
+        raw = (b'{"schema":"local-search-mcp/cache-ttl/v1",'
+               b'"settings":{"private_url":"https://hidden.invalid/?token=secret"},'
+               b'"settings":{"search_seconds":45,"fetch_seconds":120}}')
+        manifest = json.loads(members["manifest.json"])
+        manifest["files"]["cache-ttl.json"] = {
+            "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+        members["cache-ttl.json"] = raw
+        members["manifest.json"] = json.dumps(manifest).encode()
+        forged = self.root / "duplicate-member.zip"
+        with zipfile.ZipFile(forged, "w") as z:
+            for name, content in members.items():
+                z.writestr(name, content)
+        forged.chmod(0o600)
+        with self.assertRaises(ValueError):
+            backup.verified_payload(forged)
+        destination = self.root / "invalid-staging"
+        with self.assertRaises(ValueError):
+            backup.restore(forged, destination)
+        self.assertFalse(destination.exists())
 
     def test_tampered_archive_with_matching_hash_still_rejected(self):
         backup.backup(self.archive, state_dir=self.state, config_dir=self.config)
