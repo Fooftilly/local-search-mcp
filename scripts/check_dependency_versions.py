@@ -6,6 +6,7 @@ Only the fixed allowlist from requirements.txt is queried; no URL is user-contro
 from __future__ import annotations
 
 import argparse
+from http.client import HTTPException
 from importlib import metadata
 import json
 import re
@@ -43,7 +44,7 @@ def _pypi_version(name: str) -> str:
             if response.headers.get_content_type() != "application/json":
                 raise ValueError("Unexpected content type")
             content = response.read(MAX_RESPONSE_BYTES + 1)
-    except (OSError, HTTPError, URLError) as exc:
+    except (OSError, HTTPError, URLError, HTTPException) as exc:
         raise ValueError("PyPI release lookup unavailable") from exc
     if len(content) > MAX_RESPONSE_BYTES:
         raise ValueError("PyPI response too large")
