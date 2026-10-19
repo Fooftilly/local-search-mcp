@@ -64,6 +64,37 @@ class CacheSettingsTests(unittest.TestCase):
             with self.assertLogs(level="WARNING"):
                 self.assertEqual(cache_settings.effective_ttl("fetch_seconds"), 120)
 
+    def test_accepts_advertised_four_digit_fetch_ttl(self):
+        state = cache_settings.dashboard_settings()["state"]
+        cache_settings.update_settings(self.fields(fetch="1800"), state)
+        self.assertEqual(cache_settings.effective_ttl("fetch_seconds"), 1800)
+        self.assertEqual(cache_settings.dashboard_settings()["values"]["fetch_seconds"], 1800)
+        with self.assertRaisesRegex(ValueError, "changed"):
+            cache_settings.update_settings(self.fields(fetch="999"), state)
+
+    def test_duplicate_json_members_cannot_mask_unsafe_values(self):
+        folder = self.root / "local-search-mcp"
+        folder.mkdir(mode=0o700)
+        file = folder / "cache-ttl.json"
+        documents = [
+            # First settings object must not be discarded by a later duplicate.
+            ('{"schema":"local-search-mcp/cache-ttl/v1",'
+             '"settings":{"token":"PRIVATE"},'
+             '"settings":{"search_seconds":45,"fetch_seconds":120}}'),
+            ('{"schema":"local-search-mcp/cache-ttl/v1",'
+             '"settings":{"search_seconds":10,"search_seconds":45,'
+             '"fetch_seconds":120}}'),
+        ]
+        for document in documents:
+            with self.subTest(document=document):
+                file.write_text(document)
+                file.chmod(0o600)
+                with self.assertRaises(ValueError):
+                    cache_settings.dashboard_settings()
+                with self.assertRaises(ValueError):
+                    cache_settings.update_settings(self.fields(), "0" * 64)
+                self.assertEqual(file.read_text(), document)
+
     def test_corruption_and_symlinks_are_not_overwritten(self):
         folder = self.root / "local-search-mcp"
         folder.mkdir(mode=0o700)
@@ -108,6 +139,15 @@ class CacheSettingsHTTPTests(CacheSettingsTests):
             return response.status, response.read().decode("utf-8")
         finally:
             connection.close()
+
+    def test_http_form_accepts_1800_seconds(self):
+        status, page = self.request("GET", "/cache-settings")
+        self.assertEqual(status, 200)
+        state = re.search(r'name="state" value="([0-9a-f]{64})"', page).group(1)
+        form = {**self.fields(fetch="1800"), "csrf": admin_ui.CSRF,
+                "state": state, "confirm": "APPLY"}
+        self.assertEqual(self.request("POST", "/cache-settings", form)[0], 200)
+        self.assertEqual(cache_settings.effective_ttl("fetch_seconds"), 1800)
 
     def test_browser_security_and_stale_form(self):
         status, page = self.request("GET", "/cache-settings")
