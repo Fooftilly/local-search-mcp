@@ -150,6 +150,15 @@ class Crawl4AIVersionTests(unittest.TestCase):
         self.assertFalse(report["remote_requested"])
         self.assertNotIn("Traceback", result.stderr)
 
+    def test_cli_unhealthy_or_unsupported_local_is_nonzero(self):
+        for data in ({"status": "ok", "version": "0.9.4"},
+                     {"status": "degraded", "version": "0.9.6"}):
+            with self.subTest(data=data), patch.object(versions, "get_json", return_value=data), \
+                 redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(versions.main([]), 1)
+            report = json.loads(output.getvalue())
+            self.assertFalse(report["local"]["supported_and_healthy"])
+
     def test_cli_local_unavailable_is_nonzero(self):
         with patch.object(versions, "get_json", side_effect=OSError("offline")), \
              patch.object(versions, "published_release",

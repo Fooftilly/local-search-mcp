@@ -119,7 +119,8 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(report, sort_keys=True, indent=2))
     local = report["local"]
     remote = report.get("published_release", {})
-    return 1 if ("error" in local or (args.check_remote and "error" in remote)) else 0
+    return 1 if (not local.get("supported_and_healthy") or
+                 (args.check_remote and "error" in remote)) else 0
 
 
 if __name__ == "__main__":
