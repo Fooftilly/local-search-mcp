@@ -1,0 +1,16 @@
+# Managed by local-search-mcp; contains no credentials.
+[Unit]
+Description=Local SearXNG/Crawl4AI MCP bridge
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=30s
+UMask=0077
+NoNewPrivileges=true
+ExecStart=$EXE $LAUNCH --service bridge
+
+[Install]
+WantedBy=default.target

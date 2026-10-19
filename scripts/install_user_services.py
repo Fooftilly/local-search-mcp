@@ -7,8 +7,10 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from string import Template
 
 ROOT = Path(__file__).resolve().parents[1]
+TEMPLATE_DIR = ROOT / "config" / "systemd"
 MARKER = "# Managed by local-search-mcp; contains no credentials.\n"
 NAMES = (
     "local-search-mcp-bridge.service",
@@ -26,33 +28,26 @@ def quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
 
 
+def _render_unit(name: str, substitutions: dict[str, str]) -> str:
+    """Install a reviewed repository template, filling only local paths."""
+    path = TEMPLATE_DIR / name
+    if path.is_symlink():
+        raise ValueError("Refusing linked systemd unit template: " + name)
+    template = path.read_text(encoding="utf-8")
+    if not template.startswith(MARKER):
+        raise ValueError("Missing managed-unit marker in source: " + name)
+    return Template(template).substitute(substitutions)
+
+
 def unit_files(python: str, root: Path, *, auto_restart: bool = False,
                reflog_path: Path | None = None, state_path: Path | None = None) -> dict[str, str]:
-    """Generate secrets-free unit content with absolute paths."""
-    exe = quote(str(Path(python).resolve()))
-    launch = quote(str(root / "bootstrap.py"))
-    health = quote(str(root / "health_cli.py"))
-    common = (
-        "\n[Service]\nType=simple\n"
-        "Restart=on-failure\nRestartSec=30s\n"
-        "UMask=0077\nNoNewPrivileges=true\n"
-    )
-    units = {
-        NAMES[0]: MARKER + "[Unit]\nDescription=Local SearXNG/Crawl4AI MCP bridge\nStartLimitIntervalSec=300\nStartLimitBurst=5\n" +
-                  common + f"ExecStart={exe} {launch} --service bridge\n" +
-                  "\n[Install]\nWantedBy=default.target\n",
-        NAMES[1]: MARKER + "[Unit]\nDescription=Local research MCP OpenAI tunnel\nStartLimitIntervalSec=300\nStartLimitBurst=5\n"
-                  "Wants=local-search-mcp-bridge.service\nAfter=local-search-mcp-bridge.service\n" +
-                  common + f"ExecStart={exe} {launch} --service tunnel\n" +
-                  "\n[Install]\nWantedBy=default.target\n",
-        NAMES[2]: MARKER + "[Unit]\nDescription=Local research MCP health snapshot\n"
-                  "\n[Service]\nType=oneshot\nUMask=0077\nNoNewPrivileges=true\n" +
-                  f"ExecStart={exe} {health} --json\n",
-        NAMES[3]: MARKER + "[Unit]\nDescription=Periodic local research MCP health check\n"
-                  "\n[Timer]\nOnBootSec=2min\nOnUnitActiveSec=2min\n"
-                  "Unit=local-search-mcp-health.service\n"
-                  "\n[Install]\nWantedBy=timers.target\n",
+    """Render version-controlled systemd units, substituting local paths only."""
+    fields = {
+        "EXE": quote(str(Path(python).resolve())),
+        "LAUNCH": quote(str(root / "bootstrap.py")),
+        "HEALTH": quote(str(root / "health_cli.py")),
     }
+    names = NAMES[:4]
     if auto_restart:
         if reflog_path is None:
             if __package__:
@@ -71,22 +66,13 @@ def unit_files(python: str, root: Path, *, auto_restart: bool = False,
             state_path = state_file().absolute()
         if not state_path.is_absolute():
             raise ValueError("Auto-restart state path must be absolute")
-        checker = quote(str(root / "scripts" / "restart_on_update.py"))
-        state_argument = quote(str(state_path))
-        units.update({
-            NAMES[4]: MARKER + "[Unit]\nDescription=Restart local MCP services after local Git updates\n" +
-                      "\n[Service]\nType=oneshot\nUMask=0077\nNoNewPrivileges=true\nTimeoutStartSec=10min\n" +
-                      f"ExecStart={exe} {checker} --state-file {state_argument}\n",
-            NAMES[5]: MARKER + "[Unit]\nDescription=Watch local MCP Git HEAD reflog\n" +
-                      "\n[Path]\n" + f"PathChanged={watch_path.replace('%', '%%')}\n" +
-                      "Unit=local-search-mcp-update.service\n" +
-                      "\n[Install]\nWantedBy=default.target\n",
-            NAMES[6]: MARKER + "[Unit]\nDescription=Recheck local MCP Git revision without network access\n" +
-                      "\n[Timer]\nOnStartupSec=1min\nOnUnitActiveSec=1min\nAccuracySec=10s\n" +
-                      "Unit=local-search-mcp-update.service\n" +
-                      "\n[Install]\nWantedBy=timers.target\n",
+        fields.update({
+            "CHECKER": quote(str(root / "scripts" / "restart_on_update.py")),
+            "STATE_ARGUMENT": quote(str(state_path)),
+            "WATCH_PATH": watch_path.replace("%", "%%"),
         })
-    return units
+        names = NAMES
+    return {name: _render_unit(name, fields) for name in names}
 
 
 def destination() -> Path:

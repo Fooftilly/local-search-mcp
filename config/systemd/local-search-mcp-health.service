@@ -1,0 +1,9 @@
+# Managed by local-search-mcp; contains no credentials.
+[Unit]
+Description=Local research MCP health snapshot
+
+[Service]
+Type=oneshot
+UMask=0077
+NoNewPrivileges=true
+ExecStart=$EXE $HEALTH --json

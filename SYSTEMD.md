@@ -6,6 +6,21 @@ Initial implementation for issue #3. This does not manage Docker, SearXNG, Crawl
 
 First, run `./start.sh --setup-only` interactively. It prepares the Python virtual environment, private `~/.config/local-search-mcp/config.json`, tunnel binary and profile. The `--service` mode never downloads, prompts, upgrades, or changes credentials. Do not put keys in unit files or command-line arguments.
 
+## Version-controlled systemd unit templates
+
+All seven canonical unit definitions are now in `config/systemd/` as
+reviewable `.service`, `.timer` and `.path` files. The installer reads
+those checked-in templates and substitutes only the local Python executable,
+checkout paths, private state-file path and Git reflog location. Runtime tokens,
+credentials and history are never written into the unit files.
+
+You can review or change the service definitions directly in Git before
+installation. An install still writes managed copies into your XDG systemd
+user directory; it refuses symlink or unmanaged destination files and does
+not enable or start services. After an approved template change, rerun the
+installer explicitly and `systemctl --user daemon-reload` as described below.
+Missing or symlinked source templates fail rather than being silently generated.
+
 ## Preview and install (as your normal Linux user)
 
 ```sh

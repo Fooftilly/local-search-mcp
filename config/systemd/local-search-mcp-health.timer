@@ -1,0 +1,11 @@
+# Managed by local-search-mcp; contains no credentials.
+[Unit]
+Description=Periodic local research MCP health check
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Unit=local-search-mcp-health.service
+
+[Install]
+WantedBy=timers.target

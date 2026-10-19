@@ -1,0 +1,18 @@
+# Managed by local-search-mcp; contains no credentials.
+[Unit]
+Description=Local research MCP OpenAI tunnel
+StartLimitIntervalSec=300
+StartLimitBurst=5
+Wants=local-search-mcp-bridge.service
+After=local-search-mcp-bridge.service
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=30s
+UMask=0077
+NoNewPrivileges=true
+ExecStart=$EXE $LAUNCH --service tunnel
+
+[Install]
+WantedBy=default.target
