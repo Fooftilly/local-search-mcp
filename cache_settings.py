@@ -47,11 +47,21 @@ def _read_bytes(directory_fd: int | None) -> bytes:
         os.close(fd)
 
 
+def _unique_json_members(pairs: list[tuple[str, object]]) -> dict:
+    """Reject duplicate keys rather than silently replacing earlier values."""
+    document = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError("Duplicate cache TTL settings member")
+        document[key] = value
+    return document
+
+
 def _parse(raw: bytes) -> dict[str, int]:
     if not raw:
         return dict(DEFAULTS)
     try:
-        data = json.loads(raw.decode("utf-8"))
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_members)
     except (ValueError, UnicodeError) as exc:
         raise ValueError("Invalid cache TTL settings JSON") from exc
     if (not isinstance(data, dict) or set(data) != {"schema", "settings"}
