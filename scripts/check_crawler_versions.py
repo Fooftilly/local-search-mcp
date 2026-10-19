@@ -5,10 +5,16 @@ from __future__ import annotations
 import argparse
 from http.client import HTTPException
 import json
+from pathlib import Path
 import re
 import sys
 import urllib.error
 import urllib.request
+
+# Direct `python3 scripts/check_crawler_versions.py` runs with scripts/ on
+# sys.path, not necessarily the repository root.
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from crawler_security import MINIMUM_VERSION, verify_health
 from health_cli import get_json

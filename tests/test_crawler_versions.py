@@ -4,6 +4,9 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 import io
 import json
+from pathlib import Path
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 import urllib.error
@@ -134,6 +137,18 @@ class Crawl4AIVersionTests(unittest.TestCase):
             self.assertEqual(versions.main(["--check-remote"]), 1)
         self.assertNotIn("private-token", output.getvalue())
         self.assertIn("unavailable or invalid", output.getvalue())
+
+    def test_direct_script_entrypoint_imports_from_repository(self):
+        script = Path(versions.__file__).resolve()
+        result = subprocess.run(
+            [sys.executable, str(script)], capture_output=True,
+            text=True, check=False, timeout=10,
+        )
+        self.assertIn(result.returncode, (0, 1))
+        report = json.loads(result.stdout)
+        self.assertEqual(report["scope"], "crawl4ai-loopback-and-optional-public-release")
+        self.assertFalse(report["remote_requested"])
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_cli_local_unavailable_is_nonzero(self):
         with patch.object(versions, "get_json", side_effect=OSError("offline")), \
