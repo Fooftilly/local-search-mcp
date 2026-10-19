@@ -86,6 +86,22 @@ Older archives without these optional files remain accepted.
 These additions do not implement live rollback, automatically change
 installed services, or download software updates; issue #15 remains open.
 
+
+### Optional cache lifetime preferences (issue #13 integration)
+
+The archive verifier also understands the strictly allowlisted
+`cache-ttl.json` schema (two bounded integers). If present in the private
+settings directory, backup includes it without exporting cache **contents**
+or any URL/query/key. Staged restore preserves the same private-file modes.
+Invalid, unsupported or duplicate-key cache settings abort backup and archive verification.
+The absence of this optional file remains compatible with existing archives.
+
+This is independent of the settings UI under PR #60: on installations that
+have not yet incorporated that feature, a staged cache settings file remains
+inert. Neither backup nor smoke installs the file into a live configuration.
+After adopting the UI, confirm the staged settings with its real reader
+before manually enabling services. No automatic upgrade or rollback occurs.
+
 ## Offline rollback preflight (does not perform a rollback)
 
 Before attempting to return to an older *local ancestor commit*, take and

@@ -35,6 +35,13 @@ SETTINGS_SCHEMAS = {
             "searxng_seconds": (5, 120), "crawl_seconds": (15, 300),
         },
     },
+    # Optional cache lifetime preferences, introduced separately by issue #13.
+    # The backup CLI validates this schema without importing the UI module.
+    "cache-ttl.json": {
+        "local-search-mcp/cache-ttl/v1": {
+            "search_seconds": (5, 900), "fetch_seconds": (5, 1800),
+        },
+    },
 }
 SETTINGS_NAMES = tuple(SETTINGS_SCHEMAS)
 MAX_SETTINGS_FILE = 1024
@@ -61,12 +68,28 @@ def settings_directory() -> Path:
     return base / "local-search-mcp"
 
 
+def _reject_duplicate_json_members(pairs: list[tuple[str, object]]) -> dict:
+    """Reject ambiguous JSON keys before preserving any original raw bytes.
+
+    Python's default last-wins parser would otherwise allow a duplicate
+    'settings' object to hide credential-bearing content during validation
+    while archiving the entire unredacted document.
+    """
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate nonsecret settings JSON member")
+        result[key] = value
+    return result
+
+
 def _verify_nonsecret_setting(name: str, raw: bytes) -> None:
     """Reject every field not explicitly sanctioned as a bounded integer."""
     if not raw or len(raw) > MAX_SETTINGS_FILE:
         raise ValueError(f"Invalid nonsecret settings size: {name}")
     try:
-        doc = json.loads(raw.decode("utf-8"))
+        doc = json.loads(raw.decode("utf-8"),
+                         object_pairs_hook=_reject_duplicate_json_members)
     except (ValueError, UnicodeError) as exc:
         raise ValueError(f"Malformed nonsecret settings: {name}") from exc
     allowed = SETTINGS_SCHEMAS[name]
