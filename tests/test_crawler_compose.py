@@ -85,7 +85,7 @@ class CrawlerComposeTests(unittest.TestCase):
                       "foo/../../other", "foo:tag${CMD}"):
             with self.subTest(image=image), self.assertRaises(compose.ComposeSetupError):
                 compose.generate(self.private, image=image, token="secret")
-        for token in ("", "line\nbreak", "return\r", "null\x00", "back\\slash"):
+        for token in ("", "line\nbreak", "return\r", "null\x00", "back\\slash", "it's-ambiguous"):
             with self.subTest(token=token), self.assertRaises(compose.ComposeSetupError):
                 compose.generate(self.private, image="repo/crawler:0.9.5", token=token)
         self.assertFalse((self.private / "crawler-compose").exists())

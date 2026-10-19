@@ -47,11 +47,11 @@ def _env_literal(value: str) -> str:
     """Compose single-quoted .env values prevent $ interpolation and comments."""
     if not value or any(ord(c) < 32 or ord(c) == 127 for c in value):
         raise ComposeSetupError("API token contains unsupported control characters")
-    # Compose supports \' for embedded single quotes. Avoid ambiguous backslash
-    # sequences rather than generating a token that might change on parsing.
-    if "\\" in value:
-        raise ComposeSetupError("API token contains unsupported backslashes")
-    return "'" + value.replace("'", "\\'") + "'"
+    # Credentials must round-trip as literal dotenv values. Reject quotes
+    # and backslashes rather than relying on Compose parser escapes.
+    if "\\" in value or "'" in value:
+        raise ComposeSetupError("API token contains unsupported quotes or backslashes")
+    return "'" + value + "'"
 
 
 def _write_exclusive(path: Path, payload: bytes) -> None:
