@@ -18,6 +18,7 @@ import policy_transfer
 import service_status
 import safe_settings
 import upstream_settings
+import cache_settings
 import history_index
 from dashboard_live_script import LIVE_SCRIPT
 
@@ -350,7 +351,7 @@ def render(query='', message='', kind='success'):
     audit_html = decision_audit_html(query)
     once_html = once_grants_html(query)
     once_log = once_audit_html(query)
-    return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="/status">Service status</a><a href="/settings">History settings</a><a href="/upstream-settings">Upstream timeouts</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
+    return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="/status">Service status</a><a href="/settings">History settings</a><a href="/upstream-settings">Upstream timeouts</a><a href="/cache-settings">Cache TTL</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
 <main><h1>Domain approvals</h1><p>Approve or deny domains requested by agents. Changes apply to the next fetch without restarting MCP. The dashboard is accessible only from this computer.</p>{alert}
 <section class="stats"><div class="stat"><span>Awaiting approval</span><b id="live-count-pending">{c['pending']}</b></div><div class="stat"><span>Allowed</span><b id="live-count-allowed">{c['allowed']}</b></div><div class="stat"><span>Denied</span><b id="live-count-denied">{c['denied']}</b></div><div class="stat"><span>Dashboard</span><b style="font-size:14px">127.0.0.1:{PORT}</b></div></section>
 <div class="panel"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="{esc(CSRF)}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><label>Scope <select name="scope"><option value="subdomains">Host + subdomains</option><option value="exact">Exact host only</option></select></label><label>Duration <select name="expires_minutes"><option value="0">Permanent</option><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label><label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Select exact host to exclude subdomains, and optionally set a 1-hour, 24-hour or 7-day expiry. Older rules remain permanent with subdomains. Never approve private-network addresses.</p></div>
@@ -492,6 +493,50 @@ def upstream_settings_page(message="", kind="success", submitted=None):
             '<a href="/">Return to domain approvals</a></p></main></body></html>')
 
 
+def cache_settings_page(message="", kind="success", submitted=None):
+    """Strictly nonsecret, operator-only TTL configuration panel."""
+    info = cache_settings.dashboard_settings()
+    vals = info["values"]
+    shown = ({**vals, "state": info["state"]}
+             if submitted is None else submitted)
+    locked = not info["editable"]
+    alert = ('<p class="alert ' + ('error' if kind == 'error' else 'success') +
+             '">' + esc(message) + '</p>') if message else ''
+    sources = ''.join('<li>' + esc(key) + ': ' +
+                      ('environment override' if info["environment_override"][key]
+                       else 'saved or default') + '</li>' for key in vals)
+    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            f'<meta name="referrer" content="no-referrer">'
+            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<title>Local Search MCP — Cache lifetimes</title><style>{CSS}</style>'
+            '</head><body><main><h1>Cache lifetimes</h1>' +
+            alert + '<p>Changes apply to new cache entries without restarting '
+            'the bridge. Existing entries keep their original expiration. '
+            'Cache size limits and domain authorization are unchanged; '
+            'cached responses remain in memory only.</p><ul>' + sources + '</ul>' +
+            ('<p class="alert error">An environment override is present. '
+             'Remove it from the service environment and restart before '
+             'editing these saved settings.</p>' if locked else '') +
+            '<form method="post" action="/cache-settings">'
+            '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
+            '<input type="hidden" name="state" value="' + esc(shown["state"]) + '">'
+            '<label>Search cache lifetime (5–900 seconds) '
+            '<input type="number" name="search_seconds" min="5" max="900" '
+            'required value="' + esc(shown["search_seconds"]) + '"></label>'
+            '<label>Fetch cache lifetime (5–1800 seconds) '
+            '<input type="number" name="fetch_seconds" min="5" max="1800" '
+            'required value="' + esc(shown["fetch_seconds"]) + '"></label>'
+            '<label>Type APPLY <input name="confirm" required pattern="APPLY" '
+            'maxlength="5"></label><button type="submit"' +
+            (' disabled' if locked else '') + '>Apply cache TTLs</button>'
+            '</form><p class="subtle">This separate owner-only file stores '
+            'only two validated integers. It never reads or changes credentials, '
+            'domain permissions, history data, endpoint URLs or service ports. '
+            'Existing cached entries keep their original expiry.</p>'
+            '<p><a href="/settings">History settings</a> · '
+            '<a href="/">Return to domain approvals</a></p></main></body></html>')
+
+
 def status_page():
     """Read-only local TCP diagnostics; no mutation or privileged probes."""
     rows = ''.join(
@@ -628,6 +673,13 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, OSError):
                 return self._respond(400,
                     'Upstream settings unavailable; inspect permissions and file contents')
+        if path.path=='/cache-settings':
+            if not self._read_origin_valid():return self._respond(403,'Forbidden')
+            try:
+                return self._respond(200, cache_settings_page())
+            except (ValueError, OSError):
+                return self._respond(400,
+                    'Cache settings unavailable; inspect permissions and file contents')
         if path.path=='/status':
             if not self._read_origin_valid():return self._respond(403,'Forbidden')
             return self._respond(200,status_page())
@@ -694,7 +746,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._respond(403,'Invalid origin')
         if self.path not in ('/domain', '/pending/clear', '/bulk', '/once',
                              '/rules/preview', '/rules/apply', '/settings',
-                             '/upstream-settings'):
+                             '/upstream-settings', '/cache-settings'):
             return self._respond(404,'Not found')
         try:
             length=int(self.headers.get('Content-Length','-1'))
@@ -720,6 +772,30 @@ class Handler(BaseHTTPRequestHandler):
             removed = policy.clear_pending_requests()
             return self._respond(200,render(message=f"Cleared {removed} pending requests."))
         try:
+            if self.path == '/cache-settings':
+                submitted = {
+                    'search_seconds': val('search_seconds'),
+                    'fetch_seconds': val('fetch_seconds'),
+                    'state': val('state'),
+                }
+                try:
+                    if val('confirm') != 'APPLY':
+                        raise ValueError('Type APPLY to confirm the cache lifetime update')
+                    cache_settings.update_settings({
+                        'search_seconds': submitted['search_seconds'],
+                        'fetch_seconds': submitted['fetch_seconds'],
+                    }, submitted['state'])
+                except (ValueError, OSError) as exc:
+                    message = ('Cannot safely save cache settings'
+                               if isinstance(exc, OSError) else str(exc))
+                    try:
+                        return self._respond(400, cache_settings_page(
+                            message=message, kind='error', submitted=submitted))
+                    except (ValueError, OSError):
+                        return self._respond(400,
+                            'Cache settings unavailable; inspect permissions and file contents')
+                return self._respond(200, cache_settings_page(
+                    message='Cache lifetimes saved; applied to subsequent cache entries.'))
             if self.path == '/upstream-settings':
                 submitted = {
                     'searxng_seconds': val('searxng_seconds'),
