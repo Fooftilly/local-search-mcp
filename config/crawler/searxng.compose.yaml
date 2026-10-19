@@ -1,4 +1,4 @@
-# Canonical SearXNG overlay; crawler-egress remains isolated.
+# Canonical SearXNG overlay on a separate private Docker bridge.
 services:
   searxng:
     image: docker.io/searxng/searxng:latest

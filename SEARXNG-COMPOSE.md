@@ -20,7 +20,7 @@ Use both files:
 ```sh
 DIR="$HOME/.config/local-search-mcp/crawler-compose"
 docker compose -f "$DIR/compose.yaml" -f "$DIR/searxng.compose.yaml" config --quiet
-docker compose -f "$DIR/compose.yaml" -f "$DIR/searxng.compose.yaml" up -d --pull never
+docker compose -f "$DIR/compose.yaml" -f "$DIR/searxng.compose.yaml" up -d --no-deps --pull never searxng
 ```
 
 The SearXNG bridge is separate from crawler-egress. Neither the installer
@@ -28,3 +28,7 @@ nor this overlay alters firewall rules, services or already-running Docker
 containers. The public latest image tag is mutable; pin a reviewed image
 digest before production use. Do not use --remove-orphans with only one
 Compose file.
+
+Start only the SearXNG service during migration: starting the complete
+Compose project could conflict with an existing Crawl4AI container.
+Start the entire project only after the old crawler has been decommissioned.
