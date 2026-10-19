@@ -28,3 +28,6 @@ compatibility, transitive dependencies, hashes and release provenance are
 restarts or edits are performed. Keep updates and rollback manual, with
 a verified state backup and a test run before updating active services.
 This check is separate from the Git bridge revision checker in PR #58.
+
+For an independent local Crawl4AI version report and opt-in public GitHub release
+check, see [CRAWLER-VERSIONS.md](CRAWLER-VERSIONS.md). This does not install images.
