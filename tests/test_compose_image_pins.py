@@ -17,6 +17,7 @@ class ImagePinTests(unittest.TestCase):
 
     def test_digest_detection_and_no_side_effect(self):
         dig = "docker.io/searxng/searxng@sha256:" + "a" * 64
+        (self.path / "searxng.compose.yaml").write_text("services: {}")
         refs = "unclecode/crawl4ai:latest\n" + dig + "\n"
         with patch.object(pins.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, refs, "")) as runner:
             status = pins.report(self.path)
@@ -36,6 +37,14 @@ class ImagePinTests(unittest.TestCase):
         with patch.object(pins.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, a + "\n" + b + "\n", "")) as runner:
             self.assertTrue(pins.report(self.path)["all_digest_pinned"])
         self.assertEqual(runner.call_args.args[0].count("-f"), 2)
+
+    def test_incomplete_service_image_listing_never_passes(self):
+        (self.path / "searxng.compose.yaml").write_text("services: {}")
+        dig = "unclecode/crawl4ai@sha256:" + "1" * 64
+        with patch.object(pins.subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0, dig + "\\n", "")):
+            with self.assertRaisesRegex(ValueError, "Incomplete"):
+                pins.report(self.path)
 
     def test_errors_are_sanitized(self):
         with patch.object(pins.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "TOKEN=private")):

@@ -12,7 +12,9 @@ The command invokes **only** `docker compose ... config --images`, with the
 private crawler Compose file and the optional SearXNG override. It never
 executes `up`, `pull`, `inspect`, `down`, or writes configuration.
 Results report the number of images and whether each is digest pinned,
-without printing image strings or secret variables. Exit code 1 means an
+without printing image strings or secret variables. The inspection fails
+closed if Compose does not list the expected one crawler image and, when the
+SearXNG overlay is present, its second image. Exit code 1 means an
 unpinned image; 2 means inspection unavailable or invalid.
 
 The checked-in SearXNG overlay supports an optional `SEARXNG_IMAGE`

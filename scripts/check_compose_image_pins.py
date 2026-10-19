@@ -42,8 +42,11 @@ def report(folder: Path) -> dict:
     if result.returncode or len(result.stdout) > _MAX_OUTPUT:
         raise ValueError("Docker Compose image inspection failed")
     refs = result.stdout.splitlines()
-    if not refs or len(refs) > 16 or any(len(value) > 300 for value in refs):
-        raise ValueError("Invalid Docker Compose image listing")
+    # This project defines one crawler, plus optionally one SearXNG service.
+    # A truncated image listing must not be reported as fully pinned.
+    expected = 2 if searxng.is_file() else 1
+    if len(refs) != expected or any(not value or len(value) > 300 for value in refs):
+        raise ValueError("Incomplete or invalid Docker Compose image listing")
     rows = [{"index": i + 1, "digest_pinned": bool(_PIN.fullmatch(ref))}
             for i, ref in enumerate(refs)]
     return {
