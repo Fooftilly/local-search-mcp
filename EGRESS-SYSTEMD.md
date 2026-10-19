@@ -81,6 +81,16 @@ systemctl --user daemon-reload
 sudo systemctl disable --now local-search-mcp-crawler-egress.service
 ```
 
+Stopping the oneshot **does not remove** its nftables rules. If you intend a
+full firewall rollback, and only after the tunnel is stopped and disabled
+(and no other untrusted crawler access is enabled), explicitly remove only
+this guard's table using the reviewed, root-owned copy:
+
+```sh
+sudo /usr/bin/python3 /usr/local/libexec/local-search-mcp/crawler_egress_guard.py --remove
+```
+
+If you still need the network restrictions, leave the table installed.
 With the drop-in removed, leave tunnel auto-start disabled until another
 guard is approved. The sudoers permission and root-owned guard installation
 are separately removed by the administrator after reviewing dependencies.
