@@ -38,6 +38,19 @@ For setup without starting processes:
 ./start.sh --setup-only
 ```
 
+For a **separate, opt-in** Crawl4AI Docker Compose scaffold with explicit
+public DNS, loopback-only port binding and a dedicated bridge network:
+
+```bash
+./start.sh --setup-only --generate-crawler-compose
+```
+
+This creates private files only; it does not start Docker, replace the current
+Crawl4AI container or modify an existing Hermes Web Compose installation.
+Review required volumes, networking dependencies and firewall activation
+before migrating. See [CRAWLER-COMPOSE.md](CRAWLER-COMPOSE.md).
+
+
 If you do not have OpenAI tunnel access, the bridge can run directly:
 
 ```bash
