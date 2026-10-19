@@ -1,10 +1,12 @@
 """Private cache lifetime settings: validation, stale state and browser boundary."""
+from concurrent.futures import ThreadPoolExecutor
 import json
 from http.client import HTTPConnection
 import os
 from pathlib import Path
 import re
 import tempfile
+from threading import Event
 import threading
 import unittest
 from unittest.mock import patch
@@ -13,6 +15,7 @@ from urllib.parse import urlencode
 import admin_ui
 import bridge
 import cache_settings
+import request_cache
 
 
 class CacheSettingsTests(unittest.TestCase):
@@ -41,7 +44,7 @@ class CacheSettingsTests(unittest.TestCase):
         self.assertFalse((file.parent / "config.json").exists())
         with patch.object(bridge.request_cache, "run", return_value=[]) as cached:
             bridge.web_search("cache policy test")
-            self.assertEqual(cached.call_args.kwargs["ttl"], 30)
+            self.assertEqual(cached.call_args.kwargs["ttl"](), 30)
 
     def test_rejects_unsafe_invalid_and_stale_values(self):
         state = cache_settings.dashboard_settings()["state"]
@@ -63,6 +66,47 @@ class CacheSettingsTests(unittest.TestCase):
         with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_CACHE_FETCH_TTL": "10000"}):
             with self.assertLogs(level="WARNING"):
                 self.assertEqual(cache_settings.effective_ttl("fetch_seconds"), 120)
+
+    def test_inflight_result_uses_ttl_active_at_insertion(self):
+        """A saved TTL change during a slow loader affects its new cache entry."""
+        request_cache.reset_for_test()
+        self.addCleanup(request_cache.reset_for_test)
+        started, release = Event(), Event()
+        key = ("search", "inflight-timing-test")
+        clock = [1000.0]
+
+        def slow_loader():
+            started.set()
+            self.assertTrue(release.wait(5))
+            return [{"title": "result"}]
+
+        with patch.object(request_cache.time, "monotonic",
+                          side_effect=lambda: clock[0]):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                operation = pool.submit(
+                    request_cache.run, "search", key, slow_loader,
+                    ttl=lambda: cache_settings.effective_ttl("search_seconds"))
+                try:
+                    self.assertTrue(started.wait(5))
+                    state = cache_settings.dashboard_settings()["state"]
+                    cache_settings.update_settings(self.fields(search="5"), state)
+                finally:
+                    release.set()
+                self.assertEqual(operation.result(timeout=5), [{"title": "result"}])
+            self.assertEqual(request_cache._CACHE[key][0], 1005.0)
+
+    def test_callback_ttl_applies_to_forced_refresh(self):
+        request_cache.reset_for_test()
+        self.addCleanup(request_cache.reset_for_test)
+        state = cache_settings.dashboard_settings()["state"]
+        cache_settings.update_settings(self.fields(search="6"), state)
+        key = ("search", "forced-refresh")
+        with patch.object(request_cache.time, "monotonic", return_value=1000.0):
+            self.assertEqual(request_cache.run(
+                "search", key, lambda: [{"title": "fresh"}],
+                ttl=lambda: cache_settings.effective_ttl("search_seconds"),
+                fresh=True), [{"title": "fresh"}])
+            self.assertEqual(request_cache._CACHE[key][0], 1006.0)
 
     def test_accepts_advertised_four_digit_fetch_ttl(self):
         state = cache_settings.dashboard_settings()["state"]
