@@ -214,7 +214,7 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     return request_cache.run(
         "search", key, lambda: _run_search(
             params, max_results, deduplicate=deduplicate, ranking=ranking),
-        ttl=cache_settings.effective_ttl('search_seconds'), fresh=fresh, should_store=lambda r: isinstance(r, list),
+        ttl=lambda: cache_settings.effective_ttl('search_seconds'), fresh=fresh, should_store=lambda r: isinstance(r, list),
     )
 
 def _crawl_metadata(page: dict, final_url: str) -> dict:
@@ -443,7 +443,7 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False) -> dict:
         key = request_cache.fetch_key(url, mode)
         response = request_cache.run(
             "fetch", key, lambda: _run_fetch(url, mode),
-            ttl=cache_settings.effective_ttl('fetch_seconds'), fresh=fresh,
+            ttl=lambda: cache_settings.effective_ttl('fetch_seconds'), fresh=fresh,
             should_store=lambda r: (
                 isinstance(r, dict) and r.get("success") is True
                 and r.get("truncated") is False
