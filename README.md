@@ -87,7 +87,7 @@ To protect the approval dashboard from agent-generated hostname floods, automati
 
 The dashboard stores permissions in `~/.local/state/local-search-mcp/domains.sqlite3`. History is stored in `~/.local/state/local-search-mcp/history.jsonl`, rotated at 8 MiB by default with three backups; configure the per-file limit via `LOCAL_SEARCH_MCP_HISTORY_MAX_BYTES`. Rotate/archive or delete old history as needed. URL query strings, page contents and credentials are not logged; **search terms can be sensitive**.
 
-The local history dashboard now supports filtered, private indexed SQLite metadata and 30-day default retention. See [HISTORY-INDEX.md](HISTORY-INDEX.md). The original JSONL files remain unchanged. CLI text escapes terminal and bidirectional control characters; CSV export prefixes spreadsheet formula-like cells with a literal apostrophe (data is otherwise retained), and JSON export escapes Unicode control characters.
+The local history dashboard now supports filtered, private indexed SQLite metadata and 30-day default retention. See [HISTORY-INDEX.md](HISTORY-INDEX.md). The original JSONL files remain unchanged. CLI text escapes terminal and bidirectional control characters; CSV export escapes terminal/format controls and prefixes spreadsheet formula-like cells with a literal apostrophe (these cells do not round-trip byte-for-byte), and JSON export escapes Unicode control characters.
 
 MCP `web_metrics(hours=24)` returns aggregate 1/24/168-hour operation outcomes and process-lifetime cache counters without exposing queries, URLs or document content. Details: [HISTORY-INDEX.md](HISTORY-INDEX.md).
 
