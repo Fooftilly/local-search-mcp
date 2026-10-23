@@ -28,6 +28,30 @@ class DomainPolicyTests(unittest.TestCase):
         self.assertEqual(policy.normalize_domain("WWW.Example.COM."), "www.example.com")
         self.assertEqual(policy.normalize_domain("my-project.github.io"), "my-project.github.io")
 
+    def test_idna2003_browser_host_divergence_is_rejected(self):
+        # Operators who approve fass.de must never authorize faß.de.
+        # Other deviation characters can also cause different hosts.
+        for name in ("faß.de", "straße.de", "ςa.gr"):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "Ambiguous IDN"):
+                    policy.normalize_domain(name)
+        # Unambiguous internationalized names still work as before.
+        self.assertEqual(policy.normalize_domain("café.fr"), "xn--caf-dma.fr")
+        self.assertEqual(policy.normalize_domain("xn--fa-hia.de"), "xn--fa-hia.de")
+
+    def test_ambiguous_idn_never_reaches_dns_or_pending_approvals(self):
+        policy.decide("fass.de", "allow")
+        for url in ("https://faß.de/secret", "https://straße.de/private",
+                    "https://ςa.gr/"):
+            with self.subTest(url=url), patch.object(
+                    policy.socket, "getaddrinfo",
+                    side_effect=AssertionError("DNS must not be queried")):
+                result = policy.evaluate_fetch_url(url)
+            self.assertEqual(result["status"], "blocked")
+            self.assertIn("Ambiguous IDN", result["reason"])
+            self.assertIsNone(policy._public_url_host(url))
+        self.assertEqual(policy.counts()["pending"], 0)
+
     def test_private_addresses_and_special_domains_rejected(self):
         for value in ("localhost", "127.0.0.1", "foo.local", "a.internal", "http://example.com", "a.test"):
             with self.subTest(value=value), self.assertRaises(ValueError):
