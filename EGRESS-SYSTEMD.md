@@ -17,7 +17,9 @@ sudo systemctl daemon-reload
 Create a narrowly restricted sudoers rule allowing your normal Linux user
 to run only this root-owned read/probe operation, without an interactive
 password. Replace **YOUR_USER** with the actual user name. Review the result
-with `sudo visudo -cf` before proceeding:
+with `sudo visudo -cf /etc/sudoers.d/local-search-mcp-crawler` **after**
+installing that root-owned file (or `sudo visudo -cf /path/to/staged-file`
+before installing), since `-f` requires an explicit pathname:
 
 ```sudoers
 YOUR_USER ALL=(root) NOPASSWD: /usr/bin/python3 /usr/local/libexec/local-search-mcp/crawler_egress_guard.py --container crawl4ai --probe
