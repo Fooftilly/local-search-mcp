@@ -135,7 +135,7 @@ class DockerOwnershipTests(unittest.TestCase):
 
     def test_blank_container_id_line_is_rejected(self):
         # A malformed daemon response must never be classified as empty.
-        with patch.object(inventory, "_run", return_value="\\n"):
+        with patch.object(inventory, "_run", return_value="\n"):
             self.assertIsNone(inventory._ids("--filter", "publish=11235"))
 
     def test_malformed_container_ids_fail_closed(self):
