@@ -1,6 +1,6 @@
 # Manual PyPI dependency release checks (issue #15)
 
-The bridge uses two direct Python dependencies (`fastmcp` and `httpx`).
+The bridge uses three direct Python dependencies (`fastmcp`, `httpx` and `idna`).
 To view the versions installed in **the same Python environment used by the bridge**, run:
 
 ```sh
@@ -15,7 +15,7 @@ currently advertised releases:
 .venv/bin/python scripts/check_dependency_versions.py --check-remote
 ```
 
-Only two fixed public `https://pypi.org/pypi/{name}/json` endpoints are
+Only three fixed public `https://pypi.org/pypi/{name}/json` endpoints are
 requested, with five-second timeouts, bounded bodies, redirects disabled and
 ambient HTTP proxies bypassed. No credentials, local settings, queries or
 history are sent. Failures produce an `error` field and nonzero exit status.
