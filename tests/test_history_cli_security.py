@@ -81,6 +81,16 @@ class HistoryCliOutputSafetyTests(unittest.TestCase):
         self.assertIn(r"\u202e", output)
         self.assertEqual(json.loads(output)["query"], "safe\u0085\u202e")
 
+    def test_stats_handles_malformed_non_scalar_history_fields(self):
+        # Legacy/corrupted JSONL may contain list/dict values instead of
+        # status/kind strings; stats must remain usable, not throw TypeError.
+        self.record(kind=["search", "fetch"], status={"outcome": "success"})
+        self.record(kind=None, status=None)
+        output = self.run_cli("--stats")
+        self.assertIn("['search', 'fetch']", output)
+        self.assertIn("{'outcome': 'success'}", output)
+        self.assertIn("?      ?       1", output)
+
     def test_stats_mode_escapes_untrusted_event_fields(self):
         self.record(kind="search\x1b[2J", status="success\u202e")
         output = self.run_cli("--stats")
