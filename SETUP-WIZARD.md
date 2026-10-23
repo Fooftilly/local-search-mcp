@@ -22,6 +22,12 @@ read-only diagnostics but does not prove a live remote tunnel registration,
 account-side ChatGPT connection, or Docker ownership/firewall isolation.
 A missing systemd bus is reported as unknown, not inactive.
 
+Dependency checks in `--check` and interactive option 5 run the existing
+local-only dependency reporter under the **project `.venv/bin/python`**, never
+system Python. When `.venv` is missing, broken, or packages are absent, the
+report is explicit and readiness is not claimed. These checks never query PyPI;
+remote release checks remain separately and explicitly opt-in.
+
 In the interactive menu, ChatGPT is the default integration. The account-side
 MCP connection must still be completed in ChatGPT settings; no client accounts
 are modified. Other clients are not installed by default. The first pass
