@@ -14,6 +14,7 @@ from unittest.mock import patch
 import zipfile
 
 import domain_policy
+import cache_settings
 import history_index
 import safe_settings
 import upstream_settings
@@ -168,6 +169,66 @@ class FreshRecoveryTests(unittest.TestCase):
             self.assertEqual(os.environ["XDG_CONFIG_HOME"], str(live))
             self.assertEqual(os.environ["LOCAL_SEARCH_MCP_SEARXNG_TIMEOUT"], "120")
         self.assertEqual(secret.read_text(), '{"token":"NEVER_RESTORE_THIS"}')
+
+    def test_fresh_recovery_validates_optional_cache_ttl_runtime_reader(self):
+        # Verified archive settings must be read from the isolated recovery
+        # config, not silently shadowed by live environment overrides.
+        config = self.root / "cache-source-config"
+        config.mkdir(mode=0o700)
+        values = {"search_seconds": 80, "fetch_seconds": 240}
+        file = config / "cache-ttl.json"
+        file.write_text(json.dumps({
+            "schema": cache_settings.SCHEMA, "settings": values,
+        }))
+        file.chmod(0o600)
+        secret = config / "config.json"
+        secret.write_text('{"token":"UNRELATED_PRIVATE_CREDENTIAL"}')
+        secret.chmod(0o600)
+        archive = self.root / "cache-backup.zip"
+        backup_state.backup(archive, state_dir=domain_policy.storage_dir(),
+                            config_dir=config)
+        payload = backup_state.verified_payload(archive)
+        self.assertIn("cache-ttl.json", payload)
+        self.assertNotIn("config.json", payload)
+        self.assertNotIn(b"UNRELATED_PRIVATE_CREDENTIAL",
+                         b"".join(payload.values()))
+
+        live_config = self.root / "live-cache-config"
+        live_config.mkdir(mode=0o700)
+        original_reader = cache_settings.dashboard_settings
+
+        def read_restored_cache():
+            current = Path(os.environ["XDG_CONFIG_HOME"])
+            self.assertNotEqual(current, live_config)
+            self.assertIn("mcp-fresh-restore-", str(current))
+            restored = current / "local-search-mcp" / "cache-ttl.json"
+            self.assertEqual(restored.stat().st_mode & 0o777, 0o600)
+            self.assertFalse((restored.parent / "config.json").exists())
+            report = original_reader()
+            self.assertEqual(report["values"], values)
+            self.assertTrue(report["editable"])
+            return report
+
+        with (patch.dict(os.environ, {
+                  "XDG_CONFIG_HOME": str(live_config),
+                  "LOCAL_SEARCH_MCP_CACHE_SEARCH_TTL": "5",
+                  "LOCAL_SEARCH_MCP_CACHE_FETCH_TTL": "5",
+              }),
+              patch.object(cache_settings, "dashboard_settings",
+                           side_effect=read_restored_cache) as reader):
+            self.assertEqual(restore_smoke.smoke(archive),
+                             (self.expected_policy_count, 2))
+            reader.assert_called_once_with()
+            self.assertEqual(os.environ["XDG_CONFIG_HOME"], str(live_config))
+            self.assertEqual(os.environ["LOCAL_SEARCH_MCP_CACHE_SEARCH_TTL"], "5")
+        self.assertEqual(secret.read_text(),
+                         '{"token":"UNRELATED_PRIVATE_CREDENTIAL"}')
+
+    def test_missing_cache_file_never_loads_cache_runtime_reader(self):
+        with patch.object(cache_settings, "dashboard_settings",
+                          side_effect=AssertionError("No cache settings archived")):
+            self.assertEqual(restore_smoke.smoke(self.archive),
+                             (self.expected_policy_count, 2))
 
     def test_without_settings_never_inspects_live_config(self):
         live = self.root / "live-invalid-config"
