@@ -32,6 +32,13 @@ The first run provisions a virtual environment and prompts securely for secrets 
 
 For read-only configuration-source diagnostics with credentials redacted, run `python3 bootstrap.py --show-config`. For the source-precedence rules, hardening requirements and migration notes, see [CONFIGURATION.md](CONFIGURATION.md). This report does not query Docker, print private tokens or modify domain approvals.
 
+For a non-destructive shutdown of verified local-search-mcp-managed user
+services and private Compose backends, run `./stop.sh`. It disables automatic
+restart of those existing containers but leaves credentials, history, volumes,
+and firewall intact. The external Hermes Web Compose deployment is never
+stopped automatically. See [STOP.md](STOP.md) for ownership checks and the
+optional root-owned firewall-service procedure.
+
 For setup without starting processes:
 
 ```bash
