@@ -147,6 +147,52 @@ class ShutdownTests(unittest.TestCase):
         self.assertFalse(any(c[3] in ("stop", "update") for c in self.calls
                              if c[0] == "docker"))
 
+    def test_crawler_with_foreign_override_is_not_modified(self):
+        self.containers = {"crawl4ai": "crawl-id"}
+
+        def foreign(argv, **kw):
+            result = self.fake_run(argv, **kw)
+            if (argv[0] == "docker" and argv[3] == "inspect"
+                    and "Config.Labels" in " ".join(argv)):
+                return response(argv, 0, json.dumps({
+                    "com.docker.compose.service": "crawl4ai",
+                    "com.docker.compose.project": stop_stack.PROJECT,
+                    "com.docker.compose.project.config_files":
+                        str(self.dir / "compose.yaml") + ",/foreign/override.yaml",
+                }))
+            return result
+
+        result, output = self.job(foreign)
+        self.assertTrue(result.errors)
+        self.assertIn("foreign, orphaned or unverified", output)
+        self.assertFalse(any(c[3] in ("stop", "update") for c in self.calls
+                             if c[0] == "docker"))
+
+    def test_crawler_with_private_optional_overlay_is_owned(self):
+        (self.dir / "searxng.compose.yaml").write_text("services: {}\\n")
+        result, _ = self.job()
+        self.assertFalse(result.errors)
+
+    def test_duplicate_compose_file_labels_are_rejected(self):
+        self.containers = {"crawl4ai": "crawl-id"}
+
+        def duplicate(argv, **kw):
+            result = self.fake_run(argv, **kw)
+            if (argv[0] == "docker" and argv[3] == "inspect"
+                    and "Config.Labels" in " ".join(argv)):
+                path = str(self.dir / "compose.yaml")
+                return response(argv, 0, json.dumps({
+                    "com.docker.compose.service": "crawl4ai",
+                    "com.docker.compose.project": stop_stack.PROJECT,
+                    "com.docker.compose.project.config_files": path + "," + path,
+                }))
+            return result
+
+        result, _ = self.job(duplicate)
+        self.assertTrue(result.errors)
+        self.assertFalse(any(c[3] in ("stop", "update") for c in self.calls
+                             if c[0] == "docker"))
+
     def test_missing_searxng_overlay_reports_orphan(self):
         self.containers = {"searxng": "orphan"}
         result, _ = self.job()
