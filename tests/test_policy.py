@@ -38,6 +38,9 @@ class DomainPolicyTests(unittest.TestCase):
         # Unambiguous internationalized names still work as before.
         self.assertEqual(policy.normalize_domain("café.fr"), "xn--caf-dma.fr")
         self.assertEqual(policy.normalize_domain("xn--fa-hia.de"), "xn--fa-hia.de")
+        for name in ("ab--cd.example.com", "r1---sn-ab5l6nzr.googlevideo.com",
+                     "xn--abc.com"):
+            self.assertEqual(policy.normalize_domain(name), name)
 
     def test_ambiguous_idn_never_reaches_dns_or_pending_approvals(self):
         policy.decide("fass.de", "allow")
@@ -47,9 +50,9 @@ class DomainPolicyTests(unittest.TestCase):
                     policy.socket, "getaddrinfo",
                     side_effect=AssertionError("DNS must not be queried")):
                 result = policy.evaluate_fetch_url(url)
+                self.assertIsNone(policy._public_url_host(url))
             self.assertEqual(result["status"], "blocked")
             self.assertIn("Ambiguous IDN", result["reason"])
-            self.assertIsNone(policy._public_url_host(url))
         self.assertEqual(policy.counts()["pending"], 0)
 
     def test_private_addresses_and_special_domains_rejected(self):
