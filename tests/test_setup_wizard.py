@@ -30,7 +30,7 @@ class SetupWizardTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as exc:
                 wizard.main(["--help"])
         self.assertEqual(exc.exception.code, 0)
-        for option in ("--check", "--status", "--dry-run", "--chatgpt"):
+        for option in ("--check", "--status", "--dry-run", "--chatgpt", "--update-status"):
             self.assertIn(option, out.getvalue())
         self.assertIn("30 minutes", out.getvalue())
 
@@ -242,6 +242,34 @@ class SetupWizardTests(unittest.TestCase):
                            return_value={"available": True}),
               patch.object(wizard, "status_report", return_value=report)):
             self.assertFalse(wizard.check_report()["ready"])
+
+    def test_update_status_flag_is_read_only_and_does_not_mutate(self):
+        response = {"mode": "read-only", "state": "inspected",
+                    "remote_checked": False, "updates_applied": False}
+        with (patch.object(wizard, "local_update_status",
+                           return_value=response) as inspect,
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("unexpected program run"))):
+            code, output = self.call("--update-status")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output), response)
+        inspect.assert_called_once_with()
+
+    def test_update_menu_shows_existing_local_preflight_only(self):
+        response = {"mode": "read-only", "state": "unavailable",
+                    "remote_checked": False, "updates_applied": False}
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input", side_effect=["6", "0"]),
+              patch.object(wizard, "local_update_status",
+                           return_value=response) as inspect,
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("unexpected side effect")),
+              contextlib.redirect_stdout(io.StringIO()) as out):
+            self.assertEqual(wizard.main([]), 0)
+        inspect.assert_called_once_with()
+        self.assertIn('"remote_checked": false', out.getvalue())
+        self.assertIn("No automatic Git fetch", out.getvalue())
 
     def test_other_clients_not_silently_installed(self):
         rc, message = self.call("--chatgpt")
