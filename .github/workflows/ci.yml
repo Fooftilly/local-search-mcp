@@ -105,3 +105,14 @@ jobs:
           docker compose --project-directory "$tmp/crawler-compose" \
             -f "$tmp/crawler-compose/compose.yaml" \
             -f "$tmp/crawler-compose/searxng.compose.yaml" config --quiet
+          # Exercise the actual Docker Compose image-only output, not just
+          # mocked subprocess output in unit tests.
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from scripts.check_compose_image_pins import report
+          folder = Path(os.environ["CRAWLER_COMPOSE_TEST_DIR"]) / "crawler-compose"
+          status = report(folder)
+          assert status["image_count"] == 2
+          assert not status["all_digest_pinned"]
+          PY

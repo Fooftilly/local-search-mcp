@@ -35,8 +35,8 @@ fetching an unreviewed release.
 Use both files:
 ```sh
 DIR="$HOME/.config/local-search-mcp/crawler-compose"
-docker compose -f "$DIR/compose.yaml" -f "$DIR/searxng.compose.yaml" config --quiet
-docker compose -f "$DIR/compose.yaml" -f "$DIR/searxng.compose.yaml" up -d --no-deps --pull never searxng
+docker compose --project-directory "$DIR" --env-file "$DIR/.env" -f "$DIR/compose.yaml" -f "$DIR/searxng.compose.yaml" config --quiet
+docker compose --project-directory "$DIR" --env-file "$DIR/.env" -f "$DIR/compose.yaml" -f "$DIR/searxng.compose.yaml" up -d --no-deps --pull never searxng
 ```
 
 The SearXNG bridge is separate from crawler-egress. Neither the installer
