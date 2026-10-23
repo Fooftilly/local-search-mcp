@@ -109,9 +109,8 @@ class ShutdownTests(unittest.TestCase):
             s = self.calls.index(["docker", "--host", "unix:///var/run/docker.sock",
                                   "stop", "--time", "10", ident])
             self.assertLess(u, s)
-        self.assertFalse(any("compose" in c or "down" in c or "prune" in c
-                             or "--remove-orphans" in c for args in self.calls
-                             for c in args))
+        self.assertFalse(any(c in ("down", "prune", "rm", "pull", "--remove-orphans")
+                             for args in self.calls for c in args))
 
     def test_missing_components_and_empty_project_are_harmless(self):
         self.containers = {}
@@ -160,7 +159,7 @@ class ShutdownTests(unittest.TestCase):
             if argv[0] == "docker" and argv[3] == "update":
                 self.calls.append(list(argv))
                 return response(argv, 1)
-            return self.run(argv, **kw)
+            return self.fake_run(argv, **kw)
         result, text = self.job(fails)
         self.assertTrue(result.errors)
         self.assertIn("failed to disable", text)
@@ -172,7 +171,7 @@ class ShutdownTests(unittest.TestCase):
             if argv[0] == "systemctl" and "show" in argv:
                 self.calls.append(list(argv))
                 return response(argv, 1)
-            return self.run(argv, **kw)
+            return self.fake_run(argv, **kw)
         result, _ = self.job(failed_bus)
         self.assertTrue(result.errors)
         self.assertFalse(result.tunnel_safe)
@@ -193,7 +192,7 @@ class ShutdownTests(unittest.TestCase):
                 self.calls.append(list(argv))
                 return response(argv, 0, "LoadState=loaded\nActiveState=active\n"
                                 "UnitFileState=enabled\n")
-            return self.run(argv, **kw)
+            return self.fake_run(argv, **kw)
         result, output = self.job(enabled)
         self.assertTrue(result.errors)
         self.assertIn("firewall rules are retained", output)
@@ -207,14 +206,14 @@ class ShutdownTests(unittest.TestCase):
                 if scans[0] == 2:
                     self.calls.append(list(argv))
                     return response(argv, 0, "crawl-id\nrecreated-id\n")
-            return self.run(argv, **kw)
+            return self.fake_run(argv, **kw)
         result, output = self.job(race)
         self.assertTrue(result.errors)
         self.assertIn("changed during shutdown", output)
 
     def test_tilde_xdg_config_home_is_expanded(self):
-        with patch.dict(os.environ, {"XDG_CONFIG_HOME": "~/fixture"}), patch.object(
-                stop_stack.Path, "home", return_value=self.home):
+        with patch.dict(os.environ, {"XDG_CONFIG_HOME": "~/fixture",
+                                         "HOME": str(self.home)}):
             self.assertEqual(stop_stack.config_home(), self.home / "fixture")
 
 
