@@ -7,7 +7,6 @@ No setup or service mutations occur from import, --help, --check, --status,
 from __future__ import annotations
 
 import argparse
-import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -32,6 +31,48 @@ def run_existing(*argv: str) -> int:
     result = subprocess.run([sys.executable, str(ROOT / argv[0]), *argv[1:]],
                             cwd=ROOT, check=False)
     return result.returncode
+
+
+def project_python() -> Path | None:
+    """Use the environment installed by bootstrap; never fall back to system Python."""
+    python = ROOT / ".venv" / "bin" / "python"
+    return python if python.is_file() else None
+
+
+def dependency_report() -> dict:
+    """Inspect project dependencies via the existing local-only version checker."""
+    python = project_python()
+    if python is None:
+        return {"state": "missing", "note": "Project .venv Python is not installed",
+                "packages": []}
+    try:
+        proc = subprocess.run(
+            [str(python), "-I", "-B",
+             str(ROOT / "scripts" / "check_dependency_versions.py")],
+            cwd=ROOT, capture_output=True, text=True, timeout=15, check=False)
+        if proc.returncode:
+            raise ValueError("Version check failed")
+        report = json.loads(proc.stdout)
+        if (report.get("remote_requested") is not False
+                or not isinstance(report.get("packages"), list)):
+            raise ValueError("Unexpected version report")
+        names = ("fastmcp", "httpx", "idna")
+        packages = report["packages"]
+        if (len(packages) != len(names)
+                or any(not isinstance(row, dict)
+                       or row.get("package") != name
+                       or (row.get("installed") is not None
+                           and not isinstance(row.get("installed"), str))
+                       for row, name in zip(packages, names))):
+            raise ValueError("Unexpected dependency list")
+        # Only report installed versions; checker does not query PyPI in this mode.
+        return {"state": "available", "packages": packages}
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError,
+            AttributeError):
+        # Never include subprocess stdout, stderr or private pathnames.
+        return {"state": "unavailable",
+                "note": "Project .venv dependency inspection failed",
+                "packages": []}
 
 
 def configured_sources() -> dict:
@@ -94,20 +135,23 @@ def status_report() -> dict:
 
 
 def check_report() -> dict:
-    try:
-        versions = {name: importlib.metadata.version(name)
-                    for name in ("fastmcp", "httpx", "idna")}
-    except importlib.metadata.PackageNotFoundError:
-        versions = {"state": "one or more Python dependencies unavailable in this interpreter"}
+    dependencies = dependency_report()
+    installed = {row["package"]: row["installed"]
+                 for row in dependencies["packages"]}
     result = {
         "mode": "read-only",
         "python_compatible": sys.version_info >= (3, 11),
-        "dependency_versions_in_current_interpreter": versions,
-        "project_venv_present": (ROOT / ".venv" / "bin" / "python").is_file(),
+        "dependency_versions_in_project_venv": dependencies,
+        "project_venv_present": project_python() is not None,
         "configuration": configured_sources(),
         "runtime": status_report(),
     }
+    # A healthy listener is not sufficient if the project interpreter is
+    # missing or its three required direct packages are unavailable.
     result["ready"] = bool(result["python_compatible"]
+                           and dependencies["state"] == "available"
+                           and all(installed.get(name) for name in
+                                   ("fastmcp", "httpx", "idna"))
                            and result["configuration"]["available"]
                            and result["runtime"]["local_health"]["status"] == "healthy")
     return result
@@ -136,7 +180,8 @@ def dry_run() -> dict:
              "action": "./start.sh --setup-only (may install dependencies, download tunnel client, save credentials/profile)"},
             {"menu": "4", "effect": "read-only",
              "action": "preview existing systemd user unit templates"},
-            {"menu": "5", "effect": "read-only", "action": "local dependency versions"},
+            {"menu": "5", "effect": "read-only",
+             "action": "installed dependencies from project .venv, without PyPI requests"},
             {"menu": "6", "effect": "read-only", "action": "manual update and rollback instructions; no fetch/pull"},
             {"menu": "7", "effect": "potential service changes after explicit confirmation",
              "action": "./stop.sh (project-owned shutdown only; no shared Hermes Web stack)"},
@@ -189,7 +234,7 @@ def menu() -> int:
         elif choice == "4":
             run_existing("scripts/install_user_services.py")
         elif choice == "5":
-            run_existing("scripts/check_dependency_versions.py")
+            print(json.dumps(dependency_report(), indent=2, ensure_ascii=True))
         elif choice == "6":
             print("No automatic Git fetch, pull, image download, pip install or restart.")
             print("Review the worktree and deployment rollback gates in")
