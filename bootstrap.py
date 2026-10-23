@@ -207,6 +207,34 @@ def validate_domains(value: str) -> str:
     raw = [item.strip() for item in value.split(",") if item.strip()]
     if not raw or len(raw) > 100:
         raise SetupError("Provide 1 to 100 allowed public domains")
+    # Initial setup is launched by system Python, while the validated IDNA
+    # dependency lives in the already prepared .venv. Use that interpreter
+    # for Unicode input; avoid global site-package installation or imports.
+    if any(not item.isascii() for item in raw):
+        python = ROOT / ".venv" / "bin" / "python"
+        if python.is_file():
+            validator = (
+                "import json,sys;"
+                "from domain_policy import normalize_domain;"
+                "print(json.dumps([normalize_domain(x) for x in "
+                "json.loads(sys.argv[1])]))"
+            )
+            try:
+                result = subprocess.run(
+                    [str(python), "-c", validator, json.dumps(raw)],
+                    cwd=str(ROOT), capture_output=True, text=True,
+                    check=False, timeout=10,
+                )
+                if result.returncode != 0:
+                    raise SetupError("Invalid Unicode domain policy in prepared venv")
+                validated = json.loads(result.stdout)
+                if (not isinstance(validated, list)
+                        or len(validated) != len(raw)
+                        or not all(isinstance(item, str) for item in validated)):
+                    raise SetupError("Unexpected Unicode domain validation response")
+                return ",".join(dict.fromkeys(validated))
+            except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+                raise SetupError("Unicode domain validation in venv unavailable") from exc
     try:
         return ",".join(dict.fromkeys(normalize_domain(item) for item in raw))
     except (ValueError, RuntimeError) as exc:
@@ -257,9 +285,10 @@ def make_venv() -> Path:
         info("Creating Python virtual environment ...")
         run_command([sys.executable, "-m", "venv", str(ROOT / ".venv")])
     verify = (
-        "import fastmcp, httpx, importlib.metadata as m; "
+        "import fastmcp, httpx, idna, importlib.metadata as m; "
         "assert 4 <= int(m.version('fastmcp').split('.')[0]) < 5; "
-        "assert int(m.version('httpx').split('.')[0]) == 0"
+        "assert int(m.version('httpx').split('.')[0]) == 0; "
+        "assert 3 <= int(m.version('idna').split('.')[0]) < 4"
     )
     probe = subprocess.run([str(venvpy), "-c", verify], capture_output=True, timeout=15)
     if probe.returncode != 0:
