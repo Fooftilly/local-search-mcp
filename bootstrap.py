@@ -287,7 +287,8 @@ def make_venv() -> Path:
     verify = (
         "import fastmcp, httpx, idna, importlib.metadata as m; "
         "assert 4 <= int(m.version('fastmcp').split('.')[0]) < 5; "
-        "assert int(m.version('httpx').split('.')[0]) == 0"
+        "assert int(m.version('httpx').split('.')[0]) == 0; "
+        "assert 3 <= int(m.version('idna').split('.')[0]) < 4"
     )
     probe = subprocess.run([str(venvpy), "-c", verify], capture_output=True, timeout=15)
     if probe.returncode != 0:
