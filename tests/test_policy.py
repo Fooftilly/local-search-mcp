@@ -31,7 +31,8 @@ class DomainPolicyTests(unittest.TestCase):
     def test_idna2003_browser_host_divergence_is_rejected(self):
         # Operators who approve fass.de must never authorize faß.de.
         # Other deviation characters can also cause different hosts.
-        for name in ("faß.de", "straße.de", "ςa.gr"):
+        for name in ("faß.de", "straße.de", "ςa.gr",
+                     "go\u115fogle.com", "x\u1d2cy.com", "\U0002f874.com"):
             with self.subTest(name=name):
                 with self.assertRaisesRegex(ValueError, "Ambiguous IDN"):
                     policy.normalize_domain(name)
