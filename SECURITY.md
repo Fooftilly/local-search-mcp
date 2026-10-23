@@ -6,12 +6,14 @@ The FastMCP Streamable HTTP endpoint explicitly **enforces Host/Origin validatio
 
 ## Crawl4AI and SSRF
 
-Domain approvals are bound to actual browser hostnames. The bridge rejects
-internationalized hostnames when Python's IDNA2003 mapping differs from
-the UTS #46 non-transitional mapping used by current browsers (for example,
-\`faß.de\` versus \`fass.de\`). Such URLs are blocked before DNS or the
-pending-approval queue; use the explicit punycode hostname only when you have
-verified and intend to approve that separate domain.
+Domain approvals must match the host the browser actually navigates to. The
+bridge rejects Unicode IDNA deviation characters (sharp s, final sigma and
+joiner controls) that Python's IDNA2003 maps differently from browsers'
+non-transitional UTS #46 behavior (for example `faß.de` versus `fass.de`).
+Such URLs are blocked before DNS or the pending-approval queue. Other valid
+Unicode names remain supported during first-run bootstrap without requiring
+a system-wide third-party IDNA package. Operators may explicitly approve the
+verified punycode hostname as a separate domain.
 
 An approved domain is not proof that the crawler's subsequent browser navigations will stay on that domain. The bridge now inspects Crawl4AI's `redirected_url` (not only `url`, which represents the requested URL) and refuses to return content from unapproved final destinations. Initial DNS resolution and the final-URL check in the bridge are only defense in depth, not enforcement of browser egress, nested redirects, images, scripts or DNS changes. **The network isolation/egress policy belongs at the crawler process/container boundary.**
 
