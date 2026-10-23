@@ -98,7 +98,7 @@ class StopStackTests(unittest.TestCase):
             self.assertLess(update, stop)
             self.assertTrue(any("searxng.compose.yaml" in " ".join(c)
                                 for c in cmds if c[:2] == ["docker", "compose"]))
-        self.assertFalse(any("down" in c or "rm" in c or "pull" in c
+        self.assertFalse(any(c in ("down", "rm", "pull", "prune")
                              for command in cmds for c in command))
         self.assertFalse(any(c[:2] == ["sudo", "systemctl"] for c in cmds))
 
