@@ -1,0 +1,7 @@
+# Checked-in template only; generate unique secret per install.
+use_default_settings: true
+search:
+  formats: [html, json]
+server:
+  secret_key: '__GENERATE_PRIVATE_SEARXNG_KEY__'
+  limiter: false

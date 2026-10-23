@@ -97,8 +97,11 @@ jobs:
           import os
           from pathlib import Path
           from scripts.crawler_compose import generate
-          generate(Path(os.environ["CRAWLER_COMPOSE_TEST_DIR"]),
-                   image="unclecode/crawl4ai:0.9.5", token="test-only-value")
+          folder = generate(Path(os.environ["CRAWLER_COMPOSE_TEST_DIR"]),
+                            image="unclecode/crawl4ai:0.9.5", token="test-only-value")
+          from scripts.install_searxng_compose import install
+          install(folder)
           PY
           docker compose --project-directory "$tmp/crawler-compose" \
-            -f "$tmp/crawler-compose/compose.yaml" config --quiet
+            -f "$tmp/crawler-compose/compose.yaml" \
+            -f "$tmp/crawler-compose/searxng.compose.yaml" config --quiet
