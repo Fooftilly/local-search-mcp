@@ -9,8 +9,30 @@ from collections import Counter, deque
 import json
 from pathlib import Path
 import sys
+import unicodedata
 
 from history_log import history_path
+
+
+def safe_terminal(value: object) -> str:
+    """Make untrusted history inert in terminals, including bidi overrides."""
+    out = []
+    for char in str(value):
+        if unicodedata.category(char) in ("Cc", "Cf", "Zl", "Zp"):
+            code = ord(char)
+            out.append(f"\\x{code:02x}" if code <= 0xff else f"\\u{code:04x}")
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def safe_csv_cell(value: object) -> object:
+    """Prevent exported operator-audit cells from becoming spreadsheet formulas."""
+    if isinstance(value, str) and value and (
+        value[0] in "=+-@\t\r\n" or value.lstrip(" \t\r\n")[:1] in "=+-@"
+    ):
+        return "'" + value
+    return value
 
 
 def events(path: Path):
@@ -47,7 +69,7 @@ def main() -> int:
         parser.error("--last must be between 1 and 100000")
     path = history_path()
     if not path.exists():
-        print(f"No history yet: {path}", file=sys.stderr)
+        print(f"No history yet: {safe_terminal(path)}", file=sys.stderr)
         return 0
 
     def matches(event):
@@ -58,21 +80,21 @@ def main() -> int:
     selected = (e for e in events(path) if matches(e))
     if args.stats:
         counter = Counter((e.get("kind"), e.get("status")) for e in selected)
-        print(f"History file: {path}")
+        print(f"History file: {safe_terminal(path)}")
         for (kind, status), total in sorted(counter.items()):
-            print(f"{kind or '?':6} {status or '?':7} {total}")
+            print(f"{safe_terminal(kind or '?'):6} {safe_terminal(status or '?'):7} {total}")
         return 0
     recent = list(deque(selected, maxlen=args.last))
     if args.csv:
         writer = csv.DictWriter(sys.stdout, fieldnames=["time_utc", "kind", "status", "query", "url", "result_count", "page", "page_count", "http_status", "duration_ms"])
         writer.writeheader()
         for e in recent:
-            writer.writerow({name: e.get(name, "") for name in writer.fieldnames})
+            writer.writerow({name: safe_csv_cell(e.get(name, "")) for name in writer.fieldnames})
     elif args.json:
         for e in recent:
-            print(json.dumps(e, ensure_ascii=False))
+            print(json.dumps(e, ensure_ascii=True))
     else:
-        print(f"History: {path}")
+        print(f"History: {safe_terminal(path)}")
         for e in recent:
             term = e.get("query") if e.get("kind") == "search" else e.get("url", "")
             if e.get("kind") == "page":
@@ -80,7 +102,10 @@ def main() -> int:
             count = f" | {e['result_count']} results" if "result_count" in e else ""
             status = e.get("status", "?")
             http = f" | HTTP {e['http_status']}" if "http_status" in e else ""
-            print(f"{e.get('time_utc', '?')} | {e.get('kind', '?'):6} | {status:7} | {term}{count}{http}")
+            print(f"{safe_terminal(e.get('time_utc', '?'))} | "
+                  f"{safe_terminal(e.get('kind', '?')):6} | "
+                  f"{safe_terminal(status):7} | {safe_terminal(term)}"
+                  f"{safe_terminal(count)}{safe_terminal(http)}")
     return 0
 
 
