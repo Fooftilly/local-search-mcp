@@ -137,7 +137,9 @@ class Stop:
             self.error("tunnel final state is unverified; backends will not be stopped")
 
     def project_containers(self) -> list[str] | None:
-        command = [*DOCKER, "ps", "--all", "--filter",
+        # Use full container IDs: truncated display IDs are not stable
+        # operation targets when another process removes/recreates containers.
+        command = [*DOCKER, "ps", "--all", "--no-trunc", "--filter",
                    f"label=com.docker.compose.project={PROJECT}",
                    "--format", "{{.ID}}"]
         result = self.run(command)
