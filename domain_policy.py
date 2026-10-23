@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 import ipaddress
+import idna
 import os
 from pathlib import Path
 import re
@@ -177,9 +178,18 @@ def normalize_domain(domain: str) -> str:
     if not domain or any(c in domain for c in '/:@?#\\ \t\n'):
         raise ValueError("Enter only a domain name, not a URL")
     try:
-        domain = domain.encode('idna').decode('ascii')
-    except (UnicodeError, ValueError) as exc:
+        # Python's stdlib IDNA2003 maps e.g. faß.de to fass.de, while
+        # Chromium/Firefox resolve xn--fa-hia.de (UTS #46 non-transitional).
+        # Reject divergent hostnames BEFORE any approval lookup or DNS call.
+        legacy_host = domain.encode("idna").decode("ascii")
+        browser_host = idna.encode(
+            domain, uts46=True, transitional=False
+        ).decode("ascii")
+    except (UnicodeError, ValueError, idna.IDNAError) as exc:
         raise ValueError("Invalid IDN domain") from exc
+    if legacy_host != browser_host:
+        raise ValueError("Ambiguous IDN domain: browser and policy hostnames differ")
+    domain = browser_host
     if len(domain) > 253 or not re.fullmatch(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", domain):
         raise ValueError("Domain must be a valid public DNS name")
     if domain.endswith((".local", ".localhost", ".internal", ".test", ".invalid", ".onion", ".home", ".lan")):
