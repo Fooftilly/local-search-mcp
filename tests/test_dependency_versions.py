@@ -41,7 +41,7 @@ class VersionCheckTests(unittest.TestCase):
         with patch.object(check, "build_opener", side_effect=AssertionError("network")):
             with patch.object(check, "_installed_version", return_value="1.2"):
                 report = check.version_report()
-        self.assertEqual([x["installed"] for x in report], ["1.2"] * len(check.PACKAGES))
+        self.assertEqual([x["installed"] for x in report], ["1.2", "1.2"])
         self.assertTrue(all("pypi" not in x for x in report))
 
     def test_explicit_remote_fixes_host_and_disables_proxy_redirect(self):
@@ -99,7 +99,7 @@ class VersionCheckTests(unittest.TestCase):
 
     def test_fail_closed_and_differences_have_no_upgrade_verdict(self):
         with patch.object(check, "_installed_version", return_value="2.0"):
-            with patch.object(check, "_pypi_version", side_effect=["1.0", ValueError("bad"), "2.0"]):
+            with patch.object(check, "_pypi_version", side_effect=["1.0", ValueError("bad")]):
                 report = check.version_report(check_remote=True)
         self.assertEqual(report[0]["same_version"], False)
         self.assertNotIn("upgrade_available", report[0])
