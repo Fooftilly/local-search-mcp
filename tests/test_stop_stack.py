@@ -36,7 +36,7 @@ class ShutdownTests(unittest.TestCase):
         for name in stop_stack.UNITS:
             (self.units / name).write_text(stop_stack.MARKER + "\n[Unit]\n")
 
-    def run(self, argv, **kw):
+    def fake_run(self, argv, **kw):
         self.calls.append(list(argv))
         self.assertTrue(kw["capture_output"])
         self.assertFalse(kw["check"])
@@ -75,7 +75,7 @@ class ShutdownTests(unittest.TestCase):
 
     def job(self, run=None):
         out = io.StringIO()
-        with (patch.object(stop_stack.subprocess, "run", side_effect=run or self.run),
+        with (patch.object(stop_stack.subprocess, "run", side_effect=run or self.fake_run),
               contextlib.redirect_stdout(out)):
             job = stop_stack.Stop()
             job.user_units()
@@ -134,7 +134,7 @@ class ShutdownTests(unittest.TestCase):
         (self.dir / "searxng.compose.yaml").write_text("services: {}\n")
         self.containers = {"searxng": "searx-id"}
         def foreign(argv, **kw):
-            result = self.run(argv, **kw)
+            result = self.fake_run(argv, **kw)
             if argv[0] == "docker" and argv[3] == "inspect":
                 return response(argv, 0, json.dumps({
                     "com.docker.compose.service": "searxng",
