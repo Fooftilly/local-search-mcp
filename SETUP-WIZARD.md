@@ -50,3 +50,28 @@ and optional on-demand backend sleep (issue #75; planned default idle timeout:
 On a fresh host, first verify the backend prerequisites (SearXNG JSON mode,
 Crawl4AI 0.9.5+ stable, crawler firewall isolation), then run the existing
 setup route when those are healthy. The wizard does not bypass those gates.
+
+
+## Docker project ownership diagnostics (second slice)
+
+Run `./setup.sh --docker-status` or choose menu option 8.
+`./setup.sh --status` and `--check` also include the ownership summary.
+This inspects only the pinned local Docker socket, validates full container
+IDs, the fixed `local-search-crawler` Compose project, managed service labels,
+and owner-controlled private Compose files. It never executes Docker start,
+stop, update, Compose up/down, or privileged firewall commands.
+
+The report uses `running`, `stopped`, `partially_running`,
+`not_started`, `not_configured`, `unverified`, or `unknown`.
+It counts separately any containers publishing port 11235 that are
+**not** part of the managed project, such as a legacy/shared deployment.
+Published-port counts may include stopped containers. It does not reveal
+foreign Compose paths, container IDs, names, image names, private labels,
+environment values or Docker diagnostics. Unknown or unverified means
+ownership **could not be proven**, not that resources are absent.
+
+This ownership check does not verify firewall rules, SearXNG settings,
+whether a shared backend is safe, a live remote tunnel registration, or
+ChatGPT account enrollment. A security gate and live egress probe remain
+mandatory before allowing remote crawling. The wizard never claims
+ownership of the existing Hermes Web stack.
