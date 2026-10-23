@@ -46,6 +46,31 @@ class BootstrapIDNTests(unittest.TestCase):
                     bootstrap.validate_domains("faß.de")
             self.assertNotIn("SENSITIVE_ERROR", str(error.exception))
 
+    def test_existing_venv_reinstalls_when_dependency_probe_fails(self):
+        # An importable idna version outside the required 3.x range must
+        # fail the probe, prompting an explicit requirements.txt install.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            python = root / ".venv" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.touch()
+            probe_failed = subprocess.CompletedProcess([], 1, stdout="", stderr="")
+            with (patch.object(bootstrap, "ROOT", root),
+                  patch.object(bootstrap.subprocess, "run",
+                               return_value=probe_failed) as run,
+                  patch.object(bootstrap, "run_command") as command,
+                  patch.object(bootstrap, "info")):
+                self.assertEqual(bootstrap.make_venv(), python)
+        verified_script = run.call_args.args[0][2]
+        self.assertIn("3 <= int(m.version('idna').split('.')[0]) < 4",
+                      verified_script)
+        self.assertEqual(command.call_count, 2)
+        self.assertEqual(command.call_args_list[0].args[0],
+                         [str(python), "-m", "pip", "install", "-r",
+                          str(root / "requirements.txt")])
+        self.assertEqual(command.call_args_list[1].args[0],
+                         [str(python), "-c", verified_script])
+
     def test_ascii_domains_never_launch_subprocess(self):
         with patch.object(bootstrap.subprocess, "run",
                           side_effect=AssertionError("subprocess forbidden")):
