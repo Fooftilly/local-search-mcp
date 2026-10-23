@@ -19,6 +19,19 @@ existing files. Back up and compare your existing private files against
 Git, preserve your private server key and settings, then manually adopt
 only the changes you approve.
 
+The start command below uses `--pull never` deliberately, so it **will
+not download a missing SearXNG image**. Before starting a new installation,
+confirm that the reviewed image referenced in your private
+`searxng.compose.yaml` is already available locally. The checked-in
+`docker.io/searxng/searxng:latest` reference is a **mutable example, not
+a production pin**. If needed, explicitly acquire a verified image using
+your usual Docker image-pull procedure, inspect its provenance and digest,
+and update the **private** Compose image reference to that reviewed,
+immutable digest. Recheck the Compose configuration after editing. These
+steps are manual; the installer never pulls or upgrades images. If the
+image is missing, `up --pull never` should fail rather than silently
+fetching an unreviewed release.
+
 Use both files:
 ```sh
 DIR="$HOME/.config/local-search-mcp/crawler-compose"
