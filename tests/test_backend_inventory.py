@@ -53,7 +53,7 @@ class DockerOwnershipTests(unittest.TestCase):
             self.assertIn("--no-trunc", argv)
             ids = (self.project_ids if any(inventory.PROJECT in word for word in argv)
                    else self.published_ids)
-            return subprocess.CompletedProcess(argv, 0, "\n".join(ids) + "\n", "")
+            return subprocess.CompletedProcess(argv, 0, "\n".join(ids) + ("\n" if ids else ""), "")
         if command == "inspect":
             ident = argv[-1]
             if "Config.Labels" in " ".join(argv):
@@ -126,6 +126,17 @@ class DockerOwnershipTests(unittest.TestCase):
         self.assertEqual(result["state"], "unknown")
         self.assertIsNone(result["other_published_crawlers"])
         self.assertNotIn("private credentials", json.dumps(result))
+
+    def test_empty_docker_list_is_empty_output_not_a_blank_id(self):
+        self.project_ids = []
+        self.published_ids = []
+        self.assertEqual(self.report()["state"], "not_started")
+        self.assertEqual(self.report()["other_published_crawlers"], 0)
+
+    def test_blank_container_id_line_is_rejected(self):
+        # A malformed daemon response must never be classified as empty.
+        with patch.object(inventory, "_run", return_value="\\n"):
+            self.assertIsNone(inventory._ids("--filter", "publish=11235"))
 
     def test_malformed_container_ids_fail_closed(self):
         self.project_ids = ["short"]
