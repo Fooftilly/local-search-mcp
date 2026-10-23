@@ -39,6 +39,12 @@ and firewall intact. The external Hermes Web Compose deployment is never
 stopped automatically. See [STOP.md](STOP.md) for ownership checks and the
 optional root-owned firewall-service procedure.
 
+For the ChatGPT-first interactive setup and maintenance menu, run
+`./setup.sh`. For safe read-only diagnostics, use `./setup.sh --check` or
+`./setup.sh --status`; `./setup.sh --help` lists all currently implemented
+features and mutation boundaries. See [SETUP-WIZARD.md](SETUP-WIZARD.md).
+Existing `./start.sh` and `./stop.sh` still work independently.
+
 For setup without starting processes:
 
 ```bash
