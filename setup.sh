@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd -- "$(dirname -- "$(readlink -f -- "$0")")"
-exec python3 ./scripts/setup_wizard.py "$@"
+exec python3 -m scripts.setup_wizard "$@"
