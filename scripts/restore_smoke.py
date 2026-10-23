@@ -38,6 +38,8 @@ def _isolated_environment(home: Path):
         "LOCAL_SEARCH_MCP_HISTORY_MAX_BYTES",
         "LOCAL_SEARCH_MCP_SEARXNG_TIMEOUT",
         "LOCAL_SEARCH_MCP_CRAWL_TIMEOUT",
+        "LOCAL_SEARCH_MCP_CACHE_SEARCH_TTL",
+        "LOCAL_SEARCH_MCP_CACHE_FETCH_TTL",
     )
     original = {key: os.environ.get(key) for key in names}
     try:
@@ -86,12 +88,14 @@ def smoke(archive: Path) -> tuple[int, int]:
             import history_index
             import safe_settings
             import upstream_settings
+            import cache_settings
 
             # Verify the files using real application readers, not just the
             # backup schema verifier. Missing optional files are valid.
             for name, reader in (
                 ("history-settings.json", safe_settings.dashboard_settings),
                 ("upstream-timeouts.json", upstream_settings.dashboard_settings),
+                ("cache-ttl.json", cache_settings.dashboard_settings),
             ):
                 if name in payload:
                     expected = json.loads(payload[name].decode("utf-8"))["settings"]
