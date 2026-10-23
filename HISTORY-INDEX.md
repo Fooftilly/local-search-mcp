@@ -12,8 +12,11 @@ there is no permission-changing MCP tool.
 
 ## Storage, migration and privacy
 
-- **JSONL remains the source of truth**; original rotation and CSV/JSON CLI
-  exports are unchanged. The sidecar is named `history.jsonl.sqlite3` beside
+- **JSONL remains the source of truth**; rotation is unchanged. For safer
+  operator inspection, CSV exports escape terminal controls and prefix formula-like
+  strings with a literal apostrophe (including formulas preceded by Unicode
+  whitespace); JSON exports escape Unicode controls. CSV is therefore not a
+  byte-for-byte copy of the stored history. The sidecar is named `history.jsonl.sqlite3` beside
   the configured `LOCAL_SEARCH_MCP_HISTORY_FILE`, with private permissions.
   Deleting that sidecar causes it to rebuild from the currently retained JSONL
   files on the next dashboard request.
