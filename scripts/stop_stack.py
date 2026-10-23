@@ -72,9 +72,15 @@ class Stop:
                 if name == UNITS[0]:
                     self.tunnel_safe = False
                 continue
-            result = self.run(["systemctl", "--user", "disable", "--now", name])
+            # Health/update services are triggered oneshots without [Install].
+            # Their timers/paths are disabled above; stop the jobs themselves.
+            one_shot = name in ("local-search-mcp-health.service",
+                                "local-search-mcp-update.service")
+            command = (["systemctl", "--user", "stop", name] if one_shot else
+                       ["systemctl", "--user", "disable", "--now", name])
+            result = self.run(command)
             if result is None or result.returncode:
-                self.error(f"user unit {name}: disable/stop failed")
+                self.error(f"user unit {name}: stop/disable failed")
                 if name == UNITS[0]:
                     self.tunnel_safe = False
                 continue
@@ -84,7 +90,8 @@ class Stop:
                 if name == UNITS[0]:
                     self.tunnel_safe = False
             else:
-                print(f"user unit {name}: stopped and disabled")
+                print(f"user unit {name}: stopped" +
+                      ("" if one_shot else " and disabled"))
 
     def compose(self) -> None:
         base = Path(os.environ.get("XDG_CONFIG_HOME") or
