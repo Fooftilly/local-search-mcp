@@ -9,8 +9,16 @@ python3 scripts/check_compose_image_pins.py
 ```
 
 The command invokes **only** `docker compose ... config --images`, with the
-private crawler Compose file and the optional SearXNG override. It never
+explicit private project directory and private `.env` file, the crawler
+Compose file and the optional SearXNG override. It never
 executes `up`, `pull`, `inspect`, `down`, or writes configuration.
+The private Compose project must contain a regular `.env` file; linked or
+missing `.env` files are refused. As with any Docker Compose invocation,
+**exported shell environment variables take precedence over `.env` values**.
+Run the audit under the same exported environment as the intended deployment
+(or unset unintended image overrides). The audit checks the configured
+image references, not the images of currently running containers.
+
 Results report the number of images and whether each is digest pinned,
 without printing image strings or secret variables. The inspection fails
 closed if Compose does not list the expected one crawler image and, when the

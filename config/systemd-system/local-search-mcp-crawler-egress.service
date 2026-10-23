@@ -1,0 +1,19 @@
+# Operator-installed system service. Requires a ROOT-OWNED copy of the guard.
+[Unit]
+Description=Install and verify Crawl4AI host nftables egress guard
+Documentation=https://github.com/Fooftilly/local-search-mcp/blob/master/EGRESS-ISOLATION.md
+Wants=docker.service
+After=docker.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=30s
+TimeoutStartSec=4min
+ExecStart=/usr/bin/python3 /usr/local/libexec/local-search-mcp/crawler_egress_guard.py --container crawl4ai --apply
+ExecStartPost=/usr/bin/python3 /usr/local/libexec/local-search-mcp/crawler_egress_guard.py --container crawl4ai --probe
+
+[Install]
+WantedBy=multi-user.target

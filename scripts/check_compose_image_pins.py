@@ -26,7 +26,13 @@ def report(folder: Path) -> dict:
     config = folder / "compose.yaml"
     if config.is_symlink() or not config.is_file():
         raise ValueError("Crawler Compose file missing or linked")
-    argv = ["docker", "compose", "-f", str(config)]
+    envfile = folder / ".env"
+    if envfile.is_symlink() or not envfile.is_file():
+        raise ValueError("Private Compose .env file missing or linked")
+    # Ignore unrelated working-directory .env files; inspect the private
+    # project with the exact env file that its installer generated.
+    argv = ["docker", "compose", "--project-directory", str(folder),
+            "--env-file", str(envfile), "-f", str(config)]
     searxng = folder / "searxng.compose.yaml"
     if searxng.is_symlink():
         raise ValueError("Refusing linked SearXNG Compose overlay")

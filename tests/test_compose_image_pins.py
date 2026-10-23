@@ -14,6 +14,7 @@ class ImagePinTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.path = Path(tmp.name)
         (self.path / "compose.yaml").write_text("image: anything")
+        (self.path / ".env").write_text("CRAWL4AI_IMAGE=example:latest\n")
 
     def test_digest_detection_and_no_side_effect(self):
         dig = "docker.io/searxng/searxng@sha256:" + "a" * 64
@@ -26,6 +27,9 @@ class ImagePinTests(unittest.TestCase):
         self.assertEqual([r["digest_pinned"] for r in status["images"]], [False, True])
         args = runner.call_args.args[0]
         self.assertEqual(args[-2:], ["config", "--images"])
+        self.assertEqual(args[2:4], ["--project-directory", str(self.path)])
+        self.assertEqual(args[4:6], ["--env-file", str(self.path / ".env")])
+        self.assertNotIn("TOKEN=private", str(status))
         self.assertNotIn("up", args)
         self.assertNotIn("pull", args)
         self.assertNotIn(dig, str(status))
@@ -61,6 +65,17 @@ class ImagePinTests(unittest.TestCase):
         elsewhere.write_text("config")
         (self.path / "searxng.compose.yaml").symlink_to(elsewhere)
         with self.assertRaises(ValueError):
+            pins.report(self.path)
+
+    def test_missing_or_linked_private_env_is_rejected(self):
+        envfile = self.path / ".env"
+        envfile.unlink()
+        with self.assertRaisesRegex(ValueError, "Private Compose .env"):
+            pins.report(self.path)
+        other = self.path / "other.env"
+        other.write_text("CRAWL4AI_IMAGE=example:latest\\n")
+        envfile.symlink_to(other)
+        with self.assertRaisesRegex(ValueError, "Private Compose .env"):
             pins.report(self.path)
 
 
