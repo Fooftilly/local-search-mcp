@@ -232,8 +232,8 @@ class ShutdownTests(unittest.TestCase):
             if (argv[:3] == ["systemctl", "--user", "show"]
                     and argv[3] == stop_stack.TUNNEL):
                 self.calls.append(list(argv))
-                return response(argv, 0, "LoadState=not-found\\nActiveState=active\\n"
-                                "UnitFileState=\\n")
+                return response(argv, 0, "LoadState=not-found\nActiveState=active\n"
+                                "UnitFileState=\n")
             return self.fake_run(argv, **kw)
 
         job, output = self.job(missing_running_tunnel)
@@ -250,8 +250,8 @@ class ShutdownTests(unittest.TestCase):
         def missing_running_trigger(argv, **kw):
             if argv[:3] == ["systemctl", "--user", "show"] and argv[3] == missing:
                 self.calls.append(list(argv))
-                return response(argv, 0, "LoadState=not-found\\nActiveState=active\\n"
-                                "UnitFileState=\\n")
+                return response(argv, 0, "LoadState=not-found\nActiveState=active\n"
+                                "UnitFileState=\n")
             return self.fake_run(argv, **kw)
 
         job, output = self.job(missing_running_trigger)
@@ -278,8 +278,8 @@ class ShutdownTests(unittest.TestCase):
         def missing_running_guard(argv, **kw):
             if argv[:3] == ["systemctl", "--system", "show"]:
                 self.calls.append(list(argv))
-                return response(argv, 0, "LoadState=not-found\\nActiveState=active\\n"
-                                "UnitFileState=\\n")
+                return response(argv, 0, "LoadState=not-found\nActiveState=active\n"
+                                "UnitFileState=\n")
             return self.fake_run(argv, **kw)
 
         job, output = self.job(missing_running_guard)
