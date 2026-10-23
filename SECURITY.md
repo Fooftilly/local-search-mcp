@@ -6,6 +6,13 @@ The FastMCP Streamable HTTP endpoint explicitly **enforces Host/Origin validatio
 
 ## Crawl4AI and SSRF
 
+Domain approvals are bound to actual browser hostnames. The bridge rejects
+internationalized hostnames when Python's IDNA2003 mapping differs from
+the UTS #46 non-transitional mapping used by current browsers (for example,
+\`faß.de\` versus \`fass.de\`). Such URLs are blocked before DNS or the
+pending-approval queue; use the explicit punycode hostname only when you have
+verified and intend to approve that separate domain.
+
 An approved domain is not proof that the crawler's subsequent browser navigations will stay on that domain. The bridge now inspects Crawl4AI's `redirected_url` (not only `url`, which represents the requested URL) and refuses to return content from unapproved final destinations. Initial DNS resolution and the final-URL check in the bridge are only defense in depth, not enforcement of browser egress, nested redirects, images, scripts or DNS changes. **The network isolation/egress policy belongs at the crawler process/container boundary.**
 
 The bridge requires a healthy **Crawl4AI 0.9.5+ (stable)** HTTP server. Version 0.9.4 fixes some SSRF paths but retains the `CacheValidator.validate` freshness-check SSRF bypass (patched in 0.9.5; upstream GHSA-w4xc-px5p-c32w). Leave its hardened Docker egress controls enabled, and do not enable `CRAWL4AI_ALLOW_INTERNAL_URLS`, unsafe proxy rules, or `CRAWL4AI_ALLOW_INSECURE_TLS` for this integration. Use OS/container firewalling to block private, loopback, link-local, metadata, and LAN egress from the browser container as an additional control; this repository does **not** install such a firewall. Version checks alone cannot verify the container's runtime network policy. If you cannot verify isolation, do not grant access to untrusted agents or crawl hostile websites.
