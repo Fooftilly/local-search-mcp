@@ -55,6 +55,7 @@ class ShutdownTests(unittest.TestCase):
         if argv[0] == "docker":
             self.assertEqual(argv[:3], ["docker", "--host", "unix:///var/run/docker.sock"])
             if argv[3] == "ps":
+                self.assertIn("--no-trunc", argv)
                 return response(argv, 0, "\n".join(self.containers.values()) + "\n")
             if argv[3] == "inspect":
                 ident = argv[-1]
