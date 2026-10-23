@@ -176,28 +176,18 @@ def normalize_domain(domain: str) -> str:
     domain = domain.strip().lower().rstrip(".")
     if not domain or any(c in domain for c in '/:@?#\\ \t\n'):
         raise ValueError("Enter only a domain name, not a URL")
+    # Browser UTS #46 non-transitional handling diverges from Python's
+    # IDNA2003 codec on deviation characters. Reject those hostnames instead
+    # of letting a grant to fass.de authorize navigation to faß.de.
+    # This check has no third-party dependencies: bootstrap validates domain
+    # configuration before the virtualenv is available.
+    if any(char in domain for char in ("ß", "ς", "\u200c", "\u200d")):
+        raise ValueError("Ambiguous IDN domain: browser and policy hostnames differ")
     try:
-        # ASCII domains (including valid -- labels) retain the old behavior.
-        domain_ascii = domain.encode("idna").decode("ascii")
+        domain = domain.encode("idna").decode("ascii")
     except (UnicodeError, ValueError) as exc:
         raise ValueError("Invalid IDN domain") from exc
-    if not domain.isascii():
-        # Python's IDNA2003 can map faß.de to fass.de, while browsers
-        # navigate to xn--fa-hia.de via non-transitional UTS #46.
-        # Import lazily: bootstrap runs before setting up the project venv,
-        # and ASCII-only setup must not require a system-wide idna install.
-        try:
-            import idna
-            browser_host = idna.encode(
-                domain, uts46=True, transitional=False
-            ).decode("ascii")
-        except ImportError as exc:
-            raise ValueError("Unicode domain validation requires idna") from exc
-        except (UnicodeError, ValueError, idna.IDNAError) as exc:
-            raise ValueError("Invalid IDN domain") from exc
-        if domain_ascii != browser_host:
-            raise ValueError("Ambiguous IDN domain: browser and policy hostnames differ")
-    domain = domain_ascii
+
     if len(domain) > 253 or not re.fullmatch(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", domain):
         raise ValueError("Domain must be a valid public DNS name")
     if domain.endswith((".local", ".localhost", ".internal", ".test", ".invalid", ".onion", ".home", ".lan")):
