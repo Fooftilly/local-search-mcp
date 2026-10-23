@@ -85,8 +85,9 @@ class Stop:
                     raise ValueError("linked unit is not verified")
                 if not path.exists():
                     state = self.unit_state(name)
-                    if state is None or state["LoadState"] != "not-found":
-                        self.error(f"user unit {name}: missing owned file, cannot change")
+                    if (state is None or state["LoadState"] != "not-found"
+                            or state["ActiveState"] not in ("inactive", "failed")):
+                        self.error(f"user unit {name}: missing owned file or still active")
                     else:
                         print(f"user unit {name}: not installed")
                     continue
@@ -127,11 +128,16 @@ class Stop:
                 self.error("tunnel final stop/disable failed")
                 return
         state = self.unit_state(TUNNEL)
-        if state is not None and (
-            (owned and state.get("ActiveState") in ("inactive", "failed")
-             and state.get("UnitFileState") in ("disabled", "masked", "not-found", ""))
-            or (not owned and state.get("LoadState") == "not-found")
-        ):
+        # LoadState=not-found can coexist with ActiveState=active when a
+        # unit file is deleted/reloaded but its process survives. Also do not
+        # proceed if an update/health trigger could not be stopped: it may
+        # restart the tunnel after this final check.
+        if (state is not None
+                and state.get("ActiveState") in ("inactive", "failed")
+                and not self.errors
+                and ((owned and state.get("UnitFileState") in
+                      ("disabled", "masked", "not-found", ""))
+                     or (not owned and state.get("LoadState") == "not-found"))):
             self.tunnel_safe = True
         else:
             self.error("tunnel final state is unverified; backends will not be stopped")
@@ -250,10 +256,10 @@ class Stop:
         state = self.unit_state(ROOT_GUARD, system=True)
         if state is None:
             return
-        if state["LoadState"] == "not-found" or (
-            state["ActiveState"] in ("inactive", "failed")
-            and state.get("UnitFileState") in ("disabled", "masked")
-        ):
+        if ((state["LoadState"] == "not-found"
+             and state["ActiveState"] in ("inactive", "failed"))
+                or (state["ActiveState"] in ("inactive", "failed")
+                    and state.get("UnitFileState") in ("disabled", "masked"))):
             print("root egress guard: no enabled/active unit; firewall unchanged")
         else:
             self.error("root egress guard needs separate administrator shutdown; "
