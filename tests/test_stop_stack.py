@@ -224,6 +224,69 @@ class ShutdownTests(unittest.TestCase):
         self.assertFalse(result.tunnel_safe)
         self.assertFalse(any(c[0] == "docker" for c in self.calls))
 
+    def test_missing_but_active_tunnel_does_not_authorize_docker(self):
+        self.install_units()
+        (self.units / stop_stack.TUNNEL).unlink()
+
+        def missing_running_tunnel(argv, **kw):
+            if (argv[:3] == ["systemctl", "--user", "show"]
+                    and argv[3] == stop_stack.TUNNEL):
+                self.calls.append(list(argv))
+                return response(argv, 0, "LoadState=not-found\\nActiveState=active\\n"
+                                "UnitFileState=\\n")
+            return self.fake_run(argv, **kw)
+
+        job, output = self.job(missing_running_tunnel)
+        self.assertFalse(job.tunnel_safe)
+        self.assertTrue(job.errors)
+        self.assertIn("tunnel final state is unverified", output)
+        self.assertFalse(any(c[0] == "docker" for c in self.calls))
+
+    def test_missing_active_update_trigger_blocks_backend_shutdown(self):
+        self.install_units()
+        missing = "local-search-mcp-update.timer"
+        (self.units / missing).unlink()
+
+        def missing_running_trigger(argv, **kw):
+            if argv[:3] == ["systemctl", "--user", "show"] and argv[3] == missing:
+                self.calls.append(list(argv))
+                return response(argv, 0, "LoadState=not-found\\nActiveState=active\\n"
+                                "UnitFileState=\\n")
+            return self.fake_run(argv, **kw)
+
+        job, output = self.job(missing_running_trigger)
+        self.assertFalse(job.tunnel_safe)
+        self.assertIn("missing owned file or still active", output)
+        self.assertFalse(any(c[0] == "docker" for c in self.calls))
+
+    def test_failed_update_trigger_shutdown_blocks_backend_shutdown(self):
+        self.install_units()
+        trigger = "local-search-mcp-update.timer"
+
+        def failed_stop(argv, **kw):
+            if argv[:4] == ["systemctl", "--user", "disable", "--now"] and argv[-1] == trigger:
+                self.calls.append(list(argv))
+                return response(argv, 1)
+            return self.fake_run(argv, **kw)
+
+        job, output = self.job(failed_stop)
+        self.assertFalse(job.tunnel_safe)
+        self.assertIn("stop/disable failed", output)
+        self.assertFalse(any(c[0] == "docker" for c in self.calls))
+
+    def test_missing_but_active_root_guard_is_not_reported_absent(self):
+        def missing_running_guard(argv, **kw):
+            if argv[:3] == ["systemctl", "--system", "show"]:
+                self.calls.append(list(argv))
+                return response(argv, 0, "LoadState=not-found\\nActiveState=active\\n"
+                                "UnitFileState=\\n")
+            return self.fake_run(argv, **kw)
+
+        job, output = self.job(missing_running_guard)
+        self.assertTrue(job.errors)
+        self.assertIn("needs separate administrator shutdown", output)
+        self.assertNotIn("root egress guard: no enabled/active unit", output)
+
     def test_non_owned_tunnel_never_disables_foreign_unit(self):
         self.install_units()
         (self.units / stop_stack.TUNNEL).write_text("Foreign\n")
