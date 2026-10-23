@@ -159,7 +159,7 @@ class SetupWizardTests(unittest.TestCase):
             rc, output = self.call("--dry-run")
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(output)["default_client"].split()[0], "ChatGPT")
-        self.assertEqual(len(json.loads(output)["actions"]), 7)
+        self.assertEqual(len(json.loads(output)["actions"]), 8)
 
     def test_status_returns_only_allowlisted_service_state(self):
         with (patch.object(wizard, "health",
@@ -213,6 +213,35 @@ class SetupWizardTests(unittest.TestCase):
               contextlib.redirect_stdout(io.StringIO())):
             self.assertEqual(wizard.main([]), 0)
         command.assert_called_once_with("bootstrap.py", "--setup-only")
+
+    def test_docker_status_flag_uses_read_only_report(self):
+        data = {"state": "unverified", "managed_running": 0,
+                "other_published_crawlers": 1}
+        with (patch.object(wizard, "docker_status", return_value=data) as probe,
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("must not launch tools"))):
+            rc, result = self.call("--docker-status")
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(result), data)
+        probe.assert_called_once_with()
+
+    def test_docker_status_is_in_status_report_and_unsafe_check_not_ready(self):
+        with (patch.object(wizard, "health",
+                           return_value={"status": "healthy", "checks": {}}),
+              patch.object(wizard, "user_unit_states", return_value={}),
+              patch.object(wizard, "docker_status",
+                           return_value={"state": "unverified"}) as probe):
+            report = wizard.status_report()
+        self.assertEqual(report["docker_project"]["state"], "unverified")
+        probe.assert_called_once_with()
+        with (patch.object(wizard, "dependency_report",
+                           return_value={"state": "available", "packages": [
+                               {"package": name, "installed": "1.0"}
+                               for name in ("fastmcp", "httpx", "idna")]}),
+              patch.object(wizard, "configured_sources",
+                           return_value={"available": True}),
+              patch.object(wizard, "status_report", return_value=report)):
+            self.assertFalse(wizard.check_report()["ready"])
 
     def test_other_clients_not_silently_installed(self):
         rc, message = self.call("--chatgpt")

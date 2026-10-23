@@ -124,12 +124,21 @@ def user_unit_states() -> dict:
     return states
 
 
+def docker_status() -> dict:
+    """Only query the pinned local Docker daemon; never show IDs or labels."""
+    try:
+        from scripts import backend_inventory
+        return backend_inventory.report()
+    except (OSError, ValueError, ImportError):
+        return {"state": "unknown", "security_note": "Docker ownership not verified"}
+
+
 def status_report() -> dict:
     return {
         "mode": "read-only",
         "local_health": health(),
         "user_systemd_units": user_unit_states(),
-        "docker_containers": "not inspected; use the documented ownership-specific Docker checks",
+        "docker_project": docker_status(),
         "tunnel_note": "Listening locally does not prove ChatGPT account connection or remote tunnel registration",
     }
 
@@ -153,7 +162,12 @@ def check_report() -> dict:
                            and all(installed.get(name) for name in
                                    ("fastmcp", "httpx", "idna"))
                            and result["configuration"]["available"]
-                           and result["runtime"]["local_health"]["status"] == "healthy")
+                           and result["runtime"]["local_health"]["status"] == "healthy"
+                           and result["runtime"].get("docker_project", {}).get("state")
+                           != "unverified")
+    result["security_note"] = ("Local readiness does not establish remote tunnel "
+                               "registration, crawler firewall isolation, or "
+                               "ownership of other published Docker endpoints")
     return result
 
 
@@ -185,6 +199,8 @@ def dry_run() -> dict:
             {"menu": "6", "effect": "read-only", "action": "manual update and rollback instructions; no fetch/pull"},
             {"menu": "7", "effect": "potential service changes after explicit confirmation",
              "action": "./stop.sh (project-owned shutdown only; no shared Hermes Web stack)"},
+            {"menu": "8", "effect": "read-only",
+             "action": "verify ownership of private Compose project; flag foreign published crawlers"},
         ],
         "future": "Issue #75 optional 30-minute backend sleep is not implemented; off by default",
     }
@@ -219,6 +235,7 @@ def menu() -> int:
         print("5  Check installed dependency versions (local-only)")
         print("6  Review manual update and rollback steps")
         print("7  Stop project-owned services and containers (changes state)")
+        print("8  Inspect Docker ownership (read-only; no stop/restart)")
         print("0  Exit")
         try:
             choice = input("Choose: ").strip()
@@ -235,6 +252,8 @@ def menu() -> int:
             run_existing("scripts/install_user_services.py")
         elif choice == "5":
             print(json.dumps(dependency_report(), indent=2, ensure_ascii=True))
+        elif choice == "8":
+            print(json.dumps(docker_status(), indent=2, ensure_ascii=True))
         elif choice == "6":
             print("No automatic Git fetch, pull, image download, pip install or restart.")
             print("Review the worktree and deployment rollback gates in")
@@ -272,6 +291,7 @@ def make_parser() -> argparse.ArgumentParser:
   ./setup.sh --status              Read-only health and systemd status
   ./setup.sh --dry-run             Read-only menu action preview
   ./setup.sh --chatgpt             Read-only manual ChatGPT connector instructions
+  ./setup.sh --docker-status       Read-only verified Compose/Docker ownership inventory
 
 Default integration: ChatGPT only (account connection is manual).
 Other clients are not configured. On-demand Docker backend sleep from #75
@@ -287,6 +307,8 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="preview wizard commands and effects without prompts or writes")
     choices.add_argument("--chatgpt", action="store_true",
                          help="show manual ChatGPT/OpenAI tunnel connection steps")
+    choices.add_argument("--docker-status", action="store_true",
+                         help="read-only Docker ownership audit (pinned local daemon, no changes)")
     return parser
 
 
@@ -297,6 +319,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.chatgpt:
         print_chatgpt_steps()
+        return 0
+    if args.docker_status:
+        print(json.dumps(docker_status(), indent=2, ensure_ascii=True))
         return 0
     if args.status:
         print(json.dumps(status_report(), indent=2, ensure_ascii=True))
