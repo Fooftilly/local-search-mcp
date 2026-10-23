@@ -18,7 +18,7 @@ def safe_terminal(value: object) -> str:
     """Make untrusted history inert in terminals, including bidi overrides."""
     out = []
     for char in str(value):
-        if unicodedata.category(char) in ("Cc", "Cf", "Zl", "Zp"):
+        if unicodedata.category(char) in ("Cc", "Cf", "Cs", "Zl", "Zp"):
             code = ord(char)
             out.append(f"\\x{code:02x}" if code <= 0xff else f"\\u{code:04x}")
         else:
@@ -27,12 +27,16 @@ def safe_terminal(value: object) -> str:
 
 
 def safe_csv_cell(value: object) -> object:
-    """Prevent exported operator-audit cells from becoming spreadsheet formulas."""
-    if isinstance(value, str) and value and (
-        value[0] in "=+-@\t\r\n" or value.lstrip(" \t\r\n")[:1] in "=+-@"
-    ):
-        return "'" + value
-    return value
+    """Keep CSV safe for both spreadsheet imports and terminal inspection."""
+    if not isinstance(value, str):
+        return value
+    # Some spreadsheet importers ignore leading Unicode whitespace before
+    # evaluating formulas. Check the original before escaping controls.
+    formula = bool(value) and (
+        value[0] in "=+-@\t\r\n" or value.lstrip()[:1] in "=+-@"
+    )
+    value = safe_terminal(value)
+    return ("'" if formula else "") + value
 
 
 def events(path: Path):
