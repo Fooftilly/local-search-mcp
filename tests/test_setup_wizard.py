@@ -4,8 +4,10 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
+import tempfile
 import sys
 import unittest
 from unittest.mock import Mock, patch
@@ -38,6 +40,29 @@ class SetupWizardTests(unittest.TestCase):
                                 text=True, check=False, timeout=10, input="")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Examples:", result.stdout)
+
+    def test_real_setup_entrypoint_imports_root_diagnostics_without_pythonpath(self):
+        # The shell entry point runs from any working directory; importing
+        # bootstrap and health_cli must not rely on a developer PYTHONPATH.
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as config_root:
+            env = dict(os.environ)
+            env.pop("PYTHONPATH", None)
+            env["XDG_CONFIG_HOME"] = config_root
+            env["XDG_STATE_HOME"] = config_root
+            for option in ("--status", "--check"):
+                with self.subTest(option=option):
+                    result = subprocess.run(
+                        ["bash", str(root / "setup.sh"), option],
+                        cwd=config_root, env=env, capture_output=True, text=True,
+                        check=False, timeout=35, input="")
+                    self.assertIn(result.returncode, (0, 1), result.stderr)
+                    data = json.loads(result.stdout)
+                    health = (data["local_health"] if option == "--status"
+                              else data["runtime"]["local_health"])
+                    self.assertIn("TCP listener checks", health["note"])
+                    if option == "--check":
+                        self.assertTrue(data["configuration"]["available"])
 
     def test_dry_run_never_checks_health_or_runs_programs(self):
         with (patch.object(wizard, "check_report", side_effect=AssertionError("check")),
