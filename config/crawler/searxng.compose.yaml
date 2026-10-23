@@ -1,0 +1,18 @@
+# Canonical SearXNG overlay on a separate private Docker bridge.
+services:
+  searxng:
+    image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:latest}
+    restart: unless-stopped
+    ports: ["127.0.0.1:8888:8080"]
+    environment:
+      SEARXNG_BASE_URL: "http://127.0.0.1:8888/"
+      FORCE_OWNERSHIP: "false"
+    volumes:
+      - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
+      - searxng-cache:/var/cache/searxng
+    networks: [searxng-net]
+networks:
+  searxng-net:
+    driver: bridge
+volumes:
+  searxng-cache:
