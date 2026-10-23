@@ -176,17 +176,28 @@ def normalize_domain(domain: str) -> str:
     domain = domain.strip().lower().rstrip(".")
     if not domain or any(c in domain for c in '/:@?#\\ \t\n'):
         raise ValueError("Enter only a domain name, not a URL")
-    # Browser UTS #46 non-transitional handling diverges from Python's
-    # IDNA2003 codec on deviation characters. Reject those hostnames instead
-    # of letting a grant to fass.de authorize navigation to faß.de.
-    # This check has no third-party dependencies: bootstrap validates domain
-    # configuration before the virtualenv is available.
-    if any(char in domain for char in ("ß", "ς", "\u200c", "\u200d")):
-        raise ValueError("Ambiguous IDN domain: browser and policy hostnames differ")
     try:
-        domain = domain.encode("idna").decode("ascii")
+        # Preserve ASCII behavior, including browser-valid -- labels.
+        legacy_host = domain.encode("idna").decode("ascii")
     except (UnicodeError, ValueError) as exc:
         raise ValueError("Invalid IDN domain") from exc
+    if not domain.isascii():
+        # Python's Unicode-3.2 IDNA2003 differs from browsers' modern UTS #46
+        # on many Unicode characters, not only sharp s and joiners.
+        # Fail closed if the dependency is missing, never use IDNA2003 alone.
+        try:
+            import idna
+        except ImportError as exc:
+            raise ValueError("Unicode domain validation requires idna") from exc
+        try:
+            browser_host = idna.encode(
+                domain, uts46=True, transitional=False
+            ).decode("ascii")
+        except (UnicodeError, ValueError, idna.IDNAError) as exc:
+            raise ValueError("Invalid IDN domain") from exc
+        if legacy_host != browser_host:
+            raise ValueError("Ambiguous IDN domain: browser and policy hostnames differ")
+    domain = legacy_host
 
     if len(domain) > 253 or not re.fullmatch(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", domain):
         raise ValueError("Domain must be a valid public DNS name")
