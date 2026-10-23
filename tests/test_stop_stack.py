@@ -103,6 +103,7 @@ class StopStackTests(unittest.TestCase):
         self.assertFalse(any(c[:2] == ["sudo", "systemctl"] for c in cmds))
 
     def test_absent_optional_backend_and_partial_services_are_normal(self):
+        self.containers = {}  # No service container has been created yet.
         result, _ = self.run_job()
         self.assertFalse(result.errors)
         self.assertFalse(any(c[:2] == ["docker", "update"] for c in self.commands))
