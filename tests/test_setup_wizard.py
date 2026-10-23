@@ -64,6 +64,94 @@ class SetupWizardTests(unittest.TestCase):
                     if option == "--check":
                         self.assertTrue(data["configuration"]["available"])
 
+    def test_project_venv_dependency_probe_uses_local_checker_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            python = root / ".venv" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.touch()
+            payload = {"remote_requested": False, "packages": [
+                {"package": "fastmcp", "installed": "4.1.0"},
+                {"package": "httpx", "installed": "0.28.1"},
+                {"package": "idna", "installed": "3.11"},
+            ]}
+            result = subprocess.CompletedProcess([], 0, stdout=json.dumps(payload))
+            with (patch.object(wizard, "ROOT", root),
+                  patch.object(wizard.subprocess, "run", return_value=result) as invoke):
+                report = wizard.dependency_report()
+            self.assertEqual(report["state"], "available")
+            self.assertEqual(report["packages"][0]["installed"], "4.1.0")
+            argv = invoke.call_args.args[0]
+            self.assertEqual(argv, [str(python), "-I", "-B",
+                                    str(root / "scripts" / "check_dependency_versions.py")])
+            self.assertEqual(invoke.call_args.kwargs["cwd"], root)
+            self.assertTrue(invoke.call_args.kwargs["capture_output"])
+            self.assertFalse(invoke.call_args.kwargs["check"])
+
+    def test_missing_venv_is_not_silent_system_python_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with (patch.object(wizard, "ROOT", Path(tmp)),
+                  patch.object(wizard.subprocess, "run",
+                               side_effect=AssertionError("must not run"))):
+                result = wizard.dependency_report()
+            self.assertEqual(result["state"], "missing")
+            self.assertEqual(result["packages"], [])
+
+    def test_failed_venv_probe_redacts_subprocess_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            python = root / ".venv" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.touch()
+            failed = subprocess.CompletedProcess([], 1, stdout="sensitive output",
+                                                 stderr="SECRET_TOKEN")
+            with (patch.object(wizard, "ROOT", root),
+                  patch.object(wizard.subprocess, "run", return_value=failed)):
+                result = wizard.dependency_report()
+            self.assertEqual(result["state"], "unavailable")
+            self.assertNotIn("SECRET_TOKEN", json.dumps(result))
+            self.assertNotIn("sensitive output", json.dumps(result))
+
+    def test_check_uses_project_venv_report_for_readiness(self):
+        dependencies = {"state": "available", "packages": [
+            {"package": "fastmcp", "installed": "4.1"},
+            {"package": "httpx", "installed": "0.28"},
+            {"package": "idna", "installed": "3.11"},
+        ]}
+        with (patch.object(wizard, "dependency_report", return_value=dependencies),
+              patch.object(wizard, "configured_sources",
+                           return_value={"available": True}),
+              patch.object(wizard, "status_report",
+                           return_value={"local_health": {"status": "healthy"}}),
+              patch.object(wizard, "project_python", return_value=Path("/virtual/python"))):
+            report = wizard.check_report()
+        self.assertTrue(report["ready"])
+        self.assertEqual(report["dependency_versions_in_project_venv"], dependencies)
+        self.assertNotIn("dependency_versions_in_current_interpreter", report)
+        dependencies = {**dependencies, "packages": [
+            *dependencies["packages"][:-1],
+            {"package": "idna", "installed": None},
+        ]}
+        with (patch.object(wizard, "dependency_report", return_value=dependencies),
+              patch.object(wizard, "configured_sources",
+                           return_value={"available": True}),
+              patch.object(wizard, "status_report",
+                           return_value={"local_health": {"status": "healthy"}})):
+            self.assertFalse(wizard.check_report()["ready"])
+
+    def test_menu_dependency_inspection_only_reads_project_venv(self):
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input", side_effect=["5", "0"]),
+              patch.object(wizard, "dependency_report",
+                           return_value={"state": "missing", "packages": []}) as report,
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("no system python helper")),
+              contextlib.redirect_stdout(io.StringIO()) as output):
+            self.assertEqual(wizard.main([]), 0)
+        report.assert_called_once_with()
+        self.assertIn('"state": "missing"', output.getvalue())
+
     def test_dry_run_never_checks_health_or_runs_programs(self):
         with (patch.object(wizard, "check_report", side_effect=AssertionError("check")),
               patch.object(wizard, "status_report", side_effect=AssertionError("status")),
