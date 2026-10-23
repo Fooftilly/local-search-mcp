@@ -26,7 +26,7 @@ class HistoryCliOutputSafetyTests(unittest.TestCase):
         event = {"time_utc": "2026-10-22T12:00:00Z",
                  "kind": "search", "status": "success", **fields}
         with self.path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(event, ensure_ascii=False) + "\n")
+            stream.write(json.dumps(event, ensure_ascii=True) + "\n")
 
     def run_cli(self, *args):
         stdout = io.StringIO()
@@ -36,12 +36,12 @@ class HistoryCliOutputSafetyTests(unittest.TestCase):
         return stdout.getvalue()
 
     def test_text_mode_escapes_terminal_and_direction_controls(self):
-        self.record(query="q\x1b[2K\x1b]52;c;QUJD\x07\r\n\u0085\u202eEND")
+        self.record(query="q\x1b[2K\x1b]52;c;QUJD\x07\r\n\u0085\u202e\ud800END")
         output = self.run_cli()
-        for unsafe in ("\x1b", "\x07", "\r", "\x85", "\u202e"):
+        for unsafe in ("\x1b", "\x07", "\r", "\x85", "\u202e", "\ud800"):
             self.assertNotIn(unsafe, output)
         for escaped in (r"\x1b", r"\x07", r"\x0d", r"\x0a",
-                        r"\x85", r"\u202e"):
+                        r"\x85", r"\u202e", r"\ud800"):
             self.assertIn(escaped, output)
         self.assertEqual(output.count("\n"), 2)
 
@@ -50,6 +50,7 @@ class HistoryCliOutputSafetyTests(unittest.TestCase):
             '=HYPERLINK("https://example.org/", "open")',
             "+SUM(1,1)", "-2+3", "@SUM(1,2)",
             "\t=1+1", "\r=1+1", "\n=1+1", "  =1+1",
+            "\u00a0=1+1", "\u2003+SUM(1,1)",
         ]
         for query in malicious:
             self.record(query=query)
@@ -57,8 +58,19 @@ class HistoryCliOutputSafetyTests(unittest.TestCase):
         rows = list(csv.DictReader(io.StringIO(self.run_cli("--csv"))))
         self.assertEqual(len(rows), len(malicious) + 1)
         self.assertEqual([row["query"] for row in rows[:-1]],
-                         ["'" + query for query in malicious])
+                         ["'" + history_cli.safe_terminal(query) for query in malicious])
         self.assertEqual(rows[-1]["query"], "ordinary search")
+
+    def test_csv_control_sequences_and_surrogates_are_inert(self):
+        payload = "q\x1b]52;c;QUJD\x07\u202e\ud800"
+        self.record(query=payload)
+        output = self.run_cli("--csv")
+        for unsafe in ("\x1b", "\x07", "\u202e", "\ud800"):
+            self.assertNotIn(unsafe, output)
+        self.assertEqual(
+            list(csv.DictReader(io.StringIO(output)))[0]["query"],
+            history_cli.safe_terminal(payload),
+        )
 
     def test_json_mode_escapes_c1_and_format_controls(self):
         self.record(query="safe\u0085\u202e")
