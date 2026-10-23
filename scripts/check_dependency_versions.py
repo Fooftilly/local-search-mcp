@@ -14,7 +14,7 @@ import sys
 from urllib.error import HTTPError, URLError
 from urllib.request import build_opener, HTTPHandler, HTTPSHandler, HTTPRedirectHandler, ProxyHandler
 
-PACKAGES = ("fastmcp", "httpx")
+PACKAGES = ("fastmcp", "httpx", "idna")
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 TIMEOUT_SECONDS = 5
 _VERSION = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._+!\-]{0,79}\Z")
@@ -77,7 +77,7 @@ def version_report(*, check_remote: bool = False) -> list[dict]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-remote", action="store_true",
-                        help="explicitly query public PyPI for the two allowlisted packages")
+                        help="explicitly query public PyPI for the three allowlisted packages")
     args = parser.parse_args(argv)
     results = version_report(check_remote=args.check_remote)
     print(json.dumps({"scope": "installed-direct-dependencies",

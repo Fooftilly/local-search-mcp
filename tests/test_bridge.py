@@ -53,6 +53,19 @@ class BridgeTests(unittest.TestCase):
         self.addCleanup(env.stop)
 
 
+    def test_ambiguous_idn_cannot_reach_crawl4ai_even_with_twin_approved(self):
+        # The agent supplies the original Unicode URL; policy must reject it
+        # before a browser could navigate a different punycode host.
+        domain_policy.decide("fass.de", "allow")
+        with (patch.object(domain_policy.socket, "getaddrinfo",
+                           side_effect=AssertionError("no DNS on rejected URL")),
+              patch.object(self.module, "_run_fetch",
+                           side_effect=AssertionError("Crawl4AI must not run"))):
+            result = self.module.web_fetch("https://faß.de/path?secret=1")
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("Ambiguous IDN", result["reason"])
+        self.assertEqual(domain_policy.counts()["pending"], 0)
+
     def test_saved_upstream_timeouts_reach_live_http_clients(self):
         with tempfile.TemporaryDirectory() as config_home, patch.dict(os.environ, {
             "XDG_CONFIG_HOME": config_home,
