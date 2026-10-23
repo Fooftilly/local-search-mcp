@@ -199,14 +199,21 @@ class Stop:
                 continue
             service = label.get("com.docker.compose.service")
             try:
-                files = set(label["com.docker.compose.project.config_files"].split(","))
+                raw_files = label["com.docker.compose.project.config_files"].split(",")
+                files = set(raw_files)
             except (KeyError, AttributeError):
-                files = set()
+                raw_files, files = [], set()
+            # A shared crawler file is insufficient evidence of ownership:
+            # never touch a deployment with a foreign Compose override.
+            # Crawl4AI may have been started alone before the optional overlay
+            # was installed; SearXNG must reference both managed files.
             valid = (label.get("com.docker.compose.project") == PROJECT
                      and service in ("crawl4ai", "searxng")
+                     and len(raw_files) == len(files)
                      and str(crawler.resolve()) in files
+                     and files.issubset(expected)
                      and (service != "searxng"
-                          or str(overlay.resolve()) in files and overlay.exists()))
+                          or overlay.exists() and str(overlay.resolve()) in files))
             if not valid:
                 self.error("Compose: foreign, orphaned or unverified project container")
                 continue
