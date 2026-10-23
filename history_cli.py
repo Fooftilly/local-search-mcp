@@ -83,10 +83,14 @@ def main() -> int:
 
     selected = (e for e in events(path) if matches(e))
     if args.stats:
-        counter = Counter((e.get("kind"), e.get("status")) for e in selected)
+        # History may contain legacy or malformed JSON values (including
+        # unhashable lists/dicts). Sanitize to strings before counting/sorting.
+        counter = Counter((safe_terminal(e.get("kind") or "?"),
+                           safe_terminal(e.get("status") or "?"))
+                          for e in selected)
         print(f"History file: {safe_terminal(path)}")
         for (kind, status), total in sorted(counter.items()):
-            print(f"{safe_terminal(kind or '?'):6} {safe_terminal(status or '?'):7} {total}")
+            print(f"{kind:6} {status:7} {total}")
         return 0
     recent = list(deque(selected, maxlen=args.last))
     if args.csv:
