@@ -44,23 +44,37 @@ def _run(*args: str) -> str | None:
     return value.stdout.strip()
 
 
+def _trusted_root_parents(target: Path) -> bool:
+    """Require every parent of privileged files to be root-owned and unwritable."""
+    for parent in target.parents:
+        metadata = parent.lstat()
+        if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0
+                or metadata.st_mode & 0o022):
+            return False
+    return True
+
+
+def _trusted_root_fd(fd: int, *, mode: int, size: int) -> bool:
+    metadata = os.fstat(fd)
+    return (stat.S_ISREG(metadata.st_mode) and metadata.st_uid == 0
+            and metadata.st_gid == 0 and stat.S_IMODE(metadata.st_mode) == mode
+            and metadata.st_size == size)
+
+
 def _reviewed_root_file(target: Path, source: Path, mode: int) -> bool:
     """Inspect without following symlinks; compare installed bytes to checkout."""
     fd = None
     try:
-        for parent in target.parents:
-            metadata = parent.lstat()
-            if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0
-                    or metadata.st_mode & 0o022):
-                return False
+        if not _trusted_root_parents(target):
+            return False
         expected = source.read_bytes()
         if not expected or len(expected) > MAX_FILE:
             return False
-        fd = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        found = os.fstat(fd)
-        if (not stat.S_ISREG(found.st_mode) or found.st_uid != 0
-                or found.st_gid != 0 or stat.S_IMODE(found.st_mode) != mode
-                or found.st_size != len(expected)):
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if nofollow is None:
+            return False  # Linux privilege audit must never follow target links.
+        fd = os.open(target, os.O_RDONLY | nofollow)
+        if not _trusted_root_fd(fd, mode=mode, size=len(expected)):
             return False
         with os.fdopen(fd, "rb") as stream:
             fd = None
