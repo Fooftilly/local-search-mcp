@@ -124,17 +124,17 @@ resolved through a separately reviewed deployment plan before any opt-in.
 
 ## Guided production tunnel protection (#74)
 
-For a dedicated running \`local-search-crawler\` project (exactly one
+For a dedicated running `local-search-crawler` project (exactly one
 owner-verified Crawl4AI container and one SearXNG container), with the MCP
 bridge listening locally, the wizard can install the privileged firewall
-service and protected ChatGPT tunnel without manual \`visudo\` editing:
+service and protected ChatGPT tunnel without manual `visudo` editing:
 
-\`\`\`sh
+```sh
 ./setup.sh --secure-tunnel-preview
 ./setup.sh --secure-tunnel --confirm-secure-tunnel SECURE
-\`\`\`
+```
 
-Alternatively choose **11** in the interactive wizard and type \`SECURE\`.
+Alternatively choose **11** in the interactive wizard and type `SECURE`.
 The preview makes no privileged calls or writes. Installation runs as your
 **normal user**, requesting your sudo authentication when necessary.
 
@@ -147,11 +147,11 @@ The guarded action:
 3. Installs missing **fixed, repository-reviewed** guard and root systemd
    unit as root-owned copies. Root never executes an editable Git checkout.
 4. Enables the firewall service and checks it is active, then writes exactly
-   one narrowly scoped \`NOPASSWD\` sudoers probe rule for the actual OS user.
-   \`visudo -cf\` validates this rule both before and after installation.
+   one narrowly scoped `NOPASSWD` sudoers probe rule for the actual OS user.
+   `visudo -cf` validates this rule both before and after installation.
 5. Requires the fixed root-owned live private-denial/public-HTTPS egress
    probe to pass *without prompting*.
-6. Installs the fixed user tunnel \`ExecStartPre=+\` drop-in, reloads user
+6. Installs the fixed user tunnel `ExecStartPre=+` drop-in, reloads user
    systemd, and enables the tunnel and health timer only after confirming the
    drop-in is loaded.
 
@@ -166,9 +166,9 @@ The firewall service is a boot-time guard, **not a live kill switch**:
 removing nftables rules while the tunnel runs will not revoke the tunnel.
 After every reboot, verify the backend containers start before the guard
 and that the tunnel remains guarded; containers left with restart policy
-\`no\` still require a separate reviewed startup plan. Even a successful
+`no` still require a separate reviewed startup plan. Even a successful
 live probe is bounded evidence, not a full browser sandbox certificate.
 
 No script can enroll an MCP app into the user's ChatGPT account: complete
-that approval through ChatGPT settings and test \`web_search\` and an
-approved \`web_fetch\` after successful installation.
+that approval through ChatGPT settings and test `web_search` and an
+approved `web_fetch` after successful installation.
