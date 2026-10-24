@@ -385,16 +385,20 @@ def print_local_client_steps(client: str) -> None:
     endpoint = "http://127.0.0.1:8790/mcp"
     if client == "cursor":
         print("Cursor IDE (including Grok selected as the model):")
-        print("Add this entry under mcpServers in ~/.cursor/mcp.json:")
-        print(json.dumps({"mcpServers": {"local-search": {"url": endpoint}}},
-                         indent=2))
-        print("Merge this entry with existing servers; do not replace the file.")
+        print("Add the following MEMBER inside mcpServers in ~/.cursor/mcp.json:")
+        print(json.dumps({"local-search": {"url": endpoint}}, indent=2))
+        print("Do not nest another mcpServers wrapper or replace the whole file.")
+        print("If local-search already exists, choose an unused server name")
+        print("(such as local-research) instead of overwriting the entry.")
         print("Restart or refresh Cursor MCP connections and verify web_search.")
         print("This loopback URL is for Cursor running on THIS HOST only.")
         print("A remote Cursor/Grok cloud bot cannot use 127.0.0.1 on your laptop;")
         print("it needs separately authenticated HTTPS access, not the OpenAI tunnel.")
     elif client == "hermes":
         print("Hermes Agent running on THIS HOST:")
+        print("Choose an unused MCP server name; local-search is just an example.")
+        print("Do not overwrite an existing local-search entry. If it exists,")
+        print("substitute an unused name in both add and test commands.")
         print("  hermes mcp add local-search --url " + endpoint)
         print("  hermes mcp test local-search")
         print("  hermes mcp list")
