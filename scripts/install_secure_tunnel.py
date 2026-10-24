@@ -228,6 +228,36 @@ def preview() -> dict:
     }
 
 
+# The command must actually survive systemd's drop-in merge, not just
+# appear in a unit file (a later drop-in can reset ExecStartPre=).
+_REQUIRED_PROBE_ARGV = (
+    "/usr/bin/sudo -n /usr/bin/python3 "
+    "/usr/local/libexec/local-search-mcp/crawler_egress_guard.py "
+    "--container crawl4ai --probe"
+)
+
+
+def _verify_effective_tunnel_probe() -> None:
+    raw = _run("systemctl", "--user", "show", USER_TUNNEL,
+               "--property=ExecStartPre", "--value").stdout.strip()
+    if len(raw) > 8192:
+        raise InstallError("Effective tunnel pre-start commands are too large")
+    entries = re.findall(r"\\{([^{}]*)\\}", raw)
+    # One exact, non-ignored root probe is required. Refuse missing probes,
+    # additional commands or unexpected serialization rather than guessing.
+    if len(entries) != 1:
+        raise InstallError("Effective tunnel firewall startup probe is missing or overridden")
+    fields = {}
+    for field in entries[0].split(";"):
+        key, separator, value = field.strip().partition("=")
+        if separator and key not in fields:
+            fields[key] = value.strip()
+    if (fields.get("path") != "/usr/bin/sudo"
+            or fields.get("argv[]") != _REQUIRED_PROBE_ARGV
+            or fields.get("ignore_errors") != "no"):
+        raise InstallError("Effective tunnel firewall startup probe is not enforced")
+
+
 def install() -> None:
     preview()
     # No silent attempt to relax security on an already running tunnel.
@@ -255,9 +285,7 @@ def install() -> None:
     print("Installing tunnel pre-start protection...")
     _install_user_dropin()
     _run("systemctl", "--user", "daemon-reload")
-    loaded = _run("systemctl", "--user", "cat", USER_TUNNEL).stdout
-    if "ExecStartPre=+/usr/bin/sudo -n /usr/bin/python3" not in loaded:
-        raise InstallError("Guarded tunnel startup was not loaded")
+    _verify_effective_tunnel_probe()
     # Only after a successful live root-owned probe can the tunnel be started.
     try:
         _run("systemctl", "--user", "enable", "--now", USER_TUNNEL, timeout=180)
