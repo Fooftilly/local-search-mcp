@@ -1,0 +1,7 @@
+# Keep PR discussions focused on actionable review feedback.
+# Diagrams remain available via "@pr-lens draw" when useful.
+schemaVersion: 0.1.1
+github:
+  draw: on-demand
+  comment:
+    notice: false
