@@ -21,7 +21,11 @@ the code always says `can_activate: false`.
 The opt-in runtime now verifies dedicated service identity, performs serialized
 wake/idle-stop with strict Docker identity checks, and requires a **live**
 firewall probe after each crawler wake. An explicit `./stop.sh` disables
-wake paths before shutting down bridge/tunnel/backends. Unattended reboot
+wake paths before shutting down bridge/tunnel/backends. The dashboard's
+read-only service status now distinguishes a **supervisor-reported sleeping**
+backend from unexplained TCP unavailability; it does not inspect Docker or
+probe/fire up a sleeping service when refreshing the page. This is advisory,
+not proof of container health or nftables protection. Unattended reboot
 recovery and fault handling still need host acceptance tests.
 
 ## Read-only host reboot audit
