@@ -99,11 +99,11 @@ class RollbackCandidateTests(unittest.TestCase):
         code = self.base / "output"
         code.mkdir()
         for name in ("../escape", "/absolute", "safe/../../escape",
-                     "double//separator", "back\\\\slash"):
+                     "double//separator", "back\\slash"):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 candidate._valid_member(name)
         with patch.object(candidate, "_git",
-                          return_value=b"120000 blob " + (b"a" * 40) + b"\\tlink\\0"):
+                          return_value=b"120000 blob " + (b"a" * 40) + b"\tlink\0"):
             with self.assertRaisesRegex(ValueError, "unsupported tracked file type"):
                 candidate._copy_git_blobs(self.root, self.target, code)
         self.assertEqual(list(code.rglob("*")), [])
@@ -111,17 +111,17 @@ class RollbackCandidateTests(unittest.TestCase):
     def test_local_smudge_filter_never_executes_during_staging(self):
         marker = self.base / "filter-triggered"
         command = self.base / "smudge.sh"
-        command.write_text("#!/bin/sh\\nprintf 'ran' > " + str(marker) + "\\ncat\\n")
+        command.write_text("#!/bin/sh\nprintf 'ran' > " + str(marker) + "\ncat\n")
         command.chmod(0o700)
         attributes = self.base / "global-attributes"
-        attributes.write_text("*.py filter=unsafe\\n")
+        attributes.write_text("*.py filter=unsafe\n")
         self.git("config", "core.attributesFile", str(attributes))
         self.git("config", "filter.unsafe.smudge", str(command))
         with patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)):
             candidate.prepare(self.target, self.archive, self.dir, root=self.root)
         self.assertFalse(marker.exists(), "Raw blob staging executed a smudge command")
         self.assertEqual((self.dir / "source" / "bridge.py").read_text(),
-                         "old behavior\\n")
+                         "old behavior\n")
 
     def test_cli_never_applies_unconfirmed_rollback(self):
         with patch.object(candidate, "prepare",
