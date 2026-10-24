@@ -154,8 +154,10 @@ The guarded action:
 5. Requires the fixed root-owned live private-denial and public DNS/TCP-443
    reachability probe to pass *without prompting*. This does not verify TLS.
 6. Installs the fixed user tunnel `ExecStartPre=+` drop-in, reloads user
-   systemd, and enables the tunnel and health timer only after confirming the
-   drop-in is loaded.
+   systemd, and verifies the **effective** `ExecStartPre` command from
+   `systemctl show` before enabling the tunnel and health timer. A later
+   drop-in that clears, replaces or ignores the firewall probe blocks startup,
+   even when the guard still appears in `systemctl cat`.
 
 No keys or tunnel profiles are exported. No Git fetch/pull, pip/Docker image
 download, other MCP client changes, automatic on-demand Docker operation, or
