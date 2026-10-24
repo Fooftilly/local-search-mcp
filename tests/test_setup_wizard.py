@@ -368,6 +368,15 @@ class SetupWizardTests(unittest.TestCase):
         cases = (
             (active, "running"),
             ({**active, "backends": {
+                "crawl4ai": {"state": "sleeping"},
+                "searxng": {"state": "sleeping"}}}, "sleeping"),
+            ({**active, "backends": {
+                "crawl4ai": {"state": "sleeping"},
+                "searxng": {"state": "running"}}}, "partially_running"),
+            ({**active, "backends": {
+                "crawl4ai": {"state": "waking"},
+                "searxng": {"state": "running"}}}, "transitioning"),
+            ({**active, "backends": {
                 "crawl4ai": {"state": "failed"},
                 "searxng": {"state": "running"}}}, "failed"),
             ({"mode": "disabled", "enabled": False, "backends": None},
