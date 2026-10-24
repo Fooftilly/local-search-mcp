@@ -47,6 +47,16 @@ For the ChatGPT-first interactive setup and maintenance menu, run
 features and mutation boundaries. See [SETUP-WIZARD.md](SETUP-WIZARD.md).
 Existing `./start.sh` and `./stop.sh` still work independently.
 
+For an existing dedicated, running crawler/search deployment, `./setup.sh --secure-tunnel-preview`
+provides a read-only firewall/tunnel installation plan. This host firewall
+is a boot-time guard, not a live kill switch; removing nftables does not
+revoke an already running tunnel. After
+reviewing it, `./setup.sh --secure-tunnel --confirm-secure-tunnel SECURE`
+installs narrowly scoped root-owned firewall/service and sudoers probe files
+through an explicit sudo prompt and starts the protected ChatGPT tunnel
+only after live egress tests pass. Existing differing admin files are never
+overwritten. See [SETUP-WIZARD.md](SETUP-WIZARD.md).
+
 For setup without starting processes:
 
 ```bash

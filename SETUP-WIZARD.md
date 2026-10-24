@@ -120,3 +120,63 @@ firewall rules. `can_activate` remains false even for a dedicated candidate.
 The future default idle timeout is 30 minutes, but there is no live idle timer.
 Shared backends or incomplete Docker ownership/security verification must be
 resolved through a separately reviewed deployment plan before any opt-in.
+
+
+## Guided production tunnel protection (#74)
+
+For a dedicated running `local-search-crawler` project (exactly one
+owner-verified Crawl4AI container and one SearXNG container), with the MCP
+bridge listening locally, the wizard can install the privileged firewall
+service and protected ChatGPT tunnel without manual `visudo` editing:
+
+```sh
+./setup.sh --secure-tunnel-preview
+./setup.sh --secure-tunnel --confirm-secure-tunnel SECURE
+```
+
+Alternatively choose **11** in the interactive wizard and type `SECURE`.
+The preview makes no privileged calls or writes. Installation runs as your
+**normal user**, requesting your sudo authentication when necessary.
+
+The guarded action:
+1. Requires verified, dedicated, running Docker containers (never controls
+   foreign/shared Hermes Web containers), healthy SearXNG/Crawl4AI, and a
+   running local bridge/dashboard. It does not start/recreate containers.
+2. Refuses to modify an already active tunnel and refuses any conflicting
+   existing root-owned guard, firewall unit, user drop-in or sudoers file.
+3. Installs missing **fixed, repository-reviewed** guard and root systemd
+   unit as root-owned copies. Root never executes an editable Git checkout.
+4. Enables the firewall service and checks it is active, then writes exactly
+   two narrowly scoped `NOPASSWD` sudoers rules (fixed `--probe` and
+   `--preflight` commands) for the actual OS user. Both are installed;
+   only later use of `--preflight` for on-demand backends is optional.
+   `visudo -cf` validates both rules before and after installation.
+5. Requires the fixed root-owned live private-denial and public DNS/TCP-443
+   reachability probe to pass *without prompting*. This does not verify TLS.
+6. Installs the fixed user tunnel `ExecStartPre=+` drop-in, reloads user
+   systemd, and verifies the **effective** `ExecStartPre` command from
+   `systemctl show` before enabling the tunnel and health timer. A later
+   drop-in that clears, replaces or ignores the firewall probe makes the
+   installer refuse to enable the tunnel and health timer, even when the
+   guard still appears in `systemctl cat`. This validation runs at install
+   time, not continuously: later unit changes require manual revalidation.
+
+No keys or tunnel profiles are exported. No Git fetch/pull, pip/Docker image
+download, other MCP client changes, automatic on-demand Docker operation, or
+live rollback occurs. Installation is idempotent for matching existing files;
+conflicting files fail closed instead of being overwritten. If any step fails,
+the wizard attempts to stop and disable a partially started tunnel, but
+operators **must verify** `systemctl --user is-active local-search-mcp-tunnel.service`
+after any failure before permitting remote access. Previously installed
+firewall rules remain in place.
+
+The firewall service is a boot-time guard, **not a live kill switch**:
+removing nftables rules while the tunnel runs will not revoke the tunnel.
+After every reboot, verify the backend containers start before the guard
+and that the tunnel remains guarded; containers left with restart policy
+`no` still require a separate reviewed startup plan. Even a successful
+live probe is bounded evidence, not a full browser sandbox certificate.
+
+No script can enroll an MCP app into the user's ChatGPT account: complete
+that approval through ChatGPT settings and test `web_search` and an
+approved `web_fetch` after successful installation.
