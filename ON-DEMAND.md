@@ -39,8 +39,9 @@ if anything is missing. It requires both dedicated containers' **actual**
 Docker restart policies to be `no` to prevent Docker itself from starting
 the crawler before the root firewall rules are installed. It also verifies
 the root-owned installed helper and systemd unit match the reviewed checkout
-bytes, checks the **effective** systemd startup and tunnel gates, user
-service activation and linger. Run it from the same reviewed checkout
+bytes, checks the **effective** systemd startup and tunnel gates, both
+owner-triggered cold-wake guard unit commands (`--preflight` and `--probe`),
+user service activation and linger. Run it from the same reviewed checkout
 revision that was deployed to the root-owned paths.
 
 Even an all-green static report is only `ready_for_manual_reboot_test`,
