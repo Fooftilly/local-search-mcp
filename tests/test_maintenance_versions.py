@@ -62,6 +62,7 @@ class MaintenanceVersionsTests(unittest.TestCase):
                  for name in ("fastmcp", "httpx", "idna")]
         documents = (
             "INVALID",
+            "null", "[]", '"bare string"', "42",
             json.dumps({"remote_requested": False, "packages": valid}),
             json.dumps({"remote_requested": True, "packages": valid[:2]}),
             json.dumps({"remote_requested": True, "packages": [
