@@ -66,6 +66,18 @@ class OnDemandSupervisorTests(unittest.TestCase):
                 pass
             self.assertEqual(starter.call_count, 2)
 
+    def test_warm_request_does_not_take_cross_backend_docker_lock(self):
+        manager = self.new_supervisor()
+        manager._verified_at["searxng"] = sup.time.monotonic()
+        with (patch.object(manager, "_enabled", return_value=True),
+              patch.object(sup.coordination, "exclusive",
+                           side_effect=AssertionError("No global lock for warm work")),
+              patch.object(sup.docker, "start",
+                           side_effect=AssertionError("No warm Docker start"))):
+            with manager.lease("searxng"):
+                self.assertEqual(manager.snapshot()["searxng"]["active_requests"], 1)
+        self.assertEqual(manager.snapshot()["searxng"]["active_requests"], 0)
+
     def test_settings_disable_suppresses_stop_before_mutation(self):
         manager = self.new_supervisor()
         self.now[0] += 100
