@@ -208,7 +208,7 @@ def preview() -> dict:
         "privileged_install": [
             "Install missing fixed root-owned crawler egress guard and systemd service",
             "Enable and verify the root firewall service (live nftables checks)",
-            "Validate and install exact, narrow passwordless sudoers probe rule",
+            "Validate and install two exact NOPASSWD sudoers rules: root-owned --probe and --preflight (the latter reserved for future on-demand use)",
         ],
         "user_install": [
             "Install only the fixed tunnel egress-probe drop-in",
@@ -258,11 +258,15 @@ def install() -> None:
             raise InstallError("Protected tunnel did not reach active state")
         _run("systemctl", "--user", "enable", "--now",
              "local-search-mcp-health.timer", timeout=180)
-    except InstallError:
-        # A partly successful systemctl start can leave a tunnel running:
-        # attempt to shut it off, but still require the operator to verify.
-        _run("systemctl", "--user", "disable", "--now",
-             USER_TUNNEL, check=False, timeout=30)
+    except (InstallError, KeyboardInterrupt):
+        # Interrupted or partly successful systemctl commands can leave the
+        # tunnel active. Always attempt to shut it off; the operator must
+        # still verify its status if this best-effort cleanup fails.
+        try:
+            _run("systemctl", "--user", "disable", "--now",
+                 USER_TUNNEL, check=False, timeout=30)
+        except InstallError:
+            pass
         raise
     print("Protected ChatGPT tunnel enabled. Verify local MCP tools and remote registration.")
     print("WARNING: Running tunnel is not revoked if nftables is later manually removed.")
