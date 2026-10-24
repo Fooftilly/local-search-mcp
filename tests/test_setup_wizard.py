@@ -359,6 +359,48 @@ class SetupWizardTests(unittest.TestCase):
         inspect.assert_called_once_with()
         self.assertIn('"can_activate": false', output.getvalue())
 
+    def test_enabled_on_demand_reports_runtime_not_stale_candidate_gates(self):
+        inventory = {"state": "running"}
+        active = {"mode": "on-demand", "enabled": True, "idle_minutes": 30,
+                  "backends": {
+                      "crawl4ai": {"state": "running"},
+                      "searxng": {"state": "running"}}}
+        cases = (
+            (active, "running"),
+            ({**active, "backends": {
+                "crawl4ai": {"state": "failed"},
+                "searxng": {"state": "running"}}}, "failed"),
+            ({"mode": "disabled", "enabled": False, "backends": None},
+             "unverified"),
+            ({"state": "unavailable"}, "unverified"),
+            ({**active, "backends": None}, "unverified"),
+        )
+        for runtime, state in cases:
+            with (self.subTest(state=state, runtime=runtime),
+                  patch("scripts.on_demand_eligibility.eligibility",
+                        return_value={"state": "manual_verification_required",
+                                      "reason": "Potential dedicated deployment",
+                                      "next_gates": ["Old pre-activation check"]}),
+                  patch("scripts.on_demand_settings.read",
+                        return_value={"enabled": True, "idle_minutes": 30}),
+                  patch.object(wizard, "on_demand_runtime_status",
+                               return_value=runtime)):
+                report = wizard.on_demand_status(inventory=inventory)
+            self.assertEqual(report["state"], state)
+            self.assertTrue(report["enabled"])
+            self.assertFalse(report["can_activate"])
+            self.assertIn("read-only", report["activation_note"])
+            self.assertNotIn("Old pre-activation check", report["next_gates"])
+            self.assertNotIn("Potential dedicated deployment", report["reason"])
+
+    def test_dry_run_does_not_claim_on_demand_is_unimplemented(self):
+        status, output = self.call("--dry-run")
+        self.assertEqual(status, 0)
+        report = json.loads(output)
+        self.assertIn("implemented", report["limitations"])
+        self.assertNotIn("not implemented", report["limitations"])
+        self.assertIn("on-demand", report["limitations"])
+
     def test_on_demand_preflight_error_is_redacted_and_fail_closed(self):
         with (patch("scripts.on_demand_eligibility.eligibility",
                     side_effect=OSError("TOKEN=sensitive"))) as _:
