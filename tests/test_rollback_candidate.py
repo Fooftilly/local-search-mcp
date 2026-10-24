@@ -2,14 +2,12 @@
 from __future__ import annotations
 
 from contextlib import closing
-import io
 import json
 import os
 from pathlib import Path
 import sqlite3
 import stat
 import subprocess
-import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -72,7 +70,7 @@ class RollbackCandidateTests(unittest.TestCase):
 
     def test_failure_cleans_new_candidate_without_touching_checkout(self):
         with (patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)),
-              patch.object(candidate, "_extract_verified_archive",
+              patch.object(candidate, "_copy_git_blobs",
                            side_effect=ValueError("invalid tracked source"))):
             with self.assertRaisesRegex(ValueError, "invalid tracked source"):
                 candidate.prepare(self.target, self.archive, self.dir,
@@ -97,24 +95,33 @@ class RollbackCandidateTests(unittest.TestCase):
         self.assertFalse(self.dir.exists())
         self.base.chmod(0o700)
 
-    def test_rejects_tar_symlinks_and_traversal(self):
+    def test_rejects_gitlink_symlink_and_unsafe_names(self):
         code = self.base / "output"
         code.mkdir()
-        for name, is_symlink in [("../escape", False), ("safe", True)]:
-            with self.subTest(name=name):
-                archive_path = self.base / "bad.tar"
-                with tarfile.open(archive_path, "w") as out:
-                    content = tarfile.TarInfo(name)
-                    if is_symlink:
-                        content.type = tarfile.SYMTYPE
-                        content.linkname = "/etc/passwd"
-                    else:
-                        content.size = 4
-                    out.addfile(content, None if is_symlink else io.BytesIO(b"test"))
-                with self.assertRaises(ValueError):
-                    candidate._extract_verified_archive(archive_path, code)
-                archive_path.unlink()
-        self.assertFalse((self.base / "escape").exists())
+        for name in ("../escape", "/absolute", "safe/../../escape",
+                     "double//separator", "back\\\\slash"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                candidate._valid_member(name)
+        with patch.object(candidate, "_git",
+                          return_value=b"120000 blob " + (b"a" * 40) + b"\\tlink\\0"):
+            with self.assertRaisesRegex(ValueError, "unsupported tracked file type"):
+                candidate._copy_git_blobs(self.root, self.target, code)
+        self.assertEqual(list(code.rglob("*")), [])
+
+    def test_local_smudge_filter_never_executes_during_staging(self):
+        marker = self.base / "filter-triggered"
+        command = self.base / "smudge.sh"
+        command.write_text("#!/bin/sh\\nprintf 'ran' > " + str(marker) + "\\ncat\\n")
+        command.chmod(0o700)
+        attributes = self.base / "global-attributes"
+        attributes.write_text("*.py filter=unsafe\\n")
+        self.git("config", "core.attributesFile", str(attributes))
+        self.git("config", "filter.unsafe.smudge", str(command))
+        with patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)):
+            candidate.prepare(self.target, self.archive, self.dir, root=self.root)
+        self.assertFalse(marker.exists(), "Raw blob staging executed a smudge command")
+        self.assertEqual((self.dir / "source" / "bridge.py").read_text(),
+                         "old behavior\\n")
 
     def test_cli_never_applies_unconfirmed_rollback(self):
         with patch.object(candidate, "prepare",
