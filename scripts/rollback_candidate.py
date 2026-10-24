@@ -54,67 +54,128 @@ def _valid_member(name: str) -> tuple[str, ...]:
     return parts
 
 
-def _git(root: Path, *args: str) -> bytes:
-    """Raw local Git plumbing only; neither checkout nor content filters."""
-    try:
-        result = subprocess.run(
-            ["git", *args], cwd=root, capture_output=True, check=False,
-            env=update._inspection_env(), timeout=30)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ValueError("Cannot read local Git object") from exc
-    if result.returncode:
-        raise ValueError("Required local Git object unavailable")
-    return result.stdout
+_OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+_HEADER = re.compile(rb"([0-9a-f]{40}|[0-9a-f]{64}) (commit|tree|blob) ([0-9]{1,10})")
 
 
-_TREE_ENTRY = re.compile(rb"(100644|100755) blob ([0-9a-f]{40}|[0-9a-f]{64})")
+def _object(root: Path, oid: str, expected_type: str, limit: int) -> bytes:
+    """Read exactly one raw Git object via fixed argv, without filters or hooks.
+
+    Object identifiers travel over stdin, never in a command-line argument.
+    The bounded batch-check runs BEFORE requesting any object's bytes.
+    """
+    if not isinstance(oid, str) or not _OID.fullmatch(oid):
+        raise ValueError("Invalid local Git object identifier")
+    if expected_type not in ("commit", "tree", "blob"):
+        raise ValueError("Unsupported local Git object type")
+    env = update._inspection_env()
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+
+    def run(flag: str) -> bytes:
+        try:
+            result = subprocess.run(
+                ["git", "cat-file", flag], cwd=root, capture_output=True,
+                input=(oid + "\n").encode("ascii"), check=False,
+                env=env, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ValueError("Local Git object lookup failed") from exc
+        if result.returncode:
+            raise ValueError("Required local Git object unavailable")
+        return result.stdout
+
+    header = run("--batch-check").rstrip(b"\n")
+    match = _HEADER.fullmatch(header)
+    if (match is None or match.group(1).decode("ascii") != oid
+            or match.group(2).decode("ascii") != expected_type):
+        raise ValueError("Unexpected local Git object metadata")
+    size = int(match.group(3))
+    if size > limit:
+        raise ValueError("Tracked Git object exceeds size limit")
+    output = run("--batch")
+    actual_header, sep, remaining = output.partition(b"\n")
+    if sep != b"\n" or actual_header != header:
+        raise ValueError("Git object changed between metadata and read")
+    if len(remaining) != size + 1 or not remaining.endswith(b"\n"):
+        raise ValueError("Incomplete local Git object")
+    return remaining[:-1]
+
+
+def _parse_tree(contents: bytes, hash_bytes: int) -> list[tuple[str, str, str]]:
+    """Decode Git tree objects, refusing links and unsafe path components."""
+    items = []
+    position = 0
+    while position < len(contents):
+        end = contents.find(b"\0", position)
+        if end < 0:
+            raise ValueError("Malformed local Git tree")
+        prefix = contents[position:end]
+        mode, separator, name_bytes = prefix.partition(b" ")
+        if separator != b" " or not name_bytes:
+            raise ValueError("Invalid Git tree entry")
+        try:
+            name = name_bytes.decode("utf-8", errors="strict")
+        except UnicodeError as exc:
+            raise ValueError("Invalid tracked source filename") from exc
+        _valid_member(name)
+        if "/" in name or any(ord(c) < 32 or ord(c) == 127 for c in name):
+            raise ValueError("Invalid tracked source path component")
+        kind = "tree" if mode in (b"40000", b"040000") else (
+            "blob" if mode in (b"100644", b"100755") else None)
+        if kind is None:
+            # Symlinks, gitlinks and unknown executable types are forbidden.
+            raise ValueError("Unsupported tracked Git entry type")
+        first = end + 1
+        last = first + hash_bytes
+        if last > len(contents):
+            raise ValueError("Incomplete Git tree digest")
+        items.append((name, kind, contents[first:last].hex()))
+        position = last
+    return items
 
 
 def _copy_git_blobs(root: Path, target: str, destination: Path) -> int:
-    """Copy exact tracked blobs, NEVER triggering Git smudge or archive filters."""
-    listing = _git(root, "ls-tree", "-r", "-z", "--full-tree", target)
-    if len(listing) > 512_000:
-        raise ValueError("Rollback source listing too large")
-    seen = set()
-    total = 0
+    """Copy literal tracked blobs without Git archive, filters or worktree edits."""
+    commit = _object(root, target, "commit", 256_000)
+    match = re.search(rb"^tree ([0-9a-f]{40}|[0-9a-f]{64})\n", commit, re.M)
+    if match is None:
+        raise ValueError("Commit lacks valid tree identifier")
+    tree_oid = match.group(1).decode("ascii")
+    hash_bytes = len(tree_oid) // 2
     count = 0
-    for record in listing.split(b"\0"):
-        if not record:
-            continue
-        header, sep, pathname = record.partition(b"\t")
-        match = _TREE_ENTRY.fullmatch(header) if sep else None
-        if match is None:
-            # This intentionally rejects Git symlinks (120000), gitlinks
-            # (160000), and future unknown file modes.
-            raise ValueError("Rollback source has unsupported tracked file type")
-        try:
-            name = pathname.decode("utf-8", errors="strict")
-        except UnicodeError as exc:
-            raise ValueError("Rollback source uses unsupported filename encoding") from exc
-        parts = _valid_member(name)
-        if parts in seen:
-            raise ValueError("Duplicate tracked source")
-        seen.add(parts)
-        oid = match.group(2).decode("ascii")
-        raw_size = _git(root, "cat-file", "-s", oid)
-        if not re.fullmatch(rb"[0-9]{1,10}\n?", raw_size):
-            raise ValueError("Invalid tracked Git blob size")
-        size = int(raw_size)
-        count += 1
-        total += size
-        if count > MAX_FILES or size > MAX_INDIVIDUAL or total > MAX_TOTAL_SOURCE:
-            raise ValueError("Rollback tracked source exceeds size limits")
-        data = _git(root, "cat-file", "blob", oid)
-        if len(data) != size:
-            raise ValueError("Git blob bytes differ from verified object size")
-        destination_file = destination.joinpath(*parts)
-        destination_file.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-        fd = os.open(destination_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
-                     0o600)
-        with os.fdopen(fd, "wb") as output:
-            output.write(data)
-            output.flush()
-            os.fsync(output.fileno())
+    total = 0
+
+    def walk(tree: str, path: tuple[str, ...], depth: int) -> None:
+        nonlocal count, total
+        if depth > 24:
+            raise ValueError("Tracked source tree is too deep")
+        tree_bytes = _object(root, tree, "tree", 512_000)
+        entries = _parse_tree(tree_bytes, hash_bytes)
+        seen = set()
+        for name, kind, oid in entries:
+            if name in seen:
+                raise ValueError("Duplicate tracked source entry")
+            seen.add(name)
+            parts = (*path, name)
+            if kind == "tree":
+                walk(oid, parts, depth + 1)
+                continue
+            count += 1
+            if count > MAX_FILES:
+                raise ValueError("Too many tracked source files")
+            data = _object(root, oid, "blob", MAX_INDIVIDUAL)
+            total += len(data)
+            if total > MAX_TOTAL_SOURCE:
+                raise ValueError("Tracked source exceeds total size limit")
+            output_path = destination.joinpath(*parts)
+            output_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            fd = os.open(output_path,
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as output:
+                output.write(data)
+                output.flush()
+                os.fsync(output.fileno())
+
+    walk(tree_oid, (), 0)
     if count == 0:
         raise ValueError("Empty target Git tree")
     return count
