@@ -41,6 +41,8 @@ def _dependency_versions(check_remote: bool) -> dict:
         if len(completed.stdout) > _MAX_OUTPUT:
             raise ValueError("Oversized dependency report")
         data = json.loads(completed.stdout)
+        if type(data) is not dict:
+            raise ValueError("Unexpected dependency report structure")
         rows = data.get("packages")
         if (data.get("remote_requested") is not True or type(rows) is not list
                 or len(rows) != len(_PACKAGE_NAMES)):
