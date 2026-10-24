@@ -102,10 +102,11 @@ class RollbackCandidateTests(unittest.TestCase):
                      "double//separator", "back\\slash"):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 candidate._valid_member(name)
-        with patch.object(candidate, "_git",
-                          return_value=b"120000 blob " + (b"a" * 40) + b"\tlink\0"):
-            with self.assertRaisesRegex(ValueError, "unsupported tracked file type"):
-                candidate._copy_git_blobs(self.root, self.target, code)
+        bad_tree = b"120000 link\0" + bytes.fromhex("a" * 40)
+        with self.assertRaisesRegex(ValueError, "Unsupported tracked Git entry"):
+            candidate._parse_tree(bad_tree, 20)
+        with self.assertRaisesRegex(ValueError, "Invalid local Git object identifier"):
+            candidate._object(self.root, "--upload-pack=/tmp/evil", "blob", 100)
         self.assertEqual(list(code.rglob("*")), [])
 
     def test_local_smudge_filter_never_executes_during_staging(self):
