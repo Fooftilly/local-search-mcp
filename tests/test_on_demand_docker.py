@@ -51,7 +51,7 @@ class ScopedDockerTests(unittest.TestCase):
 
     def setup_mocks(self):
         self.enterContext(patch.object(docker.inv, "report", side_effect=self.inventory))
-        self.enterContext(patch.object(docker.inv, "_ids", return_value=self.ids))
+        self.enterContext(patch.object(docker.inv, "_ids", side_effect=lambda *a: self.ids))
         self.enterContext(patch.object(docker.inv, "_private_files",
                                       return_value=({self.crawler_file, self.overlay_file}, True)))
         self.enterContext(patch.object(docker.inv, "_inspect", side_effect=self.inspect))
