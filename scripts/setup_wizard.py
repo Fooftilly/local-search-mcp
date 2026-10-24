@@ -199,22 +199,31 @@ def on_demand_status(*, inventory: dict | None = None) -> dict:
                 report["reason"] = (
                     "Bridge reports on-demand enabled but its supervisor is not "
                     "initialized; inspect bridge startup and status")
-            elif any(row["state"] == "failed"
-                     for row in runtime["backends"].values()):
-                report["state"] = "failed"
-                report["reason"] = (
-                    "The running supervisor reports a failed backend; "
-                    "inspect bridge, Docker and firewall-guard logs")
             else:
-                report["state"] = (
-                    "sleeping" if selected.get("state") == "stopped"
-                    else "running" if selected.get("state") == "running"
-                    else "partially_running"
-                    if selected.get("state") == "partially_running"
-                    else "unverified")
-                report["reason"] = (
-                    "On-demand runtime is active; verify backend states in "
-                    "runtime_activity. Reboot recovery is not yet established")
+                # Inventory and dashboard are separate snapshots: rely on the
+                # live supervisor to describe transitions, not old Docker counts.
+                backend_states = {row["state"] for row in runtime["backends"].values()}
+                if "failed" in backend_states:
+                    report["state"] = "failed"
+                    report["reason"] = (
+                        "The running supervisor reports a failed backend; "
+                        "inspect bridge, Docker and firewall-guard logs")
+                elif not backend_states.issubset({
+                        "running", "sleeping", "waking", "stopping"}):
+                    report["state"] = "unverified"
+                    report["reason"] = "The supervisor returned unexpected backend state"
+                elif "waking" in backend_states or "stopping" in backend_states:
+                    report["state"] = "transitioning"
+                    report["reason"] = "A verified backend is changing state"
+                elif backend_states == {"running"}:
+                    report["state"] = "running"
+                    report["reason"] = "On-demand runtime is active; reboot recovery is not yet established"
+                elif backend_states == {"sleeping"}:
+                    report["state"] = "sleeping"
+                    report["reason"] = "Both managed backends are asleep; requests may wake them"
+                else:
+                    report["state"] = "partially_running"
+                    report["reason"] = "One backend is asleep and the other is running"
         return report
     except (OSError, ValueError, ImportError, TypeError, KeyError):
         return {"mode": "read-only", "feature": "on-demand-backends",
