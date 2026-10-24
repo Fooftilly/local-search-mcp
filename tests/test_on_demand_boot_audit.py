@@ -202,6 +202,29 @@ class ReadonlyBootAuditTests(unittest.TestCase):
                 target.write_text("content differs, never grant readiness")
                 self.assertFalse(audit._reviewed_root_file(target, source, 0o755))
 
+    def test_real_root_metadata_check_rejects_untrusted_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "untrusted"
+            target.write_text("owned by ordinary caller")
+            fd = audit.os.open(target, audit.os.O_RDONLY)
+            try:
+                # No metadata or ownership mocks: a local unprivileged
+                # temp file must not count as a privileged installed helper.
+                self.assertFalse(audit._trusted_root_fd(
+                    fd, mode=0o755, size=target.stat().st_size))
+                self.assertFalse(audit._trusted_root_fd(
+                    fd, mode=0o644, size=target.stat().st_size + 1))
+            finally:
+                audit.os.close(fd)
+
+    def test_disabled_user_linger_blocks_static_reboot_readiness(self):
+        account = audit.pwd.getpwuid(audit.os.getuid()).pw_name
+        response = {
+            ("loginctl", "show-user", account, "-p", "Linger", "--value"): "no"}
+        result, _, _ = self._successful(responses=response)
+        self.assertEqual(result["state"], "blocked")
+        self.assertFalse(result["checks"]["user_linger_enabled"])
+
     def test_run_rejects_mutating_commands_and_redacts_errors(self):
         with patch.object(audit.subprocess, "run") as run:
             for command in (
