@@ -7,6 +7,7 @@ No setup or service mutations occur from import, --help, --check, --status,
 from __future__ import annotations
 
 import argparse
+from http.client import HTTPConnection
 import json
 import os
 from pathlib import Path
@@ -133,6 +134,38 @@ def docker_status() -> dict:
         return {"state": "unknown", "security_note": "Docker ownership not verified"}
 
 
+def on_demand_runtime_status() -> dict:
+    """Bounded local dashboard read, without starting or waking a backend."""
+    conn = HTTPConnection("127.0.0.1", 8791, timeout=2)
+    try:
+        conn.request("GET", "/on-demand-state", headers={
+            "Host": "127.0.0.1:8791", "Origin": "http://127.0.0.1:8791"})
+        response = conn.getresponse()
+        raw = response.read(8193)
+        if response.status != 200 or len(raw) > 8192:
+            raise ValueError("Unusable activity status response")
+        data = json.loads(raw)
+        if type(data) is not dict or set(data) != {"mode", "enabled", "idle_minutes", "backends"}:
+            raise ValueError("Invalid activity response")
+        # Prevent any future unexpected field from being echoed to the CLI.
+        if type(data["enabled"]) is not bool or type(data["idle_minutes"]) is not int:
+            raise ValueError("Invalid activity fields")
+        backends = data["backends"]
+        if backends is not None and (
+                type(backends) is not dict
+                or set(backends) != {"crawl4ai", "searxng"}
+                or any(type(row) is not dict or set(row) != {
+                    "state", "armed", "active_requests",
+                    "last_activity_ago_seconds", "next_idle_stop_seconds",
+                    "stop_claimed"} for row in backends.values())):
+            raise ValueError("Unexpected activity fields")
+        return data
+    except (OSError, ValueError, TypeError):
+        return {"state": "unavailable", "note": "Running bridge activity not verified"}
+    finally:
+        conn.close()
+
+
 def on_demand_status(*, inventory: dict | None = None) -> dict:
     """Preview eligibility only. Never enable backend sleep or wake Docker."""
     try:
@@ -144,6 +177,7 @@ def on_demand_status(*, inventory: dict | None = None) -> dict:
         report["enabled"] = saved["enabled"]
         report["idle_minutes"] = saved["idle_minutes"]
         report["can_activate"] = False  # Diagnostic is never an authorization.
+        report["runtime_activity"] = on_demand_runtime_status()
         if saved["enabled"]:
             report["state"] = ("sleeping" if selected.get("state") == "stopped"
                                else "running" if selected.get("state") == "running"
