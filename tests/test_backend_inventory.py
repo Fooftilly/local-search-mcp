@@ -28,6 +28,7 @@ class DockerOwnershipTests(unittest.TestCase):
         self.published_ids = [CRAWLER, SHARED]
         self.labels = {CRAWLER: self.labels_for("crawl4ai")}
         self.running = {CRAWLER: True}
+        self.restart_policies = {CRAWLER: "unless-stopped"}
         self.calls = []
 
     def labels_for(self, service, *, extra=None):
@@ -58,6 +59,9 @@ class DockerOwnershipTests(unittest.TestCase):
             ident = argv[-1]
             if "Config.Labels" in " ".join(argv):
                 raw = json.dumps(self.labels.get(ident, {}))
+            elif "HostConfig.RestartPolicy" in " ".join(argv):
+                raw = json.dumps({"Name": self.restart_policies.get(
+                    ident, "unless-stopped"), "MaximumRetryCount": 0})
             else:
                 raw = "true" if self.running.get(ident) else "false"
             return subprocess.CompletedProcess(argv, 0, raw + "\n", "")
@@ -96,6 +100,8 @@ class DockerOwnershipTests(unittest.TestCase):
         self.assertEqual(result["managed_running"], 1)
         self.assertEqual(result["managed_stopped"], 1)
         self.assertEqual(result["verified_services"], {"crawl4ai": 1, "searxng": 1})
+        self.assertEqual(result["verified_restart_policies"],
+                         {"crawl4ai": "unless-stopped", "searxng": "unless-stopped"})
 
     def test_duplicate_verified_crawlers_never_pass_service_identity_gate(self):
         from scripts import on_demand_eligibility
@@ -109,6 +115,30 @@ class DockerOwnershipTests(unittest.TestCase):
         candidate = on_demand_eligibility.eligibility(inventory=report)
         self.assertEqual(candidate["state"], "blocked")
         self.assertFalse(candidate["can_activate"])
+
+    def test_unreadable_restart_policy_fails_closed_without_inspect_data(self):
+        self.restart_policies[CRAWLER] = "private-unrecognized-policy"
+        report = self.report()
+        self.assertEqual(report["state"], "unverified")
+        self.assertEqual(report["unverified_project_containers"], 1)
+        self.assertEqual(report["verified_restart_policies"]["crawl4ai"], None)
+        self.assertNotIn("private-unrecognized-policy", json.dumps(report))
+
+    def test_read_only_restart_policy_never_updates_docker(self):
+        from scripts import on_demand_eligibility
+        (self.project_dir / "searxng.compose.yaml").write_text("services: {}\\n")
+        self.project_ids = [CRAWLER, SEARCH]
+        self.published_ids = [CRAWLER, SEARCH]
+        self.labels[SEARCH] = self.labels_for("searxng")
+        self.running[SEARCH] = False
+        report = self.report()
+        self.assertEqual(report["verified_restart_policies"],
+                         {"crawl4ai": "unless-stopped", "searxng": "unless-stopped"})
+        candidate = on_demand_eligibility.eligibility(inventory=report)
+        self.assertEqual(candidate["restart_policy_review"],
+                         "requires_coordinated_change")
+        self.assertFalse(candidate["can_activate"])
+        self.assertTrue(all(cmd[3] in ("ps", "inspect") for cmd in self.calls))
 
     def test_foreign_compose_override_is_not_owned(self):
         self.labels[CRAWLER] = self.labels_for("crawl4ai", extra="/foreign/override.yaml")
