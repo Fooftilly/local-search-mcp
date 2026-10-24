@@ -97,3 +97,15 @@ automatic update operation.
 For explicit manual source updates, consult docs/SYSTEMD.md, BACKUP.md and
 docs/DEPENDENCY-UPDATES.md. The existing optional `git pull`-triggered
 restart watcher remains unchanged.
+
+## On-demand eligibility preview (fourth slice)
+
+Run `./setup.sh --on-demand-status` or choose interactive menu option 9.
+The existing `--status` and `--check` reports also show the disabled-by-default
+`on_demand_preflight` using the **same** read-only Docker inventory as the
+setup status check. It displays only sanitized readiness reasons and never
+starts/stops containers, enables a supervisor, persists settings, or changes
+firewall rules. `can_activate` remains false even for a dedicated candidate.
+The future default idle timeout is 30 minutes, but there is no live idle timer.
+Shared backends or incomplete Docker ownership/security verification must be
+resolved through a separately reviewed deployment plan before any opt-in.

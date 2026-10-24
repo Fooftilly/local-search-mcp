@@ -133,6 +133,18 @@ def docker_status() -> dict:
         return {"state": "unknown", "security_note": "Docker ownership not verified"}
 
 
+def on_demand_status(*, inventory: dict | None = None) -> dict:
+    """Preview eligibility only. Never enable backend sleep or wake Docker."""
+    try:
+        from scripts import on_demand_eligibility
+        return on_demand_eligibility.eligibility(
+            inventory=docker_status() if inventory is None else inventory)
+    except (OSError, ValueError, ImportError, TypeError, KeyError):
+        return {"mode": "read-only", "feature": "on-demand-backends",
+                "enabled": False, "can_activate": False, "state": "blocked",
+                "reason": "Unable to verify on-demand prerequisites"}
+
+
 def local_update_status() -> dict:
     """Inspect the local Git revision only; no remote or service operations."""
     try:
@@ -145,11 +157,13 @@ def local_update_status() -> dict:
 
 
 def status_report() -> dict:
+    docker = docker_status()
     return {
         "mode": "read-only",
         "local_health": health(),
         "user_systemd_units": user_unit_states(),
-        "docker_project": docker_status(),
+        "docker_project": docker,
+        "on_demand_preflight": on_demand_status(inventory=docker),
         "tunnel_note": "Listening locally does not prove ChatGPT account connection or remote tunnel registration",
     }
 
@@ -213,6 +227,8 @@ def dry_run() -> dict:
              "action": "./stop.sh (project-owned shutdown only; no shared Hermes Web stack)"},
             {"menu": "8", "effect": "read-only",
              "action": "verify ownership of private Compose project; flag foreign published crawlers"},
+            {"menu": "9", "effect": "read-only",
+             "action": "preview optional on-demand eligibility; never enable, sleep or wake"},
         ],
         "future": "Issue #75 optional 30-minute backend sleep is not implemented; off by default",
     }
@@ -248,6 +264,7 @@ def menu() -> int:
         print("6  Review manual update and rollback steps")
         print("7  Stop project-owned services and containers (changes state)")
         print("8  Inspect Docker ownership (read-only; no stop/restart)")
+        print("9  Preview on-demand backend eligibility (read-only; disabled)")
         print("0  Exit")
         try:
             choice = input("Choose: ").strip()
@@ -266,6 +283,8 @@ def menu() -> int:
             print(json.dumps(dependency_report(), indent=2, ensure_ascii=True))
         elif choice == "8":
             print(json.dumps(docker_status(), indent=2, ensure_ascii=True))
+        elif choice == "9":
+            print(json.dumps(on_demand_status(), indent=2, ensure_ascii=True))
         elif choice == "6":
             print(json.dumps(local_update_status(), indent=2, ensure_ascii=True))
             print("No automatic Git fetch, pull, image download, pip install or restart.")
@@ -306,6 +325,7 @@ def make_parser() -> argparse.ArgumentParser:
   ./setup.sh --chatgpt             Read-only manual ChatGPT connector instructions
   ./setup.sh --docker-status       Read-only verified Compose/Docker ownership inventory
   ./setup.sh --update-status       Read-only LOCAL revision/baseline check; no network fetch
+  ./setup.sh --on-demand-status    Read-only Docker ownership/eligibility preview; never wakes
 
 Default integration: ChatGPT only (account connection is manual).
 Other clients are not configured. On-demand Docker backend sleep from #75
@@ -325,6 +345,8 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="read-only Docker ownership audit (pinned local daemon, no changes)")
     choices.add_argument("--update-status", action="store_true",
                          help="inspect local Git update baseline; never fetch/pull/restart")
+    choices.add_argument("--on-demand-status", action="store_true",
+                         help="preview disabled on-demand mode; never sleep/wake or reconfigure")
     return parser
 
 
@@ -341,6 +363,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.update_status:
         print(json.dumps(local_update_status(), indent=2, ensure_ascii=True))
+        return 0
+    if args.on_demand_status:
+        print(json.dumps(on_demand_status(), indent=2, ensure_ascii=True))
         return 0
     if args.status:
         print(json.dumps(status_report(), indent=2, ensure_ascii=True))
