@@ -54,20 +54,49 @@ def _sudo(*args: str, timeout: int = 45, check: bool = True) -> subprocess.Compl
 
 
 def _existing_root(path: Path) -> bool:
+    # A sudo failure can also exit 1. Prove privileged commands remain
+    # authorized before interpreting test -e/-L exit 1 as "missing".
+    _sudo("true")
     linked = _sudo("test", "-L", str(path), check=False)
     if linked.returncode == 0:
         raise InstallError("Existing privileged path is a symlink; refuse overwrite")
+    if linked.returncode != 1:
+        raise InstallError("Cannot safely inspect privileged path")
     found = _sudo("test", "-e", str(path), check=False)
     if found.returncode == 0:
         return True
     if found.returncode != 1:
         raise InstallError("Cannot safely inspect privileged path")
+    _sudo("true")
     return False
+
+
+def _root_parent_safety(path: Path, *, allow_missing: bool = False) -> None:
+    """Never install/execute a root helper through attacker-writable parents."""
+    for parent in reversed(path.parents):
+        if parent == Path("/"):
+            continue
+        if _existing_root(parent) is False:
+            if allow_missing:
+                continue
+            raise InstallError("Privileged security-file parent missing")
+        metadata = _sudo("stat", "-c", "%u:%g:%a:%F", str(parent)).stdout.strip()
+        parts = metadata.split(":")
+        if (len(parts) != 4 or parts[0:2] != ["0", "0"]
+                or parts[3] != "directory"):
+            raise InstallError("Privileged security-file parent ownership is unsafe")
+        try:
+            mode = int(parts[2], 8)
+        except ValueError as exc:
+            raise InstallError("Invalid privileged parent permissions") from exc
+        if mode & 0o022:
+            raise InstallError("Privileged security-file parent is writable by others")
 
 
 def _install_root_file(source: Path, target: Path, permission: str) -> None:
     if not source.is_file() or source.is_symlink():
         raise InstallError("Repository security template missing or linked")
+    _root_parent_safety(target, allow_missing=True)
     if _existing_root(target):
         same = _sudo("cmp", "-s", str(source), str(target), check=False)
         if same.returncode != 0:
@@ -75,9 +104,11 @@ def _install_root_file(source: Path, target: Path, permission: str) -> None:
         observed = _sudo("stat", "-c", "%U:%G:%a:%F", str(target)).stdout.strip()
         if observed != f"root:root:{int(permission, 8):o}:regular file":
             raise InstallError("Existing privileged file owner or mode is unsafe")
+        _root_parent_safety(target)
         return
     _sudo("install", "-D", "-o", "root", "-g", "root", "-m", permission,
           str(source), str(target))
+    _root_parent_safety(target)
 
 
 def _sudoers_line() -> str:
@@ -94,6 +125,7 @@ def _sudoers_line() -> str:
 
 def _install_sudoers() -> None:
     expected = _sudoers_line()
+    _root_parent_safety(SUDOERS)
     if _existing_root(SUDOERS):
         # The exact content is read as root but may contain only this fixed
         # nonsecret rule; never print arbitrary existing sudoers contents.
