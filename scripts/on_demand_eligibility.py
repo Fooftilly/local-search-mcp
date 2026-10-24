@@ -44,6 +44,13 @@ def eligibility(*, inventory: dict | None = None) -> dict:
     if any(type(v) is not int or v < 0 for v in
            (external, unknown, running, stopped)):
         return result
+    # Refuse older count-only reports and any ambiguous service selection.
+    # Counts alone could represent two crawler containers, no SearXNG.
+    services = inventory.get("verified_services")
+    services_ok = (type(services) is dict
+                   and set(services) == {"crawl4ai", "searxng"}
+                   and all(type(services[key]) is int and services[key] == 1
+                           for key in ("crawl4ai", "searxng")))
     state = inventory.get("state")
     if external:
         result["reason"] = "Another crawler publishes this port; never take over a shared stack"
@@ -51,13 +58,14 @@ def eligibility(*, inventory: dict | None = None) -> dict:
         result["reason"] = "Docker ownership or project state is unverified"
     elif state in ("not_configured", "not_started"):
         result["reason"] = "No verified private backend deployment is active"
-    elif state in ("running", "partially_running", "stopped") and running + stopped == 2:
+    elif (state in ("running", "partially_running", "stopped")
+          and running + stopped == 2 and services_ok):
         result["state"] = "manual_verification_required"
         result["reason"] = (
             "Potential dedicated deployment; service identity, restart policy and "
             "live firewall gate must still be verified")
     else:
-        result["reason"] = "Expected two managed backends in one dedicated project"
+        result["reason"] = "Expected exactly one verified crawler and one search backend"
     return result
 
 

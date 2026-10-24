@@ -95,6 +95,20 @@ class DockerOwnershipTests(unittest.TestCase):
         self.assertEqual(result["state"], "partially_running")
         self.assertEqual(result["managed_running"], 1)
         self.assertEqual(result["managed_stopped"], 1)
+        self.assertEqual(result["verified_services"], {"crawl4ai": 1, "searxng": 1})
+
+    def test_duplicate_verified_crawlers_never_pass_service_identity_gate(self):
+        from scripts import on_demand_eligibility
+        self.project_ids = [CRAWLER, SEARCH]
+        self.published_ids = [CRAWLER, SEARCH]
+        self.labels[SEARCH] = self.labels_for("crawl4ai")
+        self.running[SEARCH] = False
+        report = self.report()
+        self.assertEqual(report["managed_running"] + report["managed_stopped"], 2)
+        self.assertEqual(report["verified_services"], {"crawl4ai": 2, "searxng": 0})
+        candidate = on_demand_eligibility.eligibility(inventory=report)
+        self.assertEqual(candidate["state"], "blocked")
+        self.assertFalse(candidate["can_activate"])
 
     def test_foreign_compose_override_is_not_owned(self):
         self.labels[CRAWLER] = self.labels_for("crawl4ai", extra="/foreign/override.yaml")
