@@ -183,6 +183,10 @@ def on_demand_status(*, inventory: dict | None = None) -> dict:
         runtime = on_demand_runtime_status()
         report["runtime_activity"] = runtime
         if saved["enabled"]:
+            # Never conceal a newly discovered shared/foreign/unverified
+            # Docker deployment just because the bridge was already enabled.
+            if report.get("state") != "manual_verification_required":
+                return report
             report["next_gates"] = [
                 "Validate cold-boot recovery and fault handling before unattended use"]
             if runtime.get("mode") != "on-demand" or runtime.get("enabled") is not True:
