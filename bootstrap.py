@@ -309,16 +309,37 @@ def http_ok(url: str, *, expect_json: bool = False) -> bool:
         return False
 
 
+def _verified_on_demand_sleep(service: str) -> bool:
+    """Only accept stopped containers from an explicitly enabled owned pair.
+
+    A shared/Hermes deployment or invalid settings never bypasses the usual
+    foreground startup health and crawler safety checks.
+    """
+    try:
+        from scripts import on_demand_settings, on_demand_docker
+        if not on_demand_settings.read()["enabled"]:
+            return False
+        return not on_demand_docker._safe_target(service).running
+    except (OSError, ValueError, ImportError):
+        return False
+
+
 def check_services() -> None:
     if not http_ok("http://127.0.0.1:8888/search?q=healthcheck&format=json", expect_json=True):
-        raise SetupError("SearXNG unavailable on 127.0.0.1:8888 (or JSON format disabled). Start your existing service.")
-    info("SearXNG: OK")
+        if not _verified_on_demand_sleep("searxng"):
+            raise SetupError("SearXNG unavailable on 127.0.0.1:8888 (or JSON format disabled). Start your existing service.")
+        info("SearXNG: verified on-demand sleep")
+    else:
+        info("SearXNG: OK")
     from crawler_security import local_container_warning, verify_health
     try:
         with urlopen("http://127.0.0.1:11235/health", timeout=8) as response:
             reason = verify_health(json.load(response))
     except (OSError, HTTPError, URLError, ValueError) as exc:
-        raise SetupError(f"Crawl4AI health unavailable: {type(exc).__name__}") from exc
+        if not _verified_on_demand_sleep("crawl4ai"):
+            raise SetupError(f"Crawl4AI health unavailable: {type(exc).__name__}") from exc
+        info("Crawl4AI: verified on-demand sleep; security checked after wake")
+        return
     if reason:
         raise SetupError(reason)
     warning = local_container_warning()
