@@ -175,9 +175,10 @@ class SetupWizardTests(unittest.TestCase):
                                   "docker_project": inventory}):
                     result = wizard.check_report()
                     self.assertFalse(result["dedicated_docker_ready"])
-                    # Normal MCP remains supported with healthy shared backends;
-                    # only optional project-owned Docker lifecycle is ineligible.
-                    self.assertTrue(result["ready"])
+                    # Healthy shared/non-Docker backends remain supported,
+                    # but an explicitly unverified project is still unsafe.
+                    self.assertEqual(result["ready"],
+                                     inventory.get("state") != "unverified")
 
     def test_menu_dependency_inspection_only_reads_project_venv(self):
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
