@@ -64,6 +64,41 @@ class ServiceTests(unittest.TestCase):
                 with self.assertRaises(FileNotFoundError):
                     unit_files("/usr/bin/python3", Path("/tmp/project"))
 
+    def test_foreground_start_allows_only_verified_intentional_sleep(self):
+        from scripts.on_demand_docker import LifecycleError, Target
+        def verified(name):
+            return Target(name, "a" * 64, False, "unless-stopped")
+        with (patch.object(bootstrap, "http_ok", return_value=False),
+              patch.object(bootstrap, "urlopen", side_effect=OSError("sleeping")),
+              patch("scripts.on_demand_settings.read",
+                    return_value={"enabled": True, "idle_minutes": 30}),
+              patch("scripts.on_demand_docker._safe_target", side_effect=verified)):
+            bootstrap.check_services()
+        with (patch.object(bootstrap, "http_ok", return_value=False),
+              patch("scripts.on_demand_settings.read",
+                    return_value={"enabled": False, "idle_minutes": 30})):
+            with self.assertRaises(bootstrap.SetupError):
+                bootstrap.check_services()
+        with (patch.object(bootstrap, "http_ok", return_value=False),
+              patch("scripts.on_demand_settings.read",
+                    return_value={"enabled": True, "idle_minutes": 30}),
+              patch("scripts.on_demand_docker._safe_target",
+                    side_effect=LifecycleError("foreign container"))):
+            with self.assertRaises(bootstrap.SetupError):
+                bootstrap.check_services()
+
+    def test_running_crawler_still_requires_hardened_api(self):
+        with (patch.object(bootstrap, "http_ok", return_value=True),
+              patch.object(bootstrap, "urlopen", side_effect=OSError("bad health")),
+              patch("scripts.on_demand_settings.read",
+                    return_value={"enabled": True, "idle_minutes": 30}),
+              patch("scripts.on_demand_docker._safe_target",
+                    return_value=__import__(
+                        "scripts.on_demand_docker", fromlist=["Target"]
+                    ).Target("crawl4ai", "a" * 64, True, "unless-stopped"))):
+            with self.assertRaises(bootstrap.SetupError):
+                bootstrap.check_services()
+
     def test_bridge_exec_uses_prepared_private_state(self):
         config = {
             "CRAWL4AI_API_TOKEN": "crawl-secret",
