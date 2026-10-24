@@ -131,7 +131,7 @@ class SetupWizardTests(unittest.TestCase):
               patch.object(wizard, "project_python", return_value=Path("/virtual/python"))):
             report = wizard.check_report()
         self.assertTrue(report["ready"])
-        self.assertTrue(report["docker_ready"])
+        self.assertTrue(report["dedicated_docker_ready"])
         self.assertEqual(report["dependency_versions_in_project_venv"], dependencies)
         self.assertNotIn("dependency_versions_in_current_interpreter", report)
         dependencies = {**dependencies, "packages": [
@@ -144,7 +144,7 @@ class SetupWizardTests(unittest.TestCase):
               patch.object(wizard, "status_report", return_value=runtime)):
             self.assertFalse(wizard.check_report()["ready"])
 
-    def test_check_fails_closed_for_unverified_or_shared_docker_backends(self):
+    def test_check_separates_shared_backend_health_from_owned_docker(self):
         dependencies = {"state": "available", "packages": [
             {"package": name, "installed": "1"} for name in
             ("fastmcp", "httpx", "idna")]}
@@ -174,8 +174,10 @@ class SetupWizardTests(unittest.TestCase):
                     return_value={"local_health": {"status": "healthy"},
                                   "docker_project": inventory}):
                     result = wizard.check_report()
-                    self.assertFalse(result["docker_ready"])
-                    self.assertFalse(result["ready"])
+                    self.assertFalse(result["dedicated_docker_ready"])
+                    # Normal MCP remains supported with healthy shared backends;
+                    # only optional project-owned Docker lifecycle is ineligible.
+                    self.assertTrue(result["ready"])
 
     def test_menu_dependency_inspection_only_reads_project_venv(self):
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
