@@ -112,6 +112,41 @@ class ScopedDockerTests(unittest.TestCase):
                           ("crawl4ai", CRAWLER, True)])
         self.assertFalse(self.running["crawl4ai"])
 
+    def test_ambiguous_docker_start_failure_still_stops_original_id(self):
+        self.setup_mocks()
+        self.running["crawl4ai"] = False
+        def fail_start(service, ident, *, stopping):
+            self.operations.append((service, ident, stopping))
+            if not stopping:
+                raise docker.LifecycleError("Docker timed out after scheduling start")
+            self.running[service] = False
+        with patch.object(docker, "_run", side_effect=fail_start):
+            with self.assertRaises(docker.LifecycleError):
+                docker.start("crawl4ai", config_base=self.base,
+                             health=lambda _: True,
+                             crawler_probe=lambda: True)
+        self.assertEqual(self.operations, [
+            ("crawl4ai", CRAWLER, False), ("crawl4ai", CRAWLER, True)])
+
+    def test_crawler_probe_fails_and_cleanup_survives_inventory_outage(self):
+        self.setup_mocks()
+        self.running["crawl4ai"] = False
+        original_inspect = self.inspect
+        calls = [0]
+        def intermittent(ident):
+            calls[0] += 1
+            # Inventory fails after the container is started, but the
+            # already verified 64-character ID is still a safe stop target.
+            if calls[0] >= 7:
+                return None
+            return original_inspect(ident)
+        with patch.object(docker.inv, "_inspect", side_effect=intermittent):
+            with self.assertRaises(docker.LifecycleError):
+                docker.start("crawl4ai", config_base=self.base,
+                             health=lambda _: True,
+                             crawler_probe=lambda: True)
+        self.assertEqual(self.operations[-1], ("crawl4ai", CRAWLER, True))
+
     def test_always_restart_policy_rejected_without_change(self):
         self.setup_mocks()
         self.policy["crawl4ai"] = "always"
