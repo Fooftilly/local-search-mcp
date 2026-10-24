@@ -782,17 +782,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self._respond(400, render(message='Type CLEAR to confirm removal.', kind='error'))
             removed = policy.clear_pending_requests()
             return self._respond(200,render(message=f"Cleared {removed} pending requests."))
-        try:
-            if self.path == '/portable-settings/preview':
-                plan = portable_settings.preview(val('settings_doc'))
-                return self._respond(200, portable_settings_preview(
-                    plan, val('settings_doc')))
-            if self.path == '/portable-settings/apply':
+        if self.path in ('/portable-settings/preview', '/portable-settings/apply'):
+            try:
+                if self.path == '/portable-settings/preview':
+                    plan = portable_settings.preview(val('settings_doc'))
+                    return self._respond(200, portable_settings_preview(
+                        plan, val('settings_doc')))
                 if val('confirm') != 'IMPORT':
                     raise ValueError('Type IMPORT to confirm the settings import')
                 profile = portable_settings.apply(val('settings_doc'), val('state'))
                 return self._respond(200, portable_settings_page(
                     message='Imported ' + profile + ' settings; applied to future operations.'))
+            except (ValueError, OSError) as exc:
+                # Do not expose operating-system paths, or redirect the
+                # operator to the unrelated domain-policy page on failure.
+                message = ('Cannot safely read or save nonsecret settings'
+                           if isinstance(exc, OSError) else str(exc))
+                return self._respond(400, portable_settings_page(
+                    message=message, kind='error'))
+        try:
             if self.path == '/cache-settings':
                 submitted = {
                     'search_seconds': val('search_seconds'),
