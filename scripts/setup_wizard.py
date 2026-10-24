@@ -326,7 +326,8 @@ def menu() -> int:
         print("6  Review manual update and rollback steps")
         print("7  Stop project-owned services and containers (changes state)")
         print("8  Inspect Docker ownership (read-only; no stop/restart)")
-        print("9  Preview on-demand backend eligibility (read-only; disabled)")
+        print("9  Inspect on-demand backend configuration and eligibility")
+        print("10 Configure optional on-demand backends (privileged checks)")
         print("0  Exit")
         try:
             choice = input("Choose: ").strip()
@@ -347,6 +348,34 @@ def menu() -> int:
             print(json.dumps(docker_status(), indent=2, ensure_ascii=True))
         elif choice == "9":
             print(json.dumps(on_demand_status(), indent=2, ensure_ascii=True))
+        elif choice == "10":
+            print(json.dumps(on_demand_status(), indent=2, ensure_ascii=True))
+            try:
+                action = input("Enable (ON), disable (OFF), or cancel: ").strip()
+                if action == "ON":
+                    idle_text = input("Idle timeout, minutes (1-1440; default 30): ").strip()
+                    minutes = 30 if not idle_text else int(idle_text)
+                    print("Requires dedicated backends, installed root-owned egress")
+                    print("probe and Docker permissions. Cold starts add latency.")
+                    if confirm("ENABLE"):
+                        print(json.dumps(configure_on_demand(
+                            enabled=True, idle_minutes=minutes), indent=2))
+                        print("Restart the bridge to apply the new mode.")
+                    else:
+                        print("Cancelled")
+                elif action == "OFF":
+                    wake = input("Start any sleeping managed backends first? (YES/no): ").strip() == "YES"
+                    if confirm("DISABLE"):
+                        print(json.dumps(configure_on_demand(
+                            enabled=False, wake_before_disable=wake), indent=2))
+                        print("Restart the bridge to finish disabling the supervisor.")
+                    else:
+                        print("Cancelled")
+                else:
+                    print("Cancelled")
+            except (ValueError, OSError, EOFError, KeyboardInterrupt) as exc:
+                print("On-demand change was not fully applied: " +
+                      type(exc).__name__ + "; inspect status before retrying")
         elif choice == "6":
             print(json.dumps(local_update_status(), indent=2, ensure_ascii=True))
             print("No automatic Git fetch, pull, image download, pip install or restart.")
@@ -387,12 +416,18 @@ def make_parser() -> argparse.ArgumentParser:
   ./setup.sh --chatgpt             Read-only manual ChatGPT connector instructions
   ./setup.sh --docker-status       Read-only verified Compose/Docker ownership inventory
   ./setup.sh --update-status       Read-only LOCAL revision/baseline check; no network fetch
-  ./setup.sh --on-demand-status    Read-only Docker ownership/eligibility preview; never wakes
+  ./setup.sh --on-demand-status    Read-only Docker ownership/eligibility and configured mode
+  ./setup.sh --on-demand-enable --idle-minutes 30 --confirm-on-demand ENABLE
+                                  Explicit validated opt-in with root-owned egress probe
+  ./setup.sh --on-demand-disable --confirm-on-demand DISABLE
+                                  Stop future on-demand wake attempts
+  ./setup.sh --on-demand-disable --wake-before-disable --confirm-on-demand DISABLE
+                                  Start previously sleeping verified backends first
 
 Default integration: ChatGPT only (account connection is manual).
-Other clients are not configured. On-demand Docker backend sleep from #75
-is not yet implemented (future opt-in idle timeout: 30 minutes).
-Mutating actions require a typed confirmation in the interactive menu.
+Other clients are not configured. On-demand backend sleep is OFF by default.
+Activation requires an operator-installed fixed probe service and validated
+dedicated Docker deployment. Mutations require an explicit confirmation.
 The existing ./start.sh and ./stop.sh remain supported independently.""")
     choices = parser.add_mutually_exclusive_group()
     choices.add_argument("--check", action="store_true",
@@ -409,11 +444,39 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="inspect local Git update baseline; never fetch/pull/restart")
     choices.add_argument("--on-demand-status", action="store_true",
                          help="preview disabled on-demand mode; never sleep/wake or reconfigure")
+    choices.add_argument("--on-demand-enable", action="store_true",
+                         help="explicitly enable verified managed backends only")
+    choices.add_argument("--on-demand-disable", action="store_true",
+                         help="disable future background wake (optionally restore sleeping backends)")
+    parser.add_argument("--idle-minutes", type=int, default=30)
+    parser.add_argument("--wake-before-disable", action="store_true")
+    parser.add_argument("--confirm-on-demand", choices=("ENABLE", "DISABLE"),
+                        help="explicit confirmation required for noninteractive changes")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = make_parser().parse_args(argv)
+    if args.on_demand_enable or args.on_demand_disable:
+        expected = "ENABLE" if args.on_demand_enable else "DISABLE"
+        if (args.confirm_on_demand != expected
+                or args.wake_before_disable and args.on_demand_enable):
+            raise SystemExit("Explicit --confirm-on-demand " + expected + " required")
+        if os.geteuid() == 0:
+            raise SystemExit("Configure on-demand mode as the normal user")
+        try:
+            value = configure_on_demand(
+                enabled=args.on_demand_enable, idle_minutes=args.idle_minutes,
+                wake_before_disable=args.wake_before_disable)
+        except (ValueError, OSError) as exc:
+            print("On-demand configuration failed safely (" +
+                  type(exc).__name__ + ")", file=sys.stderr)
+            return 1
+        print(json.dumps(value, sort_keys=True))
+        print("Restart the bridge after changing on-demand mode.")
+        return 0
+    if args.wake_before_disable or args.confirm_on_demand is not None:
+        raise SystemExit("On-demand options require explicit enable/disable mode")
     if args.dry_run:
         print(json.dumps(dry_run(), indent=2))
         return 0
