@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -106,6 +107,15 @@ class TunnelVersionAuditTests(unittest.TestCase):
             result = tunnel.version_report(root=self.root, check_remote=True)
         self.assertEqual(result["public_release"], {"state": "unavailable"})
         self.assertNotIn("evil.invalid", json.dumps(result))
+
+    def test_truncated_http_response_does_not_crash_maintenance_report(self):
+        class Opener:
+            def open(self, *_args, **_kwargs):
+                raise http.client.IncompleteRead(b"truncated", 100)
+        with patch.object(tunnel.urllib.request, "build_opener",
+                          return_value=Opener()):
+            report = tunnel.version_report(root=self.root, check_remote=True)
+        self.assertEqual(report["public_release"], {"state": "unavailable"})
 
     def test_remote_invalid_type_or_oversized_response_is_redacted(self):
         for response in (b"null", b"[]", b"x" * (tunnel.MAX_RESPONSE + 1)):
