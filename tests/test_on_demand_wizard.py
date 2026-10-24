@@ -92,6 +92,16 @@ class SetupOnDemandTests(unittest.TestCase):
         self.assertIn("--container crawl4ai --probe", unit)
         self.assertNotIn("ExecStart=/bin/sh", unit)
 
+    def test_supported_stop_script_help_runs_by_path(self):
+        import subprocess
+        import sys
+        root = Path(__file__).resolve().parents[1]
+        response = subprocess.run(
+            [sys.executable, str(root / "scripts" / "stop_stack.py"), "--help"],
+            cwd=root, capture_output=True, text=True, timeout=10)
+        self.assertEqual(response.returncode, 0, response.stderr)
+        self.assertIn("usage:", response.stdout)
+
     def test_full_stop_disables_wake_before_any_services(self):
         events = []
         with (patch.object(stop_stack.on_demand_settings, "read",
