@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Local Search MCP — Portable nonsecret settings</title>
+<link rel="stylesheet" href="/dashboard.css"></head>
+<body><main><h1>Portable nonsecret settings</h1>
+${alert}
+<p>Export or import one settings profile at a time: history retention, upstream
+request timeouts, or cache lifetimes. Only versioned, bounded integer values
+are transferred. No API keys, domain approvals, request history, tunnel keys,
+local file paths, endpoints or ports are included.</p>
+<ul><li><a href="/portable-settings/export?profile=history">Export history settings</a></li>
+<li><a href="/portable-settings/export?profile=upstream">Export upstream timeouts</a></li>
+<li><a href="/portable-settings/export?profile=cache">Export cache lifetimes</a></li></ul>
+<form method="post" action="/portable-settings/preview">
+<input type="hidden" name="csrf" value="${csrf}">
+<label>Paste a portable settings JSON document (max 4 KB)
+<textarea name="settings_doc" rows="7" maxlength="4096" required></textarea></label>
+<button type="submit">Validate and preview</button></form>
+<p>No changes are made during preview. Imports use the same atomic, stale-version
+and environment-override checks as the individual settings pages. Conflicting
+or changed profiles must be reviewed again before applying. This page cannot
+restart services or modify an upstream container.</p>
+<p><a href="/status">Service ports and status</a> ·
+<a href="/">Domain approvals</a></p></main></body></html>
