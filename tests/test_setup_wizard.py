@@ -204,7 +204,7 @@ class SetupWizardTests(unittest.TestCase):
             rc, output = self.call("--dry-run")
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(output)["default_client"].split()[0], "ChatGPT")
-        self.assertEqual(len(json.loads(output)["actions"]), 11)
+        self.assertEqual(len(json.loads(output)["actions"]), 12)
 
     def test_status_returns_only_allowlisted_service_state(self):
         with (patch.object(wizard, "health",
@@ -540,6 +540,43 @@ class SetupWizardTests(unittest.TestCase):
         self.assertEqual(result["state"], "blocked")
         self.assertFalse(result["can_activate"])
         self.assertNotIn("sensitive", json.dumps(result))
+
+    def test_optional_client_guides_are_read_only_and_local_only(self):
+        for client, hints in (
+            ("cursor", ("~/.cursor/mcp.json", '"mcpServers"', "Grok",
+                        "http://127.0.0.1:8790/mcp", "cloud bot")),
+            ("hermes", ("hermes mcp add local-search --url",
+                        "hermes mcp test local-search", "/reload-mcp",
+                        "http://127.0.0.1:8790/mcp"))):
+            with (self.subTest(client=client),
+                  patch.object(wizard, "run_existing",
+                               side_effect=AssertionError("No launched process")),
+                  patch.object(wizard, "health",
+                               side_effect=AssertionError("No network health probe")),
+                  patch.object(wizard, "docker_status",
+                               side_effect=AssertionError("No Docker probe"))):
+                status, output = self.call("--client", client)
+            self.assertEqual(status, 0)
+            for hint in hints:
+                self.assertIn(hint, output)
+            self.assertIn("No client configuration", output)
+            self.assertNotIn("Authorization: Bearer", output)
+
+    def test_only_one_client_can_be_selected(self):
+        with self.assertRaises(SystemExit):
+            wizard.make_parser().parse_args(["--client", "cursor", "--chatgpt"])
+        with self.assertRaises(SystemExit):
+            wizard.make_parser().parse_args(["--client", "remote-grok"])
+
+    def test_optional_client_menu_does_not_write_without_selection(self):
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input", side_effect=["12", "invalid", "0"]),
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("No program execution")),
+              contextlib.redirect_stdout(io.StringIO()) as captured):
+            self.assertEqual(wizard.main([]), 0)
+        self.assertIn("Cancelled; no client settings changed", captured.getvalue())
 
     def test_other_clients_not_silently_installed(self):
         rc, message = self.call("--chatgpt")
