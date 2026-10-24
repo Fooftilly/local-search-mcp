@@ -118,6 +118,39 @@ class SecureTunnelSetupTests(unittest.TestCase):
         self.assertFalse(any("enable" in c.args and "local-search-mcp-tunnel.service"
                              in c.args for c in run.call_args_list))
 
+    def test_privileged_parent_chain_rejects_writable_directory(self):
+        # Untrusted parents must block the root-owned sudo-executed helper.
+        with (patch.object(secure, "_existing_root", return_value=True),
+              patch.object(secure, "_sudo",
+                           return_value=subprocess.CompletedProcess(
+                               [], 0, "0:0:777:directory", "")),
+              self.assertRaisesRegex(secure.InstallError, "writable")):
+            secure._root_parent_safety(secure.ROOT_GUARD)
+
+    def test_failed_tunnel_start_attempts_to_disable_partly_started_unit(self):
+        commands = []
+
+        def systemctl(*args, **_kw):
+            commands.append(args)
+            if args[:4] == ("systemctl", "--user", "enable", "--now") and (
+                    secure.USER_TUNNEL in args):
+                raise secure.InstallError("mock partial tunnel start")
+            return subprocess.CompletedProcess(args, 0,
+                "inactive" if "is-active" in args else
+                "LoadState=loaded" if "show" in args else "", "")
+
+        with (patch.object(secure, "preview", return_value=self.inventory()),
+              patch.object(secure, "_run", side_effect=systemctl),
+              patch.object(secure, "_sudo", return_value=subprocess.CompletedProcess(
+                  [], 0, "active", "")),
+              patch.object(secure, "_install_root_file"),
+              patch.object(secure, "_install_sudoers"),
+              patch.object(secure, "_install_user_dropin")):
+            with self.assertRaisesRegex(secure.InstallError, "mock partial"):
+                secure.install()
+        self.assertIn(("systemctl", "--user", "disable", "--now",
+                       secure.USER_TUNNEL), commands)
+
     def test_readonly_tunnel_option_is_separate_from_confirmation(self):
         with patch.object(setup_wizard, "run_existing", return_value=0) as run:
             self.assertEqual(setup_wizard.main(["--secure-tunnel-preview"]), 0)
