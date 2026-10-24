@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import stat
 import sys
 import tempfile
 
@@ -71,6 +72,19 @@ def _existing_root(path: Path) -> bool:
     return False
 
 
+def _root_mode(path: Path) -> int:
+    """Read numeric, locale-invariant root-owned metadata from GNU stat.
+
+    %f includes the file type bits (unlike %a) and does not depend on
+    translated descriptions such as 'directory' or 'regular file'.
+    """
+    fields = _sudo("stat", "-c", "%u:%g:%f", str(path)).stdout.strip().split(":")
+    if (len(fields) != 3 or fields[:2] != ["0", "0"]
+            or re.fullmatch(r"[0-9a-fA-F]{4,8}", fields[2]) is None):
+        raise InstallError("Privileged security-file metadata or ownership is unsafe")
+    return int(fields[2], 16)
+
+
 def _root_parent_safety(path: Path, *, allow_missing: bool = False) -> None:
     """Never install/execute a root helper through attacker-writable parents."""
     for parent in reversed(path.parents):
@@ -80,16 +94,10 @@ def _root_parent_safety(path: Path, *, allow_missing: bool = False) -> None:
             if allow_missing:
                 continue
             raise InstallError("Privileged security-file parent missing")
-        metadata = _sudo("stat", "-c", "%u:%g:%a:%F", str(parent)).stdout.strip()
-        parts = metadata.split(":")
-        if (len(parts) != 4 or parts[0:2] != ["0", "0"]
-                or parts[3] != "directory"):
-            raise InstallError("Privileged security-file parent ownership is unsafe")
-        try:
-            mode = int(parts[2], 8)
-        except ValueError as exc:
-            raise InstallError("Invalid privileged parent permissions") from exc
-        if mode & 0o022:
+        mode = _root_mode(parent)
+        if not stat.S_ISDIR(mode):
+            raise InstallError("Privileged security-file parent is not a directory")
+        if stat.S_IMODE(mode) & 0o022:
             raise InstallError("Privileged security-file parent is writable by others")
 
 
@@ -101,8 +109,8 @@ def _install_root_file(source: Path, target: Path, permission: str) -> None:
         same = _sudo("cmp", "-s", str(source), str(target), check=False)
         if same.returncode != 0:
             raise InstallError("Installed security file differs; review it manually before replacing")
-        observed = _sudo("stat", "-c", "%U:%G:%a:%F", str(target)).stdout.strip()
-        if observed != f"root:root:{int(permission, 8):o}:regular file":
+        mode = _root_mode(target)
+        if not stat.S_ISREG(mode) or stat.S_IMODE(mode) != int(permission, 8):
             raise InstallError("Existing privileged file owner or mode is unsafe")
         _root_parent_safety(target)
         return
@@ -132,8 +140,8 @@ def _install_sudoers() -> None:
         actual = _sudo("cat", str(SUDOERS)).stdout
         if actual != expected:
             raise InstallError("Existing local-search-mcp sudoers differs; refuse overwrite")
-        info = _sudo("stat", "-c", "%U:%G:%a:%F", str(SUDOERS)).stdout.strip()
-        if info != "root:root:440:regular file":
+        mode = _root_mode(SUDOERS)
+        if not stat.S_ISREG(mode) or stat.S_IMODE(mode) != 0o440:
             raise InstallError("Existing sudoers has unsafe ownership or mode")
         _sudo("visudo", "-cf", str(SUDOERS))
         return
