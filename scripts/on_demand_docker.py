@@ -34,7 +34,7 @@ class Target:
 
 def _safe_target(service: str, *, config_base: Path | None = None) -> Target:
     """Select exactly one project-owned full ID; never use Docker names as targets."""
-    if service not in _ALLOWED:
+    if type(service) is not str or service not in _ALLOWED:
         raise LifecycleError("Unrecognized managed backend")
     snapshot = inv.report(config_base=config_base)
     if (snapshot.get("state") not in ("running", "partially_running", "stopped")
@@ -145,9 +145,9 @@ def start(service: str, *, config_base: Path | None = None,
                 raise LifecycleError("Backend startup timed out; retry after inspecting service")
             sleep(0.5)
     except Exception:
-        # If the runtime itself started the crawler but cannot prove a live
-        # security gate, do not leave that new crawler running unattended.
-        if started and service == "crawl4ai":
+        # Do not leave a newly started, unready backend running if the gate
+        # fails. In particular an unverified crawler must be stopped.
+        if started:
             try:
                 fresh = _safe_target(service, config_base=config_base)
                 if fresh.ident == target.ident and fresh.running:
