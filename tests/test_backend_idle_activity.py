@@ -39,6 +39,14 @@ class IdleActivityTests(unittest.TestCase):
         self.assertFalse(self.gate.snapshot("crawl4ai")["armed"])
         self.assertFalse(self.gate.claim_idle_stop("crawl4ai"))
 
+    def test_repeated_running_verification_does_not_reset_idle_window(self):
+        self.gate.arm_running("crawl4ai")
+        self.advance(1700)
+        self.gate.arm_running("crawl4ai")
+        self.assertEqual(self.gate.snapshot("crawl4ai")["idle_seconds"], 1700)
+        self.advance(100)
+        self.assertTrue(self.gate.claim_idle_stop("crawl4ai"))
+
     def test_long_request_and_overlap_prohibit_stop(self):
         self.gate.arm_running("crawl4ai")
         self.gate.begin_work("crawl4ai")
