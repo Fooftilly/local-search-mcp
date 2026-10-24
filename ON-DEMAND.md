@@ -1,8 +1,12 @@
 # Optional on-demand backend preflight (issue #75)
 
-This first slice only validates future idle settings and performs an inert
-Docker ownership check. **No container sleep, automatic wake or idle timer
-is implemented or enabled.**
+The initial eligibility report remains deliberately read-only, but the
+separately confirmed opt-in runtime can now sleep and wake verified private
+Crawl4AI/SearXNG containers. It is **disabled by default**; after enabling,
+the bridge and tunnel remain running while those backends are asleep.
+Use `./setup.sh --on-demand-status` to inspect both the read-only ownership
+candidate and the live bridge supervisor. `can_activate: false` reflects the
+read-only report, **not** the status of an already enabled runtime.
 
 Run `python3 -m scripts.on_demand_eligibility` to preview a candidate.
 Pass `--idle-minutes 45` to validate a different timeout (1–1440
