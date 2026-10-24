@@ -331,6 +331,8 @@ def dry_run() -> dict:
              "action": "verify ownership of private Compose project; flag foreign published crawlers"},
             {"menu": "9", "effect": "read-only",
              "action": "preview optional on-demand eligibility; never enable, sleep or wake"},
+            {"menu": "10", "effect": "optional Docker sleep/wake changes only after confirmation",
+             "action": "configure validated on-demand backends with operator confirmation"},
             {"menu": "11", "effect": "privileged system changes only after confirmation",
              "action": "validate dedicated backends; install fixed egress guard, restricted sudoers and protected ChatGPT tunnel"},
         ],
@@ -421,7 +423,7 @@ def menu() -> int:
                       type(exc).__name__ + "; inspect status before retrying")
         elif choice == "11":
             if run_existing("scripts/install_secure_tunnel.py") != 0:
-                print("Dedicated backend check failed; no privileged installation attempted.")
+                print("Read-only prerequisites were not met; no privileged installation attempted.")
             elif confirm("SECURE"):
                 code = run_existing("scripts/install_secure_tunnel.py",
                                     "--install", "--confirm", "SECURE")
