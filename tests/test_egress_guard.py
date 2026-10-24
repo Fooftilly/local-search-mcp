@@ -208,6 +208,81 @@ class GuardTests(unittest.TestCase):
                     self.assertNotIn('flush ruleset', payload)
                     self.assertEqual(payload.startswith('delete table inet'), exists)
 
+    def test_bootstrap_fails_closed_when_stopped_firewall_cannot_be_verified(self):
+        """A sleeping crawler permits nft installation, never an unproved pass."""
+        for good in (True, False):
+            with self.subTest(preflight=good):
+                with (patch.object(guard, 'network_for',
+                                   return_value=('crawler-egress', 'br-aaaaaaaaaaaa')) as net,
+                      patch.object(guard, 'require_root'),
+                      patch.object(guard, 'table_exists', return_value=False),
+                      patch.object(guard, 'command', return_value='') as cmd,
+                      patch.object(guard, 'verify_installed',
+                                   side_effect=None if good else guard.GuardError('no hook')) as verify,
+                      patch.object(guard, 'container_running', return_value=False),
+                      patch.object(guard, 'probe') as live):
+                    status = guard.main(['--container', 'crawl4ai', '--startup'])
+                net.assert_called_once_with('crawl4ai', allow_stopped=True)
+                self.assertEqual(status, 0 if good else 1)
+                self.assertEqual(cmd.call_count, 2)
+                self.assertEqual(cmd.call_args_list[0].args[0], ['nft', '-c', '-f', '-'])
+                self.assertEqual(cmd.call_args_list[1].args[0], ['nft', '-f', '-'])
+                verify.assert_called_once_with('br-aaaaaaaaaaaa')
+                live.assert_not_called()
+
+    def test_bootstrap_requires_live_probe_for_running_crawler(self):
+        with (patch.object(guard, 'network_for',
+                           return_value=('crawler-egress', 'br-aaaaaaaaaaaa')),
+              patch.object(guard, 'require_root'),
+              patch.object(guard, 'table_exists', return_value=False),
+              patch.object(guard, 'command', return_value=''),
+              patch.object(guard, 'verify_installed'),
+              patch.object(guard, 'container_running', return_value=True),
+              patch.object(guard, 'probe', side_effect=guard.GuardError('unsafe'))):
+            self.assertEqual(guard.main(['--startup']), 1)
+
+    def test_tunnel_gate_checks_existing_guard_before_state_and_live_probe(self):
+        for running, healthy in ((False, True), (True, True), (True, False)):
+            with self.subTest(running=running, healthy=healthy):
+                with (patch.object(guard, 'network_for',
+                                   return_value=('crawler-egress', 'br-aaaaaaaaaaaa')) as net,
+                      patch.object(guard, 'require_root'),
+                      patch.object(guard, 'verify_installed') as verify,
+                      patch.object(guard, 'container_running', return_value=running) as state,
+                      patch.object(guard, 'command',
+                                   side_effect=AssertionError('No Docker exec or nft writes')),
+                      patch.object(guard, 'probe',
+                                   side_effect=None if healthy else guard.GuardError('live failed')) as live):
+                    result = guard.main(['--tunnel-gate'])
+                self.assertEqual(result, 0 if healthy else 1)
+                net.assert_called_once_with('crawl4ai', allow_stopped=True)
+                verify.assert_called_once_with('br-aaaaaaaaaaaa')
+                state.assert_called_once_with('crawl4ai')
+                if running:
+                    live.assert_called_once_with('crawl4ai', 'crawler-egress')
+                else:
+                    live.assert_not_called()
+
+    def test_tunnel_gate_fails_closed_for_missing_firewall_even_if_sleeping(self):
+        with (patch.object(guard, 'network_for',
+                           return_value=('crawler-egress', 'br-aaaaaaaaaaaa')),
+              patch.object(guard, 'require_root'),
+              patch.object(guard, 'verify_installed',
+                           side_effect=guard.GuardError('nft absent')),
+              patch.object(guard, 'container_running') as state,
+              patch.object(guard, 'probe') as live):
+            self.assertEqual(guard.main(['--tunnel-gate']), 1)
+        state.assert_not_called()
+        live.assert_not_called()
+
+    def test_live_probe_cannot_fall_back_to_stopped_preflight(self):
+        with (patch.object(guard, 'network_for',
+                           side_effect=guard.GuardError('Crawler must run')),
+              patch.object(guard, 'require_root'),
+              patch.object(guard, 'container_running') as state):
+            self.assertEqual(guard.main(['--probe']), 1)
+        state.assert_not_called()
+
     def test_forward_probe_requires_refusal_and_counter_increase(self):
         """A failed connection alone is not proof that the nft denylist blocked it."""
         from types import SimpleNamespace
