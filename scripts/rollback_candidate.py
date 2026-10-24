@@ -3,8 +3,7 @@
 
 After the existing strict read-only rollback preflight, validate state through
 the current application's fresh-install smoke test. Copy the exact local
-ancestor's tracked source as data from 'git archive' into a NEW private
-directory and stage a verified state restore. No old code runs, no services
+ancestor's tracked raw Git blobs into a NEW private directory and stage a verified state restore. No old code runs, no services
 restart, and the current Git HEAD/index, secrets and live files stay intact.
 """
 from __future__ import annotations
@@ -12,12 +11,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import os
 from pathlib import Path, PurePosixPath
 import stat
 import subprocess
 import sys
-import tarfile
 import tempfile
 
 if __package__:
@@ -29,7 +28,7 @@ else:
     from scripts import restart_on_update as update
 
 ROOT = Path(__file__).resolve().parents[1]
-MAX_TAR = 128 * 1024 * 1024
+MAX_TOTAL_SOURCE = 128 * 1024 * 1024
 MAX_FILES = 4000
 MAX_INDIVIDUAL = 32 * 1024 * 1024
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -55,65 +54,70 @@ def _valid_member(name: str) -> tuple[str, ...]:
     return parts
 
 
-def _extract_verified_archive(tar_path: Path, target: Path) -> int:
-    count = 0
-    total = 0
+def _git(root: Path, *args: str) -> bytes:
+    """Raw local Git plumbing only; neither checkout nor content filters."""
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=root, capture_output=True, check=False,
+            env=update._inspection_env(), timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError("Cannot read local Git object") from exc
+    if result.returncode:
+        raise ValueError("Required local Git object unavailable")
+    return result.stdout
+
+
+_TREE_ENTRY = re.compile(rb"(100644|100755) blob ([0-9a-f]{40}|[0-9a-f]{64})")
+
+
+def _copy_git_blobs(root: Path, target: str, destination: Path) -> int:
+    """Copy exact tracked blobs, NEVER triggering Git smudge or archive filters."""
+    listing = _git(root, "ls-tree", "-r", "-z", "--full-tree", target)
+    if len(listing) > 512_000:
+        raise ValueError("Rollback source listing too large")
     seen = set()
-    with tarfile.open(tar_path, mode="r:") as archive:
-        for item in archive:
-            # Git tracked source is data, not something to execute while
-            # preparing. Refuse symbolic/hard links, devices and all specials.
-            if not (item.isfile() or item.isdir()):
-                raise ValueError("Rollback candidate has unsafe tracked file type")
-            parts = _valid_member(item.name.rstrip("/") if item.isdir() else item.name)
-            key = "/".join(parts)
-            if key in seen:
-                raise ValueError("Duplicate rollback source path")
-            seen.add(key)
-            destination = target.joinpath(*parts)
-            if item.isdir():
-                destination.mkdir(mode=0o700, parents=True, exist_ok=True)
-                continue
-            count += 1
-            total += item.size
-            if count > MAX_FILES or item.size > MAX_INDIVIDUAL or total > MAX_TAR:
-                raise ValueError("Rollback source exceeds fixed bounds")
-            destination.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-            stream = archive.extractfile(item)
-            if stream is None:
-                raise ValueError("Missing regular rollback source")
-            fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
-                         0o600)
-            with os.fdopen(fd, "wb") as out:
-                remaining = item.size
-                while remaining:
-                    block = stream.read(min(65536, remaining))
-                    if not block:
-                        raise ValueError("Truncated archived source")
-                    out.write(block)
-                    remaining -= len(block)
-                out.flush()
-                os.fsync(out.fileno())
-    if count == 0:
-        raise ValueError("Empty rollback candidate code archive")
-    return count
-
-
-def _git_archive(root: Path, target: str, destination: Path) -> None:
-    """Offline, literal SHA, no checkout, smudge driver or old-code execution."""
-    env = update._inspection_env()
-    with destination.open("xb") as output:
-        os.chmod(destination, 0o600)
+    total = 0
+    count = 0
+    for record in listing.split(b"\\0"):
+        if not record:
+            continue
+        header, sep, pathname = record.partition(b"\\t")
+        match = _TREE_ENTRY.fullmatch(header) if sep else None
+        if match is None:
+            # This intentionally rejects Git symlinks (120000), gitlinks
+            # (160000), and future unknown file modes.
+            raise ValueError("Rollback source has unsupported tracked file type")
         try:
-            process = subprocess.run(
-                ["git", "-c", "core.hooksPath=/dev/null", "archive",
-                 "--format=tar", target],
-                cwd=root, stdout=output, stderr=subprocess.DEVNULL,
-                env=env, timeout=45, check=False)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise ValueError("Local Git archive creation failed") from exc
-    if process.returncode or destination.stat().st_size > MAX_TAR:
-        raise ValueError("Local Git archive unavailable or oversized")
+            name = pathname.decode("utf-8", errors="strict")
+        except UnicodeError as exc:
+            raise ValueError("Rollback source uses unsupported filename encoding") from exc
+        parts = _valid_member(name)
+        if parts in seen:
+            raise ValueError("Duplicate tracked source")
+        seen.add(parts)
+        oid = match.group(2).decode("ascii")
+        raw_size = _git(root, "cat-file", "-s", oid)
+        if not re.fullmatch(rb"[0-9]{1,10}\\n?", raw_size):
+            raise ValueError("Invalid tracked Git blob size")
+        size = int(raw_size)
+        count += 1
+        total += size
+        if count > MAX_FILES or size > MAX_INDIVIDUAL or total > MAX_TOTAL_SOURCE:
+            raise ValueError("Rollback tracked source exceeds size limits")
+        data = _git(root, "cat-file", "blob", oid)
+        if len(data) != size:
+            raise ValueError("Git blob bytes differ from verified object size")
+        destination_file = destination.joinpath(*parts)
+        destination_file.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        fd = os.open(destination_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
+                     0o600)
+        with os.fdopen(fd, "wb") as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+    if count == 0:
+        raise ValueError("Empty target Git tree")
+    return count
 
 
 def prepare(target: str, archive: Path, destination: Path,
@@ -127,13 +131,10 @@ def prepare(target: str, archive: Path, destination: Path,
     _private_parent(destination)
     source_head = update.head(root, read_only=True)
     destination.mkdir(mode=0o700)
-    tar_path = destination / ".candidate.tar"
     try:
-        _git_archive(root, target, tar_path)
         code = destination / "source"
         code.mkdir(mode=0o700)
-        files = _extract_verified_archive(tar_path, code)
-        tar_path.unlink()
+        files = _copy_git_blobs(root, target, code)
         backup_state.restore(archive, destination / "state")
         if (update.head(root, read_only=True) != source_head or
                 update.busy(root, read_only=True)
@@ -184,8 +185,7 @@ def main(argv: list[str] | None = None) -> int:
             report = prepare(args.target, args.archive, args.destination)
             print(json.dumps(report, sort_keys=True))
         return 0
-    except (OSError, ValueError, subprocess.SubprocessError,
-            tarfile.TarError) as exc:
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print("Rollback candidate not prepared: " + type(exc).__name__,
               file=sys.stderr)
         return 1
