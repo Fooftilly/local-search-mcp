@@ -30,7 +30,7 @@ class SetupWizardTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as exc:
                 wizard.main(["--help"])
         self.assertEqual(exc.exception.code, 0)
-        for option in ("--check", "--status", "--dry-run", "--chatgpt", "--update-status"):
+        for option in ("--check", "--status", "--dry-run", "--chatgpt", "--update-status", "--on-demand-status"):
             self.assertIn(option, out.getvalue())
         self.assertIn("30 minutes", out.getvalue())
 
@@ -159,7 +159,7 @@ class SetupWizardTests(unittest.TestCase):
             rc, output = self.call("--dry-run")
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(output)["default_client"].split()[0], "ChatGPT")
-        self.assertEqual(len(json.loads(output)["actions"]), 8)
+        self.assertEqual(len(json.loads(output)["actions"]), 9)
 
     def test_status_returns_only_allowlisted_service_state(self):
         with (patch.object(wizard, "health",
@@ -270,6 +270,55 @@ class SetupWizardTests(unittest.TestCase):
         inspect.assert_called_once_with()
         self.assertIn('"remote_checked": false', out.getvalue())
         self.assertIn("No automatic Git fetch", out.getvalue())
+
+    def test_on_demand_diagnostic_is_inert_and_uses_single_inventory(self):
+        sample = {"state": "unverified", "other_published_crawlers": 2}
+        with (patch.object(wizard, "docker_status", return_value=sample) as docker,
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("No mutating process")),
+              patch("scripts.on_demand_eligibility.eligibility",
+                    return_value={"enabled": False, "can_activate": False,
+                                  "state": "blocked"}) as inspect):
+            rc, result = self.call("--on-demand-status")
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(result)["state"], "blocked")
+            docker.assert_called_once_with()
+            inspect.assert_called_once_with(inventory=sample)
+
+    def test_on_demand_status_and_check_share_docker_inventory(self):
+        sample = {"state": "unverified", "other_published_crawlers": 1}
+        with (patch.object(wizard, "docker_status", return_value=sample) as docker,
+              patch.object(wizard, "health", return_value={"status": "unavailable"}),
+              patch.object(wizard, "user_unit_states", return_value={}),
+              patch("scripts.on_demand_eligibility.eligibility",
+                    return_value={"enabled": False, "can_activate": False,
+                                  "state": "blocked"}) as inspect):
+            result = wizard.status_report()
+        docker.assert_called_once_with()
+        inspect.assert_called_once_with(inventory=sample)
+        self.assertEqual(result["on_demand_preflight"]["state"], "blocked")
+
+    def test_on_demand_menu_option_nine_does_not_start_containers(self):
+        sample = {"mode": "read-only", "enabled": False,
+                  "can_activate": False, "state": "blocked"}
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input", side_effect=["9", "0"]),
+              patch.object(wizard, "on_demand_status", return_value=sample) as inspect,
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("mutating process")),
+              contextlib.redirect_stdout(io.StringIO()) as output):
+            self.assertEqual(wizard.main([]), 0)
+        inspect.assert_called_once_with()
+        self.assertIn('"can_activate": false', output.getvalue())
+
+    def test_on_demand_preflight_error_is_redacted_and_fail_closed(self):
+        with (patch("scripts.on_demand_eligibility.eligibility",
+                    side_effect=OSError("TOKEN=sensitive"))) as _:
+            result = wizard.on_demand_status(inventory={})
+        self.assertEqual(result["state"], "blocked")
+        self.assertFalse(result["can_activate"])
+        self.assertNotIn("sensitive", json.dumps(result))
 
     def test_other_clients_not_silently_installed(self):
         rc, message = self.call("--chatgpt")
