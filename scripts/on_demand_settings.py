@@ -44,6 +44,15 @@ def _private_file(path: Path) -> None:
         raise SettingsError("On-demand settings file has unsafe type, owner, mode or size")
 
 
+def _no_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise SettingsError("Duplicate settings JSON keys are unsafe")
+        result[key] = value
+    return result
+
+
 def read(*, folder: Path | None = None) -> dict:
     """Read strict versioned settings, default OFF only when no file exists."""
     folder = directory() if folder is None else folder
@@ -61,7 +70,7 @@ def read(*, folder: Path | None = None) -> dict:
             raw = source.read(2049)
         if len(raw) > 2048:
             raise SettingsError("On-demand settings exceed size limit")
-        document = json.loads(raw)
+        document = json.loads(raw, object_pairs_hook=_no_duplicate_json_keys)
         if type(document) is not dict or set(document) != {"schema", "settings"}:
             raise SettingsError("Unexpected on-demand settings schema")
         if document["schema"] != SCHEMA or type(document["settings"]) is not dict:
