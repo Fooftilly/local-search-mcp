@@ -12,6 +12,12 @@ from scripts import setup_wizard
 
 
 class SecureTunnelSetupTests(unittest.TestCase):
+    def setUp(self):
+        # These fixtures exercise the unprivileged installer regardless of CI UID.
+        patcher = patch.object(secure.os, "geteuid", return_value=1000)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def inventory(self):
         return {
             "state": "running", "managed_running": 2, "managed_stopped": 0,
@@ -66,6 +72,8 @@ class SecureTunnelSetupTests(unittest.TestCase):
             line = secure._sudoers_line()
         self.assertTrue(line.startswith("realoperator ALL=(root) NOPASSWD: "))
         self.assertIn("--container crawl4ai --probe", line)
+        self.assertIn("--container crawl4ai --preflight", line)
+        self.assertEqual(line.count("NOPASSWD:"), 2)
         self.assertNotIn("--apply", line)
         self.assertNotIn("--remove", line)
         self.assertNotIn("otherroot", line)
