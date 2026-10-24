@@ -93,7 +93,7 @@ class SecureTunnelSetupTests(unittest.TestCase):
               patch.object(secure, "_sudo", side_effect=lambda *args, **kw:
                   subprocess.CompletedProcess(args, 0,
                       secure._sudoers_line() if args[0] == "cat"
-                      else "root:root:440:regular file" if args[0] == "stat"
+                      else "0:0:8120" if args[0] == "stat"
                       else "", "")) as root):
             secure._install_sudoers()
         self.assertNotIn("install", [c.args[0] for c in root.call_args_list])
@@ -123,9 +123,47 @@ class SecureTunnelSetupTests(unittest.TestCase):
         with (patch.object(secure, "_existing_root", return_value=True),
               patch.object(secure, "_sudo",
                            return_value=subprocess.CompletedProcess(
-                               [], 0, "0:0:777:directory", "")),
+                               [], 0, "0:0:41ff", "")),
               self.assertRaisesRegex(secure.InstallError, "writable")):
             secure._root_parent_safety(secure.ROOT_GUARD)
+
+    def test_numeric_metadata_ignores_non_english_locale(self):
+        with patch.dict(os.environ, {"LC_ALL": "fr_FR.UTF-8", "LANG": "fr_FR.UTF-8"}):
+            # Numeric stat output is locale-invariant: 040755 directory,
+            # 100755 regular file and 100440 sudoers file.
+            responses = {
+                secure.ROOT_GUARD: "0:0:81ed",
+                secure.SUDOERS: "0:0:8120",
+            }
+
+            def check(*args, **_kwargs):
+                if args[0] == "stat":
+                    return subprocess.CompletedProcess(
+                        args, 0, responses.get(Path(args[-1]), "0:0:41ed"), "")
+                if args[0] == "cat":
+                    return subprocess.CompletedProcess(args, 0, secure._sudoers_line(), "")
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+            with (patch.object(secure, "_sudo", side_effect=check),
+                  patch.object(secure, "_existing_root", return_value=True)):
+                secure._root_parent_safety(secure.ROOT_GUARD)
+                self.assertEqual(secure._root_mode(secure.ROOT_GUARD), 0o100755)
+                secure._install_sudoers()
+
+    def test_numeric_metadata_rejects_unsafe_modes_and_wrong_types(self):
+        cases = [
+            ("0:0:41ff", "writable"),  # 0777 directory
+            ("0:0:81ed", "not a directory"),  # regular file in parent chain
+            ("1000:0:41ed", "ownership"),
+            ("0:0:directory", "metadata"),
+        ]
+        for raw, problem in cases:
+            with (self.subTest(raw=raw),
+                  patch.object(secure, "_existing_root", return_value=True),
+                  patch.object(secure, "_sudo", return_value=subprocess.CompletedProcess(
+                      [], 0, raw, "")),
+                  self.assertRaisesRegex(secure.InstallError, problem)):
+                secure._root_parent_safety(secure.ROOT_GUARD)
 
     def test_failed_tunnel_start_attempts_to_disable_partly_started_unit(self):
         commands = []
