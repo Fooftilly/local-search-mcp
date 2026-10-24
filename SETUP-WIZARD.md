@@ -22,6 +22,17 @@ read-only diagnostics but does not prove a live remote tunnel registration,
 account-side ChatGPT connection, or Docker ownership/firewall isolation.
 A missing systemd bus is reported as unknown, not inactive.
 
+`ready: true` still means the configured local services and dependencies
+passed the existing health checks; it does **not** require a private Docker
+project, since existing healthy shared backends remain supported. The separate
+`dedicated_docker_ready` field requires exactly one verified running
+Crawl4AI and SearXNG container in the owner-controlled project, with no
+unverified project containers or external published crawler. An unknown,
+stopped or shared Docker deployment makes only that ownership-specific field
+false; it cannot be selected for future on-demand lifecycle management.
+Neither field proves firewall containment, remote tunnel registration or
+ChatGPT account-side connection.
+
 Dependency checks in `--check` and interactive option 5 run the existing
 local-only dependency reporter under the **project `.venv/bin/python`**, never
 system Python. When `.venv` is missing, broken, or packages are absent, the

@@ -118,14 +118,20 @@ class SetupWizardTests(unittest.TestCase):
             {"package": "httpx", "installed": "0.28"},
             {"package": "idna", "installed": "3.11"},
         ]}
+        dedicated = {"state": "running", "managed_running": 2,
+                     "managed_stopped": 0, "unverified_project_containers": 0,
+                     "other_published_crawlers": 0,
+                     "verified_services": {"crawl4ai": 1, "searxng": 1}}
+        runtime = {"local_health": {"status": "healthy"},
+                   "docker_project": dedicated}
         with (patch.object(wizard, "dependency_report", return_value=dependencies),
               patch.object(wizard, "configured_sources",
                            return_value={"available": True}),
-              patch.object(wizard, "status_report",
-                           return_value={"local_health": {"status": "healthy"}}),
+              patch.object(wizard, "status_report", return_value=runtime),
               patch.object(wizard, "project_python", return_value=Path("/virtual/python"))):
             report = wizard.check_report()
         self.assertTrue(report["ready"])
+        self.assertTrue(report["dedicated_docker_ready"])
         self.assertEqual(report["dependency_versions_in_project_venv"], dependencies)
         self.assertNotIn("dependency_versions_in_current_interpreter", report)
         dependencies = {**dependencies, "packages": [
@@ -135,9 +141,48 @@ class SetupWizardTests(unittest.TestCase):
         with (patch.object(wizard, "dependency_report", return_value=dependencies),
               patch.object(wizard, "configured_sources",
                            return_value={"available": True}),
-              patch.object(wizard, "status_report",
-                           return_value={"local_health": {"status": "healthy"}})):
+              patch.object(wizard, "status_report", return_value=runtime)):
             self.assertFalse(wizard.check_report()["ready"])
+
+    def test_check_separates_shared_backend_health_from_owned_docker(self):
+        dependencies = {"state": "available", "packages": [
+            {"package": name, "installed": "1"} for name in
+            ("fastmcp", "httpx", "idna")]}
+        dedicated = {"state": "running", "managed_running": 2,
+                     "managed_stopped": 0, "unverified_project_containers": 0,
+                     "other_published_crawlers": 0,
+                     "verified_services": {"crawl4ai": 1, "searxng": 1}}
+        cases = (
+            {}, {"state": "unknown"},
+            {**dedicated, "state": "unverified"},
+            {**dedicated, "state": "not_started"},
+            {**dedicated, "managed_running": 1},
+            {**dedicated, "managed_stopped": 1},
+            {**dedicated, "unverified_project_containers": 1},
+            {**dedicated, "unverified_project_containers": True},
+            {**dedicated, "other_published_crawlers": 1},
+            {**dedicated, "other_published_crawlers": None},
+            {**dedicated, "verified_services": {"crawl4ai": 2, "searxng": 0}},
+            {**dedicated, "verified_services": {"crawl4ai": True, "searxng": 1}},
+        )
+        with (patch.object(wizard, "dependency_report", return_value=dependencies),
+              patch.object(wizard, "configured_sources",
+                           return_value={"available": True}),
+              patch.object(wizard, "project_python", return_value=Path("/virtual/python"))):
+            for inventory in cases:
+                with self.subTest(inventory=inventory), patch.object(
+                    wizard, "status_report",
+                    return_value={"local_health": {"status": "healthy"},
+                                  "docker_project": inventory}):
+                    result = wizard.check_report()
+                    self.assertFalse(result["dedicated_docker_ready"])
+                    # Healthy shared/non-Docker backends remain supported,
+                    # but an explicitly unverified project is still unsafe.
+                    unsafe = (inventory.get("state") == "unverified"
+                              or type(inventory.get("unverified_project_containers", 0))
+                              is not int
+                              or inventory.get("unverified_project_containers", 0) != 0)
+                    self.assertEqual(result["ready"], not unsafe)
 
     def test_menu_dependency_inspection_only_reads_project_venv(self):
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
