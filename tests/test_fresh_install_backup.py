@@ -252,6 +252,44 @@ class FreshRecoveryTests(unittest.TestCase):
         self.assertNotIn("SECRET_SEARCH_QUERY", result.stdout)
         self.assertNotIn("SECRET_TOKEN", result.stdout)
 
+    def test_smoke_audits_every_staged_file_before_application_reads(self):
+        original_check = restore_smoke._verify_staged_copy
+        inspected = []
+
+        def audit(path, expected):
+            original_check(path, expected)
+            inspected.append(path.name)
+
+        with patch.object(restore_smoke, "_verify_staged_copy", side_effect=audit):
+            self.assertEqual(restore_smoke.smoke(self.archive),
+                             (self.expected_policy_count, 2))
+        self.assertIn("domains.sqlite3", inspected)
+        self.assertIn("history.jsonl", inspected)
+        self.assertEqual(set(inspected),
+                         set(backup_state.verified_payload(self.archive)))
+
+    def test_staged_copy_rejects_changed_bytes_modes_and_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "history.jsonl"
+            expected = b'{"query":"private"}\\n'
+            path.write_bytes(expected)
+            path.chmod(0o600)
+            restore_smoke._verify_staged_copy(path, expected)
+
+            path.write_bytes(b'{"query":"altered"}\\n')
+            with self.assertRaisesRegex(ValueError, "bytes differ"):
+                restore_smoke._verify_staged_copy(path, expected)
+            path.write_bytes(expected)
+            path.chmod(0o644)
+            with self.assertRaisesRegex(ValueError, "permissions"):
+                restore_smoke._verify_staged_copy(path, expected)
+            path.unlink()
+            outside = Path(tmp) / "outside"
+            outside.write_bytes(expected)
+            path.symlink_to(outside)
+            with self.assertRaisesRegex(ValueError, "type"):
+                restore_smoke._verify_staged_copy(path, expected)
+
     def test_corrupt_archive_is_rejected_before_initialization(self):
         broken = self.root / "not-a-zip"
         broken.write_bytes(b"damaged")
