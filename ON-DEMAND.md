@@ -67,9 +67,11 @@ This requires an **operator-reviewed upgrade** of the root-owned guard,
 root system service, fixed sudoers rule and user tunnel drop-in: an ordinary
 `git pull` does not change privileged installed files. Follow
 `docs/EGRESS-SYSTEMD.md`; the setup wizard rejects mismatched existing
-security files instead of silently overwriting them. Test with restart policy
-`no` on both verified backends, and confirm the tunnel can reconnect after
-the root firewall starts with both containers sleeping. Do not change Docker
+security files instead of silently overwriting them. Reboot tests require
+restart policy `no` on the verified backends: Docker can start a container
+using `unless-stopped` at daemon boot **before** the root guard has installed
+its nftables rules. Verify both remain stopped until actual MCP work, then
+confirm the tunnel reconnects after the root firewall is installed. Do not change Docker
 restart policies automatically or remove existing firewall protection.
 A host reboot and Docker-daemon-restart validation remain required before
 closing #75. System and user systemd services have no cross-manager ordering
