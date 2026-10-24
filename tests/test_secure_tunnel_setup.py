@@ -370,5 +370,46 @@ class SecureTunnelSetupTests(unittest.TestCase):
             self.assertEqual(setup_wizard.main(["--dry-run"]), 0)
 
 
+    def test_installer_conflicts_have_actionable_redacted_diagnostics(self):
+        import contextlib
+        import io
+
+        scenarios = (
+            ("Existing local-search-mcp sudoers differs; refuse overwrite",
+             "Existing restricted sudoers policy differs"),
+            ("Existing sudoers has unsafe ownership or mode",
+             "regular file and mode 0440"),
+            ("Effective tunnel firewall startup probe is missing or overridden",
+             "effective tunnel pre-start firewall probe"),
+        )
+        for reason, expected in scenarios:
+            with self.subTest(reason=reason):
+                stderr = io.StringIO()
+                with (patch.object(secure, "install",
+                                   side_effect=secure.InstallError(reason)),
+                      contextlib.redirect_stderr(stderr)):
+                    status = secure.main(["--install", "--confirm", "SECURE"])
+                self.assertEqual(status, 1)
+                self.assertIn(expected, stderr.getvalue())
+                self.assertIn("Check systemctl --user is-active", stderr.getvalue())
+
+    def test_unrecognized_errors_cannot_expose_private_data(self):
+        import contextlib
+        import io
+
+        for error in (secure.InstallError("SECRET_TOKEN=/private/path"),
+                      OSError("SECRET_TOKEN=/private/path"),
+                      ValueError("SECRET_TOKEN=/private/path")):
+            with self.subTest(error=type(error).__name__):
+                stderr = io.StringIO()
+                with (patch.object(secure, "install", side_effect=error),
+                      contextlib.redirect_stderr(stderr)):
+                    status = secure.main(["--install", "--confirm", "SECURE"])
+                self.assertEqual(status, 1)
+                self.assertNotIn("SECRET_TOKEN", stderr.getvalue())
+                self.assertNotIn("/private/path", stderr.getvalue())
+                self.assertIn("Secure tunnel setup incomplete", stderr.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
