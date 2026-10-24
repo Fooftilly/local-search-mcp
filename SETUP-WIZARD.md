@@ -54,8 +54,10 @@ For on-demand reboot diagnostics, run `./setup.sh --boot-audit` or
 select interactive option 13. This read-only audit checks the actual
 container restart policies, reviewed root-owned helper/unit installation,
 effective root/tunnel startup gates and systemd enablement/linger without
-mutating the host or running live firewall probes. It returns nonzero for
-missing prerequisites and does not declare reboot safety proven. Review
+mutating the host or running live firewall probes. The `--boot-audit`
+CLI flag returns nonzero for missing prerequisites; interactive option 13
+prints the same report but leaves the menu running. Neither mode declares
+reboot safety proven. Review
 `ON-DEMAND.md` and `docs/EGRESS-SYSTEMD.md` before a manual reboot test.
 
 `--check` shows redacted configuration sources, Python prerequisites,
