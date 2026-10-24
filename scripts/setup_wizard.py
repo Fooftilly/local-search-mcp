@@ -180,9 +180,9 @@ def check_report() -> dict:
         "configuration": configured_sources(),
         "runtime": status_report(),
     }
-    # A healthy listener is not proof that the correct, owned backends are
-    # running: a shared/foreign crawler or unavailable Docker can otherwise
-    # turn a status probe into a misleading "ready" result.
+    # Report dedicated Docker ownership separately from local tool health.
+    # Existing installations may intentionally use working shared backends;
+    # they remain supported for ordinary MCP use, not on-demand lifecycle.
     docker = result["runtime"].get("docker_project", {})
     services = docker.get("verified_services", {})
     owned_pair = (type(services) is dict
@@ -200,14 +200,13 @@ def check_report() -> dict:
         and type(docker.get("other_published_crawlers")) is int
         and docker["other_published_crawlers"] == 0
         and owned_pair)
-    result["docker_ready"] = docker_ready
+    result["dedicated_docker_ready"] = docker_ready
     result["ready"] = bool(result["python_compatible"]
                            and dependencies["state"] == "available"
                            and all(installed.get(name) for name in
                                    ("fastmcp", "httpx", "idna"))
                            and result["configuration"]["available"]
-                           and result["runtime"]["local_health"]["status"] == "healthy"
-                           and docker_ready)
+                           and result["runtime"]["local_health"]["status"] == "healthy")
     result["security_note"] = ("Local readiness does not establish remote tunnel "
                                "registration, crawler firewall isolation, or "
                                "ownership of other published Docker endpoints")
