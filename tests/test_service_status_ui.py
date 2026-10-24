@@ -1,4 +1,5 @@
 """Read-only service status, localhost-only probes and origin protections."""
+import errno
 import os
 import tempfile
 import threading
@@ -130,6 +131,37 @@ class StatusTests(unittest.TestCase):
                 self.assertEqual([row["status"] for row in result], expected)
                 snapshot.assert_called_once_with()
                 self.assertNotIn("private error", repr(result))
+
+    def test_only_refused_connections_can_be_supervisor_reported_sleep(self):
+        sleeping = {"state": "sleeping", "armed": False,
+                    "active_requests": 0, "stop_claimed": False}
+        activity = {"mode": "on-demand", "enabled": True, "backends": {
+            "searxng": sleeping, "crawl4ai": sleeping}}
+        cases = (
+            (ConnectionRefusedError(errno.ECONNREFUSED, "secret"), True),
+            (OSError(errno.ECONNREFUSED, "secret"), True),
+            (TimeoutError("secret"), False),
+            (OSError(errno.ENETUNREACH, "secret"), False),
+            (OSError(errno.EACCES, "secret"), False),
+            (OSError(errno.EMFILE, "secret"), False),
+            (OSError("secret"), False),
+        )
+        for error, refused in cases:
+            with (self.subTest(error=repr(error)),
+                  patch.dict(os.environ, {}, clear=True),
+                  patch.object(service_status, "_supervisor_activity",
+                               return_value=activity) as snapshot):
+                def connector(*_args, **_kwargs):
+                    raise error
+                result = service_status.probe_services(connector=connector)
+            label = ("TCP unavailable (supervisor reports sleeping)"
+                     if refused else "TCP unavailable")
+            self.assertEqual([row["status"] for row in result], [label] * 2)
+            self.assertNotIn("secret", repr(result))
+            if refused:
+                snapshot.assert_called_once_with()
+            else:
+                snapshot.assert_not_called()
 
     def test_custom_loopback_ports_are_not_mislabelled_as_supervisor_sleep(self):
         asleep = {"state": "sleeping", "armed": False,
