@@ -9,7 +9,7 @@ an editable checkout as root. Preview has no sudo calls or side effects.
 from __future__ import annotations
 
 import argparse
-import getpass
+import pwd
 import os
 from pathlib import Path
 import re
@@ -78,7 +78,7 @@ def _install_root_file(source: Path, target: Path, permission: str) -> None:
 
 
 def _sudoers_line() -> str:
-    name = getpass.getuser()
+    name = pwd.getpwuid(os.getuid()).pw_name
     if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", name):
         raise InstallError("Username cannot be written safely in sudoers")
     return (name + " ALL=(root) NOPASSWD: /usr/bin/python3 "
@@ -193,6 +193,7 @@ def install() -> None:
         raise InstallError("Managed tunnel user unit is not installed")
 
     # A single password prompt may be needed. No editable Python is run as root.
+    print("Authenticating for fixed root-owned firewall installation...")
     _sudo("-v")
     _install_root_file(GUARD, ROOT_GUARD, "0755")
     _install_root_file(SERVICE, ROOT_SERVICE, "0644")
@@ -201,9 +202,11 @@ def install() -> None:
     if _sudo("systemctl", "is-active", ROOT_SERVICE.stem + ".service").stdout.strip() != "active":
         raise InstallError("System firewall service failed verification")
 
+    print("Validating the restricted firewall-probe sudoers policy...")
     _install_sudoers()
     _sudo("-n", "/usr/bin/python3", str(ROOT_GUARD),
           "--container", "crawl4ai", "--probe", timeout=180)
+    print("Installing tunnel pre-start protection...")
     _install_user_dropin()
     _run("systemctl", "--user", "daemon-reload")
     loaded = _run("systemctl", "--user", "cat", USER_TUNNEL).stdout
