@@ -42,6 +42,14 @@ SETTINGS_SCHEMAS = {
             "search_seconds": (5, 900), "fetch_seconds": (5, 1800),
         },
     },
+    # A staged backup may preserve the opted-in idle preference, but restore
+    # never activates the supervisor or copies it into a live installation.
+    # No credentials, Docker identities, or compose paths are in this schema.
+    "on-demand.json": {
+        "local-search-mcp/on-demand/v1": {
+            "enabled": None, "idle_minutes": (1, 1440),
+        },
+    },
 }
 SETTINGS_NAMES = tuple(SETTINGS_SCHEMAS)
 MAX_SETTINGS_FILE = 1024
@@ -84,7 +92,7 @@ def _reject_duplicate_json_members(pairs: list[tuple[str, object]]) -> dict:
 
 
 def _verify_nonsecret_setting(name: str, raw: bytes) -> None:
-    """Reject every field not explicitly sanctioned as a bounded integer."""
+    """Allow only bounded nonsecret fields, including one exact boolean."""
     if not raw or len(raw) > MAX_SETTINGS_FILE:
         raise ValueError(f"Invalid nonsecret settings size: {name}")
     try:
@@ -99,10 +107,17 @@ def _verify_nonsecret_setting(name: str, raw: bytes) -> None:
     fields = doc["settings"]
     if spec is None or not isinstance(fields, dict) or set(fields) != set(spec):
         raise ValueError(f"Unsupported or unsafe nonsecret settings: {name}")
-    for key, (low, high) in spec.items():
+    for key, bounds in spec.items():
         value = fields[key]
-        if type(value) is not int or not low <= value <= high:
-            raise ValueError(f"Invalid nonsecret setting: {key}")
+        if bounds is None:
+            # Only the on-demand enabled field can be a boolean. Reject
+            # strings and integers, including 0/1, rather than coercing.
+            if name != "on-demand.json" or key != "enabled" or type(value) is not bool:
+                raise ValueError(f"Invalid nonsecret setting: {key}")
+        else:
+            low, high = bounds
+            if type(value) is not int or not low <= value <= high:
+                raise ValueError(f"Invalid nonsecret setting: {key}")
 
 
 def _private_file(path: Path, *, max_size: int = MAX_DB_FILE) -> None:
