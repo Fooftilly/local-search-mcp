@@ -65,6 +65,7 @@ class OnDemandSettingsTests(unittest.TestCase):
         file = self.folder / settings.NAME
         specimens = (
             b"null", b"[]", b"bad json",
+            b'{"schema":"local-search-mcp/on-demand/v1","settings":{"enabled":false,"enabled":true,"idle_minutes":30}}',
             json.dumps({"schema": settings.SCHEMA,
                         "settings": {"enabled": True, "idle_minutes": True}}).encode(),
             json.dumps({"schema": settings.SCHEMA,
