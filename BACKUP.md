@@ -99,6 +99,12 @@ The absence of this optional file remains compatible with existing archives.
 This is independent of the settings UI under PR #60: on installations that
 have not yet incorporated that feature, a staged cache settings file remains
 inert. Neither backup nor smoke installs the file into a live configuration.
+The fresh-install smoke check now also loads an archived `cache-ttl.json`
+through the real runtime settings reader in its temporary owner-only config
+directory, verifies the effective values, and ignores inherited live cache
+environment overrides. Missing optional cache settings remain supported.
+The test does not copy cache contents, tokens, or launcher credentials.
+
 After adopting the UI, confirm the staged settings with its real reader
 before manually enabling services. No automatic upgrade or rollback occurs.
 
