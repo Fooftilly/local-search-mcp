@@ -51,7 +51,7 @@ class ScopedDockerTests(unittest.TestCase):
 
     def setup_mocks(self):
         self.enterContext(patch.object(docker.inv, "report", side_effect=self.inventory))
-        self.enterContext(patch.object(docker.inv, "_ids", return_value=self.ids))
+        self.enterContext(patch.object(docker.inv, "_ids", side_effect=lambda *a: self.ids))
         self.enterContext(patch.object(docker.inv, "_private_files",
                                       return_value=({self.crawler_file, self.overlay_file}, True)))
         self.enterContext(patch.object(docker.inv, "_inspect", side_effect=self.inspect))
@@ -106,11 +106,81 @@ class ScopedDockerTests(unittest.TestCase):
         self.assertEqual(self.operations, [])
         with self.assertRaisesRegex(docker.LifecycleError, "egress probe failed"):
             docker.start("crawl4ai", config_base=self.base,
-                         health=lambda _: True, crawler_probe=lambda: False)
+                         health=lambda _: True, crawler_probe=lambda: False,
+                         crawler_preflight=lambda: True)
         self.assertEqual(self.operations,
                          [("crawl4ai", CRAWLER, False),
                           ("crawl4ai", CRAWLER, True)])
         self.assertFalse(self.running["crawl4ai"])
+
+    def test_ambiguous_docker_start_failure_still_stops_original_id(self):
+        self.setup_mocks()
+        self.running["crawl4ai"] = False
+        def fail_start(service, ident, *, stopping):
+            self.operations.append((service, ident, stopping))
+            if not stopping:
+                raise docker.LifecycleError("Docker timed out after scheduling start")
+            self.running[service] = False
+        with patch.object(docker, "_run", side_effect=fail_start):
+            with self.assertRaises(docker.LifecycleError):
+                docker.start("crawl4ai", config_base=self.base,
+                             health=lambda _: True,
+                             crawler_probe=lambda: True,
+                             crawler_preflight=lambda: True)
+        self.assertEqual(self.operations, [
+            ("crawl4ai", CRAWLER, False), ("crawl4ai", CRAWLER, True)])
+
+    def test_crawler_probe_fails_and_cleanup_survives_inventory_outage(self):
+        self.setup_mocks()
+        self.running["crawl4ai"] = False
+        original_inspect = self.inspect
+        calls = [0]
+        def intermittent(ident):
+            calls[0] += 1
+            # Inventory fails after the container is started, but the
+            # already verified 64-character ID is still a safe stop target.
+            if calls[0] >= 5:
+                return None
+            return original_inspect(ident)
+        with patch.object(docker.inv, "_inspect", side_effect=intermittent):
+            with self.assertRaises(docker.LifecycleError):
+                docker.start("crawl4ai", config_base=self.base,
+                             health=lambda _: True,
+                             crawler_probe=lambda: True,
+                             crawler_preflight=lambda: True)
+        self.assertEqual(self.operations[-1], ("crawl4ai", CRAWLER, True))
+
+    def test_missing_or_failed_prestart_guard_cannot_wake_crawler(self):
+        self.setup_mocks()
+        self.running["crawl4ai"] = False
+        with self.assertRaisesRegex(docker.LifecycleError, "pre-start firewall"):
+            docker.start("crawl4ai", config_base=self.base,
+                         health=lambda _: True, crawler_probe=lambda: True)
+        self.assertEqual(self.operations, [])
+        for callback in (lambda: False, lambda: None,
+                         lambda: 1, lambda: (_ for _ in ()).throw(OSError("private"))):
+            with self.subTest(callback=callback), self.assertRaisesRegex(
+                    docker.LifecycleError, "pre-start firewall"):
+                docker.start("crawl4ai", config_base=self.base,
+                             health=lambda _: True, crawler_probe=lambda: True,
+                             crawler_preflight=callback)
+            self.assertEqual(self.operations, [])
+
+    def test_crawler_verified_prestart_and_live_probe_both_required(self):
+        self.setup_mocks()
+        self.running["crawl4ai"] = False
+        events = []
+        def preflight():
+            events.append("preflight")
+            return True
+        def live():
+            events.append("live")
+            return True
+        self.assertTrue(docker.start("crawl4ai", config_base=self.base,
+                                     health=lambda _: True,
+                                     crawler_preflight=preflight, crawler_probe=live))
+        self.assertEqual(events, ["preflight", "live"])
+        self.assertEqual(self.operations, [("crawl4ai", CRAWLER, False)])
 
     def test_always_restart_policy_rejected_without_change(self):
         self.setup_mocks()
