@@ -13,12 +13,15 @@ import pwd
 import os
 from pathlib import Path
 import re
-import stat
 import subprocess
 import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+# Allow both python -m scripts.install_secure_tunnel and direct script launch
+# by setup_wizard.run_existing(), without depending on ambient PYTHONPATH.
+if not __package__:
+    sys.path.insert(0, str(ROOT))
 GUARD = ROOT / "scripts" / "crawler_egress_guard.py"
 SERVICE = ROOT / "config" / "systemd-system" / "local-search-mcp-crawler-egress.service"
 DROPIN = ROOT / "config" / "systemd" / "guards" / "10-crawler-egress.conf"
