@@ -74,28 +74,35 @@ def _private_files(base: Path) -> tuple[set[str], bool] | None:
         return None
 
 
-def _inspect(ident: str) -> tuple[dict, str, str] | None:
+def _inspect(ident: str) -> tuple[dict, str, str | None] | None:
     raw_labels = _run("inspect", "--type=container", "--format",
                       "{{json .Config.Labels}}", ident)
     running = _run("inspect", "--type=container", "--format",
                    "{{.State.Running}}", ident)
     raw_policy = _run("inspect", "--type=container", "--format",
                       "{{json .HostConfig.RestartPolicy}}", ident)
-    if (raw_labels is None or raw_policy is None or running is None
-            or running.strip() not in ("true", "false")):
+    if raw_labels is None or running is None or running.strip() not in ("true", "false"):
         return None
     try:
         labels = json.loads(raw_labels)
-        policy = json.loads(raw_policy)
     except (ValueError, TypeError):
         return None
-    # Never publish raw inspect details; only a Docker-defined policy name.
-    modes = {"no", "always", "unless-stopped", "on-failure"}
-    if (not isinstance(labels, dict) or not isinstance(policy, dict)
-            or type(policy.get("Name")) is not str
-            or policy["Name"] not in modes):
+    if not isinstance(labels, dict):
         return None
-    return labels, running.strip(), policy["Name"]
+    # Restart-policy lookup is a separate eligibility gate: missing/malformed
+    # policy must not erase otherwise verified container ownership or state.
+    policy_name = None
+    if raw_policy is not None:
+        try:
+            policy = json.loads(raw_policy)
+        except (ValueError, TypeError):
+            policy = None
+        if isinstance(policy, dict) and type(policy.get("Name")) is str:
+            # Docker may encode "no restart" as either an empty string or "no".
+            mode = policy["Name"]
+            if mode in ("", "no", "always", "unless-stopped", "on-failure"):
+                policy_name = "no" if mode == "" else mode
+    return labels, running.strip(), policy_name
 
 
 def report(*, config_base: Path | None = None) -> dict:
