@@ -254,6 +254,14 @@ class RollbackPreflightTests(unittest.TestCase):
         self.git("status", "--porcelain=v1")
         self.assertTrue(marker.exists())
         marker.unlink()
+        # Git status may refresh the index stat after the clean filter runs,
+        # making the touched-but-unchanged file appear clean again. Recreate
+        # a guaranteed metadata mismatch *after* that status probe.
+        filtered = self.root / "filtered.txt"
+        stat = filtered.stat()
+        os.utime(filtered, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000))
+        self.assertTrue(update._tracked_metadata_dirty(self.root),
+                        "Fixture must be dirty after Git status refresh")
         with self.assertRaisesRegex(ValueError, "not clean"):
             rollback.preflight(self.target, self.archive, root=self.root)
         self.assertFalse(marker.exists(), "preflight invoked a clean filter")
