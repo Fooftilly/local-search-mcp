@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -124,7 +125,7 @@ def version_report(*, check_remote: bool = False, root: Path = ROOT) -> dict:
         try:
             report["public_release"] = public_latest()
         except (OSError, ValueError, TypeError, urllib.error.URLError,
-                json.JSONDecodeError):
+                http.client.HTTPException, json.JSONDecodeError):
             report["public_release"] = {"state": "unavailable"}
     report["note"] = (
         "Local SHA-256 is a fingerprint, not a verified version. A public "
