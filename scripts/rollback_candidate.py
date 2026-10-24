@@ -78,10 +78,10 @@ def _copy_git_blobs(root: Path, target: str, destination: Path) -> int:
     seen = set()
     total = 0
     count = 0
-    for record in listing.split(b"\\0"):
+    for record in listing.split(b"\0"):
         if not record:
             continue
-        header, sep, pathname = record.partition(b"\\t")
+        header, sep, pathname = record.partition(b"\t")
         match = _TREE_ENTRY.fullmatch(header) if sep else None
         if match is None:
             # This intentionally rejects Git symlinks (120000), gitlinks
@@ -97,7 +97,7 @@ def _copy_git_blobs(root: Path, target: str, destination: Path) -> int:
         seen.add(parts)
         oid = match.group(2).decode("ascii")
         raw_size = _git(root, "cat-file", "-s", oid)
-        if not re.fullmatch(rb"[0-9]{1,10}\\n?", raw_size):
+        if not re.fullmatch(rb"[0-9]{1,10}\n?", raw_size):
             raise ValueError("Invalid tracked Git blob size")
         size = int(raw_size)
         count += 1
