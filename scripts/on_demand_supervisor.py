@@ -114,37 +114,41 @@ class Supervisor:
 
     def _idle_loop(self) -> None:
         while not self._stop_event.wait(10.0):
-            for service, lock in self._locks.items():
-                if not lock.acquire(blocking=False):
-                    continue
-                try:
-                    if not self._enabled():
-                        try:
-                            self.tracker.disarm(service)
-                        except Exception:
-                            pass
-                        continue
-                    if not self.tracker.claim_idle_stop(service):
-                        continue
-                    self._state[service] = "stopping"
-                    stopped = False
+            self.idle_once()
+
+    def idle_once(self) -> None:
+        """One testable idle sweep; no timer or Docker work while disabled."""
+        for service, lock in self._locks.items():
+            if not lock.acquire(blocking=False):
+                continue
+            try:
+                if not self._enabled():
                     try:
-                        # A full stop or settings edit can disable the mode
-                        # after claim but before Docker mutation.
-                        if self._enabled():
-                            docker.stop(service)
-                            stopped = True
-                        else:
-                            self._state[service] = "running"
-                    except (docker.LifecycleError, OSError):
-                        self._state[service] = "failed"
+                        self.tracker.disarm(service)
+                    except Exception:
+                        pass
+                    continue
+                if not self.tracker.claim_idle_stop(service):
+                    continue
+                self._state[service] = "stopping"
+                stopped = False
+                try:
+                    # A full stop or settings edit can disable the mode
+                    # after claim but before Docker mutation.
+                    if self._enabled():
+                        docker.stop(service)
+                        stopped = True
                     else:
-                        if stopped:
-                            self._state[service] = "sleeping"
-                    finally:
-                        self.tracker.finish_stop(service, stopped=stopped)
+                        self._state[service] = "running"
+                except (docker.LifecycleError, OSError):
+                    self._state[service] = "failed"
+                else:
+                    if stopped:
+                        self._state[service] = "sleeping"
                 finally:
-                    lock.release()
+                    self.tracker.finish_stop(service, stopped=stopped)
+            finally:
+                lock.release()
 
     def snapshot(self) -> dict:
         output = {}
