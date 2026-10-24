@@ -15,6 +15,7 @@ Read-only commands (no prompts, writes, downloads, restarts or root privileges):
 ./setup.sh --chatgpt
 ./setup.sh --client cursor
 ./setup.sh --client hermes
+./setup.sh --client claude
 ```
 
 Local integrations for other clients are explicitly opt-in, and the
@@ -24,6 +25,7 @@ configurations:
 ```sh
 ./setup.sh --client cursor
 ./setup.sh --client hermes
+./setup.sh --client claude
 ```
 
 Cursor IDE (including the Grok model running *inside Cursor*) can use the
@@ -40,7 +42,23 @@ Hermes Agent on the same host can use
 followed by `hermes mcp test local-search` and `/reload-mcp` in chat.
 If Hermes already has an MCP named `local-search`, choose an unused server
 name and substitute it consistently in both commands; never overwrite it.
-Both share the existing bridge, crawler safety guard and optional backend
+Claude Code CLI running on the **same Linux host** can also connect via
+Streamable HTTP. Select `./setup.sh --client claude` for read-only instructions.
+First inspect `claude mcp list` to choose an unused server name, then
+run `claude mcp add --transport http local-search http://127.0.0.1:8790/mcp`
+**manually** in the directory where you want local-scope configuration.
+Verify the connection with `claude mcp list` and `/mcp` inside Claude Code.
+The default CLI scope is per-project; `--scope user` is an explicit choice
+for all projects. The wizard does not run Claude Code, create a Desktop
+extension or write Claude/Cursor/Hermes configuration files.
+
+Claude.ai, Cowork and Claude Desktop **remote** connectors connect through
+Anthropic's cloud and cannot reach a laptop's `127.0.0.1`. They need a
+separately secured HTTPS MCP endpoint. Local Claude Desktop MCP configuration
+is a different integration not modified by this wizard; never copy the
+OpenAI-only secure tunnel credentials to third-party clients.
+
+Both local clients share the existing bridge, crawler safety guard and optional backend
 idle timer. No new Docker resources are needed.
 
 A **remote** Cursor/Grok bot or Docker-containerized Hermes process does
