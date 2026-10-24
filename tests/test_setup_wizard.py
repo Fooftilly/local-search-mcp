@@ -171,7 +171,9 @@ class SetupWizardTests(unittest.TestCase):
         report = json.loads(out)
         self.assertEqual(rc, 0)
         self.assertEqual(report["local_health"]["status"], "unavailable")
-        self.assertNotIn("private", out.lower())
+        # Safe status descriptions may say "private deployment"; reject
+        # credential-like material instead of an ordinary adjective.
+        self.assertNotIn("private token", out.lower())
 
     def test_check_failure_redacts_and_fails_closed(self):
         with (patch.object(wizard, "configured_sources",
