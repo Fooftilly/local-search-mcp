@@ -1,11 +1,9 @@
 """Secure tunnel setup: dry-run, privilege boundaries, and fail-closed behavior."""
 from __future__ import annotations
 
-import argparse
 import os
 from pathlib import Path
 import subprocess
-import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -36,7 +34,6 @@ class SecureTunnelSetupTests(unittest.TestCase):
             result = secure.preview()
         self.assertEqual(result["mode"], "read-only-preview")
         self.assertTrue(result["confirmation_required"])
-        self.assertEqual(secure.main(["--confirm", "SECURE"]), 2 if False else 0) if False else None
 
     def test_rejects_shared_stopped_and_unhealthy_backends_before_sudo(self):
         for field, value in (("state", "stopped"),
@@ -45,11 +42,13 @@ class SecureTunnelSetupTests(unittest.TestCase):
                              ("other_published_crawlers", 1)):
             inv = self.inventory()
             inv[field] = value
-            with self.subTest(field=field), (
+            with (
+                self.subTest(field=field),
                 patch("scripts.backend_inventory.report", return_value=inv),
                 patch("health_cli.snapshot", return_value=self.healthy()),
                 patch.object(secure, "_sudo", side_effect=AssertionError("sudo called")),
-                self.assertRaises(secure.InstallError)):
+                self.assertRaises(secure.InstallError),
+            ):
                 secure.install()
         unhealthy = self.healthy()
         unhealthy["checks"]["mcp_listener"] = False
