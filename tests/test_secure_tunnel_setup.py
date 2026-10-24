@@ -80,6 +80,7 @@ class SecureTunnelSetupTests(unittest.TestCase):
 
     def test_existing_privileged_files_are_not_overwritten(self):
         with (patch.object(secure, "_existing_root", return_value=True),
+              patch.object(secure, "_root_parent_safety"),
               patch.object(secure, "_sudo", return_value=subprocess.CompletedProcess(
                   [], 1, "", "")) as run):
             with self.assertRaises(secure.InstallError):
@@ -88,6 +89,7 @@ class SecureTunnelSetupTests(unittest.TestCase):
 
     def test_correct_existing_sudoers_does_not_rewrite(self):
         with (patch.object(secure, "_existing_root", return_value=True),
+              patch.object(secure, "_root_parent_safety"),
               patch.object(secure, "_sudo", side_effect=lambda *args, **kw:
                   subprocess.CompletedProcess(args, 0,
                       secure._sudoers_line() if args[0] == "cat"
@@ -107,11 +109,12 @@ class SecureTunnelSetupTests(unittest.TestCase):
               patch.object(secure, "_install_sudoers"),
               patch.object(secure, "_sudo", side_effect=lambda *args, **kw:
                   (_ for _ in ()).throw(secure.InstallError("no probe"))
-                  if "--probe" in args else subprocess.CompletedProcess(args, 0, "active", "")),
+                  if "--probe" in args else subprocess.CompletedProcess(args, 0, "active", "")) as root,
               patch.object(secure, "_install_user_dropin",
                            side_effect=AssertionError("Unverified tunnel started"))):
             with self.assertRaises(secure.InstallError):
                 secure.install()
+        self.assertTrue(any("--probe" in c.args for c in root.call_args_list))
         self.assertFalse(any("enable" in c.args and "local-search-mcp-tunnel.service"
                              in c.args for c in run.call_args_list))
 
