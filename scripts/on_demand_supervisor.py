@@ -19,6 +19,7 @@ from crawler_security import verify_health, local_container_warning
 from health_cli import get_json, searxng_ok
 from scripts import on_demand_docker as docker
 from scripts import on_demand_settings as settings
+from scripts import on_demand_coordination as coordination
 from scripts.backend_idle_activity import IdleActivity
 
 PROBE_UNIT = "local-search-mcp-guard-probe.service"
@@ -107,34 +108,37 @@ class Supervisor:
     @contextmanager
     def lease(self, service: str) -> Iterator[None]:
         lock = self._locks[service]
-        with lock:
-            if not self._enabled():
-                # Caller will re-check settings below and bypass in disabled
-                # mode rather than trying to start any Docker containers.
-                raise BackendUnavailable("On-demand mode was disabled; retry the request")
-            try:
-                self.tracker.begin_work(service)
-            except Exception as exc:
-                raise BackendUnavailable("Backend busy; retry the request") from exc
-            try:
-                current = self.tracker.snapshot(service)
-                needs_verification = (
-                    self._state[service] != "running" or not current["armed"]
-                    or time.monotonic() - self._verified_at[service] >= VERIFY_SECONDS)
-                if needs_verification:
-                    self._state[service] = "waking"
-                    docker.start(
-                        service, health=_healthy,
-                        crawler_probe=_probe_crawler if service == "crawl4ai" else None,
-                        crawler_preflight=_preflight_crawler if service == "crawl4ai" else None)
-                    self.tracker.arm_running(service)
-                    self._verified_at[service] = time.monotonic()
-                self._state[service] = "running"
-            except (docker.LifecycleError, OSError, ValueError) as exc:
+        lease_started = False
+        try:
+            with lock:
+                with coordination.exclusive():
+                    # The operator may have disabled mode while we waited
+                    # for an existing stop or wake to finish.
+                    if not self._enabled():
+                        raise BackendUnavailable("On-demand mode disabled; retry")
+                    self.tracker.begin_work(service)
+                    lease_started = True
+                    current = self.tracker.snapshot(service)
+                    needs_verification = (
+                        self._state[service] != "running" or not current["armed"]
+                        or time.monotonic() - self._verified_at[service] >= VERIFY_SECONDS)
+                    if needs_verification:
+                        self._state[service] = "waking"
+                        docker.start(
+                            service, health=_healthy,
+                            crawler_probe=_probe_crawler if service == "crawl4ai" else None,
+                            crawler_preflight=_preflight_crawler if service == "crawl4ai" else None)
+                        self.tracker.arm_running(service)
+                        self._verified_at[service] = time.monotonic()
+                    self._state[service] = "running"
+        except Exception as exc:
+            # TypeErrors or unexpected probe errors must also release the
+            # lease: otherwise an idle stop can be blocked until restart.
+            if lease_started:
                 self.tracker.finish_work(service)
                 self._state[service] = "failed"
-                raise BackendUnavailable(
-                    "Backend could not be verified or started; check local Docker and egress guard") from exc
+            raise BackendUnavailable(
+                "Backend could not be verified or started; check local Docker and egress guard") from exc
         try:
             yield
         finally:
@@ -150,32 +154,35 @@ class Supervisor:
             if not lock.acquire(blocking=False):
                 continue
             try:
-                if not self._enabled():
+                with coordination.exclusive():
+                    if not self._enabled():
+                        try:
+                            self.tracker.disarm(service)
+                        except Exception:
+                            pass
+                        continue
+                    if not self.tracker.claim_idle_stop(service):
+                        continue
+                    self._state[service] = "stopping"
+                    stopped = False
                     try:
-                        self.tracker.disarm(service)
-                    except Exception:
-                        pass
-                    continue
-                if not self.tracker.claim_idle_stop(service):
-                    continue
-                self._state[service] = "stopping"
-                stopped = False
-                try:
-                    # A full stop or settings edit can disable the mode
-                    # after claim but before Docker mutation.
-                    if self._enabled():
-                        docker.stop(service)
-                        stopped = True
+                        # A full stop or settings edit can disable the mode
+                        # after claim but before Docker mutation.
+                        if self._enabled():
+                            docker.stop(service)
+                            stopped = True
+                        else:
+                            self._state[service] = "running"
+                    except (docker.LifecycleError, OSError):
+                        self._state[service] = "failed"
                     else:
-                        self._state[service] = "running"
-                except (docker.LifecycleError, OSError):
-                    self._state[service] = "failed"
-                else:
-                    if stopped:
-                        self._state[service] = "sleeping"
-                        self._verified_at[service] = 0.0
-                finally:
-                    self.tracker.finish_stop(service, stopped=stopped)
+                        if stopped:
+                            self._state[service] = "sleeping"
+                            self._verified_at[service] = 0.0
+                    finally:
+                        self.tracker.finish_stop(service, stopped=stopped)
+            except Exception:
+                self._state[service] = "failed"
             finally:
                 lock.release()
 
