@@ -272,9 +272,12 @@ def install() -> None:
         # still verify its status if this best-effort cleanup fails.
         try:
             _run("systemctl", "--user", "disable", "--now",
-                 USER_TUNNEL, check=False, timeout=30)
+                 USER_TUNNEL, timeout=30)
         except InstallError:
-            pass
+            print("WARNING: automatic tunnel shutdown failed; "
+                  "the tunnel may still be running. Verify with "
+                  "systemctl --user is-active " + USER_TUNNEL +
+                  " and stop/disable it manually.", file=sys.stderr)
         raise
     print("Protected ChatGPT tunnel enabled. Verify local MCP tools and remote registration.")
     print("WARNING: Running tunnel is not revoked if nftables is later manually removed.")
