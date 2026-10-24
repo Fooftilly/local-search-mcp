@@ -94,6 +94,38 @@ class PortableDashboardTests(unittest.TestCase):
                                       {**base, "confirm": ""})[0], 400)
         self.assertEqual(cache_settings.dashboard_settings()["values"]["search_seconds"], 45)
 
+    def test_filesystem_failures_return_redacted_settings_page(self):
+        with patch.object(cache_settings, "dashboard_settings",
+                          side_effect=PermissionError("/private/SECRET_DIR")):
+            doc = json.dumps({"schema": "local-search-mcp/portable-settings/v1",
+                              "profile": "cache",
+                              "settings": {"search_seconds": 45, "fetch_seconds": 120}})
+            code, page, _ = self.request(
+                "POST", "/portable-settings/preview",
+                {"csrf": admin_ui.CSRF, "settings_doc": doc})
+        self.assertEqual(code, 400)
+        self.assertIn("Portable nonsecret settings", page)
+        self.assertIn("Cannot safely read or save", page)
+        self.assertNotIn("SECRET_DIR", page)
+        with patch.object(cache_settings, "update_settings",
+                          side_effect=PermissionError("/private/SECRET_FILE")):
+            code, page, _ = self.request(
+                "POST", "/portable-settings/apply",
+                {"csrf": admin_ui.CSRF, "settings_doc": doc,
+                 "state": cache_settings.dashboard_settings()["state"],
+                 "confirm": "IMPORT"})
+        self.assertEqual(code, 400)
+        self.assertIn("Portable nonsecret settings", page)
+        self.assertNotIn("SECRET_FILE", page)
+
+    def test_rejected_document_remains_on_settings_transfer_page(self):
+        code, page, _ = self.request(
+            "POST", "/portable-settings/preview",
+            {"csrf": admin_ui.CSRF, "settings_doc": '{"bad":true}'})
+        self.assertEqual(code, 400)
+        self.assertIn("Portable nonsecret settings", page)
+        self.assertNotIn("Domain approvals</h1>", page)
+
     def test_forged_export_and_remote_origin_rejected(self):
         self.assertEqual(self.request("GET",
                          "/portable-settings/export?profile=config.json")[0], 400)
