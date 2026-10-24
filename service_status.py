@@ -56,3 +56,23 @@ def probe_services(*, connector=socket.create_connection) -> list[dict]:
                         "source": "environment" if variable in os.environ
                         else "default"})
     return results
+
+
+def configured_ports() -> list[dict]:
+    """Display bounded loopback ports only; never emit upstream URLs or secrets.
+
+    Changing a backend URL in the environment requires a service restart.
+    The dashboard cannot bind/reconfigure a Docker service or MCP listener.
+    """
+    results = []
+    for label, variable, default in SERVICES:
+        target = _endpoint(os.environ.get(variable, default))
+        results.append({
+            "service": label,
+            "port": target[1] if target is not None else None,
+            "source": "environment" if variable in os.environ else "default",
+            "apply": "bridge restart required" if variable in os.environ
+                     else "fixed default unless overridden",
+            "valid": target is not None,
+        })
+    return results

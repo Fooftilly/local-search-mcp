@@ -543,6 +543,12 @@ def status_page():
         '<tr><td>' + esc(x['service']) + '</td><td>' +
         esc(x['status']) + '</td><td>' + esc(x['source']) +
         '</td></tr>' for x in service_status.probe_services())
+    ports = ''.join(
+        '<tr><td>' + esc(item['service']) + '</td><td>' +
+        esc(item['port'] if item['valid'] else 'Invalid (check local configuration)') +
+        '</td><td>' + esc(item['source']) + '</td><td>' +
+        esc(item['apply']) + '</td></tr>'
+        for item in service_status.configured_ports())
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="referrer" content="no-referrer">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -554,6 +560,20 @@ def status_page():
             '<div class="scroll"><table><thead><tr><th>Service</th>'
             '<th>Transport</th><th>Configuration source</th></tr></thead>'
             '<tbody>' + rows + '</tbody></table></div>'
+            '<h2>Backend port configuration (read-only)</h2>'
+            '<p>Only numeric loopback ports and source names are shown; '
+            'upstream URLs and credentials are never displayed. Changing an '
+            'environment endpoint requires restarting the bridge. This '
+            'page cannot alter container bindings, firewall rules or '
+            'the fixed MCP listener port (8790). The health monitor '
+            'probes fixed ports 8888 (SearXNG), 11235 (Crawl4AI), and '
+            '8791 (dashboard), regardless of backend URL overrides. '
+            'Custom backend or dashboard ports can make monitoring report '
+            'degraded even after a successful bridge restart; monitoring '
+            'configuration must be coordinated separately.</p>'
+            '<div class="scroll"><table><thead><tr><th>Backend</th>'
+            '<th>Port</th><th>Source</th><th>Apply semantics</th></tr>'
+            '</thead><tbody>' + ports + '</tbody></table></div>'
             '<p><a href="/status">Refresh</a> · '
             '<a href="/">Return to domain approvals</a></p></main></body></html>')
 
