@@ -137,12 +137,54 @@ def on_demand_status(*, inventory: dict | None = None) -> dict:
     """Preview eligibility only. Never enable backend sleep or wake Docker."""
     try:
         from scripts import on_demand_eligibility
-        return on_demand_eligibility.eligibility(
-            inventory=docker_status() if inventory is None else inventory)
+        from scripts import on_demand_settings
+        selected = docker_status() if inventory is None else inventory
+        report = on_demand_eligibility.eligibility(inventory=selected)
+        saved = on_demand_settings.read()
+        report["enabled"] = saved["enabled"]
+        report["idle_minutes"] = saved["idle_minutes"]
+        report["can_activate"] = False  # Diagnostic is never an authorization.
+        if saved["enabled"]:
+            report["state"] = ("sleeping" if selected.get("state") == "stopped"
+                               else "running" if selected.get("state") == "running"
+                               else "partially_running" if selected.get("state") == "partially_running"
+                               else "failed")
+        return report
     except (OSError, ValueError, ImportError, TypeError, KeyError):
         return {"mode": "read-only", "feature": "on-demand-backends",
                 "enabled": False, "can_activate": False, "state": "blocked",
                 "reason": "Unable to verify on-demand prerequisites"}
+
+
+def configure_on_demand(*, enabled: bool, idle_minutes: int = 30,
+                        wake_before_disable: bool = False) -> dict:
+    """Explicit operator action, never callable from an MCP tool request."""
+    from scripts import on_demand_eligibility, on_demand_settings
+    from scripts import on_demand_docker, on_demand_supervisor
+    opts = on_demand_eligibility.validate_options(
+        enabled=enabled, idle_minutes=idle_minutes)
+    if type(wake_before_disable) is not bool or enabled and wake_before_disable:
+        raise ValueError("Invalid on-demand option combination")
+    if enabled:
+        candidate = on_demand_eligibility.eligibility(inventory=docker_status())
+        if candidate["state"] != "manual_verification_required":
+            raise ValueError("Dedicated Docker ownership or restart policies are not safe")
+        if (not on_demand_docker._safe_target("crawl4ai").running
+                or not on_demand_docker._safe_target("searxng").running):
+            raise ValueError("Both verified backends must be running before first activation")
+        if (not on_demand_supervisor._healthy("crawl4ai")
+                or not on_demand_supervisor._healthy("searxng")
+                or not on_demand_supervisor._probe_crawler()):
+            raise ValueError("Required local health or live root-owned egress probe failed")
+        return on_demand_settings.save(**opts)
+    # Persist OFF first, preventing further supervisor wake attempts. An
+    # optional deliberate wake may still need the fixed egress probe.
+    on_demand_settings.save(**opts)
+    if wake_before_disable:
+        on_demand_docker.start("searxng", health=on_demand_supervisor._healthy)
+        on_demand_docker.start("crawl4ai", health=on_demand_supervisor._healthy,
+                               crawler_probe=on_demand_supervisor._probe_crawler)
+    return opts
 
 
 def local_update_status() -> dict:
