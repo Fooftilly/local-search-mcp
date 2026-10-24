@@ -52,6 +52,30 @@ and `unless-stopped` policies, preserves them during transient sleep, and
 requires full-stop coordination. Reboot policy restoration is not automatic.
 `can_activate` remains `false` only because this is a read-only diagnostic.
 
+## Protected reboot with intentionally sleeping backends
+
+The root-owned system service now supports a `--startup` guard mode: after
+Docker becomes available, it installs the verified nftables policy for the
+fixed crawler bridge even when Crawl4AI is stopped by the on-demand supervisor.
+The protected user tunnel's `--tunnel-gate` pre-start command accepts a
+**stopped** crawler only if the root firewall rules remain present and match
+the verified bridge. A **running** crawler still requires the complete live
+negative/public egress probe. Cold `web_fetch` calls must still pass both
+the pre-start and post-start probes in the supervisor before fetching content.
+
+This requires an **operator-reviewed upgrade** of the root-owned guard,
+root system service, fixed sudoers rule and user tunnel drop-in: an ordinary
+`git pull` does not change privileged installed files. Follow
+`docs/EGRESS-SYSTEMD.md`; the setup wizard rejects mismatched existing
+security files instead of silently overwriting them. Test with restart policy
+`no` on both verified backends, and confirm the tunnel can reconnect after
+the root firewall starts with both containers sleeping. Do not change Docker
+restart policies automatically or remove existing firewall protection.
+A host reboot and Docker-daemon-restart validation remain required before
+closing #75. System and user systemd services have no cross-manager ordering
+guarantee, so an early tunnel attempt must fail closed until the root guard
+is ready.
+
 ## Opt-in runtime installation and operator smoke test (#75)
 
 **Off by default.** PRs #98 and #99 provide private preferences and
