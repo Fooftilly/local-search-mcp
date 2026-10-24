@@ -30,15 +30,15 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("OnUnitActiveSec=2min", units["local-search-mcp-health.timer"])
 
     def test_units_are_rendered_from_version_controlled_templates(self):
-        expected = set(installer.NAMES)
+        expected = set(installer.NAMES) | {installer.GUARD_PROBE}
         self.assertEqual({p.name for p in installer.TEMPLATE_DIR.iterdir()
                           if p.is_file()}, expected)
         units = unit_files("/usr/bin/python3", Path("/tmp/demo"),
-                           auto_restart=True,
+                           auto_restart=True, guard_probe=True,
                            reflog_path=Path("/tmp/demo/.git/logs/HEAD"),
                            state_path=Path("/tmp/service-state"))
         self.assertEqual(set(units), expected)
-        for name in installer.NAMES:
+        for name in expected:
             template = (installer.TEMPLATE_DIR / name).read_text()
             self.assertTrue(template.startswith(installer.MARKER))
             self.assertNotIn("CRAWL4AI_API_TOKEN=", template)
