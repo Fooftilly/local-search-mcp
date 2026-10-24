@@ -654,6 +654,13 @@ def web_metrics(hours: Literal[1, 24, 168] = 24) -> dict:
 
 def serve_mcp() -> None:
     """Launch with explicit Host/Origin validation, including via local tunnel."""
+    # Arm already-running verified backends on bridge startup even before the
+    # first tool call. This starts an idle timer, never a Docker container.
+    try:
+        on_demand._manager()
+    except on_demand.BackendUnavailable:
+        # Keep the transport reachable; later tool calls return safe errors.
+        pass
     mcp.run(
         transport="http",
         host=MCP_BIND_HOST,
