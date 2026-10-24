@@ -156,8 +156,10 @@ The guarded action:
 6. Installs the fixed user tunnel `ExecStartPre=+` drop-in, reloads user
    systemd, and verifies the **effective** `ExecStartPre` command from
    `systemctl show` before enabling the tunnel and health timer. A later
-   drop-in that clears, replaces or ignores the firewall probe blocks startup,
-   even when the guard still appears in `systemctl cat`.
+   drop-in that clears, replaces or ignores the firewall probe makes the
+   installer refuse to enable the tunnel and health timer, even when the
+   guard still appears in `systemctl cat`. This validation runs at install
+   time, not continuously: later unit changes require manual revalidation.
 
 No keys or tunnel profiles are exported. No Git fetch/pull, pip/Docker image
 download, other MCP client changes, automatic on-demand Docker operation, or
