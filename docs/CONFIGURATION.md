@@ -39,3 +39,34 @@ The diagnostic checks that SearXNG and Crawl4AI endpoint overrides use parseable
 ### Still needed for issue #5
 
 A full typed runtime settings layer, ownership/perms policy for all legacy and tunnel profile paths, conflict tests across independently launched services, and an operator-tested migration are follow-up slices. Do not close issue #5 based only on redacted inspection and private-JSON hardening.
+
+## Portable nonsecret settings transfer (issue #13)
+
+The loopback dashboard has a **Settings transfer** page at
+`/portable-settings`. Export a single versioned profile (history retention,
+SearXNG/Crawl4AI request timeouts, or cache lifetimes) as JSON. Imports require
+a separate **validation preview** and an explicit `IMPORT` confirmation.
+Each profile is committed independently by the existing atomic
+compare-and-swap settings writer: an outdated preview, corrupted source file,
+or environment override rejects the operation without overwriting it.
+
+The exported JSON contains only a fixed schema, one of three allowlisted
+profile names and strictly bounded whole-number settings. It cannot export
+credentials, domain policy, history entries, URLs, port bindings, pathnames,
+Docker state or tunnel configuration. Domain allow/deny decisions continue
+to use the existing, separate `/rules/export` and rule-preview workflow.
+
+Only the loopback browser with valid Host, Origin/Fetch-Site and CSRF token
+may apply imports. The preview does not write. The importing operator should
+review any existing environment override or mismatching profile **before**
+applying; unchanged existing profile values are not conflicts.
+
+Deployment **ports are intentionally read-only** at `/status`. Editing a
+runtime port through the browser would require restarting coordinated bridge,
+dashboard, tunnel, monitoring and Docker/systemd components; this feature
+does **not** offer unsafe partial port changes or automatic restarts. The
+approval request link now uses a validated dashboard-port environment
+override instead of assuming port 8791.
+
+The existing settings pages still apply integer updates live; no MCP tool
+signatures are changed.
