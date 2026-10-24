@@ -203,15 +203,16 @@ class SecureTunnelSetupTests(unittest.TestCase):
             with self.subTest(shutdown_failure=shutdown_failure):
                 commands = []
 
-                def systemctl(*args, **_kwargs):
+                def systemctl_process(argv, **_kwargs):
+                    args = tuple(argv)
                     commands.append(args)
                     if args[:4] == ("systemctl", "--user", "disable", "--now"):
                         if shutdown_failure == "exception":
-                            raise secure.InstallError("disable command unavailable")
+                            raise OSError("simulated inaccessible systemctl")
                         return subprocess.CompletedProcess(args, 1, "", "failure")
                     if (args[:4] == ("systemctl", "--user", "enable", "--now")
                             and secure.USER_TUNNEL in args):
-                        raise secure.InstallError("mock partial tunnel start")
+                        return subprocess.CompletedProcess(args, 1, "", "failure")
                     return subprocess.CompletedProcess(
                         args, 0,
                         "inactive" if "is-active" in args else
@@ -221,7 +222,8 @@ class SecureTunnelSetupTests(unittest.TestCase):
 
                 stderr = io.StringIO()
                 with (patch.object(secure, "preview", return_value=self.inventory()),
-                      patch.object(secure, "_run", side_effect=systemctl),
+                      patch.object(secure.subprocess, "run",
+                                   side_effect=systemctl_process),
                       patch.object(secure, "_sudo",
                                    return_value=subprocess.CompletedProcess(
                                        [], 0, "active", "")),
@@ -229,7 +231,8 @@ class SecureTunnelSetupTests(unittest.TestCase):
                       patch.object(secure, "_install_sudoers"),
                       patch.object(secure, "_install_user_dropin"),
                       contextlib.redirect_stderr(stderr),
-                      self.assertRaisesRegex(secure.InstallError, "mock partial")):
+                      self.assertRaisesRegex(secure.InstallError,
+                                            "Required setup command failed: systemctl")):
                     secure.install()
                 self.assertIn("WARNING: automatic tunnel shutdown failed",
                               stderr.getvalue())
