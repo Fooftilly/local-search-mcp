@@ -94,6 +94,6 @@ separately reviewed and approved by the operator, including security,
 dependency and backup/rollback decisions. The wizard still offers no
 automatic update operation.
 
-For explicit manual source updates, consult SYSTEMD.md, BACKUP.md and
-DEPENDENCY-UPDATES.md. The existing optional `git pull`-triggered
+For explicit manual source updates, consult docs/SYSTEMD.md, BACKUP.md and
+docs/DEPENDENCY-UPDATES.md. The existing optional `git pull`-triggered
 restart watcher remains unchanged.

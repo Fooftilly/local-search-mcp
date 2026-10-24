@@ -2,14 +2,16 @@
 
 A **local, read-only MCP bridge** for [SearXNG](https://docs.searxng.org/) search and [Crawl4AI](https://docs.crawl4ai.com/) page extraction, with a local domain-approval dashboard and private request history. Connect it to ChatGPT using an OpenAI Secure MCP Tunnel (where available). Linux-first; tested locally with Python, SearXNG and Crawl4AI 0.9.4; 0.9.5+ is now required for remote crawling. **Experimental software**, not a network firewall.
 
+For organized operator documentation, see the [documentation index](docs/README.md).
+
 ## What it provides
 
-- MCP `web_search(query, max_results=8)` — SearXNG-backed public web search, with optional language, category, time range, engine and page filters, plus opt-in URL deduplication and deterministic source-count ranking. See [SEARCH.md](SEARCH.md).
-- MCP `web_fetch(url, mode="raw")` — Crawl4AI-backed extraction of an approved public page, with optional fit Markdown and short metadata. Long approved pages expose `web_fetch_page(document_id, page=2)` for bounded in-memory continuation without recrawling. See [EXTRACTION.md](EXTRACTION.md). Unknown domains enter the dashboard approval queue. Agents cannot approve domains.
-- MCP `web_fetch_batch(urls, mode="raw", fresh=false)` — fetch up to eight public URLs in one call, with three concurrent workers, per-URL permission checks and ordered individual outcomes. See [BATCH.md](BATCH.md).
+- MCP `web_search(query, max_results=8)` — SearXNG-backed public web search, with optional language, category, time range, engine and page filters, plus opt-in URL deduplication and deterministic source-count ranking. See [SEARCH.md](docs/SEARCH.md).
+- MCP `web_fetch(url, mode="raw")` — Crawl4AI-backed extraction of an approved public page, with optional fit Markdown and short metadata. Long approved pages expose `web_fetch_page(document_id, page=2)` for bounded in-memory continuation without recrawling. See [EXTRACTION.md](docs/EXTRACTION.md). Unknown domains enter the dashboard approval queue. Agents cannot approve domains.
+- MCP `web_fetch_batch(urls, mode="raw", fresh=false)` — fetch up to eight public URLs in one call, with three concurrent workers, per-URL permission checks and ordered individual outcomes. See [BATCH.md](docs/BATCH.md).
 - Local approvals, deny rules, domain history and search/fetch audit trail.
-- Per-rule exact-host vs subdomain scope and optional 1-hour/24-hour/7-day expiry in the local dashboard. See [PERMISSIONS.md](PERMISSIONS.md).
-- Same-origin dashboard live pending/history refresh every ten seconds, with optional browser-powered KDE desktop notifications for new domain requests. See [DASHBOARD-LIVE.md](DASHBOARD-LIVE.md).
+- Per-rule exact-host vs subdomain scope and optional 1-hour/24-hour/7-day expiry in the local dashboard. See [PERMISSIONS.md](docs/PERMISSIONS.md).
+- Same-origin dashboard live pending/history refresh every ten seconds, with optional browser-powered KDE desktop notifications for new domain requests. See [DASHBOARD-LIVE.md](docs/DASHBOARD-LIVE.md).
 - Process-only, bounded search and public-page response cache with in-flight request deduplication; two-attempt upstream retry bounds and explicit structured error responses. Add `fresh=true` to bypass.
 - A launcher which checks services, sets up a Python venv, discovers a local Crawl4AI token where permitted, and starts the bridge plus tunnel.
 
@@ -30,13 +32,13 @@ A **local, read-only MCP bridge** for [SearXNG](https://docs.searxng.org/) searc
 
 The first run provisions a virtual environment and prompts securely for secrets it cannot retrieve. The launcher stores configuration in `~/.config/local-search-mcp/config.json` (mode `0600`). It reuses `~/.config/tunnel-client/local-research.yaml` if present and downloads the verified official Linux x86_64 `tunnel-client` release if the binary is missing. It does **not** install or reconfigure SearXNG/Crawl4AI itself.
 
-For read-only configuration-source diagnostics with credentials redacted, run `python3 bootstrap.py --show-config`. For the source-precedence rules, hardening requirements and migration notes, see [CONFIGURATION.md](CONFIGURATION.md). This report does not query Docker, print private tokens or modify domain approvals.
+For read-only configuration-source diagnostics with credentials redacted, run `python3 bootstrap.py --show-config`. For the source-precedence rules, hardening requirements and migration notes, see [CONFIGURATION.md](docs/CONFIGURATION.md). This report does not query Docker, print private tokens or modify domain approvals.
 
 For a non-destructive shutdown of verified local-search-mcp-managed user
 services and private Compose backends, run `./stop.sh`. It disables automatic
 restart of those existing containers but leaves credentials, history, volumes,
 and firewall intact. The external Hermes Web Compose deployment is never
-stopped automatically. See [STOP.md](STOP.md) for ownership checks and the
+stopped automatically. See [STOP.md](docs/STOP.md) for ownership checks and the
 optional root-owned firewall-service procedure.
 
 For the ChatGPT-first interactive setup and maintenance menu, run
@@ -61,7 +63,7 @@ public DNS, loopback-only port binding and a dedicated bridge network:
 This creates private files only; it does not start Docker, replace the current
 Crawl4AI container or modify an existing Hermes Web Compose installation.
 Review required volumes, networking dependencies and firewall activation
-before migrating. See [CRAWLER-COMPOSE.md](CRAWLER-COMPOSE.md).
+before migrating. See [CRAWLER-COMPOSE.md](docs/CRAWLER-COMPOSE.md).
 
 
 If you do not have OpenAI tunnel access, the bridge can run directly:
@@ -82,15 +84,15 @@ fastmcp list http://127.0.0.1:8790/mcp --auth none
 fastmcp call http://127.0.0.1:8790/mcp web_search query='Arch Linux news' max_results=3 --auth none
 ```
 
-For optional search filters, page limits, SearXNG engine support, and examples, see [SEARCH.md](SEARCH.md).
+For optional search filters, page limits, SearXNG engine support, and examples, see [SEARCH.md](docs/SEARCH.md).
 
-For long-document paging, temporary handle limits, extraction modes, and content safety, see [EXTRACTION.md](EXTRACTION.md).
+For long-document paging, temporary handle limits, extraction modes, and content safety, see [EXTRACTION.md](docs/EXTRACTION.md).
 
-For bounded memory caching, `fresh` bypass, safe cache keys, retry caps and outage responses, see [CACHE.md](CACHE.md).
+For bounded memory caching, `fresh` bypass, safe cache keys, retry caps and outage responses, see [CACHE.md](docs/CACHE.md).
 
-For live dashboard polling and opt-in desktop notifications on KDE/Wayland, see [DASHBOARD-LIVE.md](DASHBOARD-LIVE.md).
+For live dashboard polling and opt-in desktop notifications on KDE/Wayland, see [DASHBOARD-LIVE.md](docs/DASHBOARD-LIVE.md).
 
-For batch limits, result format, duplicate URL handling, and per-item audit history, see [BATCH.md](BATCH.md).
+For batch limits, result format, duplicate URL handling, and per-item audit history, see [BATCH.md](docs/BATCH.md).
 
 ## Domains and approvals
 
@@ -100,9 +102,9 @@ To protect the approval dashboard from agent-generated hostname floods, automati
 
 The dashboard stores permissions in `~/.local/state/local-search-mcp/domains.sqlite3`. History is stored in `~/.local/state/local-search-mcp/history.jsonl`, rotated at 8 MiB by default with three backups; configure the per-file limit via `LOCAL_SEARCH_MCP_HISTORY_MAX_BYTES`. Rotate/archive or delete old history as needed. URL query strings, page contents and credentials are not logged; **search terms can be sensitive**.
 
-The local history dashboard now supports filtered, private indexed SQLite metadata and 30-day default retention. See [HISTORY-INDEX.md](HISTORY-INDEX.md). The original JSONL files remain unchanged. CLI text escapes terminal and bidirectional control characters; CSV export escapes terminal/format controls and prefixes spreadsheet formula-like cells with a literal apostrophe (these cells do not round-trip byte-for-byte), and JSON export escapes Unicode control characters.
+The local history dashboard now supports filtered, private indexed SQLite metadata and 30-day default retention. See [HISTORY-INDEX.md](docs/HISTORY-INDEX.md). The original JSONL files remain unchanged. CLI text escapes terminal and bidirectional control characters; CSV export escapes terminal/format controls and prefixes spreadsheet formula-like cells with a literal apostrophe (these cells do not round-trip byte-for-byte), and JSON export escapes Unicode control characters.
 
-MCP `web_metrics(hours=24)` returns aggregate 1/24/168-hour operation outcomes and process-lifetime cache counters without exposing queries, URLs or document content. Details: [HISTORY-INDEX.md](HISTORY-INDEX.md).
+MCP `web_metrics(hours=24)` returns aggregate 1/24/168-hour operation outcomes and process-lifetime cache counters without exposing queries, URLs or document content. Details: [HISTORY-INDEX.md](docs/HISTORY-INDEX.md).
 
 History commands:
 
@@ -118,13 +120,13 @@ For an offline, integrity-checked backup of domain approvals and JSONL history, 
 
 ## Optional Docker egress guard (Linux)
 
-For operators using a dedicated Crawl4AI Docker bridge, see [EGRESS-ISOLATION.md](EGRESS-ISOLATION.md) for an **opt-in nftables containment tool**, an example workflow, and live negative/positive probes. This host firewall is **not installed by the launcher**, does not replace Crawl4AI's own protections, and must be re-applied after reboot or Docker network changes. It does not isolate loopback inside the crawler container.
+For operators using a dedicated Crawl4AI Docker bridge, see [EGRESS-ISOLATION.md](docs/EGRESS-ISOLATION.md) for an **opt-in nftables containment tool**, an example workflow, and live negative/positive probes. This host firewall is **not installed by the launcher**, does not replace Crawl4AI's own protections, and must be re-applied after reboot or Docker network changes. It does not isolate loopback inside the crawler container.
 
 ## Optional systemd user services
 
-For independently supervised bridge/tunnel processes and periodic health diagnostics, see [SYSTEMD.md](SYSTEMD.md). These are opt-in and not installed by `./start.sh`; run `./start.sh --setup-only` before installing. The foreground launcher remains available.
+For independently supervised bridge/tunnel processes and periodic health diagnostics, see [SYSTEMD.md](docs/SYSTEMD.md). These are opt-in and not installed by `./start.sh`; run `./start.sh --setup-only` before installing. The foreground launcher remains available.
 
-Optional offline auto-restart after **locally performed** `git pull`/checkout/merge is available with `python3 scripts/install_user_services.py --install --auto-restart`. Enable the installed `local-search-mcp-update.path` and `local-search-mcp-update.timer` user units as described in [SYSTEMD.md](SYSTEMD.md). No Git fetching, downloads or dependency installations occur automatically; runtime code changes restart active services only, documentation-only changes do not, and changed Python requirements require explicit manual preparation.
+Optional offline auto-restart after **locally performed** `git pull`/checkout/merge is available with `python3 scripts/install_user_services.py --install --auto-restart`. Enable the installed `local-search-mcp-update.path` and `local-search-mcp-update.timer` user units as described in [SYSTEMD.md](docs/SYSTEMD.md). No Git fetching, downloads or dependency installations occur automatically; runtime code changes restart active services only, documentation-only changes do not, and changed Python requirements require explicit manual preparation.
 
 ## Connecting through OpenAI tunnel
 

@@ -269,8 +269,8 @@ def menu() -> int:
         elif choice == "6":
             print(json.dumps(local_update_status(), indent=2, ensure_ascii=True))
             print("No automatic Git fetch, pull, image download, pip install or restart.")
-            print("For a reviewed backup/rollback, see DEPENDENCY-UPDATES.md,")
-            print("BACKUP.md, and SYSTEMD.md. Apply updates explicitly outside")
+            print("For a reviewed backup/rollback, see docs/DEPENDENCY-UPDATES.md,")
+            print("BACKUP.md, and docs/SYSTEMD.md. Apply updates explicitly outside")
             print("this wizard only after examining an operator-approved plan.")
         elif choice in actions:
             word, command = actions[choice]

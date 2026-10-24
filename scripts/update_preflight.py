@@ -16,7 +16,7 @@ def report() -> dict:
         "state": "unknown",
         "local_revision": "not inspected",
         "next_step": (
-            "Review DEPENDENCY-UPDATES.md, SYSTEMD.md and BACKUP.md before "
+            "Review docs/DEPENDENCY-UPDATES.md, docs/SYSTEMD.md and BACKUP.md before "
             "any manual update; no Git fetch/pull or service action was run"
         ),
     }
