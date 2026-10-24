@@ -15,8 +15,8 @@ sudo systemctl daemon-reload
 ```
 
 Create a narrowly restricted sudoers rule allowing your normal Linux user
-to run only this root-owned read/probe operation, without an interactive
-password. Replace **YOUR_USER** with the actual user name. Review the result
+to run only these three root-owned read/probe operations, without an
+interactive password. Replace **YOUR_USER** with the actual user name. Review the result
 with `sudo visudo -cf /etc/sudoers.d/local-search-mcp-crawler` **after**
 installing that root-owned file (or `sudo visudo -cf /path/to/staged-file`
 before installing), since `-f` requires an explicit pathname:
