@@ -2,7 +2,9 @@
 
 A **local, read-only MCP bridge** for [SearXNG](https://docs.searxng.org/) search and [Crawl4AI](https://docs.crawl4ai.com/) page extraction, with a local domain-approval dashboard and private request history. Connect it to ChatGPT using an OpenAI Secure MCP Tunnel (where available). Linux-first; tested locally with Python, SearXNG and Crawl4AI 0.9.4; 0.9.5+ is now required for remote crawling. **Experimental software**, not a network firewall.
 
-For organized operator documentation, see the [documentation index](docs/README.md).\n\n## What it provides
+For organized operator documentation, see the [documentation index](docs/README.md).
+
+## What it provides
 
 - MCP `web_search(query, max_results=8)` — SearXNG-backed public web search, with optional language, category, time range, engine and page filters, plus opt-in URL deduplication and deterministic source-count ranking. See [SEARCH.md](docs/SEARCH.md).
 - MCP `web_fetch(url, mode="raw")` — Crawl4AI-backed extraction of an approved public page, with optional fit Markdown and short metadata. Long approved pages expose `web_fetch_page(document_id, page=2)` for bounded in-memory continuation without recrawling. See [EXTRACTION.md](docs/EXTRACTION.md). Unknown domains enter the dashboard approval queue. Agents cannot approve domains.
