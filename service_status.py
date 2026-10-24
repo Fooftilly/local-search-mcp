@@ -87,7 +87,9 @@ def probe_services(*, connector=socket.create_connection) -> list[dict]:
                 activity = _supervisor_activity()
                 checked_activity = True
             backend = "searxng" if label == "SearXNG" else "crawl4ai"
-            if _expected_sleeping(activity, backend):
+            # The supervisor manages fixed backend ports. An overridden
+            # environment URL may target a completely unrelated loopback app.
+            if target == _endpoint(default) and _expected_sleeping(activity, backend):
                 status = "TCP unavailable (supervisor reports sleeping)"
         results.append({"service": label, "status": status,
                         "source": "environment" if variable in os.environ
