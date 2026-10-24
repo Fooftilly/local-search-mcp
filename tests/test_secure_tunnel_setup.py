@@ -370,5 +370,90 @@ class SecureTunnelSetupTests(unittest.TestCase):
             self.assertEqual(setup_wizard.main(["--dry-run"]), 0)
 
 
+    def test_installer_conflicts_have_actionable_redacted_diagnostics(self):
+        import contextlib
+        import io
+
+        scenarios = (
+            ("Existing local-search-mcp sudoers differs; refuse overwrite",
+             "Existing restricted sudoers policy differs"),
+            ("Existing sudoers has unsafe ownership or mode",
+             "regular file and mode 0440"),
+            ("Effective tunnel firewall startup probe is missing or overridden",
+             "effective tunnel pre-start firewall probe"),
+            ("Dedicated project ownership/running backends not proven",
+             "./setup.sh --docker-status"),
+            ("Required bridge and backends are not healthy",
+             "python3 health_cli.py --json"),
+            ("Stop the running tunnel before installing startup protections",
+             "Stop and disable the active tunnel"),
+            ("Managed tunnel user unit is not installed",
+             "managed tunnel user unit is missing"),
+            ("Existing tunnel drop-in differs; refuse overwrite",
+             "existing tunnel startup drop-in differs"),
+            ("Privileged security-file metadata or ownership is unsafe",
+             "unsafe ownership or metadata"),
+            ("Existing privileged file owner or mode is unsafe",
+             "root-owned security file has incorrect permissions"),
+            ("Installed security file differs; review it manually before replacing",
+             "differs from the reviewed template"),
+            ("Effective tunnel firewall startup probe is not enforced",
+             "not the exact non-ignored root-owned firewall probe"),
+            ("Run the wizard as the normal user",
+             "normal Linux user, not with sudo"),
+        )
+        for reason, expected in scenarios:
+            with self.subTest(reason=reason):
+                stderr = io.StringIO()
+                with (patch.object(secure, "install",
+                                   side_effect=secure.InstallError(reason)),
+                      contextlib.redirect_stderr(stderr)):
+                    status = secure.main(["--install", "--confirm", "SECURE"])
+                self.assertEqual(status, 1)
+                self.assertIn(expected.lower(), stderr.getvalue().lower())
+                self.assertNotIn(".. Check", stderr.getvalue())
+                self.assertIn("Check systemctl --user is-active", stderr.getvalue())
+
+    def test_every_advice_key_matches_a_literal_install_error_in_source(self):
+        import ast
+        import inspect
+
+        tree = ast.parse(inspect.getsource(secure))
+        allowlist = next(node.value for node in ast.walk(tree)
+                         if isinstance(node, ast.Assign)
+                         and any(isinstance(name, ast.Name) and name.id == "advice"
+                                 for name in node.targets))
+        self.assertIsInstance(allowlist, ast.Dict)
+        keys = {key.value for key in allowlist.keys}
+        messages = set()
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "InstallError"
+                    and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)):
+                messages.add(node.args[0].value)
+        self.assertTrue(keys, "Expected reviewed advice mapping")
+        self.assertEqual(keys - messages, set(), "Stale diagnostic messages")
+
+    def test_unrecognized_errors_cannot_expose_private_data(self):
+        import contextlib
+        import io
+
+        for error in (secure.InstallError("SECRET_TOKEN=/private/path"),
+                      OSError("SECRET_TOKEN=/private/path"),
+                      ValueError("SECRET_TOKEN=/private/path")):
+            with self.subTest(error=type(error).__name__):
+                stderr = io.StringIO()
+                with (patch.object(secure, "install", side_effect=error),
+                      contextlib.redirect_stderr(stderr)):
+                    status = secure.main(["--install", "--confirm", "SECURE"])
+                self.assertEqual(status, 1)
+                self.assertNotIn("SECRET_TOKEN", stderr.getvalue())
+                self.assertNotIn("/private/path", stderr.getvalue())
+                self.assertIn("Secure tunnel setup incomplete", stderr.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
