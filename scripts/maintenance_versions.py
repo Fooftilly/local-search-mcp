@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 from pathlib import Path
 import re
@@ -15,7 +16,7 @@ from scripts import (
 
 ROOT = Path(__file__).resolve().parents[1]
 _PACKAGE_NAMES = ("fastmcp", "httpx", "idna")
-_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+!-]{0,79}\\Z")
+_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+!-]{0,79}\Z")
 _MAX_OUTPUT = 8192
 
 
@@ -93,7 +94,8 @@ def report(*, check_remote: bool = False) -> dict:
         try:
             result["public_bridge_revision"] = {
                 "state": "checked", "summary": check_bridge_version.check()}
-        except (OSError, ValueError, subprocess.SubprocessError):
+        except (OSError, ValueError, subprocess.SubprocessError,
+                http.client.HTTPException):
             result["public_bridge_revision"] = _unavailable(
                 "Public bridge revision lookup unavailable")
     result["note"] = (
