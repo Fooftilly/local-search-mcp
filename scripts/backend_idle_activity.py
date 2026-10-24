@@ -51,8 +51,11 @@ class IdleActivity:
             item = self._item(backend)
             if item.stopping:
                 raise BackendBusy("Idle stop is already claimed")
-            item.armed = True
-            item.idle_since = self._clock() if item.active == 0 else None
+            # Revalidating an already-running backend must not restart its
+            # quiet window; only a transition from disarmed starts the clock.
+            if not item.armed:
+                item.armed = True
+                item.idle_since = self._clock() if item.active == 0 else None
 
     def begin_work(self, backend: str) -> None:
         """Explicit real MCP work; reject races with already-claimed idle stop."""
