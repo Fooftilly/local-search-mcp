@@ -40,6 +40,6 @@ Stable operator and feature guides live in this folder. Start with the [project 
 The root retains files commonly expected by GitHub and contributors:
 `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `SECURITY.md`, and `LICENSE`.
 
-**Active guides temporarily remain at the root:** [Backup and recovery](../BACKUP.md) and [setup wizard](../SETUP-WIZARD.md). Their related feature PRs are still open; relocating those now would create avoidable conflicts. New or revised guides may move here after the related feature lands.
+**Additional guides retained at the repository root:** [Backup and recovery](../BACKUP.md), [setup and maintenance wizard](../SETUP-WIZARD.md), [on-demand backend preflight](../ON-DEMAND.md), and [dashboard port status](../PORT-STATUS.md). These areas are still evolving; keeping their current paths avoids unnecessary churn while leaving stable feature and operator documentation organized here.
 
 All commands in these guides are intended to run from the **repository root** unless stated otherwise; moving a Markdown file does not change its working directory.
