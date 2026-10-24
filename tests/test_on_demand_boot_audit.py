@@ -43,6 +43,16 @@ class ReadonlyBootAuditTests(unittest.TestCase):
                 return responses[args]
             if args[:2] == ("systemctl", "show"):
                 return GOOD_ROOT_EXEC
+            if args[:3] == ("systemctl", "--user", "show"):
+                if args[-2] == "LoadState":
+                    return "loaded"
+                if args[-2] == "ExecStart":
+                    mode = ("preflight" if "preflight" in args[3] else "probe")
+                    return ("{ path=/usr/bin/sudo ; argv[]=/usr/bin/sudo -n "
+                            "/usr/bin/python3 /usr/local/libexec/local-search-mcp/"
+                            "crawler_egress_guard.py --container crawl4ai --"
+                            + mode + " ; ignore_errors=no ; "
+                            "start_time=[n/a] ; stop_time=[n/a] }")
             if args[0] == "loginctl":
                 return "yes"
             if args[-2] == "is-enabled":
@@ -69,7 +79,7 @@ class ReadonlyBootAuditTests(unittest.TestCase):
         result, calls, files = self._successful()
         self.assertEqual(result["state"], "ready_for_manual_reboot_test")
         self.assertFalse(result["safe_to_reboot_proven"])
-        self.assertEqual(len(result["checks"]), 11)
+        self.assertEqual(len(result["checks"]), 13)
         self.assertTrue(all(result["checks"].values()))
         self.assertEqual(files.call_count, 2)
         self.assertIn(("systemctl", "show", audit.ROOT_SERVICE,
@@ -101,6 +111,42 @@ class ReadonlyBootAuditTests(unittest.TestCase):
                 self.assertFalse(all(result["checks"].values()))
         result, _, _ = self._successful(settings={"enabled": False, "idle_minutes": 30})
         self.assertFalse(result["checks"]["on_demand_enabled"])
+
+    def test_owner_triggered_guard_units_are_required_and_exact(self):
+        for unit, mode in (
+            ("local-search-mcp-guard-preflight.service", "preflight"),
+            ("local-search-mcp-guard-probe.service", "probe"),
+        ):
+            expected = (
+                "{ path=/usr/bin/sudo ; argv[]=/usr/bin/sudo -n /usr/bin/python3 "
+                "/usr/local/libexec/local-search-mcp/crawler_egress_guard.py "
+                "--container crawl4ai --" + mode
+                + " ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] }")
+            for value, allowed in (
+                (expected, True),
+                (expected.replace("ignore_errors=no", "ignore_errors=yes"), False),
+                (expected.replace("--" + mode, "--apply"), False),
+                (expected.replace("path=/usr/bin/sudo", "path=/usr/bin/sh"), False),
+                (expected + expected, False),
+            ):
+                with (self.subTest(unit=unit, allowed=allowed, value=value[:40]),
+                      patch.object(audit, "_run", side_effect=["loaded", value])):
+                    self.assertEqual(audit._user_guard_unit(unit, mode), allowed)
+            with patch.object(audit, "_run", return_value=None):
+                self.assertFalse(audit._user_guard_unit(unit, mode))
+
+    def test_absent_cold_wake_units_block_preflight_even_if_tunnel_is_up(self):
+        default, _, _ = self._successful()
+        self.assertEqual(default["state"], "ready_for_manual_reboot_test")
+        for unit in ("local-search-mcp-guard-preflight.service",
+                     "local-search-mcp-guard-probe.service"):
+            with self.subTest(unit=unit):
+                missing = {
+                    ("systemctl", "--user", "show", unit,
+                     "-p", "LoadState", "--value"): "not-found"}
+                report, _, _ = self._successful(responses=missing)
+                self.assertEqual(report["state"], "blocked")
+                self.assertFalse(all(report["checks"].values()))
 
     def test_effective_startup_command_cannot_be_overridden(self):
         for effective in (
