@@ -18,7 +18,7 @@ class SecureTunnelSetupTests(unittest.TestCase):
         # weakening of sudo -n, helper path, or probe arguments must fail.
         return ("{ path=/usr/bin/sudo ; argv[]=/usr/bin/sudo -n /usr/bin/python3 "
                 "/usr/local/libexec/local-search-mcp/crawler_egress_guard.py "
-                "--container crawl4ai --probe ; ignore_errors=no ; "
+                "--container crawl4ai --tunnel-gate ; ignore_errors=no ; "
                 "start_time=[n/a] ; stop_time=[n/a] }")
 
     def setUp(self):
@@ -82,7 +82,8 @@ class SecureTunnelSetupTests(unittest.TestCase):
         self.assertTrue(line.startswith("realoperator ALL=(root) NOPASSWD: "))
         self.assertIn("--container crawl4ai --probe", line)
         self.assertIn("--container crawl4ai --preflight", line)
-        self.assertEqual(line.count("NOPASSWD:"), 2)
+        self.assertIn("--container crawl4ai --tunnel-gate", line)
+        self.assertEqual(line.count("NOPASSWD:"), 3)
         self.assertNotIn("--apply", line)
         self.assertNotIn("--remove", line)
         self.assertNotIn("otherroot", line)
@@ -118,12 +119,12 @@ class SecureTunnelSetupTests(unittest.TestCase):
               patch.object(secure, "_install_sudoers"),
               patch.object(secure, "_sudo", side_effect=lambda *args, **kw:
                   (_ for _ in ()).throw(secure.InstallError("no probe"))
-                  if "--probe" in args else subprocess.CompletedProcess(args, 0, "active", "")) as root,
+                  if "--tunnel-gate" in args else subprocess.CompletedProcess(args, 0, "active", "")) as root,
               patch.object(secure, "_install_user_dropin",
                            side_effect=AssertionError("Unverified tunnel started"))):
             with self.assertRaises(secure.InstallError):
                 secure.install()
-        self.assertTrue(any("--probe" in c.args for c in root.call_args_list))
+        self.assertTrue(any("--tunnel-gate" in c.args for c in root.call_args_list))
         self.assertFalse(any("enable" in c.args and "local-search-mcp-tunnel.service"
                              in c.args for c in run.call_args_list))
 
@@ -187,9 +188,10 @@ class SecureTunnelSetupTests(unittest.TestCase):
             ("ExecStartPre=", False),
             ("ExecStartPre=+/usr/bin/sudo -n /usr/bin/python3 " +
              "/usr/local/libexec/local-search-mcp/crawler_egress_guard.py " +
-             "--container crawl4ai --probe", False),  # Unit text, not effective state.
+             "--container crawl4ai --tunnel-gate", False),  # Unit text, not effective state.
             (protected.replace("ignore_errors=no", "ignore_errors=yes"), False),
-            (protected.replace("--probe", "--preflight"), False),
+            (protected.replace("--tunnel-gate", "--preflight"), False),
+            (protected.replace("--tunnel-gate", "--probe"), False),
             (protected.replace("path=/usr/bin/sudo", "path=/bin/false"), False),
             (protected + protected, False),  # No unreviewed extra pre-start command.
         )
@@ -337,6 +339,7 @@ class SecureTunnelSetupTests(unittest.TestCase):
         privileged = " ".join(report["privileged_install"])
         self.assertIn("--probe", privileged)
         self.assertIn("--preflight", privileged)
+        self.assertIn("--tunnel-gate", privileged)
         self.assertIn("NOPASSWD", privileged)
 
     def test_readonly_tunnel_option_is_separate_from_confirmation(self):
