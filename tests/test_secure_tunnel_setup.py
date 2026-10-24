@@ -14,8 +14,12 @@ from scripts import setup_wizard
 class SecureTunnelSetupTests(unittest.TestCase):
     @staticmethod
     def effective_probe():
-        return ("{ path=/usr/bin/sudo ; argv[]=" + secure._REQUIRED_PROBE_ARGV +
-                " ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] }")
+        # Keep this literal independent of the production constant: any
+        # weakening of sudo -n, helper path, or probe arguments must fail.
+        return ("{ path=/usr/bin/sudo ; argv[]=/usr/bin/sudo -n /usr/bin/python3 "
+                "/usr/local/libexec/local-search-mcp/crawler_egress_guard.py "
+                "--container crawl4ai --probe ; ignore_errors=no ; "
+                "start_time=[n/a] ; stop_time=[n/a] }")
 
     def setUp(self):
         # These fixtures exercise the unprivileged installer regardless of CI UID.
