@@ -84,9 +84,12 @@ def _sudoers_line() -> str:
     name = pwd.getpwuid(os.getuid()).pw_name
     if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", name):
         raise InstallError("Username cannot be written safely in sudoers")
-    return (name + " ALL=(root) NOPASSWD: /usr/bin/python3 "
-            "/usr/local/libexec/local-search-mcp/crawler_egress_guard.py "
-            "--container crawl4ai --probe\n")
+    fixed = (name + " ALL=(root) NOPASSWD: /usr/bin/python3 "
+             "/usr/local/libexec/local-search-mcp/crawler_egress_guard.py "
+             "--container crawl4ai ")
+    # Both operations are fixed, narrow and documented; preflight is used
+    # only when explicitly enabling opt-in on-demand backends later.
+    return fixed + "--probe\n" + fixed + "--preflight\n"
 
 
 def _install_sudoers() -> None:
@@ -216,8 +219,19 @@ def install() -> None:
     if "ExecStartPre=+/usr/bin/sudo -n /usr/bin/python3" not in loaded:
         raise InstallError("Guarded tunnel startup was not loaded")
     # Only after a successful live root-owned probe can the tunnel be started.
-    _run("systemctl", "--user", "enable", "--now", USER_TUNNEL,
-         "local-search-mcp-health.timer", timeout=180)
+    try:
+        _run("systemctl", "--user", "enable", "--now", USER_TUNNEL, timeout=180)
+        active = _run("systemctl", "--user", "is-active", USER_TUNNEL)
+        if active.stdout.strip() != "active":
+            raise InstallError("Protected tunnel did not reach active state")
+        _run("systemctl", "--user", "enable", "--now",
+             "local-search-mcp-health.timer", timeout=180)
+    except InstallError:
+        # A partly successful systemctl start can leave a tunnel running:
+        # attempt to shut it off, but still require the operator to verify.
+        _run("systemctl", "--user", "disable", "--now",
+             USER_TUNNEL, check=False, timeout=30)
+        raise
     print("Protected ChatGPT tunnel enabled. Verify local MCP tools and remote registration.")
     print("WARNING: Running tunnel is not revoked if nftables is later manually removed.")
 
@@ -242,8 +256,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except (InstallError, OSError, ValueError) as exc:
         print("Secure tunnel setup incomplete: " + type(exc).__name__ +
-              " (verify service state and use manual recovery documentation)",
-              file=sys.stderr)
+              ". Check systemctl --user is-active local-search-mcp-tunnel.service; "
+              "stop and disable it if protection is uncertain.", file=sys.stderr)
         return 1
 
 
