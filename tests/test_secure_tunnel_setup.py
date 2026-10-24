@@ -175,6 +175,60 @@ class SecureTunnelSetupTests(unittest.TestCase):
                   self.assertRaisesRegex(secure.InstallError, problem)):
                 secure._root_parent_safety(secure.ROOT_GUARD)
 
+    def test_effective_prestart_rejects_later_dropin_resets_and_bypasses(self):
+        protected = self.effective_probe()
+        cases = (
+            (protected, True),
+            ("", False),  # A later drop-in ExecStartPre= clears the guard.
+            ("ExecStartPre=", False),
+            ("ExecStartPre=+/usr/bin/sudo -n /usr/bin/python3 " +
+             "/usr/local/libexec/local-search-mcp/crawler_egress_guard.py " +
+             "--container crawl4ai --probe", False),  # Unit text, not effective state.
+            (protected.replace("ignore_errors=no", "ignore_errors=yes"), False),
+            (protected.replace("--probe", "--preflight"), False),
+            (protected.replace("path=/usr/bin/sudo", "path=/bin/false"), False),
+            (protected + protected, False),  # No unreviewed extra pre-start command.
+        )
+        for output, allowed in cases:
+            with (self.subTest(output=output[:80]),
+                  patch.object(secure, "_run",
+                               return_value=subprocess.CompletedProcess(
+                                   [], 0, output, "")) as invoke):
+                if allowed:
+                    secure._verify_effective_tunnel_probe()
+                else:
+                    with self.assertRaises(secure.InstallError):
+                        secure._verify_effective_tunnel_probe()
+                invoke.assert_called_once_with(
+                    "systemctl", "--user", "show", secure.USER_TUNNEL,
+                    "--property=ExecStartPre", "--value")
+
+    def test_later_dropin_reset_refuses_tunnel_activation(self):
+        calls = []
+
+        def systemctl(*args, **_kwargs):
+            calls.append(args)
+            if "--property=ExecStartPre" in args:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            return subprocess.CompletedProcess(
+                args, 0,
+                "inactive" if "is-active" in args else
+                "LoadState=loaded" if "--property=LoadState" in args else "", "")
+
+        with (patch.object(secure, "preview", return_value=self.inventory()),
+              patch.object(secure, "_run", side_effect=systemctl),
+              patch.object(secure, "_sudo", return_value=subprocess.CompletedProcess(
+                  [], 0, "active", "")),
+              patch.object(secure, "_install_root_file"),
+              patch.object(secure, "_install_sudoers"),
+              patch.object(secure, "_install_user_dropin"),
+              self.assertRaisesRegex(secure.InstallError,
+                                     "startup probe is missing or overridden")):
+            secure.install()
+        self.assertTrue(any("--property=ExecStartPre" in call for call in calls))
+        self.assertFalse(any("enable" in call and secure.USER_TUNNEL in call
+                             for call in calls))
+
     def test_failed_tunnel_start_attempts_to_disable_partly_started_unit(self):
         commands = []
 
