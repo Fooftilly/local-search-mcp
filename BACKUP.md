@@ -115,6 +115,27 @@ The test does not copy cache contents, tokens, or launcher credentials.
 After adopting the UI, confirm the staged settings with its real reader
 before manually enabling services. No automatic upgrade or rollback occurs.
 
+## On-demand idle preferences in offline backups
+
+When the private config directory contains `on-demand.json`, backups now
+include that **nonsecret, versioned** document alongside history, upstream
+timeout and cache TTL preferences. Only `enabled` (a strict boolean) and
+`idle_minutes` (a strict integer from 1 through 1440) are permitted. Unknown
+keys, duplicate JSON members, symlinks, unsafe permissions and malformed
+fields abort the backup rather than copying possible credentials or an
+unsupported configuration.
+
+An archived `enabled: true` is preserved **only as staged data**.
+`backup_state.py restore` never installs it into the running config,
+and `restore_smoke.py` reads it only inside a disposable isolated
+`XDG_CONFIG_HOME`. Neither routine initializes the supervisor or starts
+Docker. On a different machine, never activate the restored preference until
+its dedicated Docker identity, firewall startup guard, effective protected
+tunnel, and post-wake live security probes have been separately validated
+with the normal setup and `--boot-audit` workflows. Historical archives
+without this optional file remain supported and default to on-demand OFF
+on a clean installation.
+
 ## Offline rollback preflight (does not perform a rollback)
 
 Before attempting to return to an older *local ancestor commit*, take and
