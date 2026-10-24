@@ -105,6 +105,7 @@ def smoke(archive: Path) -> tuple[int, int]:
             import safe_settings
             import upstream_settings
             import cache_settings
+            from scripts import on_demand_settings
 
             # Verify the files using real application readers, not just the
             # backup schema verifier. Missing optional files are valid.
@@ -117,6 +118,14 @@ def smoke(archive: Path) -> tuple[int, int]:
                     expected = json.loads(payload[name].decode("utf-8"))["settings"]
                     if reader()["values"] != expected:
                         raise ValueError("Recovered settings differ from archive")
+
+            if "on-demand.json" in payload:
+                expected = json.loads(payload["on-demand.json"].decode("utf-8"))["settings"]
+                # Call only the inert settings reader. This smoke must not
+                # instantiate Supervisor or initiate Docker / guard activity.
+                actual = on_demand_settings.read()
+                if actual != expected:
+                    raise ValueError("Recovered on-demand preferences differ from archive")
 
             domain_policy.initialize()
             with sqlite3.connect(domain_policy.database_path()) as conn:
