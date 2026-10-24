@@ -31,3 +31,35 @@ This check is separate from the Git bridge revision checker in PR #58.
 
 For an independent local Crawl4AI version report and opt-in public GitHub release
 check, see [CRAWLER-VERSIONS.md](CRAWLER-VERSIONS.md). This does not install images.
+
+## Consolidated version inventory (read-only)
+
+To gather installed bridge dependency versions from the **project virtual
+environment**, local Crawl4AI version/health, and offline Git baseline
+diagnostics in one JSON report, run:
+
+```sh
+python3 -m scripts.maintenance_versions
+```
+
+This default operation does not query public hosts, install packages, fetch
+Git objects, pull Docker images, restart services, or change settings.
+If a maintainer explicitly wants current public version metadata as well:
+
+```sh
+python3 -m scripts.maintenance_versions --check-remote
+```
+
+The optional switch runs the existing bounded HTTPS checks against PyPI and
+GitHub for direct Python dependencies, the published Crawl4AI release, and
+the bridge repository's public master revision. It uses the project `.venv`
+Python for installed dependencies. Failures are reported with redacted,
+non-actionable status instead of exposing private paths or credentials.
+
+A version difference is **not** evidence that upgrading is safe. The public
+Crawl4AI release tag may lag available Docker builds; a remote bridge revision
+may diverge rather than be newer. Review compatibility, image digests, security,
+backup integrity and controlled restart requirements manually. This command
+never performs updates, rollback, or client configuration. The tunnel client's
+version remains outside this inventory because its executable identity is not
+yet safely established by a dedicated version checker.
