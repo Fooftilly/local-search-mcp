@@ -11,7 +11,9 @@ def state(**kw):
     return dict(state="running", managed_running=2, managed_stopped=0,
                 unverified_project_containers=0,
                 other_published_crawlers=0,
-                verified_services={"crawl4ai": 1, "searxng": 1}, **kw)
+                verified_services={"crawl4ai": 1, "searxng": 1},
+                verified_restart_policies={"crawl4ai": "unless-stopped",
+                                           "searxng": "unless-stopped"}, **kw)
 
 
 class OnDemandEligibilityTests(unittest.TestCase):
@@ -19,6 +21,7 @@ class OnDemandEligibilityTests(unittest.TestCase):
         self.assertEqual(gate.validate_options(), {"enabled": False, "idle_minutes": 30})
         x = gate.eligibility(inventory=state())
         self.assertEqual(x["state"], "manual_verification_required")
+        self.assertEqual(x["restart_policy_review"], "requires_coordinated_change")
         self.assertFalse(x["can_activate"])
         self.assertFalse(x["enabled"])
 
@@ -62,6 +65,29 @@ class OnDemandEligibilityTests(unittest.TestCase):
         older = state()
         del older["verified_services"]
         self.assertEqual(gate.eligibility(inventory=older)["state"], "blocked")
+
+    def test_unknown_and_malformed_restart_policies_fail_closed(self):
+        for policies in (None, {}, {"crawl4ai": "no"},
+                         {"crawl4ai": "private-mode", "searxng": "no"},
+                         {"crawl4ai": True, "searxng": "no"},
+                         {"crawl4ai": "no", "searxng": "no", "foreign": "always"}):
+            with self.subTest(policies=policies):
+                result = gate.eligibility(inventory={
+                    **state(), "verified_restart_policies": policies})
+                self.assertEqual(result["state"], "blocked")
+                self.assertEqual(result["restart_policy_review"], "unknown")
+                self.assertFalse(result["can_activate"])
+        older = state()
+        del older["verified_restart_policies"]
+        self.assertEqual(gate.eligibility(inventory=older)["state"], "blocked")
+
+    def test_no_restart_policy_requires_no_policy_change(self):
+        report = gate.eligibility(inventory={
+            **state(), "verified_restart_policies": {
+                "crawl4ai": "no", "searxng": "no"}})
+        self.assertEqual(report["state"], "manual_verification_required")
+        self.assertEqual(report["restart_policy_review"], "no_change_observed")
+        self.assertFalse(report["can_activate"])
 
     def test_two_stopped_containers_only_candidate(self):
         data = {**state(), "state": "stopped",
