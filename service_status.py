@@ -5,6 +5,7 @@ isolation. The dashboard never invokes Docker, systemctl, or remote URLs.
 """
 from __future__ import annotations
 
+import errno
 import os
 import socket
 from urllib.parse import urlsplit
@@ -81,16 +82,22 @@ def probe_services(*, connector=socket.create_connection) -> list[dict]:
         try:
             with connector(target, timeout=0.3):
                 status = "TCP reachable"
-        except (OSError, TimeoutError):
+        except OSError as exc:
             status = "TCP unavailable"
-            if not checked_activity:
-                activity = _supervisor_activity()
-                checked_activity = True
-            backend = "searxng" if label == "SearXNG" else "crawl4ai"
-            # The supervisor manages fixed backend ports. An overridden
-            # environment URL may target a completely unrelated loopback app.
-            if target == _endpoint(default) and _expected_sleeping(activity, backend):
-                status = "TCP unavailable (supervisor reports sleeping)"
+            # An absent listener normally refuses a TCP connection. Timeouts,
+            # address/routing errors and local socket exhaustion are failures,
+            # not evidence that Docker intentionally stopped a backend.
+            refused = (isinstance(exc, ConnectionRefusedError)
+                       or getattr(exc, "errno", None) == errno.ECONNREFUSED)
+            # The supervisor only owns the fixed loopback backend endpoints;
+            # an overridden URL may refer to an unrelated service.
+            if refused and target == _endpoint(default):
+                if not checked_activity:
+                    activity = _supervisor_activity()
+                    checked_activity = True
+                backend = "searxng" if label == "SearXNG" else "crawl4ai"
+                if _expected_sleeping(activity, backend):
+                    status = "TCP unavailable (supervisor reports sleeping)"
         results.append({"service": label, "status": status,
                         "source": "environment" if variable in os.environ
                         else "default"})
