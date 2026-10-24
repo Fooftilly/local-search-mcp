@@ -9,6 +9,11 @@ from pathlib import Path
 import stat
 import subprocess
 
+if __package__:
+    from . import on_demand_settings
+else:
+    import on_demand_settings
+
 PROJECT = "local-search-crawler"
 ROOT_GUARD = "local-search-mcp-crawler-egress.service"
 MARKER = "# Managed by local-search-mcp; contains no credentials."
@@ -24,6 +29,7 @@ UNITS = (
     "local-search-mcp-health.service",
     "local-search-mcp-tunnel.service",
     "local-search-mcp-bridge.service",
+    "local-search-mcp-guard-probe.service",
 )
 TUNNEL = "local-search-mcp-tunnel.service"
 CHECKERS = {"local-search-mcp-health.service", "local-search-mcp-update.service"}
@@ -38,6 +44,17 @@ class Stop:
     def __init__(self):
         self.errors: list[str] = []
         self.tunnel_safe = False
+
+    def inhibit_on_demand(self) -> None:
+        """Disarm future wake before stopping any bridge/tunnel services."""
+        try:
+            saved = on_demand_settings.read()
+            if saved["enabled"]:
+                on_demand_settings.save(enabled=False,
+                                        idle_minutes=saved["idle_minutes"])
+                print("On-demand wake: disabled before full stop")
+        except (OSError, ValueError):
+            self.error("On-demand wake suppression could not be verified")
 
     def error(self, detail: str) -> None:
         self.errors.append(detail)
@@ -272,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
     if os.geteuid() == 0:
         parser.error("Run as normal user; root guard requires separate authorization")
     job = Stop()
+    job.inhibit_on_demand()
     job.user_units()
     if job.tunnel_safe:
         job.compose()
