@@ -19,6 +19,7 @@ import service_status
 import safe_settings
 import upstream_settings
 import cache_settings
+import portable_settings
 import history_index
 from web_assets import LIVE_SCRIPT, STYLESHEET
 from web_templates import render_template
@@ -482,6 +483,44 @@ def cache_settings_page(message="", kind="success", submitted=None):
     )
 
 
+def portable_settings_page(message="", kind="success"):
+    alert = ('<p class="alert ' + ("error" if kind == "error" else "success") +
+             '">' + esc(message) + '</p>') if message else ''
+    return render_template("portable-settings", alert=alert, csrf=esc(CSRF))
+
+
+def portable_settings_preview(plan: dict, document: str) -> str:
+    """Bounded, HTML-escaped preview; submit the same text under CAS."""
+    rows = ''.join(
+        '<tr><td>' + esc(key) + '</td><td>' + esc(values["old"]) +
+        '</td><td>' + esc(values["new"]) + '</td></tr>'
+        for key, values in plan["changes"].items()
+    )
+    if not rows:
+        rows = '<tr><td colspan="3">No changes</td></tr>'
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="referrer" content="no-referrer">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<title>Local Search MCP — Settings import preview</title>'
+        '<link rel="stylesheet" href="/dashboard.css"></head><body><main>'
+        '<h1>Nonsecret settings import preview</h1><p>Profile: ' +
+        esc(plan["profile"]) + ' (one atomic profile only)</p>'
+        '<table><thead><tr><th>Setting</th><th>Current</th><th>New</th>'
+        '</tr></thead><tbody>' + rows + '</tbody></table>'
+        '<form method="post" action="/portable-settings/apply">'
+        '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
+        '<input type="hidden" name="state" value="' + esc(plan["state"]) + '">'
+        '<textarea name="settings_doc" hidden readonly>' + esc(document) + '</textarea>'
+        '<label>Type IMPORT to confirm <input name="confirm" required '
+        'pattern="IMPORT" maxlength="6"></label>'
+        '<button type="submit">Apply validated settings</button></form>'
+        '<p>Stale or conflicting values and environment overrides refuse the '
+        'write; no secrets or service restart actions are included.</p>'
+        '<p><a href="/portable-settings">Cancel import</a></p></main></body></html>'
+    )
+
+
 def status_page():
     """Read-only local TCP diagnostics; no mutation or privileged probes."""
     rows = ''.join(
@@ -545,9 +584,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Length',str(len(data)))
         self.send_header('Cache-Control','no-store')
         if download_name is not None:
-            # Fixed in-repository filename only, not request-controlled.
+            # Reject arbitrary filenames: fixed, in-repository names only.
+            if download_name not in ('domain-rules-v1.json',
+                                     'nonsecret-settings-v1.json'):
+                raise ValueError('Unrecognized download filename')
             self.send_header('Content-Disposition',
-                             'attachment; filename="domain-rules-v1.json"')
+                             'attachment; filename="' + download_name + '"')
         self.send_header('X-Content-Type-Options','nosniff')
         self.send_header('X-Frame-Options','DENY')
         self.send_header('Referrer-Policy','no-referrer')
@@ -633,6 +675,21 @@ class Handler(BaseHTTPRequestHandler):
         if path.path=='/status':
             if not self._read_origin_valid():return self._respond(403,'Forbidden')
             return self._respond(200,status_page())
+        if path.path=='/portable-settings':
+            if not self._read_origin_valid():return self._respond(403,'Forbidden')
+            return self._respond(200, portable_settings_page())
+        if path.path=='/portable-settings/export':
+            if not self._read_origin_valid():return self._respond(403,'Forbidden')
+            query=parse_qs(path.query, max_num_fields=2)
+            if set(query) != {'profile'} or len(query['profile']) != 1:
+                return self._respond(400, 'Invalid settings export selection')
+            try:
+                document = json.dumps(portable_settings.export_profile(
+                    query['profile'][0]), indent=2, ensure_ascii=True)
+            except (ValueError, OSError):
+                return self._respond(400, 'Nonsecret settings cannot be exported')
+            return self._respond(200, document, 'application/json; charset=utf-8',
+                                 download_name='nonsecret-settings-v1.json')
         if path.path=='/rules/export':
             if not self._read_origin_valid():return self._respond(403,'Forbidden')
             try:
@@ -696,7 +753,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._respond(403,'Invalid origin')
         if self.path not in ('/domain', '/pending/clear', '/bulk', '/once',
                              '/rules/preview', '/rules/apply', '/settings',
-                             '/upstream-settings', '/cache-settings'):
+                             '/upstream-settings', '/cache-settings',
+                             '/portable-settings/preview', '/portable-settings/apply'):
             return self._respond(404,'Not found')
         try:
             length=int(self.headers.get('Content-Length','-1'))
@@ -706,6 +764,9 @@ class Handler(BaseHTTPRequestHandler):
         # for CSRF, preview ticket/state and form field names.
         limit = (3 * policy_transfer.MAX_JSON_BYTES + 4096
                  if self.path in ('/rules/preview', '/rules/apply')
+                 else (3 * portable_settings.MAX_JSON_BYTES + 4096)
+                 if self.path in ('/portable-settings/preview',
+                                  '/portable-settings/apply')
                  else 8192 if self.path == '/bulk' else 4096)
         if length < 0 or length > limit:
             return self._respond(413,'Request too large')
@@ -721,6 +782,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self._respond(400, render(message='Type CLEAR to confirm removal.', kind='error'))
             removed = policy.clear_pending_requests()
             return self._respond(200,render(message=f"Cleared {removed} pending requests."))
+        if self.path in ('/portable-settings/preview', '/portable-settings/apply'):
+            try:
+                if self.path == '/portable-settings/preview':
+                    plan = portable_settings.preview(val('settings_doc'))
+                    return self._respond(200, portable_settings_preview(
+                        plan, val('settings_doc')))
+                if val('confirm') != 'IMPORT':
+                    raise ValueError('Type IMPORT to confirm the settings import')
+                profile = portable_settings.apply(val('settings_doc'), val('state'))
+                return self._respond(200, portable_settings_page(
+                    message='Imported ' + profile + ' settings; applied to future operations.'))
+            except (ValueError, OSError) as exc:
+                # Do not expose operating-system paths, or redirect the
+                # operator to the unrelated domain-policy page on failure.
+                message = ('Cannot safely read or save nonsecret settings'
+                           if isinstance(exc, OSError) else str(exc))
+                return self._respond(400, portable_settings_page(
+                    message=message, kind='error'))
         try:
             if self.path == '/cache-settings':
                 submitted = {

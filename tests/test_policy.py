@@ -19,6 +19,19 @@ class DomainPolicyTests(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
 
+    def test_approval_link_uses_only_validated_loopback_port(self):
+        with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_DASHBOARD_PORT": "18791"}):
+            self.assertEqual(policy.approval_dashboard_url(), "http://127.0.0.1:18791/")
+            result = policy.evaluate_fetch_url("https://unapproved.example.net/page")
+            self.assertEqual(result["approval_dashboard"], "http://127.0.0.1:18791/")
+        for value in ("http://evil.example", "99999", "0", "-1", "8791/path",
+                      "8791\\nX-Injected: yes", ""):
+            with self.subTest(value=value), patch.dict(os.environ,
+                   {"LOCAL_SEARCH_MCP_DASHBOARD_PORT": value}):
+                self.assertEqual(policy.approval_dashboard_url(), "")
+        with patch.dict(os.environ, clear=True):
+            self.assertEqual(policy.approval_dashboard_url(), "http://127.0.0.1:8791/")
+
     def test_public_suffixes_rejected_including_private(self):
         for name in ("co.uk", "github.io", "blogspot.com"):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, "Public suffix"):
