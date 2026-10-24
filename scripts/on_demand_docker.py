@@ -124,36 +124,42 @@ def start(service: str, *, config_base: Path | None = None,
     if service == "crawl4ai" and crawler_probe is None:
         raise LifecycleError("Crawler security probe not configured")
     started = not target.running
-    if started:
-        # Recheck the exact ID immediately before mutation; Docker cannot
-        # reuse a full ID if the container is removed between checks.
-        again = _safe_target(service, config_base=config_base)
-        if again.ident != target.ident or again.running:
-            raise LifecycleError("Managed target changed before startup")
-        _run(service, target.ident, stopping=False)
+    attempted_start = False
     deadline = clock() + timeout
     try:
+        if started:
+            # Docker cannot reuse a full container ID after removal. Keep the
+            # verified target for rollback even if later inventory reads fail.
+            again = _safe_target(service, config_base=config_base)
+            if again.ident != target.ident or again.running:
+                raise LifecycleError("Managed target changed before startup")
+            attempted_start = True
+            _run(service, target.ident, stopping=False)
         while True:
-            fresh = _safe_target(service, config_base=config_base)
-            if fresh.ident != target.ident:
+            fresh_target = _safe_target(service, config_base=config_base)
+            if fresh_target.ident != target.ident:
                 raise LifecycleError("Managed target changed during wake")
-            if fresh.running and health(service):
+            if fresh_target.running and health(service):
                 if service == "crawl4ai" and not crawler_probe():
                     raise LifecycleError("Live crawler egress probe failed")
                 return started
             if clock() >= deadline:
                 raise LifecycleError("Backend startup timed out; retry after inspecting service")
             sleep(0.5)
-    except Exception:
-        # Do not leave a newly started, unready backend running if the gate
-        # fails. In particular an unverified crawler must be stopped.
-        if started:
+    except Exception as exc:
+        # A Docker start that times out may nevertheless have started the
+        # backend. Even when a fresh inventory is unavailable, stopping this
+        # previously verified full ID cannot target a replacement container.
+        # A crawler with an invalid live guard is also shut down even if it
+        # was already running when this request began.
+        must_stop = attempted_start or service == "crawl4ai"
+        if must_stop:
             try:
-                fresh = _safe_target(service, config_base=config_base)
-                if fresh.ident == target.ident and fresh.running:
-                    _run(service, target.ident, stopping=True)
-            except (LifecycleError, OSError):
-                pass
+                _run(service, target.ident, stopping=True)
+            except LifecycleError as stop_error:
+                raise LifecycleError(
+                    "Backend wake failed and verified-ID cleanup failed; "
+                    "block crawler access and inspect Docker manually") from stop_error
         raise
 
 
