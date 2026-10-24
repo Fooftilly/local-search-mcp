@@ -167,9 +167,11 @@ python3 scripts/rollback_candidate.py --target YOUR_FULL_LOCAL_COMMIT_SHA --arch
 ```
 
 The command copies only the target's locally available *tracked source files*
-into `source/` using a bounded Git tar archive, rejecting archived symlinks,
-path traversal, duplicates and non-regular entries. It never runs the older
-code or installs dependencies. The independently verified recovery data goes
+into `source/` using bounded **raw Git tree/blob plumbing**, rejecting
+symlinks, gitlinks, path traversal, duplicates and non-regular entries. It
+does **not** use `git archive` or a working-tree checkout because those may
+invoke configured smudge filters or other operator hooks. It never executes
+content filters, runs older code, or installs dependencies. The independently verified recovery data goes
 to `state/` through the same no-clobber owner-only restore mechanism used
 elsewhere. An owner-only `candidate.json` records exact source/target
 commits, file counts and the explicit `ready_for_live_use: false` flag.
