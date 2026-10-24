@@ -113,15 +113,18 @@ def probe_targets(subnet: ipaddress.IPv4Network) -> tuple[str, ...]:
     return tuple(selected)
 
 
-def network_for(container: str) -> tuple[str, str]:
-    """Inspect the running crawler and require a dedicated locked-down bridge."""
+def network_for(container: str, *, allow_stopped: bool = False) -> tuple[str, str]:
+    """Inspect a dedicated crawler bridge; allow stopped only for preflight."""
     container = validated_container(container)
     raw = json.loads(command(['docker', 'inspect', '--type=container', container]))
     if len(raw) != 1:
         raise GuardError('Expected exactly one Crawl4AI container')
     c = raw[0]
-    if not c.get('State', {}).get('Running'):
+    running = c.get('State', {}).get('Running') is True
+    if not running and not allow_stopped:
         raise GuardError('Crawl4AI container must be running')
+    if not running and c.get('State', {}).get('Status') not in ('exited', 'created'):
+        raise GuardError('Cannot verify stopped Crawl4AI state')
     host = c.get('HostConfig', {})
     if host.get('Privileged') or any(cap.upper() in {'NET_ADMIN', 'SYS_ADMIN', 'SYS_MODULE', 'BPF'} for cap in (host.get('CapAdd') or [])):
         raise GuardError('Refusing privileged or elevated container: crawler could modify firewall or networking')
@@ -142,14 +145,19 @@ def network_for(container: str) -> tuple[str, str]:
     if net.get('EnableIPv6'):
         raise GuardError('Disable Docker-network IPv6 for this supported profile; IPv6 forwarding is blocked')
     members = net.get('Containers') or {}
-    if len(members) != 1 or c['Id'] not in members:
+    if any(member != c['Id'] for member in members):
+        raise GuardError('Bridge contains a foreign container')
+    if running and (len(members) != 1 or c['Id'] not in members):
         raise GuardError('Bridge must contain only this Crawl4AI container')
+    if not running and members and set(members) != {c['Id']}:
+        raise GuardError('Stopped crawler bridge members are unverified')
     opts = net.get('Options') or {}
     bridge = opts.get('com.docker.network.bridge.name') or ('br-' + net['Id'][:12])
     if not re.fullmatch(r'[a-zA-Z0-9_.-]{1,15}', bridge) or bridge in ('docker0', 'lo'):
         raise GuardError('Unexpected Docker bridge interface name')
     if detail.get('NetworkID') != net['Id']:
-        raise GuardError('Container/network identity mismatch')
+        if running or detail.get('NetworkID') not in ('', None):
+            raise GuardError('Container/network identity mismatch')
     if not re.fullmatch(r'[a-fA-F0-9]{64}', c.get('Id', '')) or not re.fullmatch(r'[a-fA-F0-9]{64}', net.get('Id', '')):
         raise GuardError('Malformed Docker container/network identity')
     return name, bridge
@@ -296,6 +304,8 @@ def main(argv: list[str] | None = None) -> int:
     modes.add_argument('--print', action='store_true', help='Preview nftables rules; makes no changes')
     modes.add_argument('--apply', action='store_true', help='Install isolated nftables table as root')
     modes.add_argument('--status', action='store_true', help='Display installed rules and check current bridge')
+    modes.add_argument('--preflight', action='store_true',
+                       help='Verify installed firewall coverage while crawler is stopped (not a live probe)')
     modes.add_argument('--probe', action='store_true', help='Test live blocked host-gateway and permitted public TCP')
     modes.add_argument('--remove', action='store_true', help='Delete only this tool\'s nftables table')
     args = parser.parse_args(argv)
@@ -306,10 +316,24 @@ def main(argv: list[str] | None = None) -> int:
                 command(['nft', 'delete', 'table', 'inet', TABLE])
             print('Removed local-search-mcp crawler firewall table')
             return 0
-        name, bridge = network_for(args.container)
+        name, bridge = network_for(args.container, allow_stopped=args.preflight)
         generated = rules(bridge)
         if args.print:
             print(f'# Docker network: {name}; bridge: {bridge}\n{generated}')
+            return 0
+        if args.preflight:
+            require_root()
+            if not table_exists():
+                raise GuardError('Pre-start firewall table is absent')
+            live = command(['nft', 'list', 'table', 'inet', TABLE])
+            required = (
+                f'iifname "{bridge}"', 'hook forward', 'hook input',
+                'meta nfproto ipv6', 'ct direction reply',
+                'ip daddr', 'reject', 'blocked_ipv4',
+            )
+            if not all(token in live for token in required):
+                raise GuardError('Pre-start firewall coverage is incomplete')
+            print('PASS: installed private bridge guard preflight; live probe is still required after wake')
             return 0
         if args.probe:
             require_root()
