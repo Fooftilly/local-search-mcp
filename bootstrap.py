@@ -320,7 +320,7 @@ def _verified_on_demand_sleep(service: str) -> bool:
         if not on_demand_settings.read()["enabled"]:
             return False
         return not on_demand_docker._safe_target(service).running
-    except (OSError, ValueError, ImportError):
+    except (OSError, ValueError, ImportError, RuntimeError):
         return False
 
 
