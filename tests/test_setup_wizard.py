@@ -30,7 +30,7 @@ class SetupWizardTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as exc:
                 wizard.main(["--help"])
         self.assertEqual(exc.exception.code, 0)
-        for option in ("--check", "--status", "--dry-run", "--chatgpt", "--update-status", "--on-demand-status"):
+        for option in ("--check", "--status", "--dry-run", "--chatgpt", "--update-status", "--on-demand-status", "--boot-audit"):
             self.assertIn(option, out.getvalue())
         self.assertIn("30 minutes", out.getvalue())
 
@@ -204,7 +204,7 @@ class SetupWizardTests(unittest.TestCase):
             rc, output = self.call("--dry-run")
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(output)["default_client"].split()[0], "ChatGPT")
-        self.assertEqual(len(json.loads(output)["actions"]), 12)
+        self.assertEqual(len(json.loads(output)["actions"]), 13)
 
     def test_status_returns_only_allowlisted_service_state(self):
         with (patch.object(wizard, "health",
