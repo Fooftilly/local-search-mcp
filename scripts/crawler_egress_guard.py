@@ -335,7 +335,7 @@ def verify_installed(bridge: str) -> None:
         raise GuardError('Invalid bridge name')
     if not table_exists():
         raise GuardError('Pre-start firewall table is absent')
-    live = command(['nft', 'list', 'table', 'inet', TABLE])
+    # -s omits live packet/byte counters from anonymous rule listings.\n    # Parsing stateful output would falsely reject a valid guarded rule.\n    live = command(['nft', '-s', 'list', 'table', 'inet', TABLE])
     if not re.search(r'\btable\s+inet\s+' + TABLE + r'\s*\{', live):
         raise GuardError('Installed firewall table identity is incorrect')
 
