@@ -108,6 +108,19 @@ restarting the tunnel. This is not continuous runtime enforcement.
 Container restart policy and firewall reinstallation still need monitoring
 and operator tests. Do not claim permanent sandboxing from these templates.
 
+Before an attended on-demand reboot, explicitly enable on-demand mode
+with a validated idle timeout first, then run `./setup.sh --boot-audit` as
+the normal user. A default (on-demand-disabled) install is intentionally
+reported as blocked. The audit compares the reviewed checkout with the installed privileged
+guard and unit and checks effective systemd start commands; it never invokes
+sudo, applies nftables, wakes Docker, or replaces privileged files. An
+all-green report is **not** verification of nftables enforcement or boot
+ordering. Confirm the fixed sudoers policy manually, perform the live
+guard probe when Crawl4AI is running, and verify guarded cold wake during
+an attended reboot. Both Crawl4AI and SearXNG managed containers must use
+Docker restart policy `no` before reboot; otherwise Docker may auto-start the crawler ahead of
+the root firewall service.
+
 ## Updating an existing protected installation
 
 This is a security-sensitive, explicit migration, **not** an automatic

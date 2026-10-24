@@ -24,6 +24,37 @@ firewall probe after each crawler wake. An explicit `./stop.sh` disables
 wake paths before shutting down bridge/tunnel/backends. Unattended reboot
 recovery and fault handling still need host acceptance tests.
 
+## Read-only host reboot audit
+
+After reviewing and manually deploying PR #108's root-owned guard and
+systemd templates, check static boot prerequisites without starting/stopping
+containers, invoking sudo or executing a firewall probe:
+
+```sh
+./setup.sh --boot-audit
+```
+
+This returns a redacted JSON report with individual gates and exits nonzero
+if anything is missing. On-demand mode must already be explicitly enabled
+with a validated idle timeout; the disabled-by-default installation will
+intentionally report `blocked`. The audit also requires both dedicated containers'
+**actual**
+Docker restart policies to be `no` to prevent Docker itself from starting
+the crawler before the root firewall rules are installed. It also verifies
+the root-owned installed helper and systemd unit match the reviewed checkout
+bytes, checks the **effective** systemd startup and tunnel gates, both
+owner-triggered cold-wake guard unit commands (`--preflight` and `--probe`),
+user service activation and linger. Run it from the same reviewed checkout
+revision that was deployed to the root-owned paths.
+
+Even an all-green static report is only `ready_for_manual_reboot_test`,
+not proof of a safe reboot: the report deliberately says
+`safe_to_reboot_proven: false`. Check the three-command sudoers policy and
+actual nftables protection separately; test an attended full reboot, verify
+the root firewall service becomes active before crawling, and exercise a
+real `web_search` and guarded `web_fetch` from sleeping state. Do not
+assume system and user systemd units have cross-manager ordering.
+
 ## Service identity gate
 
 The inventory reports **only bounded service counts**, never Docker IDs, names,
