@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 from contextlib import contextmanager
+import hashlib
 import os
 from pathlib import Path
 import sqlite3
@@ -57,6 +58,20 @@ def _isolated_environment(home: Path):
                 os.environ[key] = value
 
 
+
+def _verify_staged_copy(path: Path, original: bytes) -> None:
+    """Verify exact bytes and owner-only permissions before app readers run."""
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size != len(original)):
+        raise ValueError("Staged recovery file has incorrect type, owner, permissions or size")
+    with path.open("rb") as restored:
+        actual_hash = hashlib.file_digest(restored, "sha256").digest()
+    if actual_hash != hashlib.sha256(original).digest():
+        raise ValueError("Staged recovery bytes differ from validated archive")
+
+
 def smoke(archive: Path) -> tuple[int, int]:
     """Load an archive through the actual policy and history modules, offline.
 
@@ -80,6 +95,7 @@ def smoke(archive: Path) -> tuple[int, int]:
             fd = os.open(file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             with os.fdopen(fd, "wb") as stream:
                 stream.write(data)
+            _verify_staged_copy(file, data)
 
         with _isolated_environment(home):
             # Runtime modules use XDG_STATE_HOME dynamically. Import only after
