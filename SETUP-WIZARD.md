@@ -29,10 +29,14 @@ configurations:
 Cursor IDE (including the Grok model running *inside Cursor*) can use the
 existing loopback Streamable HTTP MCP endpoint
 `http://127.0.0.1:8790/mcp` via an `mcpServers.local-search.url` entry in
-`~/.cursor/mcp.json`. Preserve any existing MCP entries. Hermes Agent on
-the same host can use
+`~/.cursor/mcp.json`. Insert only the `local-search` member inside
+the existing `mcpServers` object, not another nested wrapper. Preserve every
+existing entry; if the example name already exists, use an unused name instead.
+Hermes Agent on the same host can use
 `hermes mcp add local-search --url http://127.0.0.1:8790/mcp`,
 followed by `hermes mcp test local-search` and `/reload-mcp` in chat.
+If Hermes already has an MCP named `local-search`, choose an unused server
+name and substitute it consistently in both commands; never overwrite it.
 Both share the existing bridge, crawler safety guard and optional backend
 idle timer. No new Docker resources are needed.
 
