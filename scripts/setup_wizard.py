@@ -133,6 +133,17 @@ def docker_status() -> dict:
         return {"state": "unknown", "security_note": "Docker ownership not verified"}
 
 
+def local_update_status() -> dict:
+    """Inspect the local Git revision only; no remote or service operations."""
+    try:
+        from scripts import update_preflight
+        return update_preflight.report()
+    except (OSError, ValueError, ImportError):
+        return {"mode": "read-only", "state": "unavailable",
+                "local_revision": "Local update inspection unavailable",
+                "remote_checked": False, "updates_applied": False}
+
+
 def status_report() -> dict:
     return {
         "mode": "read-only",
@@ -196,7 +207,8 @@ def dry_run() -> dict:
              "action": "preview existing systemd user unit templates"},
             {"menu": "5", "effect": "read-only",
              "action": "installed dependencies from project .venv, without PyPI requests"},
-            {"menu": "6", "effect": "read-only", "action": "manual update and rollback instructions; no fetch/pull"},
+            {"menu": "6", "effect": "read-only",
+             "action": "inspect local Git update baseline and show manual rollback guidance; no fetch/pull"},
             {"menu": "7", "effect": "potential service changes after explicit confirmation",
              "action": "./stop.sh (project-owned shutdown only; no shared Hermes Web stack)"},
             {"menu": "8", "effect": "read-only",
@@ -255,10 +267,11 @@ def menu() -> int:
         elif choice == "8":
             print(json.dumps(docker_status(), indent=2, ensure_ascii=True))
         elif choice == "6":
+            print(json.dumps(local_update_status(), indent=2, ensure_ascii=True))
             print("No automatic Git fetch, pull, image download, pip install or restart.")
-            print("Review the worktree and deployment rollback gates in")
-            print("DEPENDENCY-UPDATES.md, BACKUP.md, and SYSTEMD.md.")
-            print("Use existing explicit update procedures outside this wizard.")
+            print("For a reviewed backup/rollback, see docs/DEPENDENCY-UPDATES.md,")
+            print("BACKUP.md, and docs/SYSTEMD.md. Apply updates explicitly outside")
+            print("this wizard only after examining an operator-approved plan.")
         elif choice in actions:
             word, command = actions[choice]
             if choice == "3":
@@ -292,6 +305,7 @@ def make_parser() -> argparse.ArgumentParser:
   ./setup.sh --dry-run             Read-only menu action preview
   ./setup.sh --chatgpt             Read-only manual ChatGPT connector instructions
   ./setup.sh --docker-status       Read-only verified Compose/Docker ownership inventory
+  ./setup.sh --update-status       Read-only LOCAL revision/baseline check; no network fetch
 
 Default integration: ChatGPT only (account connection is manual).
 Other clients are not configured. On-demand Docker backend sleep from #75
@@ -309,6 +323,8 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="show manual ChatGPT/OpenAI tunnel connection steps")
     choices.add_argument("--docker-status", action="store_true",
                          help="read-only Docker ownership audit (pinned local daemon, no changes)")
+    choices.add_argument("--update-status", action="store_true",
+                         help="inspect local Git update baseline; never fetch/pull/restart")
     return parser
 
 
@@ -322,6 +338,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.docker_status:
         print(json.dumps(docker_status(), indent=2, ensure_ascii=True))
+        return 0
+    if args.update_status:
+        print(json.dumps(local_update_status(), indent=2, ensure_ascii=True))
         return 0
     if args.status:
         print(json.dumps(status_report(), indent=2, ensure_ascii=True))
