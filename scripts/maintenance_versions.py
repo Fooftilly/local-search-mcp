@@ -11,7 +11,8 @@ import subprocess
 import sys
 
 from scripts import (
-    check_bridge_version, check_crawler_versions, setup_wizard, update_preflight,
+    check_bridge_version, check_crawler_versions, check_tunnel_version,
+    setup_wizard, update_preflight,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +93,11 @@ def report(*, check_remote: bool = False) -> dict:
             check_remote=check_remote)
     except (OSError, ValueError, TypeError):
         result["crawler"] = _unavailable("Crawler version inspection unavailable")
+    try:
+        result["tunnel_client"] = check_tunnel_version.version_report(
+            check_remote=check_remote)
+    except (OSError, ValueError, TypeError, http.client.HTTPException):
+        result["tunnel_client"] = _unavailable("Tunnel client inspection unavailable")
     if check_remote:
         try:
             result["public_bridge_revision"] = {

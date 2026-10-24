@@ -60,6 +60,31 @@ A version difference is **not** evidence that upgrading is safe. The public
 Crawl4AI release tag may lag available Docker builds; a remote bridge revision
 may diverge rather than be newer. Review compatibility, image digests, security,
 backup integrity and controlled restart requirements manually. This command
-never performs updates, rollback, or client configuration. The tunnel client's
-version remains outside this inventory because its executable identity is not
-yet safely established by a dedicated version checker.
+never performs updates, rollback, or client configuration. The tunnel-client inventory is now available through a separate,
+deliberately nonexecuting binary fingerprint checker. It reports SHA-256
+and file size for a verified owner-controlled regular `tunnel-client` file,
+but **does not claim to identify an installed version**.
+
+## Tunnel client binary and optional public release check
+
+```sh
+python3 -m scripts.check_tunnel_version
+python3 -m scripts.check_tunnel_version --check-remote
+```
+
+The default command reads only a bounded, owner-controlled, non-symlinked
+local `tunnel-client` executable and hashes it without **executing** that
+binary. Missing/unsafe binaries return a redacted status. No runtime key,
+tunnel profile, endpoints, paths or credentials are read or printed.
+
+With `--check-remote`, the checker fetches only the official OpenAI tunnel
+client's fixed public GitHub latest-release metadata over HTTPS, with
+redirects and ambient proxies disabled. It validates the advertised tag
+and exact official asset names and URLs, without downloading any releases.
+A locally installed **binary hash** cannot be directly compared to the hash
+of a published **ZIP release**, so even a newer-looking public tag does
+not establish an upgrade or local binary provenance. Before upgrades,
+manually verify the downloaded archive's signed/release checksums and
+dependency/profile compatibility. No installation, restart or Git change
+occurs. This report is also included in
+`python3 -m scripts.maintenance_versions` (offline by default).

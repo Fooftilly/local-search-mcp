@@ -25,12 +25,16 @@ class MaintenanceVersionsTests(unittest.TestCase):
                            return_value=crawler) as crawl,
               patch.object(maintenance.check_bridge_version, "check",
                            side_effect=AssertionError("No remote requests")),
+              patch.object(maintenance.check_tunnel_version, "version_report",
+                           return_value={"mode": "read-only"}) as tunnel_checker,
               patch.object(maintenance.subprocess, "run",
                            side_effect=AssertionError("No subprocess"))):
             result = maintenance.report()
         packages.assert_called_once_with()
         local.assert_called_once_with()
         crawl.assert_called_once_with(check_remote=False)
+        tunnel_checker.assert_called_once_with(check_remote=False)
+        self.assertEqual(result["tunnel_client"]["mode"], "read-only")
         self.assertFalse(result["remote_requested"])
         self.assertFalse(result["updates_applied"])
         self.assertFalse(result["downloads_performed"])
@@ -98,11 +102,14 @@ class MaintenanceVersionsTests(unittest.TestCase):
               patch.object(maintenance.check_crawler_versions, "version_report",
                            side_effect=ValueError("private-token")),
               patch.object(maintenance.check_bridge_version, "check",
-                           side_effect=ValueError("private-path"))):
+                           side_effect=ValueError("private-path")),
+              patch.object(maintenance.check_tunnel_version, "version_report",
+                           side_effect=ValueError("secret-token"))):
             result = maintenance.report(check_remote=True)
         self.assertTrue(result["remote_requested"])
         self.assertEqual(result["crawler"]["state"], "unavailable")
         self.assertEqual(result["public_bridge_revision"]["state"], "unavailable")
+        self.assertEqual(result["tunnel_client"]["state"], "unavailable")
         self.assertNotIn("private-token", json.dumps(result))
         self.assertNotIn("private-path", json.dumps(result))
 
