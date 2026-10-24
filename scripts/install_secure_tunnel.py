@@ -242,7 +242,7 @@ def _verify_effective_tunnel_probe() -> None:
                "--property=ExecStartPre", "--value").stdout.strip()
     if len(raw) > 8192:
         raise InstallError("Effective tunnel pre-start commands are too large")
-    entries = re.findall(r"\\{([^{}]*)\\}", raw)
+    entries = re.findall(r"\{([^{}]*)\}", raw)
     # One exact, non-ignored root probe is required. Refuse missing probes,
     # additional commands or unexpected serialization rather than guessing.
     if len(entries) != 1:
