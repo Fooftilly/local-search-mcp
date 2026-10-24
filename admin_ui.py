@@ -21,6 +21,7 @@ import upstream_settings
 import cache_settings
 import history_index
 from web_assets import LIVE_SCRIPT, STYLESHEET
+from web_templates import render_template
 
 HOST='127.0.0.1'
 PORT=int(os.environ.get('LOCAL_SEARCH_MCP_DASHBOARD_PORT','8791'))
@@ -346,55 +347,23 @@ def render(query='', message='', kind='success'):
     audit_html = decision_audit_html(query)
     once_html = once_grants_html(query)
     once_log = once_audit_html(query)
-    return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><link rel="stylesheet" href="/dashboard.css"><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="/status">Service status</a><a href="/settings">History settings</a><a href="/upstream-settings">Upstream timeouts</a><a href="/cache-settings">Cache TTL</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
-<main><h1>Domain approvals</h1><p>Approve or deny domains requested by agents. Changes apply to the next fetch without restarting MCP. The dashboard is accessible only from this computer.</p>{alert}
-<section class="stats"><div class="stat"><span>Awaiting approval</span><b id="live-count-pending">{c['pending']}</b></div><div class="stat"><span>Allowed</span><b id="live-count-allowed">{c['allowed']}</b></div><div class="stat"><span>Denied</span><b id="live-count-denied">{c['denied']}</b></div><div class="stat"><span>Dashboard</span><b style="font-size:14px">127.0.0.1:{PORT}</b></div></section>
-<div class="panel"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="{esc(CSRF)}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><label>Scope <select name="scope"><option value="subdomains">Host + subdomains</option><option value="exact">Exact host only</option></select></label><label>Duration <select name="expires_minutes"><option value="0">Permanent</option><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label><label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Select exact host to exclude subdomains, and optionally set a 1-hour, 24-hour or 7-day expiry. Older rules remain permanent with subdomains. Never approve private-network addresses.</p></div>
-<div class="panel"><h2 style="margin-top:0">Single-use domain permission</h2>
-<p>Allow exactly one standalone fetch after public DNS validation. Does not grant permanent access, cannot be consumed by a batch fetch, and a long-document continuation is part of the same authorization. Denied domains cannot be granted.</p>
-<form method="post" action="/once">
-<input type="hidden" name="csrf" value="{esc(CSRF)}">
-<input name="domain" class="wide" placeholder="example.org" maxlength="253" required aria-label="One-use domain">
-<label>Scope <select name="scope"><option value="exact">Exact host</option><option value="subdomains">Host + subdomains</option></select></label>
-<label>Valid for <select name="expires_minutes"><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label>
-<label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label>
-<button name="action" value="stage" class="allow">Allow once</button></form>
-<p class="subtle">Single-use grants are stored separately from ordinary rules. Replacing or revoking a grant invalidates in-flight one-use content. The private authorization token is never shown or exported.</p>
-{once_html}
-<h2>Recent single-use activity</h2><p class="subtle">Last 25 staging, consumption and revocation events; only URL origins are retained.</p>
-{once_log}</div>
-<div class="row" style="justify-content:space-between"><h2>Requests awaiting review</h2><div><button type="button" id="notification-toggle">Enable desktop notifications</button> <a href="/">Refresh requests</a></div></div>
-<p class="subtle" role="status" id="live-status">Live updates starting · manual refresh works without JavaScript.</p>
-<p class="subtle">Showing at most 200 pending entries (filter to find specific hosts). Agent-created queue entries are limited to {policy.MAX_PENDING_TOTAL} total, {policy.MAX_NEW_PENDING_GLOBAL_PER_HOUR} globally per hour, {policy.MAX_PENDING_PER_SITE} per registrable domain and {policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR} new hosts per site per hour. Manual allow/deny remains available even when the queue is full. Existing entries are never silently removed.</p>
-{table_head}<tbody id="live-pending">{pending or '<tr><td colspan="4">No pending requests.</td></tr>'}</tbody></table></div>
-<div class="panel"><h2 style="margin-top:0">Decide selected pending requests</h2>
-<p>Check up to {policy.MAX_BULK_DECISIONS} requests above. Decisions are atomic: any stale request invalidates the whole selection. Explicit child exceptions are preserved; scope and duration apply to every selection.</p>
-<form id="bulk-form" method="post" action="/bulk">
-<input type="hidden" name="csrf" value="{esc(CSRF)}">
-<label>Scope <select name="scope" required><option value="exact">Exact host only</option><option value="subdomains">Host + subdomains</option></select></label>
-<label>Duration <select name="expires_minutes" required><option value="" selected disabled>Choose duration</option><option value="0">Permanent</option><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label>
-<label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label>
-<button name="action" value="allow" class="allow">Allow selected</button>
-<button name="action" value="deny" class="deny">Deny selected</button>
-</form></div>
-<div class="panel"><h2 style="margin-top:0">Clear pending requests</h2>
-<p>Removes <strong>all pending requests</strong>, including rows not currently shown or matching the filter. Existing allow/deny rules and the rolling-hour admission limits are not affected. Agents may need to retry after the rate limit expires.</p>
-<form method="post" action="/pending/clear"><input type="hidden" name="csrf" value="{esc(CSRF)}"><label for="clear-confirm">Type CLEAR to confirm</label><input id="clear-confirm" name="confirm" placeholder="CLEAR" pattern="CLEAR" maxlength="5" required><button type="submit" class="delete">Clear all pending</button></form>
-</div>
-<div class="row" style="justify-content:space-between"><h2>Allowed and denied domains</h2><form method="get" action="/"><input name="q" value="{query_escaped}" placeholder="Filter by domain"><button type="submit">Filter</button></form></div>
-{table_head}<tbody id="live-decided">{other or '<tr><td colspan="4">No matching domains.</td></tr>'}</tbody></table></div>
-<h2>Recent local decisions</h2>
-<p class="subtle">Only the most recent 25 actions; no page bodies or URL query strings.</p>
-{audit_html}
-<div class="panel"><h2 style="margin-top:0">Portable domain rules (issue #13)</h2>
-<p><a href="/rules/export">Export active explicit allow/deny rules (JSON v1)</a>. Only domain, decision, scope and UTC expiry are included. Pending requests, single-use grants, history, machine paths and credentials are excluded.</p>
-<form method="post" action="/rules/preview" style="display:flex;align-items:flex-start;flex-direction:column">
-<input type="hidden" name="csrf" value="{esc(CSRF)}">
-<label for="rules-json">Paste an exported domain-rules JSON document (up to 48 KB)</label>
-<textarea id="rules-json" name="rule_doc" rows="6" maxlength="48000" required style="width:min(700px,100%);background:#0f141a;color:#e9edf2;border:1px solid #45515f"></textarea>
-<button type="submit">Validate and preview import</button></form>
-<p class="subtle">Imports are atomic, add only missing decisions, and reject conflicting explicit rules. Existing rules, expired grants or a stale preview cannot be silently overwritten. Preview never changes your database. A local confirmation is required before applying.</p></div>
-<div class="panel"><h2 style="margin-top:0">Configuration and safety</h2><p>Search endpoint: <code>127.0.0.1:8888</code> · Crawl endpoint: <code>127.0.0.1:11235</code> · MCP: <code>127.0.0.1:8790/mcp</code> · Dashboard: <code>127.0.0.1:{PORT}</code>.</p><p>Domains are stored in <code>{esc(policy.database_path())}</code>. Your existing credentials stay in the launcher’s private configuration and are not displayed here.</p><p class="small">Unknown domains generate a pending request rather than a Python traceback. Only the user can approve them here; agents cannot invoke a tool to grant access. A domain's DNS is also checked for public addresses before an allowed fetch. Crawl4AI should still be isolated from your local network to guard against redirects and DNS rebinding.</p></div></main></body></html>'''
+    return render_template(
+        "policy",
+        alert=alert, pending_count=c["pending"], allowed_count=c["allowed"],
+        denied_count=c["denied"], dashboard_port=PORT, csrf=esc(CSRF),
+        once_html=once_html, once_log=once_log,
+        max_pending_total=policy.MAX_PENDING_TOTAL,
+        max_pending_global_hour=policy.MAX_NEW_PENDING_GLOBAL_PER_HOUR,
+        max_pending_per_site=policy.MAX_PENDING_PER_SITE,
+        max_pending_site_hour=policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR,
+        table_head=table_head,
+        pending_rows=pending or '<tr><td colspan="4">No pending requests.</td></tr>',
+        max_bulk_decisions=policy.MAX_BULK_DECISIONS,
+        query_escaped=query_escaped,
+        other_rows=other or '<tr><td colspan="4">No matching domains.</td></tr>',
+        audit_html=audit_html,
+        database_path=esc(policy.database_path()),
+    )
 
 
 def history_settings_page(message="", kind="success", submitted=None):
@@ -594,15 +563,17 @@ def history_page(kind="", status="", domain="", hours=0, filter_error=""):
         f'<option value="{n}"{" selected" if hours == n else ""}>{label}</option>'
         for n, label in ((0, "All retained"), (1, "Last hour"),
                          (24, "Last 24 hours"), (168, "Last 7 days")))
-    return f'''<!doctype html><html lang="en" data-live-view="history"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — History</title><link rel="stylesheet" href="/dashboard.css"><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a></nav></header><main><h1>Indexed request history</h1><p>Private metadata from existing rotating JSONL files. Filter by operation, outcome, domain, and rolling UTC time window. Search terms, URL paths, tokens and page content are never copied into the SQLite index.</p>
-<form method="get" action="/history"><label>Operation <select name="kind"><option value="">All</option>{invalid_kind_option}<option value="search"{' selected' if kind == 'search' else ''}>Search</option><option value="fetch"{' selected' if kind == 'fetch' else ''}>Fetch</option><option value="page"{' selected' if kind == 'page' else ''}>Continuation</option></select></label><label>Status <input name="status" value="{esc(status)}" maxlength="48"></label><label>Domain <input name="domain" value="{esc(domain)}" maxlength="253" placeholder="example.org"></label><label>Time <select name="hours">{options}</select></label><button>Filter</button></form>
-{warning}
-{rows}
-<p class="subtle" role="status" id="live-status">Live updates starting · manually reload if needed.</p>
-<h2>Outcome counts and average duration</h2>
-<p class="subtle">The bars summarize all retained matching events in this time window, not just the 25 recent rows.</p>
-<div class="scroll"><table><thead><tr><th>Operation</th><th>Outcome</th><th>Relative volume</th><th>Count</th><th>Average ms</th></tr></thead><tbody id="live-history-summary">{history_summary_html(metrics)}</tbody></table></div>
-<p class="subtle">Indexed entries expire after {esc(retention_label)} days by default (configurable 1–365). JSONL rotation and CLI CSV/JSON export remain unchanged; the index is rebuildable. Search queries may contain private terms in the original JSONL—keep that file private.</p><p><a href="/">Return to domain approvals</a></p></main></body></html>'''
+    return render_template(
+        "history",
+        invalid_kind_option=invalid_kind_option,
+        search_selected=" selected" if kind == "search" else "",
+        fetch_selected=" selected" if kind == "fetch" else "",
+        page_selected=" selected" if kind == "page" else "",
+        status=esc(status), domain=esc(domain), options=options,
+        warning=warning, rows=rows,
+        summary_html=history_summary_html(metrics),
+        retention_label=esc(retention_label),
+    )
 
 
 class Handler(BaseHTTPRequestHandler):
