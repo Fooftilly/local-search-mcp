@@ -216,8 +216,10 @@ def configure_on_demand(*, enabled: bool, idle_minutes: int = 30,
     on_demand_settings.save(**opts)
     if wake_before_disable:
         on_demand_docker.start("searxng", health=on_demand_supervisor._healthy)
-        on_demand_docker.start("crawl4ai", health=on_demand_supervisor._healthy,
-                               crawler_probe=on_demand_supervisor._probe_crawler)
+        on_demand_docker.start(
+            "crawl4ai", health=on_demand_supervisor._healthy,
+            crawler_preflight=on_demand_supervisor._preflight_crawler,
+            crawler_probe=on_demand_supervisor._probe_crawler)
     return opts
 
 
