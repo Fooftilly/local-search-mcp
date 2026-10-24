@@ -1,0 +1,14 @@
+# Managed by local-search-mcp; contains no credentials.
+[Unit]
+Description=On-demand Crawl4AI live egress probe (owner-triggered)
+Documentation=https://github.com/Fooftilly/local-search-mcp/blob/master/docs/EGRESS-SYSTEMD.md
+
+[Service]
+Type=oneshot
+UMask=0077
+# This is a separate oneshot process in the user's systemd manager. The
+# bridge itself retains NoNewPrivileges=true and has no sudo permissions.
+# Only the root-owned fixed probe command is allowed by the optional sudoers
+# rule in docs/EGRESS-SYSTEMD.md. No shell and no operator arguments.
+ExecStart=/usr/bin/sudo -n /usr/bin/python3 /usr/local/libexec/local-search-mcp/crawler_egress_guard.py --container crawl4ai --probe
+TimeoutStartSec=70s
