@@ -80,7 +80,7 @@ class GuardTests(unittest.TestCase):
             self.assertEqual(guard.main(["--preflight"]), 0)
         net.assert_called_once_with("crawl4ai", allow_stopped=True)
         self.assertEqual(cmd.call_args.args[0],
-                         ["nft", "list", "table", "inet", guard.TABLE])
+                         ["nft", "-s", "list", "table", "inet", guard.TABLE])
         for bad in ("", 'table inet ' + guard.TABLE + ' { chain forward {} }'):
             with (patch.object(guard, "network_for",
                                return_value=("crawler-egress", "br-aaaaaaaaaaaa")),
@@ -93,8 +93,9 @@ class GuardTests(unittest.TestCase):
         bridge = 'br-aaaaaaaaaaaa'
         expected = guard.rules(bridge)
         with (patch.object(guard, 'table_exists', return_value=True),
-              patch.object(guard, 'command', return_value=expected)):
+              patch.object(guard, 'command', return_value=expected) as cmd):
             guard.verify_installed(bridge)
+        cmd.assert_called_once_with(['nft', '-s', 'list', 'table', 'inet', guard.TABLE])
 
         tampered = (
             # FORWARD uses stale bridge but INPUT mentions the correct bridge.
