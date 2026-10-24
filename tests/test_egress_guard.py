@@ -23,6 +23,39 @@ def fixture(networks=None, cap=None, privileged=False, members=True, driver='bri
              'Containers':{('c'*64):{}} if members else {}}
     return [container], [network]
 
+def nft_listing(bridge: str) -> str:
+    """Comment-free, stateless nft -s list table shape, not an input rules file.
+
+    Keep this independent of guard.rules(): a generated template includes
+    comments and does not represent the kernel's serialized listing.
+    """
+    # Independent acceptance contract: changes to production BLOCKED_IPV4
+    # must fail this fixture's verification instead of silently weakening it.
+    expected_denied = (
+        '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
+        '169.254.0.0/16', '172.16.0.0/12', '192.0.0.0/24',
+        '192.0.2.0/24', '192.88.99.0/24', '192.168.0.0/16',
+        '198.18.0.0/15', '198.51.100.0/24', '203.0.113.0/24',
+        '224.0.0.0/4', '240.0.0.0/4',
+    )
+    networks = ', '.join(expected_denied)
+    return f'''table inet {guard.TABLE} {{
+    counter blocked_ipv4 {{
+    }}
+    chain block_forward {{
+        type filter hook forward priority -200; policy accept;
+        iifname "{bridge}" ip daddr {{ {networks} }} counter name blocked_ipv4 reject
+        iifname "{bridge}" meta nfproto ipv6 counter reject
+    }}
+    chain block_host {{
+        type filter hook input priority -200; policy accept;
+        iifname "{bridge}" ct state established ct direction reply accept
+        iifname "{bridge}" counter reject
+    }}
+}}
+'''
+
+
 class GuardTests(unittest.TestCase):
     def test_rules_only_act_on_selected_bridge_and_block_ipv6(self):
         """Verify bridge scoping and deny rules for IPv4 and IPv6."""
@@ -71,7 +104,7 @@ class GuardTests(unittest.TestCase):
                 guard.network_for("crawl4ai")
 
     def test_preflight_fails_closed_without_any_docker_exec(self):
-        expected = guard.rules("br-aaaaaaaaaaaa")
+        expected = nft_listing("br-aaaaaaaaaaaa")
         with (patch.object(guard, "network_for",
                            return_value=("crawler-egress", "br-aaaaaaaaaaaa")) as net,
               patch.object(guard, "require_root"),
@@ -80,7 +113,7 @@ class GuardTests(unittest.TestCase):
             self.assertEqual(guard.main(["--preflight"]), 0)
         net.assert_called_once_with("crawl4ai", allow_stopped=True)
         self.assertEqual(cmd.call_args.args[0],
-                         ["nft", "list", "table", "inet", guard.TABLE])
+                         ["nft", "-s", "list", "table", "inet", guard.TABLE])
         for bad in ("", 'table inet ' + guard.TABLE + ' { chain forward {} }'):
             with (patch.object(guard, "network_for",
                                return_value=("crawler-egress", "br-aaaaaaaaaaaa")),
@@ -88,6 +121,40 @@ class GuardTests(unittest.TestCase):
                   patch.object(guard, "table_exists", return_value=True),
                   patch.object(guard, "command", return_value=bad)):
                 self.assertEqual(guard.main(["--preflight"]), 1)
+
+    def test_installed_rules_must_match_both_complete_guarded_chains(self):
+        bridge = 'br-aaaaaaaaaaaa'
+        expected = nft_listing(bridge)
+        with (patch.object(guard, 'table_exists', return_value=True),
+              patch.object(guard, 'command', return_value=expected) as cmd):
+            guard.verify_installed(bridge)
+        cmd.assert_called_once_with(['nft', '-s', 'list', 'table', 'inet', guard.TABLE])
+
+        tampered = (
+            # FORWARD uses stale bridge but INPUT mentions the correct bridge.
+            expected.replace(
+                f'iifname "{bridge}" ip daddr',
+                'iifname "br-bbbbbbbbbbbb" ip daddr'),
+            # A permissive rule before the denial would bypass the guard.
+            expected.replace('chain block_forward {',
+                             'chain block_forward {\n        accept'),
+            expected.replace('192.168.0.0/16', '192.168.0.0/24'),
+            expected.replace('hook forward priority -200',
+                             'hook forward priority 0'),
+            expected.replace(f'iifname "{bridge}" meta nfproto ipv6',
+                             'meta nfproto ipv6'),
+            expected.replace(f'iifname "{bridge}" counter reject',
+                             'iifname "br-bbbbbbbbbbbb" counter reject'),
+            # Dormant tables preserve rules but unregister their base chains.
+            expected.replace(f'table inet {guard.TABLE} {{',
+                             f'table inet {guard.TABLE} {{\n    flags dormant'),
+        )
+        for text in tampered:
+            with (self.subTest(text=text[:80]),
+                  patch.object(guard, 'table_exists', return_value=True),
+                  patch.object(guard, 'command', return_value=text),
+                  self.assertRaises(guard.GuardError)):
+                guard.verify_installed(bridge)
 
     def test_apply_requires_root_before_nft_writes(self):
         """Never call nft to mutate rules without root privileges."""
@@ -207,6 +274,114 @@ class GuardTests(unittest.TestCase):
                     self.assertIn('table inet local_search_mcp_crawler', payload)
                     self.assertNotIn('flush ruleset', payload)
                     self.assertEqual(payload.startswith('delete table inet'), exists)
+
+    def test_bootstrap_fails_closed_when_stopped_firewall_cannot_be_verified(self):
+        """A sleeping crawler permits nft installation, never an unproved pass."""
+        ident = 'c' * 64
+        for good in (True, False):
+            with self.subTest(preflight=good):
+                with (patch.object(guard, 'pin_container_id', return_value=ident) as pin,
+                      patch.object(guard, 'network_for',
+                                   return_value=('crawler-egress', 'br-aaaaaaaaaaaa')) as net,
+                      patch.object(guard, 'require_root'),
+                      patch.object(guard, 'table_exists', return_value=False),
+                      patch.object(guard, 'command', return_value='') as cmd,
+                      patch.object(guard, 'verify_installed',
+                                   side_effect=None if good else guard.GuardError('no hook')) as verify,
+                      patch.object(guard, 'container_running', return_value=False),
+                      patch.object(guard, 'probe') as live):
+                    status = guard.main(['--container', 'crawl4ai', '--startup'])
+                pin.assert_called_once_with('crawl4ai')
+                net.assert_called_once_with(ident, allow_stopped=True)
+                self.assertEqual(status, 0 if good else 1)
+                self.assertEqual(cmd.call_count, 2)
+                self.assertEqual(cmd.call_args_list[0].args[0], ['nft', '-c', '-f', '-'])
+                self.assertEqual(cmd.call_args_list[1].args[0], ['nft', '-f', '-'])
+                verify.assert_called_once_with('br-aaaaaaaaaaaa')
+                live.assert_not_called()
+
+    def test_bootstrap_requires_live_probe_for_running_crawler(self):
+        ident = 'c' * 64
+        with (patch.object(guard, 'pin_container_id', return_value=ident),
+              patch.object(guard, 'network_for',
+                           return_value=('crawler-egress', 'br-aaaaaaaaaaaa')),
+              patch.object(guard, 'require_root'),
+              patch.object(guard, 'table_exists', return_value=False),
+              patch.object(guard, 'command', return_value=''),
+              patch.object(guard, 'verify_installed'),
+              patch.object(guard, 'container_running', return_value=True) as running,
+              patch.object(guard, 'probe', side_effect=guard.GuardError('unsafe')) as live):
+            self.assertEqual(guard.main(['--startup']), 1)
+        running.assert_called_once_with(ident)
+        live.assert_called_once_with(ident, 'crawler-egress')
+
+    def test_tunnel_gate_checks_existing_guard_before_state_and_live_probe(self):
+        ident = 'c' * 64
+        for running, healthy in ((False, True), (True, True), (True, False)):
+            with self.subTest(running=running, healthy=healthy):
+                events = []
+                with (patch.object(guard, 'pin_container_id', return_value=ident) as pin,
+                      patch.object(guard, 'network_for',
+                                   return_value=('crawler-egress', 'br-aaaaaaaaaaaa')) as net,
+                      patch.object(guard, 'require_root'),
+                      patch.object(guard, 'verify_installed',
+                                   side_effect=lambda bridge: events.append('firewall')) as verify,
+                      patch.object(guard, 'container_running',
+                                   side_effect=lambda target: events.append('state') or running) as state,
+                      patch.object(guard, 'command',
+                                   side_effect=AssertionError('No Docker exec or nft writes')),
+                      patch.object(guard, 'probe',
+                                   side_effect=lambda *args: (
+                                       events.append('probe'),
+                                       (_ for _ in ()).throw(guard.GuardError('live failed'))
+                                       if not healthy else None)[1]) as live):
+                    result = guard.main(['--tunnel-gate'])
+                self.assertEqual(result, 0 if healthy else 1)
+                pin.assert_called_once_with('crawl4ai')
+                net.assert_called_once_with(ident, allow_stopped=True)
+                verify.assert_called_once_with('br-aaaaaaaaaaaa')
+                state.assert_called_once_with(ident)
+                self.assertEqual(events, ['firewall', 'state'] + (['probe'] if running else []))
+                if running:
+                    live.assert_called_once_with(ident, 'crawler-egress')
+                else:
+                    live.assert_not_called()
+
+    def test_tunnel_gate_fails_closed_for_missing_firewall_even_if_sleeping(self):
+        with (patch.object(guard, 'pin_container_id', return_value='c' * 64),
+              patch.object(guard, 'network_for',
+                           return_value=('crawler-egress', 'br-aaaaaaaaaaaa')),
+              patch.object(guard, 'require_root'),
+              patch.object(guard, 'verify_installed',
+                           side_effect=guard.GuardError('nft absent')),
+              patch.object(guard, 'container_running') as state,
+              patch.object(guard, 'probe') as live):
+            self.assertEqual(guard.main(['--tunnel-gate']), 1)
+        state.assert_not_called()
+        live.assert_not_called()
+
+    def test_pin_container_id_rejects_unverified_or_replaced_docker_identity(self):
+        for result in ('c' * 64, 'c' * 12, '--privileged', '', 'C' * 64):
+            with (self.subTest(result=result[:12]),
+                  patch.object(guard, 'command', return_value=result)):
+                if result == 'c' * 64:
+                    self.assertEqual(guard.pin_container_id('crawl4ai'), result)
+                else:
+                    with self.assertRaises(guard.GuardError):
+                        guard.pin_container_id('crawl4ai')
+        with (patch.object(guard, 'pin_container_id',
+                           side_effect=guard.GuardError('Docker unavailable')),
+              patch.object(guard, 'network_for') as net):
+            self.assertEqual(guard.main(['--tunnel-gate']), 1)
+        net.assert_not_called()
+
+    def test_live_probe_cannot_fall_back_to_stopped_preflight(self):
+        with (patch.object(guard, 'network_for',
+                           side_effect=guard.GuardError('Crawler must run')),
+              patch.object(guard, 'require_root'),
+              patch.object(guard, 'container_running') as state):
+            self.assertEqual(guard.main(['--probe']), 1)
+        state.assert_not_called()
 
     def test_forward_probe_requires_refusal_and_counter_increase(self):
         """A failed connection alone is not proof that the nft denylist blocked it."""
