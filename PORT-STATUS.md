@@ -15,10 +15,15 @@ dashboard: it requires a reviewed, explicitly authorized container
 reconfiguration and corresponding bridge settings.
 
 The MCP listener is currently fixed to localhost port 8790.
-The dashboard's nominal port is 8791; although the dashboard can be
-configured with `LOCAL_SEARCH_MCP_DASHBOARD_PORT`, the existing health
-monitor expects port 8791 and can otherwise show a misleading failure.
-Do not make port changes without coordinating monitoring.
+The separate `health_cli.py` monitor probes fixed loopback ports:
+**8888 for SearXNG**, **11235 for Crawl4AI**, and **8791 for the dashboard**.
+It does not follow `SEARXNG_URL`, `CRAWL4AI_URL`, or
+`LOCAL_SEARCH_MCP_DASHBOARD_PORT` overrides. Changing a backend connection
+URL and restarting the bridge can therefore leave the MCP tools working
+while the existing health timer incorrectly reports `degraded`. A custom
+dashboard port has the same limitation. Coordinate any nondefault backend
+or dashboard port with an explicit monitoring change before deployment;
+this read-only status page cannot fix the health monitor.
 
 The status panel executes no Docker, systemd, firewall, update or
 configuration-writing command. It retains the same local Host/Origin and
