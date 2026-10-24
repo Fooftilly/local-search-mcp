@@ -18,7 +18,18 @@ from urllib.parse import urlsplit, urlunsplit
 from public_suffix import is_public_suffix, registrable_domain
 from request_cache import invalidate_fetch
 
-UI_URL = "http://127.0.0.1:8791/"
+def approval_dashboard_url() -> str:
+    """Show only a validated loopback port; never interpolate arbitrary URLs."""
+    raw = os.environ.get("LOCAL_SEARCH_MCP_DASHBOARD_PORT", "8791")
+    if not re.fullmatch(r"[0-9]{1,5}", raw):
+        return ""
+    port = int(raw)
+    if not 1 <= port <= 65535:
+        return ""
+    return f"http://127.0.0.1:{port}/"
+
+
+
 SCHEMA_VERSION = 6
 # Fixed safeguards for agent-created pending requests (not explicit rules).
 MAX_PENDING_TOTAL = 512
@@ -1074,11 +1085,11 @@ def evaluate_fetch_url(url: str) -> dict | None:
         return {'success': False, 'status': 'blocked', 'url': shown, 'reason': str(exc)}
     status, matched=request(host, shown)
     if status == 'pending':
-        return {'success':False,'status':'approval_required','url':shown,'domain':host,'rule':matched,'reason':'Domain approval required. A request is waiting in the local dashboard. Ask the user to approve it, then retry this tool call.','approval_dashboard':UI_URL}
+        return {'success':False,'status':'approval_required','url':shown,'domain':host,'rule':matched,'reason':'Domain approval required. A request is waiting in the local dashboard. Ask the user to approve it, then retry this tool call.','approval_dashboard':approval_dashboard_url()}
     if status == 'queue_full':
-        return {'success':False,'status':'approval_queue_full','url':shown,'domain':host,'reason':'Domain was not queued: automatic approval requests are capacity/rate limited. Ask the local user to approve the hostname manually in the dashboard.','approval_dashboard':UI_URL}
+        return {'success':False,'status':'approval_queue_full','url':shown,'domain':host,'reason':'Domain was not queued: automatic approval requests are capacity/rate limited. Ask the local user to approve the hostname manually in the dashboard.','approval_dashboard':approval_dashboard_url()}
     if status == 'denied':
-        return {'success':False,'status':'denied','url':shown,'domain':host,'rule':matched,'reason':'Domain denied in local dashboard. Only the local user can change this decision.','approval_dashboard':UI_URL}
+        return {'success':False,'status':'denied','url':shown,'domain':host,'rule':matched,'reason':'Domain denied in local dashboard. Only the local user can change this decision.','approval_dashboard':approval_dashboard_url()}
     try:
         addresses=socket.getaddrinfo(host, port or (443 if parsed.scheme=='https' else 80), type=socket.SOCK_STREAM)
     except socket.gaierror:
