@@ -91,6 +91,10 @@ class SetupOnDemandTests(unittest.TestCase):
         unit = opted[install_user_services.GUARD_PROBE]
         self.assertIn("--container crawl4ai --probe", unit)
         self.assertNotIn("ExecStart=/bin/sh", unit)
+        self.assertNotIn(install_user_services.GUARD_PREFLIGHT, default)
+        preflight = opted[install_user_services.GUARD_PREFLIGHT]
+        self.assertIn("--container crawl4ai --preflight", preflight)
+        self.assertNotIn("ExecStart=/bin/sh", preflight)
 
     def test_supported_stop_script_help_runs_by_path(self):
         import subprocess
