@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from http.client import HTTPConnection
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -174,7 +175,8 @@ def on_demand_runtime_status() -> dict:
                 for field in ("last_activity_ago_seconds", "next_idle_stop_seconds"):
                     value = row[field]
                     if (value is not None and (
-                            type(value) not in (int, float) or not 0 <= value <= 86400 * 7)):
+                            type(value) not in (int, float) or value < 0
+                            or (type(value) is float and not math.isfinite(value)))):
                         raise ValueError("Invalid backend timer fields")
         return data
     except (OSError, ValueError, TypeError):
