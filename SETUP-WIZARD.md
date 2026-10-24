@@ -160,8 +160,10 @@ No keys or tunnel profiles are exported. No Git fetch/pull, pip/Docker image
 download, other MCP client changes, automatic on-demand Docker operation, or
 live rollback occurs. Installation is idempotent for matching existing files;
 conflicting files fail closed instead of being overwritten. If any step fails,
-**the tunnel stays off unless an operator started it separately**. Previously
-installed firewall rules remain in place.
+the wizard attempts to stop and disable a partially started tunnel, but
+operators **must verify** `systemctl --user is-active local-search-mcp-tunnel.service`
+after any failure before permitting remote access. Previously installed
+firewall rules remain in place.
 
 The firewall service is a boot-time guard, **not a live kill switch**:
 removing nftables rules while the tunnel runs will not revoke the tunnel.
