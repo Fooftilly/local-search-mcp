@@ -206,6 +206,24 @@ class SetupWizardTests(unittest.TestCase):
         self.assertEqual(json.loads(output)["default_client"].split()[0], "ChatGPT")
         self.assertEqual(len(json.loads(output)["actions"]), 13)
 
+    def test_menu_boot_audit_is_read_only(self):
+        from scripts import on_demand_boot_audit
+        sample = {"state": "blocked", "checks": {"root_guard_matches_checkout": False}}
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input", side_effect=["13", "0"]),
+              patch.object(on_demand_boot_audit, "audit", return_value=sample) as auditor,
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("No child process")),
+              patch.object(wizard, "check_report",
+                           side_effect=AssertionError("No health probes")),
+              patch.object(wizard, "docker_status",
+                           side_effect=AssertionError("No extra Docker probing")),
+              contextlib.redirect_stdout(io.StringIO()) as output):
+            self.assertEqual(wizard.main([]), 0)
+        auditor.assert_called_once_with()
+        self.assertIn('"root_guard_matches_checkout": false', output.getvalue())
+
     def test_status_returns_only_allowlisted_service_state(self):
         with (patch.object(wizard, "health",
                            return_value={"status": "unavailable", "checks": {}}),
