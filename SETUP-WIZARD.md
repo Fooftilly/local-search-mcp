@@ -48,18 +48,21 @@ First inspect `claude mcp list` to choose an unused server name, then
 run `claude mcp add --transport http local-search http://127.0.0.1:8790/mcp`
 **manually** in the directory where you want local-scope configuration.
 Verify the connection with `claude mcp list` and `/mcp` inside Claude Code.
-The default CLI scope is per-project; `--scope user` is an explicit choice
-for all projects. The wizard does not run Claude Code, create a Desktop
+The default CLI scope is `local` (private to this directory's Claude Code
+configuration). `--scope project` writes a shared project `.mcp.json`, while
+`--scope user` is a deliberate global choice for all projects. The wizard does not run Claude Code, create a Desktop
 extension or write Claude/Cursor/Hermes configuration files.
 
 Claude.ai, Cowork and Claude Desktop **remote** connectors connect through
 Anthropic's cloud and cannot reach a laptop's `127.0.0.1`. They need a
 separately secured HTTPS MCP endpoint. Local Claude Desktop MCP configuration
 is a different integration not modified by this wizard; never copy the
-OpenAI-only secure tunnel credentials to third-party clients.
+OpenAI-only secure tunnel credentials to third-party clients. If Claude Code
+runs in Docker, a devcontainer or another computer, its `127.0.0.1` is not
+the Arch host's loopback; a separate secured reachable endpoint is required.
 
-Both local clients share the existing bridge, crawler safety guard and optional backend
-idle timer. No new Docker resources are needed.
+All three local clients (Cursor, Claude Code and Hermes) share the
+existing bridge, crawler safety guard and optional backend idle timer. No new Docker resources are needed.
 
 A **remote** Cursor/Grok bot or Docker-containerized Hermes process does
 not reach the Linux host via its own `127.0.0.1`. Never expose loopback MCP
