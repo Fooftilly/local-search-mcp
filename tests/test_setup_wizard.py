@@ -402,6 +402,39 @@ class SetupWizardTests(unittest.TestCase):
             self.assertNotIn("Old pre-activation check", report["next_gates"])
             self.assertNotIn("Potential dedicated deployment", report["reason"])
 
+    def test_live_state_takes_priority_over_lagging_verified_docker_inventory(self):
+        def inventory(state, running, stopped):
+            return {"state": state, "managed_running": running,
+                    "managed_stopped": stopped,
+                    "other_published_crawlers": 0, "unverified_project_containers": 0,
+                    "verified_services": {"crawl4ai": 1, "searxng": 1},
+                    "verified_restart_policies": {
+                        "crawl4ai": "no", "searxng": "no"}}
+
+        def live(crawler, search):
+            return {"mode": "on-demand", "enabled": True, "idle_minutes": 30,
+                    "backends": {"crawl4ai": {"state": crawler},
+                                 "searxng": {"state": search}}}
+
+        cases = (
+            (inventory("stopped", 0, 2), live("running", "running"), "running"),
+            (inventory("running", 2, 0), live("sleeping", "sleeping"), "sleeping"),
+            (inventory("stopped", 0, 2),
+             live("sleeping", "running"), "partially_running"),
+            (inventory("partially_running", 1, 1),
+             live("waking", "running"), "transitioning"),
+        )
+        for docker, activity, expected in cases:
+            with (self.subTest(expected=expected),
+                  patch("scripts.on_demand_settings.read",
+                        return_value={"enabled": True, "idle_minutes": 30}),
+                  patch.object(wizard, "on_demand_runtime_status",
+                               return_value=activity)):
+                report = wizard.on_demand_status(inventory=docker)
+            self.assertEqual(report["state"], expected)
+            self.assertEqual(report["runtime_activity"], activity)
+            self.assertFalse(report["can_activate"])
+
     def test_enabled_mode_never_hides_new_docker_ownership_blocker(self):
         blocked = {"state": "blocked",
                    "reason": "Another crawler publishes this port; never take over",
