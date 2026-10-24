@@ -30,7 +30,7 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("OnUnitActiveSec=2min", units["local-search-mcp-health.timer"])
 
     def test_units_are_rendered_from_version_controlled_templates(self):
-        expected = set(installer.NAMES) | {installer.GUARD_PROBE}
+        expected = set(installer.NAMES) | {installer.GUARD_PROBE, installer.GUARD_PREFLIGHT}
         self.assertEqual({p.name for p in installer.TEMPLATE_DIR.iterdir()
                           if p.is_file()}, expected)
         units = unit_files("/usr/bin/python3", Path("/tmp/demo"),
