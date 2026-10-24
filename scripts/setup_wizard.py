@@ -211,15 +211,18 @@ def configure_on_demand(*, enabled: bool, idle_minutes: int = 30,
                 or not on_demand_supervisor._probe_crawler()):
             raise ValueError("Required local health or live root-owned egress probe failed")
         return on_demand_settings.save(**opts)
-    # Persist OFF first, preventing further supervisor wake attempts. An
-    # optional deliberate wake may still need the fixed egress probe.
-    on_demand_settings.save(**opts)
-    if wake_before_disable:
-        on_demand_docker.start("searxng", health=on_demand_supervisor._healthy)
-        on_demand_docker.start(
-            "crawl4ai", health=on_demand_supervisor._healthy,
-            crawler_preflight=on_demand_supervisor._preflight_crawler,
-            crawler_probe=on_demand_supervisor._probe_crawler)
+    # A running bridge is another process. Wait for any in-progress idle
+    # stop/wake and hold the same lock through OFF persistence and optional
+    # restart; otherwise an already claimed stop could run after the wake.
+    from scripts import on_demand_coordination
+    with on_demand_coordination.exclusive():
+        on_demand_settings.save(**opts)
+        if wake_before_disable:
+            on_demand_docker.start("searxng", health=on_demand_supervisor._healthy)
+            on_demand_docker.start(
+                "crawl4ai", health=on_demand_supervisor._healthy,
+                crawler_preflight=on_demand_supervisor._preflight_crawler,
+                crawler_probe=on_demand_supervisor._probe_crawler)
     return opts
 
 
