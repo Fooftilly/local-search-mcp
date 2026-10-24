@@ -31,6 +31,13 @@ After creating and verifying an archive, run:
 python3 scripts/restore_smoke.py "$HOME/local-search-state-2026.zip"
 ```
 
+Before loading restored data through application readers, the fresh-install smoke
+test now verifies each staged file has identical bytes to the validated archive
+and retains a user-owned regular file with mode `0600`. This includes rotated
+history generations and optional validated settings; any mismatch fails closed.
+This verifies exact **staged** bytes and permissions, not historical index
+retention (which may legitimately exclude expired records).
+
 The smoke command **never overwrites or modifies live state**. It verifies the
 archive, copies only the allowlisted policy and history files into a new private
 temporary XDG state directory, initializes the actual domain-policy reader, and
