@@ -353,11 +353,12 @@ def main(argv: list[str] | None = None) -> int:
                 "The effective tunnel pre-start command is not the exact "
                 "non-ignored root-owned firewall probe.",
         }
-        detail = advice.get(str(exc), "A guarded prerequisite failed; "
-                            "inspect the root firewall, sudoers and user "
-                            "systemd unit without weakening protections") \\
-            if type(exc) is InstallError else "A local setup operation failed; "
-                                               "inspect filesystem and service state"
+        if type(exc) is InstallError:
+            detail = advice.get(str(exc), "A guarded prerequisite failed; "
+                                "inspect the root firewall, sudoers and user "
+                                "systemd unit without weakening protections")
+        else:
+            detail = "A local setup operation failed; inspect filesystem and service state"
         print("Secure tunnel setup incomplete: " + detail +
               ". Check systemctl --user is-active local-search-mcp-tunnel.service; "
               "stop and disable it if protection is uncertain.", file=sys.stderr)
