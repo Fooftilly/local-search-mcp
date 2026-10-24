@@ -398,6 +398,22 @@ def print_local_client_steps(client: str) -> None:
         print("This loopback URL is for Cursor running on THIS HOST only.")
         print("A remote Cursor/Grok cloud bot cannot use 127.0.0.1 on your laptop;")
         print("it needs separately authenticated HTTPS access, not the OpenAI tunnel.")
+    elif client == "claude":
+        print("Claude Code CLI running on THIS HOST (not Claude.ai cloud):")
+        print("Choose an UNUSED MCP name; do not overwrite an existing entry.")
+        print("Inspect current names before adding anything: claude mcp list")
+        print("Local/project-specific registration (run manually):")
+        print("  claude mcp add --transport http local-search " + endpoint)
+        print("Verify via claude mcp list; within Claude Code use /mcp.")
+        print("Default scope is local to this project; if you want it in all")
+        print("Claude Code projects, explicitly choose --scope user yourself.")
+        print("The wizard does not invoke claude, write .mcp.json/.claude.json,")
+        print("or touch existing MCP entries or other agent configurations.")
+        print("The Claude.ai/Claude Desktop REMOTE connector is cloud-brokered")
+        print("and cannot use 127.0.0.1 on your laptop. It requires a separate")
+        print("authenticated HTTPS MCP endpoint, not the OpenAI secure tunnel.")
+        print("Local Claude Desktop config is a separate integration; this")
+        print("wizard offers only Claude Code's supported HTTP CLI method.")
     elif client == "hermes":
         print("Hermes Agent running on THIS HOST:")
         print("Choose an unused MCP server name; local-search is just an example.")
@@ -442,7 +458,7 @@ def dry_run() -> dict:
             {"menu": "11", "effect": "privileged system changes only after confirmation",
              "action": "validate dedicated backends; install fixed egress guard, restricted sudoers and protected ChatGPT tunnel"},
             {"menu": "12", "effect": "read-only",
-             "action": "show optional local Cursor or Hermes HTTP MCP instructions; never edit third-party config"},
+             "action": "show optional local Cursor, Claude Code or Hermes HTTP MCP instructions; never edit third-party config"},
             {"menu": "13", "effect": "read-only",
              "action": "inspect on-demand reboot prerequisites; no sudo, Docker mutation or live firewall probes"},
         ],
@@ -483,7 +499,7 @@ def menu() -> int:
         print("9  Inspect on-demand backend configuration and eligibility")
         print("10 Configure optional on-demand backends (privileged checks)")
         print("11 Install protected ChatGPT tunnel (sudo; explicit confirmation)")
-        print("12 Connect another local MCP client (read-only Cursor/Hermes guidance)")
+        print("12 Connect another local MCP client (Cursor/Claude Code/Hermes guidance)")
         print("13 Audit on-demand reboot prerequisites (read-only)")
         print("0  Exit")
         try:
@@ -538,8 +554,8 @@ def menu() -> int:
             print(json.dumps(on_demand_boot_audit.audit(), indent=2, ensure_ascii=True))
         elif choice == "12":
             try:
-                client = input("Client (cursor/hermes), or enter to cancel: ").strip().lower()
-                if client in ("cursor", "hermes"):
+                client = input("Client (cursor/claude/hermes), or enter to cancel: ").strip().lower()
+                if client in ("cursor", "claude", "hermes"):
                     print_local_client_steps(client)
                 else:
                     print("Cancelled; no client settings changed")
@@ -594,6 +610,7 @@ def make_parser() -> argparse.ArgumentParser:
   ./setup.sh --chatgpt             Read-only manual ChatGPT connector instructions
   ./setup.sh --client cursor       Read-only local Cursor / Grok-in-Cursor MCP instructions
   ./setup.sh --client hermes       Read-only local Hermes Agent MCP instructions
+  ./setup.sh --client claude       Read-only local Claude Code HTTP MCP instructions
   ./setup.sh --docker-status       Read-only verified Compose/Docker ownership inventory
   ./setup.sh --update-status       Read-only LOCAL revision/baseline check; no network fetch
   ./setup.sh --on-demand-status    Read-only Docker ownership/eligibility and configured mode
@@ -623,8 +640,8 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="preview wizard commands and effects without prompts or writes")
     choices.add_argument("--chatgpt", action="store_true",
                          help="show manual ChatGPT/OpenAI tunnel connection steps")
-    choices.add_argument("--client", choices=("cursor", "hermes"),
-                         help="read-only instructions for one optional local HTTP MCP client")
+    choices.add_argument("--client", choices=("cursor", "claude", "hermes"),
+                         help="read-only manual instructions for Cursor, Claude Code or Hermes")
     choices.add_argument("--docker-status", action="store_true",
                          help="read-only Docker ownership audit (pinned local daemon, no changes)")
     choices.add_argument("--update-status", action="store_true",
