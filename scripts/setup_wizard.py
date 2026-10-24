@@ -207,7 +207,9 @@ def check_report() -> dict:
                                    ("fastmcp", "httpx", "idna"))
                            and result["configuration"]["available"]
                            and result["runtime"]["local_health"]["status"] == "healthy"
-                           and docker.get("state") != "unverified")
+                           and docker.get("state") != "unverified"
+                           and type(docker.get("unverified_project_containers", 0)) is int
+                           and docker.get("unverified_project_containers", 0) == 0)
     result["security_note"] = ("Local readiness does not establish remote tunnel "
                                "registration, crawler firewall isolation, or "
                                "ownership of other published Docker endpoints")
