@@ -393,6 +393,26 @@ class SetupWizardTests(unittest.TestCase):
             self.assertNotIn("Old pre-activation check", report["next_gates"])
             self.assertNotIn("Potential dedicated deployment", report["reason"])
 
+    def test_enabled_mode_never_hides_new_docker_ownership_blocker(self):
+        blocked = {"state": "blocked",
+                   "reason": "Another crawler publishes this port; never take over",
+                   "next_gates": ["Resolve foreign crawler ownership"]}
+        live = {"mode": "on-demand", "enabled": True, "idle_minutes": 30,
+                "backends": {"crawl4ai": {"state": "running"},
+                             "searxng": {"state": "running"}}}
+        with (patch("scripts.on_demand_eligibility.eligibility",
+                    return_value=blocked),
+              patch("scripts.on_demand_settings.read",
+                    return_value={"enabled": True, "idle_minutes": 30}),
+              patch.object(wizard, "on_demand_runtime_status", return_value=live)):
+            result = wizard.on_demand_status(
+                inventory={"state": "running", "other_published_crawlers": 1})
+        self.assertTrue(result["enabled"])
+        self.assertEqual(result["state"], "blocked")
+        self.assertEqual(result["reason"], blocked["reason"])
+        self.assertEqual(result["next_gates"], blocked["next_gates"])
+        self.assertEqual(result["runtime_activity"], live)
+
     def test_dry_run_does_not_claim_on_demand_is_unimplemented(self):
         status, output = self.call("--dry-run")
         self.assertEqual(status, 0)
