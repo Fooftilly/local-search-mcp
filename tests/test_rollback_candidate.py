@@ -115,6 +115,34 @@ class RollbackCandidateTests(unittest.TestCase):
             candidate._object(self.root, "--upload-pack=/tmp/evil", "blob", 100)
         self.assertEqual(list(code.rglob("*")), [])
 
+    def test_reused_empty_subtrees_cannot_exhaust_git_object_walk(self):
+        """A shallow fan-out of directories with no blobs must be bounded."""
+        root_oid = "a" * 40
+        empty_oid = "b" * 40
+        children = b"".join(
+            b"40000 sub" + str(i).encode("ascii") + b"\0" +
+            bytes.fromhex(empty_oid) for i in range(candidate.MAX_TREE_VISITS + 2)
+        )
+        queried = []
+
+        def git_object(_root, oid, kind, _limit):
+            queried.append((oid, kind))
+            if kind == "commit":
+                return b"tree " + root_oid.encode("ascii") + b"\nauthor Fixture\n"
+            if oid == root_oid and kind == "tree":
+                return children
+            if oid == empty_oid and kind == "tree":
+                return b""
+            self.fail("Unexpected Git object lookup")
+
+        destination = self.base / "bounded-source"
+        destination.mkdir()
+        with patch.object(candidate, "_object", side_effect=git_object):
+            with self.assertRaisesRegex(ValueError, "Too many Git tree visits"):
+                candidate._copy_git_blobs(self.root, self.target, destination)
+        self.assertLessEqual(len(queried), candidate.MAX_TREE_VISITS + 1)
+        self.assertEqual(list(destination.iterdir()), [])
+
     def test_local_smudge_filter_never_executes_during_staging(self):
         marker = self.base / "filter-triggered"
         command = self.base / "smudge.sh"
