@@ -484,6 +484,10 @@ class SetupWizardTests(unittest.TestCase):
                        for service in ("crawl4ai", "searxng")}}
         cases = (
             (200, healthy, "ok"),
+            (200, {**healthy, "backends": {
+                **healthy["backends"],
+                "crawl4ai": {**healthy["backends"]["crawl4ai"],
+                             "last_activity_ago_seconds": 86400 * 9.5}}}, "ok"),
             (500, {"TOKEN": "SECRET_VALUE"}, "unavailable"),
             (200, {**healthy, "backends": {
                 **healthy["backends"],
@@ -493,6 +497,14 @@ class SetupWizardTests(unittest.TestCase):
                 **healthy["backends"],
                 "searxng": {**healthy["backends"]["searxng"],
                              "active_requests": "SECRET_VALUE"}}}, "unavailable"),
+            (200, {**healthy, "backends": {
+                **healthy["backends"],
+                "searxng": {**healthy["backends"]["searxng"],
+                             "last_activity_ago_seconds": -1}}}, "unavailable"),
+            (200, {**healthy, "backends": {
+                **healthy["backends"],
+                "searxng": {**healthy["backends"]["searxng"],
+                             "last_activity_ago_seconds": float("nan")}}}, "unavailable"),
         )
         for status, payload, outcome in cases:
             with self.subTest(outcome=outcome, status=status):
