@@ -129,7 +129,8 @@ class ScopedDockerTests(unittest.TestCase):
             docker.start("searxng", config_base=self.base,
                          health=lambda _: False,
                          clock=clock, sleep=lambda _: None)
-        self.assertEqual(self.operations, [("searxng", SEARCH, False)])
+        self.assertEqual(self.operations, [("searxng", SEARCH, False),
+                                           ("searxng", SEARCH, True)])
 
 
 if __name__ == "__main__":
