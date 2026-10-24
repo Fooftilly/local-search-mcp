@@ -244,7 +244,24 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((target / "on-demand.json").stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o700)
         self.assertFalse((config / "config.json").is_symlink())
-        self.assertTrue(optional.exists())  # No live config replacement.
+        self.assertEqual(optional.read_bytes(), raw)  # No live config replacement.
+
+    def test_on_demand_minimum_and_maximum_idle_values_are_allowed(self):
+        config = self.base / "on-demand-boundaries"
+        config.mkdir(mode=0o700)
+        settings = config / "on-demand.json"
+        for idle in (1, 1440):
+            with self.subTest(idle_minutes=idle):
+                raw = json.dumps({
+                    "schema": "local-search-mcp/on-demand/v1",
+                    "settings": {"enabled": True, "idle_minutes": idle},
+                }).encode()
+                settings.write_bytes(raw)
+                settings.chmod(0o600)
+                backup.backup(self.archive, state_dir=self.state, config_dir=config)
+                self.assertEqual(backup.verified_payload(self.archive)["on-demand.json"],
+                                 raw)
+                self.archive.unlink()
 
     def test_on_demand_settings_reject_unsafe_types_duplicate_and_secret_fields(self):
         config = self.base / "on-demand-input"
@@ -276,8 +293,7 @@ class BackupTests(unittest.TestCase):
                 self.assertFalse(self.archive.exists())
                 with self.assertRaises(ValueError):
                     backup._verify_nonsecret_setting("on-demand.json", raw)
-        # Existing valid backups cannot be expanded by a crafted settings
-        # entry without schema/manifest verification.
+        # A valid on-demand.json is archived again after the rejected inputs.
         option.write_text(json.dumps(good))
         option.chmod(0o600)
         backup.backup(self.archive, state_dir=self.state, config_dir=config)
