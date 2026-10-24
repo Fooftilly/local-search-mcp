@@ -25,7 +25,7 @@ Operator validation should include inspecting the running Crawl4AI Docker config
 
 ### Optional operator-managed host firewall
 
-[EGRESS-ISOLATION.md](EGRESS-ISOLATION.md) documents a Linux/nftables profile that restricts new crawler-to-host connections and non-global IPv4 destinations for a single dedicated Docker bridge, and blocks IPv6 forwarding. It is opt-in, not a complete browser sandbox: it does not block the crawler's own container loopback, is not persistent across reboot, and requires a live verification on the operator's host. Do **not** treat the script's presence in the repository or a passing unit test as proof of runtime containment.
+[EGRESS-ISOLATION.md](docs/EGRESS-ISOLATION.md) documents a Linux/nftables profile that restricts new crawler-to-host connections and non-global IPv4 destinations for a single dedicated Docker bridge, and blocks IPv6 forwarding. It is opt-in, not a complete browser sandbox: it does not block the crawler's own container loopback, is not persistent across reboot, and requires a live verification on the operator's host. Do **not** treat the script's presence in the repository or a passing unit test as proof of runtime containment.
 
 ## Domain approval
 

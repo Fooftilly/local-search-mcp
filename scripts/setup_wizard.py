@@ -257,7 +257,7 @@ def menu() -> int:
         elif choice == "6":
             print("No automatic Git fetch, pull, image download, pip install or restart.")
             print("Review the worktree and deployment rollback gates in")
-            print("DEPENDENCY-UPDATES.md, BACKUP.md, and SYSTEMD.md.")
+            print("docs/DEPENDENCY-UPDATES.md, BACKUP.md, and docs/SYSTEMD.md.")
             print("Use existing explicit update procedures outside this wizard.")
         elif choice in actions:
             word, command = actions[choice]
