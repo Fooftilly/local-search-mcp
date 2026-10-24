@@ -15,7 +15,7 @@ import threading
 import time
 from typing import Iterator
 
-from crawler_security import verify_health
+from crawler_security import verify_health, local_container_warning
 from health_cli import get_json, searxng_ok
 from scripts import on_demand_docker as docker
 from scripts import on_demand_settings as settings
@@ -34,6 +34,9 @@ def _healthy(service: str) -> bool:
     if service == "searxng":
         return searxng_ok()
     try:
+        # Recheck unsafe settings after a cold start, not only at bridge import.
+        if local_container_warning():
+            return False
         return verify_health(get_json(11235, "/health")) is None
     except (OSError, ValueError, TypeError, HTTPException):
         return False
