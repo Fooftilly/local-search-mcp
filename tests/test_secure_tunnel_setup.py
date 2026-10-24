@@ -127,28 +127,33 @@ class SecureTunnelSetupTests(unittest.TestCase):
               self.assertRaisesRegex(secure.InstallError, "writable")):
             secure._root_parent_safety(secure.ROOT_GUARD)
 
-    def test_numeric_metadata_ignores_non_english_locale(self):
-        with patch.dict(os.environ, {"LC_ALL": "fr_FR.UTF-8", "LANG": "fr_FR.UTF-8"}):
-            # Numeric stat output is locale-invariant: 040755 directory,
-            # 100755 regular file and 100440 sudoers file.
-            responses = {
-                secure.ROOT_GUARD: "0:0:81ed",
-                secure.SUDOERS: "0:0:8120",
-            }
+    def test_numeric_stat_format_is_locale_independent(self):
+        # Mocked metadata cannot prove installed locale support; instead
+        # assert every privileged stat uses untranslated numeric type/mode.
+        responses = {
+            secure.ROOT_GUARD: "0:0:81ed",
+            secure.SUDOERS: "0:0:8120",
+        }
 
-            def check(*args, **_kwargs):
-                if args[0] == "stat":
-                    return subprocess.CompletedProcess(
-                        args, 0, responses.get(Path(args[-1]), "0:0:41ed"), "")
-                if args[0] == "cat":
-                    return subprocess.CompletedProcess(args, 0, secure._sudoers_line(), "")
-                return subprocess.CompletedProcess(args, 0, "", "")
+        def check(*args, **_kwargs):
+            if args[0] == "stat":
+                self.assertEqual(args[1:3], ("-c", "%u:%g:%f"))
+                return subprocess.CompletedProcess(
+                    args, 0, responses.get(Path(args[-1]), "0:0:41ed"), "")
+            if args[0] == "cat":
+                return subprocess.CompletedProcess(args, 0, secure._sudoers_line(), "")
+            return subprocess.CompletedProcess(args, 0, "", "")
 
-            with (patch.object(secure, "_sudo", side_effect=check),
-                  patch.object(secure, "_existing_root", return_value=True)):
-                secure._root_parent_safety(secure.ROOT_GUARD)
-                self.assertEqual(secure._root_mode(secure.ROOT_GUARD), 0o100755)
-                secure._install_sudoers()
+        with (patch.object(secure, "_sudo", side_effect=check) as privileged,
+              patch.object(secure, "_existing_root", return_value=True)):
+            secure._root_parent_safety(secure.ROOT_GUARD)
+            self.assertEqual(secure._root_mode(secure.ROOT_GUARD), 0o100755)
+            secure._install_sudoers()
+        stat_calls = [c.args for c in privileged.call_args_list
+                      if c.args[0] == "stat"]
+        self.assertGreaterEqual(len(stat_calls), 3)
+        self.assertTrue(all(call[1:3] == ("-c", "%u:%g:%f")
+                            for call in stat_calls))
 
     def test_numeric_metadata_rejects_unsafe_modes_and_wrong_types(self):
         cases = [
@@ -190,6 +195,47 @@ class SecureTunnelSetupTests(unittest.TestCase):
                 secure.install()
         self.assertIn(("systemctl", "--user", "disable", "--now",
                        secure.USER_TUNNEL), commands)
+
+    def test_cleanup_failure_warns_and_preserves_original_error(self):
+        import contextlib
+        import io
+        for shutdown_failure in ("nonzero", "exception"):
+            with self.subTest(shutdown_failure=shutdown_failure):
+                commands = []
+
+                def systemctl(*args, **_kwargs):
+                    commands.append(args)
+                    if args[:4] == ("systemctl", "--user", "disable", "--now"):
+                        if shutdown_failure == "exception":
+                            raise secure.InstallError("disable command unavailable")
+                        return subprocess.CompletedProcess(args, 1, "", "failure")
+                    if (args[:4] == ("systemctl", "--user", "enable", "--now")
+                            and secure.USER_TUNNEL in args):
+                        raise secure.InstallError("mock partial tunnel start")
+                    return subprocess.CompletedProcess(
+                        args, 0,
+                        "inactive" if "is-active" in args else
+                        "LoadState=loaded" if "show" in args else
+                        "ExecStartPre=+/usr/bin/sudo -n /usr/bin/python3"
+                        if "cat" in args else "", "")
+
+                stderr = io.StringIO()
+                with (patch.object(secure, "preview", return_value=self.inventory()),
+                      patch.object(secure, "_run", side_effect=systemctl),
+                      patch.object(secure, "_sudo",
+                                   return_value=subprocess.CompletedProcess(
+                                       [], 0, "active", "")),
+                      patch.object(secure, "_install_root_file"),
+                      patch.object(secure, "_install_sudoers"),
+                      patch.object(secure, "_install_user_dropin"),
+                      contextlib.redirect_stderr(stderr),
+                      self.assertRaisesRegex(secure.InstallError, "mock partial")):
+                    secure.install()
+                self.assertIn("WARNING: automatic tunnel shutdown failed",
+                              stderr.getvalue())
+                self.assertIn("systemctl --user is-active", stderr.getvalue())
+                self.assertIn(("systemctl", "--user", "disable", "--now",
+                               secure.USER_TUNNEL), commands)
 
     def test_ctrl_c_during_tunnel_start_disables_partial_activation(self):
         commands = []
