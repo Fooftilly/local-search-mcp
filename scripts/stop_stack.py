@@ -11,12 +11,12 @@ import subprocess
 import sys
 
 if __package__:
-    from . import on_demand_settings
+    from . import on_demand_settings, on_demand_coordination
 else:
     # stop.sh intentionally launches this script by path, placing only
     # scripts/ on sys.path. Restore the repository root for package imports.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from scripts import on_demand_settings
+    from scripts import on_demand_settings, on_demand_coordination
 
 PROJECT = "local-search-crawler"
 ROOT_GUARD = "local-search-mcp-crawler-egress.service"
@@ -55,11 +55,12 @@ class Stop:
     def inhibit_on_demand(self) -> None:
         """Disarm future wake before stopping any bridge/tunnel services."""
         try:
-            saved = on_demand_settings.read()
-            if saved["enabled"]:
-                on_demand_settings.save(enabled=False,
-                                        idle_minutes=saved["idle_minutes"])
-                print("On-demand wake: disabled before full stop")
+            with on_demand_coordination.exclusive():
+                saved = on_demand_settings.read()
+                if saved["enabled"]:
+                    on_demand_settings.save(enabled=False,
+                                            idle_minutes=saved["idle_minutes"])
+                    print("On-demand wake: disabled before full stop")
         except (OSError, ValueError):
             self.error("On-demand wake suppression could not be verified")
 
