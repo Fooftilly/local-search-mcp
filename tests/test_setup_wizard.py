@@ -543,7 +543,7 @@ class SetupWizardTests(unittest.TestCase):
 
     def test_optional_client_guides_are_read_only_and_local_only(self):
         for client, hints in (
-            ("cursor", ("~/.cursor/mcp.json", '"mcpServers"', "Grok",
+            ("cursor", ("~/.cursor/mcp.json", "mcpServers", "Grok",
                         "http://127.0.0.1:8790/mcp", "cloud bot")),
             ("hermes", ("hermes mcp add local-search --url",
                         "hermes mcp test local-search", "/reload-mcp",
@@ -561,6 +561,10 @@ class SetupWizardTests(unittest.TestCase):
                 self.assertIn(hint, output)
             self.assertIn("No client configuration", output)
             self.assertNotIn("Authorization: Bearer", output)
+            self.assertIn("unused", output)
+            if client == "cursor":
+                self.assertNotIn('"mcpServers": {', output)
+                self.assertIn('"local-search": {', output)
 
     def test_only_one_client_can_be_selected(self):
         with self.assertRaises(SystemExit):
