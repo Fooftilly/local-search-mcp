@@ -24,6 +24,7 @@ import cache_settings
 import upstream_settings
 from search_results import enrich_search_results
 from batch_fetch import fetch_many
+from scripts import on_demand_supervisor as on_demand
 
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://127.0.0.1:8888").rstrip("/")
 CRAWL4AI_URL = os.getenv("CRAWL4AI_URL", "http://127.0.0.1:11235").rstrip("/")
@@ -144,6 +145,19 @@ def _upstream_error(response, backend: str) -> dict:
 def _run_search(params: dict, max_results: int, *,
                 deduplicate: bool = False,
                 ranking: str = "searxng") -> list[dict] | dict:
+    try:
+        with on_demand.lease("searxng"):
+            return _run_search_network(params, max_results, deduplicate=deduplicate,
+                                       ranking=ranking)
+    except on_demand.BackendUnavailable:
+        return {"success": False, "status": "upstream_unavailable",
+                "backend": "searxng",
+                "reason": "On-demand search backend unavailable; check Docker ownership and setup, then retry."}
+
+
+def _run_search_network(params: dict, max_results: int, *,
+                        deduplicate: bool = False,
+                        ranking: str = "searxng") -> list[dict] | dict:
     with httpx.Client(timeout=upstream_settings.effective_timeout("searxng_seconds"),
                       trust_env=False) as client:
         response = _retry_request(lambda: client.get(
@@ -255,6 +269,16 @@ def _crawl_metadata(page: dict, final_url: str) -> dict:
 
 def _run_fetch(url: str, mode: str, *,
                once_proof: tuple[str, str] | None = None) -> dict:
+    try:
+        with on_demand.lease("crawl4ai"):
+            return _run_fetch_network(url, mode, once_proof=once_proof)
+    except on_demand.BackendUnavailable:
+        return {"url": url, "success": False, "status": "upstream_unavailable",
+                "reason": "On-demand crawler unavailable; verify Docker ownership and the live egress probe, then retry."}
+
+
+def _run_fetch_network(url: str, mode: str, *,
+                       once_proof: tuple[str, str] | None = None) -> dict:
     """Crawl only after the caller has passed current local policy checks."""
     headers = {"Authorization": f"Bearer {CRAWL4AI_TOKEN}"} if CRAWL4AI_TOKEN else {}
     crawler_params = {"stream": False}
