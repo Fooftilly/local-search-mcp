@@ -520,7 +520,7 @@ class SetupWizardTests(unittest.TestCase):
                         "Origin": "http://127.0.0.1:8791"})
                 connection.close.assert_called_once_with()
                 if outcome == "ok":
-                    self.assertEqual(report, healthy)
+                    self.assertEqual(report, payload)
                 else:
                     self.assertEqual(report["state"], "unavailable")
                     self.assertNotIn("SECRET_VALUE", json.dumps(report))
