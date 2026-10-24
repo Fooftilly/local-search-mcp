@@ -563,7 +563,8 @@ class SetupWizardTests(unittest.TestCase):
             self.assertNotIn("Authorization: Bearer", output)
             self.assertIn("unused", output)
             if client == "cursor":
-                self.assertNotIn('"mcpServers": {', output)
+                self.assertIn('{"mcpServers": {}}', output)
+                self.assertIn('If mcpServers is missing', output)
                 self.assertIn('"local-search": {', output)
 
     def test_only_one_client_can_be_selected(self):
