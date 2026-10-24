@@ -30,6 +30,9 @@ else:
 ROOT = Path(__file__).resolve().parents[1]
 MAX_TOTAL_SOURCE = 128 * 1024 * 1024
 MAX_FILES = 4000
+# Bound even pathological Git trees reusing empty subtrees (no blobs).
+MAX_TREE_VISITS = 512
+MAX_TREE_ENTRIES = MAX_FILES + MAX_TREE_VISITS
 MAX_INDIVIDUAL = 32 * 1024 * 1024
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
@@ -143,9 +146,14 @@ def _copy_git_blobs(root: Path, target: str, destination: Path) -> int:
     hash_bytes = len(tree_oid) // 2
     count = 0
     total = 0
+    tree_visits = 0
+    examined_entries = 0
 
     def walk(tree: str, path: tuple[str, ...], depth: int) -> None:
-        nonlocal count, total
+        nonlocal count, total, tree_visits, examined_entries
+        tree_visits += 1
+        if tree_visits > MAX_TREE_VISITS:
+            raise ValueError("Too many Git tree visits in rollback source")
         if depth > 24:
             raise ValueError("Tracked source tree is too deep")
         tree_bytes = _object(root, tree, "tree", 512_000)
@@ -155,6 +163,9 @@ def _copy_git_blobs(root: Path, target: str, destination: Path) -> int:
             if name in seen:
                 raise ValueError("Duplicate tracked source entry")
             seen.add(name)
+            examined_entries += 1
+            if examined_entries > MAX_TREE_ENTRIES:
+                raise ValueError("Too many tracked Git tree entries")
             parts = (*path, name)
             if kind == "tree":
                 walk(oid, parts, depth + 1)
