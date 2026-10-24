@@ -180,16 +180,34 @@ def check_report() -> dict:
         "configuration": configured_sources(),
         "runtime": status_report(),
     }
-    # A healthy listener is not sufficient if the project interpreter is
-    # missing or its three required direct packages are unavailable.
+    # A healthy listener is not proof that the correct, owned backends are
+    # running: a shared/foreign crawler or unavailable Docker can otherwise
+    # turn a status probe into a misleading "ready" result.
+    docker = result["runtime"].get("docker_project", {})
+    services = docker.get("verified_services", {})
+    owned_pair = (type(services) is dict
+                  and set(services) == {"crawl4ai", "searxng"}
+                  and all(type(services[s]) is int and services[s] == 1
+                          for s in ("crawl4ai", "searxng")))
+    docker_ready = bool(
+        docker.get("state") == "running"
+        and type(docker.get("managed_running")) is int
+        and docker["managed_running"] == 2
+        and type(docker.get("managed_stopped")) is int
+        and docker["managed_stopped"] == 0
+        and type(docker.get("unverified_project_containers")) is int
+        and docker["unverified_project_containers"] == 0
+        and type(docker.get("other_published_crawlers")) is int
+        and docker["other_published_crawlers"] == 0
+        and owned_pair)
+    result["docker_ready"] = docker_ready
     result["ready"] = bool(result["python_compatible"]
                            and dependencies["state"] == "available"
                            and all(installed.get(name) for name in
                                    ("fastmcp", "httpx", "idna"))
                            and result["configuration"]["available"]
                            and result["runtime"]["local_health"]["status"] == "healthy"
-                           and result["runtime"].get("docker_project", {}).get("state")
-                           != "unverified")
+                           and docker_ready)
     result["security_note"] = ("Local readiness does not establish remote tunnel "
                                "registration, crawler firewall isolation, or "
                                "ownership of other published Docker endpoints")
