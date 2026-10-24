@@ -117,9 +117,11 @@ before manually enabling services. No automatic upgrade or rollback occurs.
 
 ## On-demand idle preferences in offline backups
 
-When the private config directory contains `on-demand.json`, backups now
-include that **nonsecret, versioned** document alongside history, upstream
-timeout and cache TTL preferences. Only `enabled` (a strict boolean) and
+When the default private config directory contains `on-demand.json`,
+backups now include that **nonsecret, versioned** document alongside history,
+upstream timeout and cache TTL preferences. For an explicit `--state-dir`,
+the caller must also provide `--config-dir` to include any settings;
+`--state-dir` alone never reads the operator's default configuration. Only `enabled` (a strict boolean) and
 `idle_minutes` (a strict integer from 1 through 1440) are permitted. Unknown
 keys, duplicate JSON members, symlinks, unsafe permissions and malformed
 fields abort the backup rather than copying possible credentials or an
