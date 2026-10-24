@@ -145,3 +145,50 @@ dependencies, check version-specific migration/restore requirements, and use
 a separately reviewed operator-controlled recovery procedure. Do not
 automatically swap a live database based only on this result. Full rollback
 implementation remains tracked under issue #15.
+
+## Prepare a reversible rollback candidate without touching live services
+
+The optional `rollback_candidate.py` command builds on the existing offline
+ancestor/backup preflight. It verifies that the requested full commit is a
+*local ancestor* of a clean current checkout, validates your **private**
+backup, and runs the current application's isolated fresh-install smoke test.
+
+First run its **read-only** checks:
+
+```sh
+python3 scripts/rollback_candidate.py --target YOUR_FULL_LOCAL_COMMIT_SHA --archive "$HOME/local-search-state-2026.zip"
+```
+
+If that succeeds, make a **new** private destination under an existing
+owner-only `0700` parent (the destination itself must not exist):
+
+```sh
+python3 scripts/rollback_candidate.py --target YOUR_FULL_LOCAL_COMMIT_SHA --archive "$HOME/local-search-state-2026.zip" --destination "$HOME/.local/state/rollback-candidate-1" --confirm STAGE
+```
+
+The command copies only the target's locally available *tracked source files*
+into `source/` using a bounded Git tar archive, rejecting archived symlinks,
+path traversal, duplicates and non-regular entries. It never runs the older
+code or installs dependencies. The independently verified recovery data goes
+to `state/` through the same no-clobber owner-only restore mechanism used
+elsewhere. An owner-only `candidate.json` records exact source/target
+commits, file counts and the explicit `ready_for_live_use: false` flag.
+No launcher credential, tunnel profile, `.venv`, live checkout file, Git HEAD,
+service, daemon, Docker container or auto-restart baseline is modified.
+Incomplete staging is removed on errors; an existing candidate is never
+overwritten.
+
+**Staging is NOT activating a working rollback.** An older revision can need
+different dependency versions, state schemas, tunnel binaries, configuration
+and service files; current-reader smoke tests cannot certify old-reader
+compatibility. Review the staged source and release differences, prepare a
+*separate* virtual environment, and test its operation and restored policy
+privately. Disable the Git restart watcher and stop the affected services
+*before* any future reviewed activation or live-state swap. Preserve the
+original checkout, archive and rollback candidate so manual recovery can
+return to the previous revision if validation fails. Do not perform a blind
+`git reset --hard`, replace current state in place, or assume a clean
+preflight authorizes a live deployment.
+
+Issue #15 remains open until a controlled and operator-tested activation,
+failure rollback and restart procedure has been validated on a real host.
