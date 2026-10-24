@@ -331,6 +331,8 @@ def dry_run() -> dict:
              "action": "verify ownership of private Compose project; flag foreign published crawlers"},
             {"menu": "9", "effect": "read-only",
              "action": "preview optional on-demand eligibility; never enable, sleep or wake"},
+            {"menu": "11", "effect": "privileged system changes only after confirmation",
+             "action": "validate dedicated backends; install fixed egress guard, restricted sudoers and protected ChatGPT tunnel"},
         ],
         "future": "Issue #75 optional 30-minute backend sleep is not implemented; off by default",
     }
@@ -368,6 +370,7 @@ def menu() -> int:
         print("8  Inspect Docker ownership (read-only; no stop/restart)")
         print("9  Inspect on-demand backend configuration and eligibility")
         print("10 Configure optional on-demand backends (privileged checks)")
+        print("11 Install protected ChatGPT tunnel (sudo; explicit confirmation)")
         print("0  Exit")
         try:
             choice = input("Choose: ").strip()
@@ -416,6 +419,15 @@ def menu() -> int:
             except (ValueError, OSError, EOFError, KeyboardInterrupt) as exc:
                 print("On-demand change was not fully applied: " +
                       type(exc).__name__ + "; inspect status before retrying")
+        elif choice == "11":
+            if run_existing("scripts/install_secure_tunnel.py") != 0:
+                print("Dedicated backend check failed; no privileged installation attempted.")
+            elif confirm("SECURE"):
+                code = run_existing("scripts/install_secure_tunnel.py",
+                                    "--install", "--confirm", "SECURE")
+                print("Secure tunnel setup exited with status " + str(code))
+            else:
+                print("Cancelled; no privileged installation attempted")
         elif choice == "6":
             print(json.dumps(local_update_status(), indent=2, ensure_ascii=True))
             print("No automatic Git fetch, pull, image download, pip install or restart.")
@@ -457,6 +469,10 @@ def make_parser() -> argparse.ArgumentParser:
   ./setup.sh --docker-status       Read-only verified Compose/Docker ownership inventory
   ./setup.sh --update-status       Read-only LOCAL revision/baseline check; no network fetch
   ./setup.sh --on-demand-status    Read-only Docker ownership/eligibility and configured mode
+  ./setup.sh --secure-tunnel-preview
+                                  Read-only preview of guarded production tunnel setup
+  ./setup.sh --secure-tunnel --confirm-secure-tunnel SECURE
+                                  Install root-owned firewall, restricted sudoers, protected tunnel
   ./setup.sh --on-demand-enable --idle-minutes 30 --confirm-on-demand ENABLE
                                   Explicit validated opt-in with root-owned egress probe
   ./setup.sh --on-demand-disable --confirm-on-demand DISABLE
@@ -484,6 +500,10 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="inspect local Git update baseline; never fetch/pull/restart")
     choices.add_argument("--on-demand-status", action="store_true",
                          help="preview disabled on-demand mode; never sleep/wake or reconfigure")
+    choices.add_argument("--secure-tunnel-preview", action="store_true",
+                         help="read-only preview of production firewall/tunnel setup")
+    choices.add_argument("--secure-tunnel", action="store_true",
+                         help="install reviewed root guard, restricted probe and protected ChatGPT tunnel")
     choices.add_argument("--on-demand-enable", action="store_true",
                          help="explicitly enable verified managed backends only")
     choices.add_argument("--on-demand-disable", action="store_true",
@@ -493,11 +513,26 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
     parser.add_argument("--wake-before-disable", action="store_true")
     parser.add_argument("--confirm-on-demand", choices=("ENABLE", "DISABLE"),
                         help="explicit confirmation required for noninteractive changes")
+    parser.add_argument("--confirm-secure-tunnel", choices=("SECURE",),
+                        help="explicit acknowledgement for privileged tunnel installation")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = make_parser().parse_args(argv)
+    if args.secure_tunnel or args.secure_tunnel_preview:
+        if args.confirm_on_demand is not None or args.wake_before_disable:
+            raise SystemExit("Unrelated on-demand options cannot be combined with tunnel setup")
+        if args.secure_tunnel and args.confirm_secure_tunnel != "SECURE":
+            raise SystemExit("Explicit --confirm-secure-tunnel SECURE required")
+        if args.secure_tunnel_preview and args.confirm_secure_tunnel is not None:
+            raise SystemExit("Preview does not accept confirmation flags")
+        if os.geteuid() == 0:
+            raise SystemExit("Run setup as the normal user")
+        return run_existing("scripts/install_secure_tunnel.py", *(
+            ("--install", "--confirm", "SECURE") if args.secure_tunnel else ()))
+    if args.confirm_secure_tunnel is not None:
+        raise SystemExit("--confirm-secure-tunnel requires --secure-tunnel")
     if args.on_demand_enable or args.on_demand_disable:
         expected = "ENABLE" if args.on_demand_enable else "DISABLE"
         if (args.confirm_on_demand != expected
