@@ -4,6 +4,11 @@ on:
   pull_request:
 permissions:
   contents: read
+# Superseded PR commits should not generate duplicate check runs.
+# Keep push and pull_request groups distinct so master checks are not cancelled.
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   python:
     runs-on: ubuntu-latest
