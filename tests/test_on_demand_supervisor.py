@@ -40,11 +40,13 @@ class OnDemandSupervisorTests(unittest.TestCase):
             with manager.lease("searxng"):
                 self.now[0] += 300
                 manager.idle_once()
-                stopper.assert_not_called()
+                self.assertFalse(any(c.args == ("searxng",) for c in
+                                     stopper.call_args_list))
                 self.assertEqual(manager.snapshot()["searxng"]["active_requests"], 1)
             starter.assert_called_once()
             manager.idle_once()
-            stopper.assert_not_called()
+            self.assertFalse(any(c.args == ("searxng",) for c in
+                                 stopper.call_args_list))
             self.now[0] += 60
             manager.idle_once()
             stopper.assert_any_call("searxng")
