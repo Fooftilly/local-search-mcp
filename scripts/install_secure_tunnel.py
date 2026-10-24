@@ -288,7 +288,8 @@ def install() -> None:
     _install_user_dropin()
     _run("systemctl", "--user", "daemon-reload")
     _verify_effective_tunnel_probe()
-    # Only after the root-owned tunnel gate succeeds may the tunnel start.\n    # A sleeping crawler is live-probed by the on-demand supervisor on wake.
+    # Only after the root-owned tunnel gate succeeds may the tunnel start.
+    # A sleeping crawler is live-probed by the on-demand supervisor on wake.
     try:
         _run("systemctl", "--user", "enable", "--now", USER_TUNNEL, timeout=180)
         active = _run("systemctl", "--user", "is-active", USER_TUNNEL)
