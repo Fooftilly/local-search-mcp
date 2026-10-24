@@ -282,7 +282,8 @@ def check_report() -> dict:
                            and all(installed.get(name) for name in
                                    ("fastmcp", "httpx", "idna"))
                            and result["configuration"]["available"]
-                           and result["runtime"]["local_health"]["status"] == "healthy"
+                           and result["runtime"]["local_health"]["status"]
+                           in ("healthy", "sleeping")
                            and docker.get("state") != "unverified"
                            and type(docker.get("unverified_project_containers", 0)) is int
                            and docker.get("unverified_project_containers", 0) == 0)
