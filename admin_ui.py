@@ -20,7 +20,7 @@ import safe_settings
 import upstream_settings
 import cache_settings
 import history_index
-from dashboard_live_script import LIVE_SCRIPT
+from web_assets import LIVE_SCRIPT, STYLESHEET
 
 HOST='127.0.0.1'
 PORT=int(os.environ.get('LOCAL_SEARCH_MCP_DASHBOARD_PORT','8791'))
@@ -31,13 +31,8 @@ _LAST_LIVE_SNAPSHOT_US = 0
 # moves backward. The browser rejects delayed responses from retired runs.
 _LIVE_SNAPSHOT_RUN = secrets.token_hex(16)
 
-CSS="""
-:root{color-scheme:dark;font-family:Inter,system-ui,-apple-system,sans-serif;background:#101318;color:#e9edf2;font-size:14px}
-*{box-sizing:border-box}body{margin:0}a{color:#9bc8ff}header{border-bottom:1px solid #343b44;padding:17px max(22px,calc((100vw - 1150px)/2));display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
-.brand{font-weight:700;letter-spacing:.02em;font-size:16px}main{max-width:1150px;margin:auto;padding:26px 22px 70px}h1{font-size:26px;margin:0 0 8px}h2{font-size:18px;margin:24px 0 10px}p{line-height:1.45;color:#b5bfcd}.subtle{color:#99a6b6;font-size:12px}nav a{margin-left:16px;text-decoration:none}
-.stats{display:flex;flex-wrap:wrap;gap:10px;margin:23px 0}.stat{background:#1a2028;border:1px solid #343b44;padding:14px 18px;min-width:152px;flex:1}.stat b{font-size:25px;display:block;margin-top:7px}.stat span{font-size:12px;color:#b2bdcb}
-.panel{border:1px solid #343b44;background:#151a21;padding:18px 20px;margin:18px 0}input{padding:9px 10px;color:#e9edf2;background:#0f141a;border:1px solid #45515f;border-radius:3px;min-width:0}input:focus{outline:2px solid #80aef0}button{padding:8px 11px;background:#253245;border:1px solid #506076;color:#eff5fd;cursor:pointer;border-radius:3px;white-space:nowrap}button:hover{background:#34475e}button.allow{background:#214b38;border-color:#3c8064}button.deny{background:#613531;border-color:#aa6157}button.delete{background:transparent}form{display:inline-flex;gap:6px;flex-wrap:wrap;align-items:center}.wide{width:min(500px,80vw)}.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:middle;border-bottom:1px solid #323b47;padding:10px 10px}th{font-size:12px;font-weight:600;color:#aab5c3}td{font-size:13px}td.domain{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}tbody tr:hover{background:#1b232d}.pill{display:inline-block;border-radius:3px;border:1px solid #586274;padding:4px 6px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.03em}.pending{color:#ffca82;border-color:#805b2f}.allowed{color:#97e4b8;border-color:#427957}.denied{color:#f8a3a3;border-color:#884444}.actions{min-width:240px}.scroll{overflow-x:auto}.alert{padding:12px;border:1px solid #7c6640;background:#3a3020}.error{border-color:#954945;background:#442626}.success{border-color:#3b7c5d;background:#21362c}code{color:#cee1fa} .small{font-size:12px} .history{font-family:ui-monospace,monospace;font-size:12px}
-"""
+# Browser CSS is a fixed, same-origin asset under web/static.
+
 
 
 def esc(value): return html.escape(str(value), quote=True)
@@ -331,7 +326,7 @@ def import_preview_html(plan: dict) -> str:
               '<p>No changes can be applied from this preview.</p>')
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="referrer" content="no-referrer"><title>Rule import preview</title>'
-            f'<style>{CSS}</style></head><body><main><h1>Domain rule import preview</h1>'
+            f'<link rel="stylesheet" href="/dashboard.css"></head><body><main><h1>Domain rule import preview</h1>'
             f'<p>New: {len(plan["add"])} · Unchanged: {len(plan["unchanged"])}'
             f' · Conflicts: {len(conflicts)}</p>{notice}'
             '<div class="scroll"><table><thead><tr><th>Domain</th><th>Preview</th>'
@@ -351,7 +346,7 @@ def render(query='', message='', kind='success'):
     audit_html = decision_audit_html(query)
     once_html = once_grants_html(query)
     once_log = once_audit_html(query)
-    return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="/status">Service status</a><a href="/settings">History settings</a><a href="/upstream-settings">Upstream timeouts</a><a href="/cache-settings">Cache TTL</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
+    return f'''<!doctype html><html lang="en" data-live-view="policy"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Domain approvals</title><link rel="stylesheet" href="/dashboard.css"><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="/status">Service status</a><a href="/settings">History settings</a><a href="/upstream-settings">Upstream timeouts</a><a href="/cache-settings">Cache TTL</a><a href="http://127.0.0.1:8080/ui">Tunnel diagnostics</a></nav></header>
 <main><h1>Domain approvals</h1><p>Approve or deny domains requested by agents. Changes apply to the next fetch without restarting MCP. The dashboard is accessible only from this computer.</p>{alert}
 <section class="stats"><div class="stat"><span>Awaiting approval</span><b id="live-count-pending">{c['pending']}</b></div><div class="stat"><span>Allowed</span><b id="live-count-allowed">{c['allowed']}</b></div><div class="stat"><span>Denied</span><b id="live-count-denied">{c['denied']}</b></div><div class="stat"><span>Dashboard</span><b style="font-size:14px">127.0.0.1:{PORT}</b></div></section>
 <div class="panel"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="{esc(CSRF)}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><label>Scope <select name="scope"><option value="subdomains">Host + subdomains</option><option value="exact">Exact host only</option></select></label><label>Duration <select name="expires_minutes"><option value="0">Permanent</option><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label><label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Select exact host to exclude subdomains, and optionally set a 1-hour, 24-hour or 7-day expiry. Older rules remain permanent with subdomains. Never approve private-network addresses.</p></div>
@@ -426,7 +421,7 @@ def history_settings_page(message="", kind="success", submitted=None):
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="referrer" content="no-referrer">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>Local Search MCP — History settings</title><style>{CSS}</style>'
+            f'<title>Local Search MCP — History settings</title><link rel="stylesheet" href="/dashboard.css">'
             '</head><body><main><h1>Nonsecret history settings</h1>' +
             alerts + '<p>' + esc(note) + '</p><ul>' + override + '</ul>'
             '<form method="post" action="/settings">'
@@ -464,7 +459,7 @@ def upstream_settings_page(message="", kind="success", submitted=None):
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="referrer" content="no-referrer">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>Local Search MCP — Upstream timeouts</title><style>{CSS}</style>'
+            f'<title>Local Search MCP — Upstream timeouts</title><link rel="stylesheet" href="/dashboard.css">'
             '</head><body><main><h1>Upstream request timeouts</h1>' +
             alert + '<p>Timeouts apply to the next outgoing upstream request '
             'without restarting the bridge. Requests already running retain '
@@ -508,7 +503,7 @@ def cache_settings_page(message="", kind="success", submitted=None):
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="referrer" content="no-referrer">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>Local Search MCP — Cache lifetimes</title><style>{CSS}</style>'
+            f'<title>Local Search MCP — Cache lifetimes</title><link rel="stylesheet" href="/dashboard.css">'
             '</head><body><main><h1>Cache lifetimes</h1>' +
             alert + '<p>Changes apply to new cache entries without restarting '
             'the bridge. Existing entries keep their original expiration. '
@@ -552,7 +547,7 @@ def status_page():
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="referrer" content="no-referrer">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>Local Search MCP — Service status</title><style>{CSS}</style>'
+            f'<title>Local Search MCP — Service status</title><link rel="stylesheet" href="/dashboard.css">'
             '</head><body><main><h1>Local service status</h1>'
             '<p>Read-only TCP availability on loopback endpoints; reachability '
             'does not prove application health, credentials, or network isolation. '
@@ -599,7 +594,7 @@ def history_page(kind="", status="", domain="", hours=0, filter_error=""):
         f'<option value="{n}"{" selected" if hours == n else ""}>{label}</option>'
         for n, label in ((0, "All retained"), (1, "Last hour"),
                          (24, "Last 24 hours"), (168, "Last 7 days")))
-    return f'''<!doctype html><html lang="en" data-live-view="history"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — History</title><style>{CSS}</style><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a></nav></header><main><h1>Indexed request history</h1><p>Private metadata from existing rotating JSONL files. Filter by operation, outcome, domain, and rolling UTC time window. Search terms, URL paths, tokens and page content are never copied into the SQLite index.</p>
+    return f'''<!doctype html><html lang="en" data-live-view="history"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — History</title><link rel="stylesheet" href="/dashboard.css"><script defer src="/dashboard-live.js"></script></head><body><header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a></nav></header><main><h1>Indexed request history</h1><p>Private metadata from existing rotating JSONL files. Filter by operation, outcome, domain, and rolling UTC time window. Search terms, URL paths, tokens and page content are never copied into the SQLite index.</p>
 <form method="get" action="/history"><label>Operation <select name="kind"><option value="">All</option>{invalid_kind_option}<option value="search"{' selected' if kind == 'search' else ''}>Search</option><option value="fetch"{' selected' if kind == 'fetch' else ''}>Fetch</option><option value="page"{' selected' if kind == 'page' else ''}>Continuation</option></select></label><label>Status <input name="status" value="{esc(status)}" maxlength="48"></label><label>Domain <input name="domain" value="{esc(domain)}" maxlength="253" placeholder="example.org"></label><label>Time <select name="hours">{options}</select></label><button>Filter</button></form>
 {warning}
 {rows}
@@ -630,7 +625,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options','nosniff')
         self.send_header('X-Frame-Options','DENY')
         self.send_header('Referrer-Policy','no-referrer')
-        self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+        self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
         self.end_headers();self.wfile.write(data)
     def _read_origin_valid(self):
         """Refuse cross-site script/API GETs even on the loopback listener."""
@@ -663,6 +658,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_valid():return self._respond(403,'Forbidden')
         path=urlsplit(self.path)
         if path.path=='/healthz':return self._respond(200,json.dumps({'status':'ok'}),'application/json')
+        if path.path=='/dashboard.css':
+            if not self._read_origin_valid():return self._respond(403,'Forbidden')
+            # Fixed package-owned stylesheet; never serve a requested file path.
+            return self._respond(200, STYLESHEET, 'text/css; charset=utf-8')
         if path.path=='/dashboard-live.js':
             if not self._read_origin_valid():return self._respond(403,'Forbidden')
             # Fixed in-repository program literal, never a path read from
