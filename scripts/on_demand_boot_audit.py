@@ -105,6 +105,35 @@ def _root_effective_start() -> bool:
             and fields.get("ignore_errors") == "no")
 
 
+def _user_guard_unit(unit: str, mode: str) -> bool:
+    """Validate both owner-triggered guard services without executing them."""
+    if (unit, mode) not in (
+            ("local-search-mcp-guard-preflight.service", "preflight"),
+            ("local-search-mcp-guard-probe.service", "probe")):
+        return False
+    base = ("systemctl", "--user", "show", unit)
+    if _run(*base, "-p", "LoadState", "--value") != "loaded":
+        return False
+    raw = _run(*base, "-p", "ExecStart", "--value")
+    if raw is None:
+        return False
+    entries = re.findall(r"\{([^{}]*)\}", raw)
+    if len(entries) != 1:
+        return False
+    fields = {}
+    for item in entries[0].split(";"):
+        key, sep, value = item.strip().partition("=")
+        if sep:
+            fields[key] = value.strip()
+    expected = (
+        "/usr/bin/sudo -n /usr/bin/python3 "
+        "/usr/local/libexec/local-search-mcp/crawler_egress_guard.py "
+        "--container crawl4ai --" + mode)
+    return (fields.get("path") == "/usr/bin/sudo"
+            and fields.get("argv[]") == expected
+            and fields.get("ignore_errors") == "no")
+
+
 def _is_enabled_and_active(service: str, *, user: bool) -> bool:
     prefix = ("systemctl", "--user") if user else ("systemctl",)
     return (_run(*prefix, "is-enabled", service) == "enabled"
@@ -125,6 +154,8 @@ def audit(*, inventory: dict | None = None, settings: dict | None = None) -> dic
         "tunnel_enabled_active": False,
         "user_linger_enabled": False,
         "tunnel_effective_gate": False,
+        "cold_wake_preflight_unit": False,
+        "cold_wake_live_probe_unit": False,
     }
     try:
         selected = on_demand_settings.read() if settings is None else settings
@@ -171,6 +202,10 @@ def audit(*, inventory: dict | None = None, settings: dict | None = None) -> dic
             == "yes")
     except (KeyError, OSError):
         pass
+    checks["cold_wake_preflight_unit"] = _user_guard_unit(
+        "local-search-mcp-guard-preflight.service", "preflight")
+    checks["cold_wake_live_probe_unit"] = _user_guard_unit(
+        "local-search-mcp-guard-probe.service", "probe")
     try:
         from scripts import install_secure_tunnel
         install_secure_tunnel._verify_effective_tunnel_probe()
