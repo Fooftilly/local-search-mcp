@@ -159,6 +159,7 @@ class SetupWizardTests(unittest.TestCase):
             {**dedicated, "managed_running": 1},
             {**dedicated, "managed_stopped": 1},
             {**dedicated, "unverified_project_containers": 1},
+            {**dedicated, "unverified_project_containers": True},
             {**dedicated, "other_published_crawlers": 1},
             {**dedicated, "other_published_crawlers": None},
             {**dedicated, "verified_services": {"crawl4ai": 2, "searxng": 0}},
@@ -177,8 +178,11 @@ class SetupWizardTests(unittest.TestCase):
                     self.assertFalse(result["dedicated_docker_ready"])
                     # Healthy shared/non-Docker backends remain supported,
                     # but an explicitly unverified project is still unsafe.
-                    self.assertEqual(result["ready"],
-                                     inventory.get("state") != "unverified")
+                    unsafe = (inventory.get("state") == "unverified"
+                              or type(inventory.get("unverified_project_containers", 0))
+                              is not int
+                              or inventory.get("unverified_project_containers", 0) != 0)
+                    self.assertEqual(result["ready"], not unsafe)
 
     def test_menu_dependency_inspection_only_reads_project_venv(self):
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
