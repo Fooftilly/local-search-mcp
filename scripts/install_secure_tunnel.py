@@ -335,8 +335,11 @@ def main(argv: list[str] | None = None) -> int:
         advice = {
             "Existing local-search-mcp sudoers differs; refuse overwrite":
                 "Existing restricted sudoers policy differs; compare its contents "
-                "against the two fixed --probe/--preflight rules without "
-                "overwriting unrelated policy",
+                "against the two fixed --probe/--preflight rules, verify "
+                "root-owned mode 0440, and never overwrite unrelated policy",
+            "Privileged security-file metadata or ownership is unsafe":
+                "A privileged security file has unsafe ownership or metadata; "
+                "inspect the root-owned files and permissions manually",
             "Existing sudoers has unsafe ownership or mode":
                 "Existing restricted sudoers policy must be root-owned, "
                 "a regular file and mode 0440",
