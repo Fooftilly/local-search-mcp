@@ -84,10 +84,8 @@ class ReadonlyBootAuditTests(unittest.TestCase):
         self.assertEqual(files.call_count, 2)
         self.assertIn(("systemctl", "show", audit.ROOT_SERVICE,
                        "-p", "ExecStart", "--value"), calls)
-        self.assertFalse(any(cmd[0] in ("sudo", "docker", "nft", "git", "pip")
-                             for cmd in calls))
-        self.assertFalse(any("enable" in cmd and "--now" in cmd for cmd in calls))
-        self.assertNotIn("SECRET", json.dumps(result))
+        # _run's fixed-command allowlist is exercised using a real subprocess
+        # mock in test_run_rejects_mutating_commands_and_redacts_errors.
 
     def test_non_no_docker_restart_policy_blocks_reboot_audit(self):
         for policy in ("unless-stopped", "always", "on-failure", None):
