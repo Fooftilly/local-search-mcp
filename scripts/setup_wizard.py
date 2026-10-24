@@ -176,13 +176,41 @@ def on_demand_status(*, inventory: dict | None = None) -> dict:
         saved = on_demand_settings.read()
         report["enabled"] = saved["enabled"]
         report["idle_minutes"] = saved["idle_minutes"]
-        report["can_activate"] = False  # Diagnostic is never an authorization.
-        report["runtime_activity"] = on_demand_runtime_status()
+        report["can_activate"] = False  # A read-only report cannot grant activation.
+        report["activation_note"] = (
+            "can_activate is always false for read-only diagnostics; "
+            "use enabled and runtime_activity to inspect an active setup")
+        runtime = on_demand_runtime_status()
+        report["runtime_activity"] = runtime
         if saved["enabled"]:
-            report["state"] = ("sleeping" if selected.get("state") == "stopped"
-                               else "running" if selected.get("state") == "running"
-                               else "partially_running" if selected.get("state") == "partially_running"
-                               else "failed")
+            report["next_gates"] = [
+                "Validate cold-boot recovery and fault handling before unattended use"]
+            if runtime.get("mode") != "on-demand" or runtime.get("enabled") is not True:
+                report["state"] = "unverified"
+                report["reason"] = (
+                    "On-demand is configured but the running bridge has not confirmed "
+                    "activation; restart the bridge and inspect its status")
+            elif runtime.get("backends") is None:
+                report["state"] = "unverified"
+                report["reason"] = (
+                    "Bridge reports on-demand enabled but its supervisor is not "
+                    "initialized; inspect bridge startup and status")
+            elif any(row["state"] == "failed"
+                     for row in runtime["backends"].values()):
+                report["state"] = "failed"
+                report["reason"] = (
+                    "The running supervisor reports a failed backend; "
+                    "inspect bridge, Docker and firewall-guard logs")
+            else:
+                report["state"] = (
+                    "sleeping" if selected.get("state") == "stopped"
+                    else "running" if selected.get("state") == "running"
+                    else "partially_running"
+                    if selected.get("state") == "partially_running"
+                    else "unverified")
+                report["reason"] = (
+                    "On-demand runtime is active; verify backend states in "
+                    "runtime_activity. Reboot recovery is not yet established")
         return report
     except (OSError, ValueError, ImportError, TypeError, KeyError):
         return {"mode": "read-only", "feature": "on-demand-backends",
@@ -336,7 +364,7 @@ def dry_run() -> dict:
             {"menu": "11", "effect": "privileged system changes only after confirmation",
              "action": "validate dedicated backends; install fixed egress guard, restricted sudoers and protected ChatGPT tunnel"},
         ],
-        "future": "Issue #75 optional 30-minute backend sleep is not implemented; off by default",
+        "limitations": "Optional on-demand backend sleep/wake is implemented and off by default; reboot/fault-recovery still requires host validation",
     }
 
 
@@ -501,7 +529,7 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
     choices.add_argument("--update-status", action="store_true",
                          help="inspect local Git update baseline; never fetch/pull/restart")
     choices.add_argument("--on-demand-status", action="store_true",
-                         help="preview disabled on-demand mode; never sleep/wake or reconfigure")
+                         help="read-only configured on-demand and runtime state; no Docker changes")
     choices.add_argument("--secure-tunnel-preview", action="store_true",
                          help="read-only preview of production firewall/tunnel setup")
     choices.add_argument("--secure-tunnel", action="store_true",
