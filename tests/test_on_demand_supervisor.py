@@ -95,6 +95,17 @@ class OnDemandSupervisorTests(unittest.TestCase):
                          ["systemctl", "--user", "start", sup.PROBE_UNIT])
         self.assertFalse(command.call_args.kwargs.get("shell", False))
 
+    def test_prestart_guard_uses_distinct_fixed_privileged_unit(self):
+        response = subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(sup.subprocess, "run", return_value=response) as command:
+            self.assertTrue(sup._preflight_crawler())
+        self.assertEqual(command.call_args.args[0],
+                         ["systemctl", "--user", "start", sup.PREFLIGHT_UNIT])
+        self.assertFalse(command.call_args.kwargs.get("shell", False))
+        with patch.object(sup.subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 1, "", "private")):
+            self.assertFalse(sup._preflight_crawler())
+
     def test_probe_failure_fails_closed(self):
         response = subprocess.CompletedProcess([], 1, "", "secret-token")
         with patch.object(sup.subprocess, "run", return_value=response):
