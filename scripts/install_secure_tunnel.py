@@ -336,22 +336,39 @@ def main(argv: list[str] | None = None) -> int:
             "Existing local-search-mcp sudoers differs; refuse overwrite":
                 "Existing restricted sudoers policy differs; compare its contents "
                 "against the two fixed --probe/--preflight rules without "
-                "overwriting unrelated policy.",
+                "overwriting unrelated policy",
             "Existing sudoers has unsafe ownership or mode":
                 "Existing restricted sudoers policy must be root-owned, "
-                "a regular file and mode 0440.",
+                "a regular file and mode 0440",
             "Existing privileged file owner or mode is unsafe":
                 "An installed root-owned security file has incorrect permissions; "
-                "inspect and reconcile the reviewed file manually.",
+                "inspect and reconcile the reviewed file manually",
             "Installed security file differs; review it manually before replacing":
                 "An installed security file differs from the reviewed template; "
-                "inspect the difference without overwriting it.",
+                "inspect the difference without overwriting it",
             "Effective tunnel firewall startup probe is missing or overridden":
                 "The effective tunnel pre-start firewall probe is absent or reset "
-                "by another systemd drop-in; inspect systemctl --user show.",
+                "by another systemd drop-in; inspect systemctl --user show",
             "Effective tunnel firewall startup probe is not enforced":
                 "The effective tunnel pre-start command is not the exact "
-                "non-ignored root-owned firewall probe.",
+                "non-ignored root-owned firewall probe",
+            "Dedicated project ownership/running backends not proven":
+                "Dedicated running backends could not be verified; run "
+                "./setup.sh --docker-status and inspect the managed project",
+            "Required bridge and backends are not healthy":
+                "The bridge or a backend is unhealthy; run "
+                "python3 health_cli.py --json before retrying",
+            "Stop the running tunnel before installing startup protections":
+                "Stop and disable the active tunnel with systemctl --user "
+                "disable --now local-search-mcp-tunnel.service before changing its guard",
+            "Managed tunnel user unit is not installed":
+                "The managed tunnel user unit is missing; install and reload "
+                "the reviewed user systemd units first",
+            "Existing tunnel drop-in differs; refuse overwrite":
+                "An existing tunnel startup drop-in differs from the reviewed "
+                "guard; inspect and reconcile the conflict manually",
+            "Run the wizard as the normal user":
+                "Run setup as the normal Linux user, not with sudo",
         }
         if type(exc) is InstallError:
             detail = advice.get(str(exc), "A guarded prerequisite failed; "
