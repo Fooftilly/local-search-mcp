@@ -221,6 +221,68 @@ class BackupTests(unittest.TestCase):
         secret.chmod(0o600)
         return private
 
+    def test_on_demand_settings_roundtrip_is_private_and_staged_only(self):
+        config = self.base / "on-demand-config"
+        config.mkdir(mode=0o700)
+        settings = {"enabled": True, "idle_minutes": 45}
+        optional = config / "on-demand.json"
+        raw = json.dumps({"schema": "local-search-mcp/on-demand/v1",
+                          "settings": settings}).encode()
+        optional.write_bytes(raw)
+        optional.chmod(0o600)
+        (config / "config.json").write_text('{"token": "DO_NOT_COPY_TOKEN"}')
+        (config / "config.json").chmod(0o600)
+        backup.backup(self.archive, state_dir=self.state, config_dir=config)
+        stored = backup.verified_payload(self.archive)
+        self.assertEqual(stored["on-demand.json"], raw)
+        self.assertNotIn("config.json", stored)
+        with zipfile.ZipFile(self.archive) as archive:
+            self.assertNotIn("config.json", archive.namelist())
+        target = self.base / "on-demand-staged-only"
+        backup.restore(self.archive, target)
+        self.assertEqual((target / "on-demand.json").read_bytes(), raw)
+        self.assertEqual(stat.S_IMODE((target / "on-demand.json").stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o700)
+        self.assertFalse((config / "config.json").is_symlink())
+        self.assertTrue(optional.exists())  # No live config replacement.
+
+    def test_on_demand_settings_reject_unsafe_types_duplicate_and_secret_fields(self):
+        config = self.base / "on-demand-input"
+        config.mkdir(mode=0o700)
+        option = config / "on-demand.json"
+        good = {"schema": "local-search-mcp/on-demand/v1",
+                "settings": {"enabled": False, "idle_minutes": 30}}
+        invalid = (
+            {**good, "settings": {"enabled": 1, "idle_minutes": 30}},
+            {**good, "settings": {"enabled": "true", "idle_minutes": 30}},
+            {**good, "settings": {"enabled": False, "idle_minutes": True}},
+            {**good, "settings": {"enabled": False, "idle_minutes": 0}},
+            {**good, "settings": {"enabled": False, "idle_minutes": 1441}},
+            {**good, "settings": {"enabled": False, "idle_minutes": 30,
+                                  "credential": "DO_NOT_ARCHIVE"}},
+            {**good, "schema": "local-search-mcp/on-demand/v2"},
+        )
+        raw_values = [json.dumps(value).encode() for value in invalid]
+        raw_values.extend([
+            b'{"schema":"local-search-mcp/on-demand/v1","settings":{"enabled":false,"enabled":true,"idle_minutes":30}}',
+            b'{"schema":"local-search-mcp/on-demand/v1","schema":"local-search-mcp/on-demand/v1","settings":{"enabled":false,"idle_minutes":30}}',
+        ])
+        for raw in raw_values:
+            with self.subTest(raw=raw[:90]):
+                option.write_bytes(raw)
+                option.chmod(0o600)
+                with self.assertRaises(ValueError):
+                    backup.backup(self.archive, state_dir=self.state, config_dir=config)
+                self.assertFalse(self.archive.exists())
+                with self.assertRaises(ValueError):
+                    backup._verify_nonsecret_setting("on-demand.json", raw)
+        # Existing valid backups cannot be expanded by a crafted settings
+        # entry without schema/manifest verification.
+        option.write_text(json.dumps(good))
+        option.chmod(0o600)
+        backup.backup(self.archive, state_dir=self.state, config_dir=config)
+        self.assertIn("on-demand.json", backup.verified_payload(self.archive))
+
     def test_optional_settings_roundtrip_never_archives_credentials(self):
         conf = self._write_nonsecret_settings()
         backup.backup(self.archive, state_dir=self.state, config_dir=conf)
