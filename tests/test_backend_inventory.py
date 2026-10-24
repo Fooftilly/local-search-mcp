@@ -116,13 +116,23 @@ class DockerOwnershipTests(unittest.TestCase):
         self.assertEqual(candidate["state"], "blocked")
         self.assertFalse(candidate["can_activate"])
 
-    def test_unreadable_restart_policy_fails_closed_without_inspect_data(self):
+    def test_unreadable_restart_policy_blocks_eligibility_not_ownership(self):
+        from scripts import on_demand_eligibility
         self.restart_policies[CRAWLER] = "private-unrecognized-policy"
         report = self.report()
-        self.assertEqual(report["state"], "unverified")
-        self.assertEqual(report["unverified_project_containers"], 1)
-        self.assertEqual(report["verified_restart_policies"]["crawl4ai"], None)
+        self.assertEqual(report["state"], "running")
+        self.assertEqual(report["unverified_project_containers"], 0)
+        self.assertEqual(report["verified_services"]["crawl4ai"], 1)
+        self.assertIsNone(report["verified_restart_policies"]["crawl4ai"])
+        self.assertEqual(on_demand_eligibility.eligibility(inventory=report)["state"],
+                         "blocked")
         self.assertNotIn("private-unrecognized-policy", json.dumps(report))
+
+    def test_empty_restart_policy_normalizes_to_no(self):
+        self.restart_policies[CRAWLER] = ""
+        report = self.report()
+        self.assertEqual(report["state"], "running")
+        self.assertEqual(report["verified_restart_policies"]["crawl4ai"], "no")
 
     def test_read_only_restart_policy_never_updates_docker(self):
         from scripts import on_demand_eligibility
