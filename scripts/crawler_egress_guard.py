@@ -343,7 +343,10 @@ def verify_installed(bridge: str) -> None:
     # A dormant nftables table can list all of its rules while none of its
     # base chains are registered. Reject *any* unexpected table flag before
     # trusting stopped-container containment.
-    if re.search(r'^\s*flags\s+[^\n]*
+    if re.search(r'^\s*flags\s+[^\n]*', live, flags=re.MULTILINE):
+        raise GuardError('Installed firewall table has unsupported flags')
+
+    def chain_lines(name: str) -> list[str]:
         pattern = r'^\s*chain\s+' + name + r'\s*\{(.*?)^\s*\}'
         matches = list(re.finditer(pattern, live, flags=re.MULTILINE | re.DOTALL))
         if len(matches) != 1:
