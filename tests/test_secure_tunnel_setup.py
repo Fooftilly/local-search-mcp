@@ -381,6 +381,16 @@ class SecureTunnelSetupTests(unittest.TestCase):
              "regular file and mode 0440"),
             ("Effective tunnel firewall startup probe is missing or overridden",
              "effective tunnel pre-start firewall probe"),
+            ("Dedicated project ownership/running backends not proven",
+             "./setup.sh --docker-status"),
+            ("Required bridge and backends are not healthy",
+             "python3 health_cli.py --json"),
+            ("Stop the running tunnel before installing startup protections",
+             "Stop and disable the active tunnel"),
+            ("Managed tunnel user unit is not installed",
+             "managed tunnel user unit is missing"),
+            ("Existing tunnel drop-in differs; refuse overwrite",
+             "existing tunnel startup drop-in differs"),
         )
         for reason, expected in scenarios:
             with self.subTest(reason=reason):
@@ -390,8 +400,32 @@ class SecureTunnelSetupTests(unittest.TestCase):
                       contextlib.redirect_stderr(stderr)):
                     status = secure.main(["--install", "--confirm", "SECURE"])
                 self.assertEqual(status, 1)
-                self.assertIn(expected, stderr.getvalue())
+                self.assertIn(expected.lower(), stderr.getvalue().lower())
+                self.assertNotIn(".. Check", stderr.getvalue())
                 self.assertIn("Check systemctl --user is-active", stderr.getvalue())
+
+    def test_every_advice_key_matches_a_literal_install_error_in_source(self):
+        import ast
+        import inspect
+
+        tree = ast.parse(inspect.getsource(secure))
+        allowlist = next(node.value for node in ast.walk(tree)
+                         if isinstance(node, ast.Assign)
+                         and any(isinstance(name, ast.Name) and name.id == "advice"
+                                 for name in node.targets))
+        self.assertIsInstance(allowlist, ast.Dict)
+        keys = {key.value for key in allowlist.keys}
+        messages = set()
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "InstallError"
+                    and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)):
+                messages.add(node.args[0].value)
+        self.assertTrue(keys, "Expected reviewed advice mapping")
+        self.assertEqual(keys - messages, set(), "Stale diagnostic messages")
 
     def test_unrecognized_errors_cannot_expose_private_data(self):
         import contextlib
