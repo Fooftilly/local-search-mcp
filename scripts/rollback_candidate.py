@@ -100,7 +100,7 @@ def _object(root: Path, oid: str, expected_type: str, limit: int) -> bytes:
     return remaining[:-1]
 
 
-def _parse_tree(contents: bytes, hash_bytes: int) -> list[tuple[str, str, str]]:
+def _parse_tree(contents: bytes, hash_bytes: int) -> list[tuple[str, str, str, bytes]]:
     """Decode Git tree objects, refusing links and unsafe path components."""
     items = []
     position = 0
@@ -128,7 +128,7 @@ def _parse_tree(contents: bytes, hash_bytes: int) -> list[tuple[str, str, str]]:
         last = first + hash_bytes
         if last > len(contents):
             raise ValueError("Incomplete Git tree digest")
-        items.append((name, kind, contents[first:last].hex()))
+        items.append((name, kind, contents[first:last].hex(), mode))
         position = last
     return items
 
@@ -151,7 +151,7 @@ def _copy_git_blobs(root: Path, target: str, destination: Path) -> int:
         tree_bytes = _object(root, tree, "tree", 512_000)
         entries = _parse_tree(tree_bytes, hash_bytes)
         seen = set()
-        for name, kind, oid in entries:
+        for name, kind, oid, mode in entries:
             if name in seen:
                 raise ValueError("Duplicate tracked source entry")
             seen.add(name)
@@ -169,7 +169,8 @@ def _copy_git_blobs(root: Path, target: str, destination: Path) -> int:
             output_path = destination.joinpath(*parts)
             output_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
             fd = os.open(output_path,
-                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, 0o600)
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
+                         0o700 if mode == b"100755" else 0o600)
             with os.fdopen(fd, "wb") as output:
                 output.write(data)
                 output.flush()
