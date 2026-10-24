@@ -26,6 +26,7 @@ def eligibility(*, inventory: dict | None = None) -> dict:
         "mode": "read-only", "feature": "on-demand-backends",
         "enabled": False, "can_activate": False,
         "default_idle_minutes": DEFAULT_IDLE_MINUTES,
+        "restart_policy_review": "unknown",
         "state": "blocked",
         "reason": "Cannot verify dedicated backend ownership",
         "next_gates": [
@@ -51,6 +52,15 @@ def eligibility(*, inventory: dict | None = None) -> dict:
                    and set(services) == {"crawl4ai", "searxng"}
                    and all(type(services[key]) is int and services[key] == 1
                            for key in ("crawl4ai", "searxng")))
+    # Inspect actual Docker restart policies before claiming a candidate.
+    # 'unless-stopped' is the normal Compose default and requires planned
+    # coordination before any future automatic idle-stop operation.
+    modes = inventory.get("verified_restart_policies")
+    modes_ok = (type(modes) is dict
+                and set(modes) == {"crawl4ai", "searxng"}
+                and all(type(modes[s]) is str
+                        and modes[s] in ("no", "always", "unless-stopped", "on-failure")
+                        for s in ("crawl4ai", "searxng")))
     state = inventory.get("state")
     if external:
         result["reason"] = "Another crawler publishes this port; never take over a shared stack"
@@ -59,11 +69,15 @@ def eligibility(*, inventory: dict | None = None) -> dict:
     elif state in ("not_configured", "not_started"):
         result["reason"] = "No verified private backend deployment is active"
     elif (state in ("running", "partially_running", "stopped")
-          and running + stopped == 2 and services_ok):
+          and running + stopped == 2 and services_ok and modes_ok):
         result["state"] = "manual_verification_required"
+        result["restart_policy_review"] = (
+            "requires_coordinated_change"
+            if any(modes[s] != "no" for s in ("crawl4ai", "searxng"))
+            else "no_change_observed")
         result["reason"] = (
-            "Potential dedicated deployment; service identity, restart policy and "
-            "live firewall gate must still be verified")
+            "Potential dedicated deployment; restart-policy coordination, "
+            "least-privilege controls and live firewall gate still require review")
     else:
         result["reason"] = "Expected exactly one verified crawler and one search backend"
     return result
