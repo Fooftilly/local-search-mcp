@@ -57,6 +57,38 @@ class GuardTests(unittest.TestCase):
             with self.subTest(opts=opts),patch.object(guard,'command',side_effect=[json.dumps(c),json.dumps(n)]):
                 with self.assertRaises(guard.GuardError):guard.network_for('crawl4ai')
 
+    def test_stopped_crawler_preflight_reads_rules_without_exec(self):
+        c, n = fixture(members=False)
+        c[0]["State"] = {"Running": False, "Status": "exited"}
+        c[0]["NetworkSettings"]["Networks"]["crawler-egress"]["NetworkID"] = ""
+        with patch.object(guard, "command", side_effect=[
+            json.dumps(c), json.dumps(n)]):
+            self.assertEqual(guard.network_for("crawl4ai", allow_stopped=True),
+                             ("crawler-egress", "br-aaaaaaaaaaaa"))
+        with patch.object(guard, "command", side_effect=[
+            json.dumps(c), json.dumps(n)]):
+            with self.assertRaises(guard.GuardError):
+                guard.network_for("crawl4ai")
+
+    def test_preflight_fails_closed_without_any_docker_exec(self):
+        expected = guard.rules("br-aaaaaaaaaaaa")
+        with (patch.object(guard, "network_for",
+                           return_value=("crawler-egress", "br-aaaaaaaaaaaa")) as net,
+              patch.object(guard, "require_root"),
+              patch.object(guard, "table_exists", return_value=True),
+              patch.object(guard, "command", return_value=expected) as cmd):
+            self.assertEqual(guard.main(["--preflight"]), 0)
+        net.assert_called_once_with("crawl4ai", allow_stopped=True)
+        self.assertEqual(cmd.call_args.args[0],
+                         ["nft", "list", "table", "inet", guard.TABLE])
+        for bad in ("", 'table inet ' + guard.TABLE + ' { chain forward {} }'):
+            with (patch.object(guard, "network_for",
+                               return_value=("crawler-egress", "br-aaaaaaaaaaaa")),
+                  patch.object(guard, "require_root"),
+                  patch.object(guard, "table_exists", return_value=True),
+                  patch.object(guard, "command", return_value=bad)):
+                self.assertEqual(guard.main(["--preflight"]), 1)
+
     def test_apply_requires_root_before_nft_writes(self):
         """Never call nft to mutate rules without root privileges."""
         c,n=fixture()
