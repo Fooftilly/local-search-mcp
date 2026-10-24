@@ -131,6 +131,32 @@ class StatusTests(unittest.TestCase):
                 snapshot.assert_called_once_with()
                 self.assertNotIn("private error", repr(result))
 
+    def test_custom_loopback_ports_are_not_mislabelled_as_supervisor_sleep(self):
+        asleep = {"state": "sleeping", "armed": False,
+                  "active_requests": 0, "stop_claimed": False}
+        active_mode = {"mode": "on-demand", "enabled": True, "backends": {
+            "searxng": asleep, "crawl4ai": asleep}}
+        with (patch.dict(os.environ, {
+                "SEARXNG_URL": "http://127.0.0.1:9000",
+                "CRAWL4AI_URL": "http://localhost:9111"}, clear=True),
+              patch.object(service_status, "_supervisor_activity",
+                           return_value=active_mode)):
+            result = service_status.probe_services(
+                connector=lambda *a, **k: (_ for _ in ()).throw(ConnectionRefusedError()))
+        self.assertEqual([item["status"] for item in result], ["TCP unavailable"] * 2)
+
+        # An explicit environment URL for the same managed port is still
+        # the actual supervised TCP listener and may report sleeping.
+        with (patch.dict(os.environ, {
+                "SEARXNG_URL": "http://localhost:8888",
+                "CRAWL4AI_URL": "http://127.0.0.1:11235"}, clear=True),
+              patch.object(service_status, "_supervisor_activity",
+                           return_value=active_mode)):
+            result = service_status.probe_services(
+                connector=lambda *a, **k: (_ for _ in ()).throw(ConnectionRefusedError()))
+        self.assertEqual([item["status"] for item in result],
+                         ["TCP unavailable (supervisor reports sleeping)"] * 2)
+
     def test_reachable_or_invalid_backend_never_needs_supervisor_state(self):
         with (patch.dict(os.environ, {}, clear=True),
               patch.object(service_status, "_supervisor_activity",
