@@ -31,7 +31,33 @@ EXPECTED_EXEC = (
 
 def _run(*args: str) -> str | None:
     """Only fixed, read-only systemd/loginctl queries; redact command errors."""
-    if not args or args[0] not in ("systemctl", "loginctl"):
+    root_query = ("systemctl", "show", ROOT_SERVICE,
+                  "-p", "ExecStart", "--value")
+    user_guard_units = (
+        "local-search-mcp-guard-preflight.service",
+        "local-search-mcp-guard-probe.service")
+    read_only = (
+        args == root_query
+        or (len(args) == 3 and args[:2] == ("systemctl", "is-enabled")
+            and args[2] == ROOT_SERVICE)
+        or (len(args) == 3 and args[:2] == ("systemctl", "is-active")
+            and args[2] == ROOT_SERVICE)
+        or (len(args) == 4 and args[:3] in (
+                ("systemctl", "--user", "is-enabled"),
+                ("systemctl", "--user", "is-active"))
+            and args[3] in USER_SERVICES)
+        or (len(args) == 7 and args[:3] == ("systemctl", "--user", "show")
+            and args[3] in user_guard_units
+            and args[4] == "-p" and args[5] in ("LoadState", "ExecStart")
+            and args[6] == "--value")
+    )
+    if not read_only and len(args) == 6 and args[:2] == ("loginctl", "show-user"):
+        try:
+            read_only = (args[2] == pwd.getpwuid(os.getuid()).pw_name
+                         and args[3:] == ("-p", "Linger", "--value"))
+        except (KeyError, OSError):
+            pass
+    if not read_only:
         raise ValueError("Unsupported audit command")
     try:
         value = subprocess.run(
