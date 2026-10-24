@@ -10,7 +10,8 @@ from scripts import on_demand_eligibility as gate
 def state(**kw):
     return dict(state="running", managed_running=2, managed_stopped=0,
                 unverified_project_containers=0,
-                other_published_crawlers=0, **kw)
+                other_published_crawlers=0,
+                verified_services={"crawl4ai": 1, "searxng": 1}, **kw)
 
 
 class OnDemandEligibilityTests(unittest.TestCase):
@@ -47,6 +48,20 @@ class OnDemandEligibilityTests(unittest.TestCase):
             with self.subTest(changes=changes):
                 data = {**state(), **changes}
                 self.assertEqual(gate.eligibility(inventory=data)["state"], "blocked")
+
+    def test_two_crawlers_or_missing_service_counts_are_not_candidates(self):
+        for services in (None, {}, {"crawl4ai": 2, "searxng": 0},
+                         {"crawl4ai": 1, "searxng": 0},
+                         {"crawl4ai": True, "searxng": 1},
+                         {"crawl4ai": 1, "searxng": 1, "extra": 0}):
+            with self.subTest(services=services):
+                data = {**state(), "verified_services": services}
+                result = gate.eligibility(inventory=data)
+                self.assertEqual(result["state"], "blocked")
+                self.assertFalse(result["can_activate"])
+        older = state()
+        del older["verified_services"]
+        self.assertEqual(gate.eligibility(inventory=older)["state"], "blocked")
 
     def test_two_stopped_containers_only_candidate(self):
         data = {**state(), "state": "stopped",

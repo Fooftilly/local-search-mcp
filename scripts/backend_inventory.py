@@ -99,6 +99,7 @@ def report(*, config_base: Path | None = None) -> dict:
         "state": "unknown",
         "managed_running": 0,
         "managed_stopped": 0,
+        "verified_services": {"crawl4ai": 0, "searxng": 0},
         "unverified_project_containers": 0,
         "other_published_crawlers": None,
         "security_note": ("Docker ownership is not firewall/egress proof; "
@@ -144,7 +145,11 @@ def report(*, config_base: Path | None = None) -> dict:
                       (overlay_exists and overlay_file in files)))
         if not valid:
             output["unverified_project_containers"] += 1
-        elif running == "true":
+            continue
+        # A matching Compose project label alone is insufficient for a
+        # lifecycle action: two crawlers cannot substitute for one searcher.
+        output["verified_services"][service] += 1
+        if running == "true":
             output["managed_running"] += 1
         else:
             output["managed_stopped"] += 1
