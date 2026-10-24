@@ -16,10 +16,18 @@ unchanged for transient `docker stop`. Other policies are rejected rather
 than secretly updated. Full `./stop.sh` retains its stronger
 restart-disabled semantics.
 
-A crawler `start` requires an **explicit live egress probe callback**
-and will refuse use without one. This callback must come from a separately
-reviewed, root-owned probing mechanism with narrow authorization; never
-grant passwordless sudo access to a user-writable Git script. The existing
+A sleeping crawler `start` requires **two independent, explicit
+security checks**: a successful pre-start firewall gate *before* issuing
+`docker start`, and a separate **live egress probe** after wake but before
+returning control to the MCP caller. If either callback is missing, fails,
+raises or reports anything other than boolean `True`, activation is refused.
+A failed pre-start gate issues **no Docker command**. An ambiguous Docker
+start failure or post-start gate failure triggers a stop attempt against the
+previously verified full container ID, even when a fresh inventory is
+temporarily unavailable. A failed cleanup is also an explicit error, not
+success. These callbacks must come from separately reviewed, root-owned
+probing mechanisms with narrow authorization; never grant passwordless sudo
+access to a user-writable Git script. The existing
 `docs/EGRESS-SYSTEMD.md` explains the privileged root-owned checker, but
 the default bridge user service has `NoNewPrivileges=true` and therefore
 cannot itself execute an elevated `sudo -n` probe. A safe privileged
