@@ -483,7 +483,8 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="explicitly enable verified managed backends only")
     choices.add_argument("--on-demand-disable", action="store_true",
                          help="disable future background wake (optionally restore sleeping backends)")
-    parser.add_argument("--idle-minutes", type=int, default=30)
+    parser.add_argument("--idle-minutes", type=int, default=30,
+                        help="validated idle time in minutes (default 30 minutes)")
     parser.add_argument("--wake-before-disable", action="store_true")
     parser.add_argument("--confirm-on-demand", choices=("ENABLE", "DISABLE"),
                         help="explicit confirmation required for noninteractive changes")
