@@ -12,6 +12,11 @@ from scripts import setup_wizard
 
 
 class SecureTunnelSetupTests(unittest.TestCase):
+    @staticmethod
+    def effective_probe():
+        return ("{ path=/usr/bin/sudo ; argv[]=" + secure._REQUIRED_PROBE_ARGV +
+                " ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] }")
+
     def setUp(self):
         # These fixtures exercise the unprivileged installer regardless of CI UID.
         patcher = patch.object(secure.os, "geteuid", return_value=1000)
@@ -181,7 +186,7 @@ class SecureTunnelSetupTests(unittest.TestCase):
             return subprocess.CompletedProcess(args, 0,
                 "inactive" if "is-active" in args else
                 "LoadState=loaded" if "show" in args else
-                "ExecStartPre=+/usr/bin/sudo -n /usr/bin/python3" if "cat" in args
+                self.effective_probe() if "--property=ExecStartPre" in args
                 else "", "")
 
         with (patch.object(secure, "preview", return_value=self.inventory()),
@@ -217,8 +222,8 @@ class SecureTunnelSetupTests(unittest.TestCase):
                         args, 0,
                         "inactive" if "is-active" in args else
                         "LoadState=loaded" if "show" in args else
-                        "ExecStartPre=+/usr/bin/sudo -n /usr/bin/python3"
-                        if "cat" in args else "", "")
+                        self.effective_probe()
+                        if "--property=ExecStartPre" in args else "", "")
 
                 stderr = io.StringIO()
                 with (patch.object(secure, "preview", return_value=self.inventory()),
@@ -252,8 +257,8 @@ class SecureTunnelSetupTests(unittest.TestCase):
                 args, 0,
                 "inactive" if "is-active" in args else
                 "LoadState=loaded" if "show" in args else
-                "ExecStartPre=+/usr/bin/sudo -n /usr/bin/python3"
-                if "cat" in args else "", "")
+                self.effective_probe()
+                if "--property=ExecStartPre" in args else "", "")
 
         with (patch.object(secure, "preview", return_value=self.inventory()),
               patch.object(secure, "_run", side_effect=interrupted_systemctl),
