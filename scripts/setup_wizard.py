@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from http.client import HTTPConnection
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -148,7 +149,10 @@ def on_demand_runtime_status() -> dict:
         if type(data) is not dict or set(data) != {"mode", "enabled", "idle_minutes", "backends"}:
             raise ValueError("Invalid activity response")
         # Prevent any future unexpected field from being echoed to the CLI.
-        if type(data["enabled"]) is not bool or type(data["idle_minutes"]) is not int:
+        if (type(data["enabled"]) is not bool
+                or type(data["idle_minutes"]) is not int
+                or not 1 <= data["idle_minutes"] <= 1440
+                or data["mode"] not in ("on-demand", "disabled")):
             raise ValueError("Invalid activity fields")
         backends = data["backends"]
         if backends is not None and (
@@ -159,6 +163,21 @@ def on_demand_runtime_status() -> dict:
                     "last_activity_ago_seconds", "next_idle_stop_seconds",
                     "stop_claimed"} for row in backends.values())):
             raise ValueError("Unexpected activity fields")
+        if backends is not None:
+            for row in backends.values():
+                if (row["state"] not in (
+                        "running", "sleeping", "waking", "stopping", "failed")
+                        or type(row["armed"]) is not bool
+                        or type(row["active_requests"]) is not int
+                        or row["active_requests"] < 0
+                        or type(row["stop_claimed"]) is not bool):
+                    raise ValueError("Invalid backend status fields")
+                for field in ("last_activity_ago_seconds", "next_idle_stop_seconds"):
+                    value = row[field]
+                    if (value is not None and (
+                            type(value) not in (int, float) or value < 0
+                            or (type(value) is float and not math.isfinite(value)))):
+                        raise ValueError("Invalid backend timer fields")
         return data
     except (OSError, ValueError, TypeError):
         return {"state": "unavailable", "note": "Running bridge activity not verified"}
@@ -176,13 +195,64 @@ def on_demand_status(*, inventory: dict | None = None) -> dict:
         saved = on_demand_settings.read()
         report["enabled"] = saved["enabled"]
         report["idle_minutes"] = saved["idle_minutes"]
-        report["can_activate"] = False  # Diagnostic is never an authorization.
-        report["runtime_activity"] = on_demand_runtime_status()
+        report["can_activate"] = False  # A read-only report cannot grant activation.
+        report["activation_note"] = (
+            "can_activate is a read-only diagnostic and never changes the persisted "
+            "enabled setting or supervisor state; inspect runtime_activity for live state")
+        runtime = on_demand_runtime_status()
+        report["runtime_activity"] = runtime
         if saved["enabled"]:
-            report["state"] = ("sleeping" if selected.get("state") == "stopped"
-                               else "running" if selected.get("state") == "running"
-                               else "partially_running" if selected.get("state") == "partially_running"
-                               else "failed")
+            # Never conceal a newly discovered shared/foreign/unverified
+            # Docker deployment just because the bridge was already enabled.
+            if report.get("state") != "manual_verification_required":
+                # Keep the ownership blocker primary, but do not hide an
+                # independent supervisor failure when it is reported as well.
+                backends = runtime.get("backends")
+                if (runtime.get("mode") == "on-demand"
+                        and runtime.get("enabled") is True
+                        and isinstance(backends, dict)
+                        and any(isinstance(row, dict) and row.get("state") == "failed"
+                                for row in backends.values())):
+                    report["reason"] = report.get("reason", "Docker ownership unverified") + (
+                        "; the running supervisor also reports a failed backend")
+                return report
+            report["next_gates"] = [
+                "Validate cold-boot recovery and fault handling before unattended use"]
+            if runtime.get("mode") != "on-demand" or runtime.get("enabled") is not True:
+                report["state"] = "unverified"
+                report["reason"] = (
+                    "On-demand is configured but the running bridge has not confirmed "
+                    "activation; restart the bridge and inspect its status")
+            elif runtime.get("backends") is None:
+                report["state"] = "unverified"
+                report["reason"] = (
+                    "Bridge reports on-demand enabled but its supervisor is not "
+                    "initialized; inspect bridge startup and status")
+            else:
+                # Inventory and dashboard are separate snapshots: rely on the
+                # live supervisor to describe transitions, not old Docker counts.
+                backend_states = {row["state"] for row in runtime["backends"].values()}
+                if "failed" in backend_states:
+                    report["state"] = "failed"
+                    report["reason"] = (
+                        "The running supervisor reports a failed backend; "
+                        "inspect bridge, Docker and firewall-guard logs")
+                elif not backend_states.issubset({
+                        "running", "sleeping", "waking", "stopping"}):
+                    report["state"] = "unverified"
+                    report["reason"] = "The supervisor returned unexpected backend state"
+                elif "waking" in backend_states or "stopping" in backend_states:
+                    report["state"] = "transitioning"
+                    report["reason"] = "A verified backend is changing state"
+                elif backend_states == {"running"}:
+                    report["state"] = "running"
+                    report["reason"] = "On-demand runtime is active; reboot recovery is not yet established"
+                elif backend_states == {"sleeping"}:
+                    report["state"] = "sleeping"
+                    report["reason"] = "Both managed backends are asleep; requests may wake them"
+                else:
+                    report["state"] = "partially_running"
+                    report["reason"] = "One backend is asleep and the other is running"
         return report
     except (OSError, ValueError, ImportError, TypeError, KeyError):
         return {"mode": "read-only", "feature": "on-demand-backends",
@@ -336,7 +406,7 @@ def dry_run() -> dict:
             {"menu": "11", "effect": "privileged system changes only after confirmation",
              "action": "validate dedicated backends; install fixed egress guard, restricted sudoers and protected ChatGPT tunnel"},
         ],
-        "future": "Issue #75 optional 30-minute backend sleep is not implemented; off by default",
+        "limitations": "Optional on-demand backend sleep/wake is implemented and off by default; reboot/fault-recovery still requires host validation",
     }
 
 
@@ -501,7 +571,7 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
     choices.add_argument("--update-status", action="store_true",
                          help="inspect local Git update baseline; never fetch/pull/restart")
     choices.add_argument("--on-demand-status", action="store_true",
-                         help="preview disabled on-demand mode; never sleep/wake or reconfigure")
+                         help="read-only configured on-demand and runtime state; no Docker changes")
     choices.add_argument("--secure-tunnel-preview", action="store_true",
                          help="read-only preview of production firewall/tunnel setup")
     choices.add_argument("--secure-tunnel", action="store_true",

@@ -359,6 +359,180 @@ class SetupWizardTests(unittest.TestCase):
         inspect.assert_called_once_with()
         self.assertIn('"can_activate": false', output.getvalue())
 
+    def test_enabled_on_demand_reports_runtime_not_stale_candidate_gates(self):
+        inventory = {"state": "running"}
+        active = {"mode": "on-demand", "enabled": True, "idle_minutes": 30,
+                  "backends": {
+                      "crawl4ai": {"state": "running"},
+                      "searxng": {"state": "running"}}}
+        cases = (
+            (active, "running"),
+            ({**active, "backends": {
+                "crawl4ai": {"state": "sleeping"},
+                "searxng": {"state": "sleeping"}}}, "sleeping"),
+            ({**active, "backends": {
+                "crawl4ai": {"state": "sleeping"},
+                "searxng": {"state": "running"}}}, "partially_running"),
+            ({**active, "backends": {
+                "crawl4ai": {"state": "waking"},
+                "searxng": {"state": "running"}}}, "transitioning"),
+            ({**active, "backends": {
+                "crawl4ai": {"state": "failed"},
+                "searxng": {"state": "running"}}}, "failed"),
+            ({"mode": "disabled", "enabled": False, "backends": None},
+             "unverified"),
+            ({"state": "unavailable"}, "unverified"),
+            ({**active, "backends": None}, "unverified"),
+        )
+        for runtime, state in cases:
+            with (self.subTest(state=state, runtime=runtime),
+                  patch("scripts.on_demand_eligibility.eligibility",
+                        return_value={"state": "manual_verification_required",
+                                      "reason": "Potential dedicated deployment",
+                                      "next_gates": ["Old pre-activation check"]}),
+                  patch("scripts.on_demand_settings.read",
+                        return_value={"enabled": True, "idle_minutes": 30}),
+                  patch.object(wizard, "on_demand_runtime_status",
+                               return_value=runtime)):
+                report = wizard.on_demand_status(inventory=inventory)
+            self.assertEqual(report["state"], state)
+            self.assertTrue(report["enabled"])
+            self.assertFalse(report["can_activate"])
+            self.assertIn("read-only", report["activation_note"])
+            self.assertNotIn("Old pre-activation check", report["next_gates"])
+            self.assertNotIn("Potential dedicated deployment", report["reason"])
+
+    def test_live_state_takes_priority_over_lagging_verified_docker_inventory(self):
+        def inventory(state, running, stopped):
+            return {"state": state, "managed_running": running,
+                    "managed_stopped": stopped,
+                    "other_published_crawlers": 0, "unverified_project_containers": 0,
+                    "verified_services": {"crawl4ai": 1, "searxng": 1},
+                    "verified_restart_policies": {
+                        "crawl4ai": "no", "searxng": "no"}}
+
+        def live(crawler, search):
+            return {"mode": "on-demand", "enabled": True, "idle_minutes": 30,
+                    "backends": {"crawl4ai": {"state": crawler},
+                                 "searxng": {"state": search}}}
+
+        cases = (
+            (inventory("stopped", 0, 2), live("running", "running"), "running"),
+            (inventory("running", 2, 0), live("sleeping", "sleeping"), "sleeping"),
+            (inventory("stopped", 0, 2),
+             live("sleeping", "running"), "partially_running"),
+            (inventory("partially_running", 1, 1),
+             live("waking", "running"), "transitioning"),
+        )
+        for docker, activity, expected in cases:
+            with (self.subTest(expected=expected),
+                  patch("scripts.on_demand_settings.read",
+                        return_value={"enabled": True, "idle_minutes": 30}),
+                  patch.object(wizard, "on_demand_runtime_status",
+                               return_value=activity)):
+                report = wizard.on_demand_status(inventory=docker)
+            self.assertEqual(report["state"], expected)
+            self.assertEqual(report["runtime_activity"], activity)
+            self.assertFalse(report["can_activate"])
+
+    def test_enabled_mode_never_hides_new_docker_ownership_blocker(self):
+        blocked = {"state": "blocked",
+                   "reason": "Another crawler publishes this port; never take over",
+                   "next_gates": ["Resolve foreign crawler ownership"]}
+        live = {"mode": "on-demand", "enabled": True, "idle_minutes": 30,
+                "backends": {"crawl4ai": {"state": "running"},
+                             "searxng": {"state": "running"}}}
+        with (patch("scripts.on_demand_eligibility.eligibility",
+                    return_value=blocked),
+              patch("scripts.on_demand_settings.read",
+                    return_value={"enabled": True, "idle_minutes": 30}),
+              patch.object(wizard, "on_demand_runtime_status", return_value=live)):
+            result = wizard.on_demand_status(
+                inventory={"state": "running", "other_published_crawlers": 1})
+        self.assertTrue(result["enabled"])
+        self.assertEqual(result["state"], "blocked")
+        self.assertEqual(result["reason"], blocked["reason"])
+        self.assertEqual(result["next_gates"], blocked["next_gates"])
+        self.assertEqual(result["runtime_activity"], live)
+
+    def test_enabled_blocker_still_reports_independent_supervisor_failure(self):
+        blocked = {"state": "blocked",
+                   "reason": "Foreign crawler detected",
+                   "next_gates": ["Resolve Docker ownership"]}
+        runtime = {"mode": "on-demand", "enabled": True, "idle_minutes": 30,
+                   "backends": {"crawl4ai": {"state": "failed"},
+                                "searxng": {"state": "running"}}}
+        with (patch("scripts.on_demand_eligibility.eligibility",
+                    return_value=blocked),
+              patch("scripts.on_demand_settings.read",
+                    return_value={"enabled": True, "idle_minutes": 30}),
+              patch.object(wizard, "on_demand_runtime_status", return_value=runtime)):
+            report = wizard.on_demand_status(inventory={"state": "unverified"})
+        self.assertEqual(report["state"], "blocked")
+        self.assertIn("Foreign crawler detected", report["reason"])
+        self.assertIn("supervisor also reports a failed backend", report["reason"])
+        self.assertEqual(report["next_gates"], blocked["next_gates"])
+
+    def test_dashboard_activity_rejects_unexpected_or_secret_responses(self):
+        healthy = {"mode": "on-demand", "enabled": True, "idle_minutes": 30,
+                   "backends": {
+                       service: {"state": "running", "armed": True,
+                                 "active_requests": 0,
+                                 "last_activity_ago_seconds": 3.5,
+                                 "next_idle_stop_seconds": 1796.5,
+                                 "stop_claimed": False}
+                       for service in ("crawl4ai", "searxng")}}
+        cases = (
+            (200, healthy, "ok"),
+            (200, {**healthy, "backends": {
+                **healthy["backends"],
+                "crawl4ai": {**healthy["backends"]["crawl4ai"],
+                             "last_activity_ago_seconds": 86400 * 9.5}}}, "ok"),
+            (500, {"TOKEN": "SECRET_VALUE"}, "unavailable"),
+            (200, {**healthy, "backends": {
+                **healthy["backends"],
+                "crawl4ai": {**healthy["backends"]["crawl4ai"],
+                             "state": "SECRET_VALUE"}}}, "unavailable"),
+            (200, {**healthy, "backends": {
+                **healthy["backends"],
+                "searxng": {**healthy["backends"]["searxng"],
+                             "active_requests": "SECRET_VALUE"}}}, "unavailable"),
+            (200, {**healthy, "backends": {
+                **healthy["backends"],
+                "searxng": {**healthy["backends"]["searxng"],
+                             "last_activity_ago_seconds": -1}}}, "unavailable"),
+            (200, {**healthy, "backends": {
+                **healthy["backends"],
+                "searxng": {**healthy["backends"]["searxng"],
+                             "last_activity_ago_seconds": float("nan")}}}, "unavailable"),
+        )
+        for status, payload, outcome in cases:
+            with self.subTest(outcome=outcome, status=status):
+                response = Mock(status=status)
+                response.read.return_value = json.dumps(payload).encode()
+                connection = Mock()
+                connection.getresponse.return_value = response
+                with patch.object(wizard, "HTTPConnection", return_value=connection):
+                    report = wizard.on_demand_runtime_status()
+                connection.request.assert_called_once_with(
+                    "GET", "/on-demand-state", headers={
+                        "Host": "127.0.0.1:8791",
+                        "Origin": "http://127.0.0.1:8791"})
+                connection.close.assert_called_once_with()
+                if outcome == "ok":
+                    self.assertEqual(report, payload)
+                else:
+                    self.assertEqual(report["state"], "unavailable")
+                    self.assertNotIn("SECRET_VALUE", json.dumps(report))
+
+    def test_dry_run_does_not_claim_on_demand_is_unimplemented(self):
+        status, output = self.call("--dry-run")
+        self.assertEqual(status, 0)
+        report = json.loads(output)
+        self.assertIn("implemented", report["limitations"])
+        self.assertNotIn("not implemented", report["limitations"])
+        self.assertIn("on-demand", report["limitations"])
+
     def test_on_demand_preflight_error_is_redacted_and_fail_closed(self):
         with (patch("scripts.on_demand_eligibility.eligibility",
                     side_effect=OSError("TOKEN=sensitive"))) as _:

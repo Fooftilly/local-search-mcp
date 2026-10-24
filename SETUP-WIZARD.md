@@ -53,10 +53,11 @@ The local systemd unit preview and dependency inspection reuse their existing
 read-only helpers. Update guidance performs no Git fetch/pull, pip install,
 image download, or service restart.
 
-Not yet provided in this initial slice: full managed Docker migration and
-repair, direct updates with rollback plans, third-party client installers,
-and optional on-demand backend sleep (issue #75; planned default idle timeout:
-30 minutes). These remain separate reviewed follow-up work.
+Not yet provided: full managed Docker migration and repair, direct updates
+with rollback plans, and third-party client installers. These remain separate
+reviewed follow-up work. Optional on-demand backend sleep/wake is implemented
+for verified dedicated containers, with an explicit wizard confirmation and
+a 30-minute default idle timeout; unattended reboot recovery remains unverified.
 
 On a fresh host, first verify the backend prerequisites (SearXNG JSON mode,
 Crawl4AI 0.9.5+ stable, crawler firewall isolation), then run the existing
@@ -116,10 +117,13 @@ The existing `--status` and `--check` reports also show the disabled-by-default
 `on_demand_preflight` using the **same** read-only Docker inventory as the
 setup status check. It displays only sanitized readiness reasons and never
 starts/stops containers, enables a supervisor, persists settings, or changes
-firewall rules. `can_activate` remains false even for a dedicated candidate.
-The future default idle timeout is 30 minutes, but there is no live idle timer.
-Shared backends or incomplete Docker ownership/security verification must be
-resolved through a separately reviewed deployment plan before any opt-in.
+firewall rules. `can_activate` remains false for this **read-only** report,
+even if the optional runtime is already enabled. The separately reported
+`runtime_activity` includes the live supervisor's state and idle deadlines.
+The implemented opt-in mode defaults to a 30-minute idle timeout, remains off
+until explicitly enabled, and requires verified dedicated ownership plus a
+live root-owned firewall probe. Restart the bridge after changing settings;
+shared or unverified backends cannot be enrolled.
 
 
 ## Guided production tunnel protection (#74)
