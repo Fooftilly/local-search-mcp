@@ -24,6 +24,7 @@ before installing), since `-f` requires an explicit pathname:
 ```sudoers
 YOUR_USER ALL=(root) NOPASSWD: /usr/bin/python3 /usr/local/libexec/local-search-mcp/crawler_egress_guard.py --container crawl4ai --probe
 YOUR_USER ALL=(root) NOPASSWD: /usr/bin/python3 /usr/local/libexec/local-search-mcp/crawler_egress_guard.py --container crawl4ai --preflight
+YOUR_USER ALL=(root) NOPASSWD: /usr/bin/python3 /usr/local/libexec/local-search-mcp/crawler_egress_guard.py --container crawl4ai --tunnel-gate
 ```
 
 Install it manually as /etc/sudoers.d/local-search-mcp-crawler (root-owned,
@@ -36,7 +37,7 @@ Stop and disable the user tunnel before applying the new ordering:
 systemctl --user disable --now local-search-mcp-tunnel.service
 sudo systemctl enable --now local-search-mcp-crawler-egress.service
 sudo systemctl status local-search-mcp-crawler-egress.service
-sudo -n /usr/bin/python3 /usr/local/libexec/local-search-mcp/crawler_egress_guard.py --container crawl4ai --probe
+sudo -n /usr/bin/python3 /usr/local/libexec/local-search-mcp/crawler_egress_guard.py --container crawl4ai --tunnel-gate
 ```
 
 Only after BOTH commands pass and the crawler has the required single
@@ -72,14 +73,32 @@ privilege on its own. Refresh the operator-installed root-owned guard when
 the reviewed helper source changes; never execute the editable checkout
 as root.
 
-The noninteractive `ExecStartPre` runs the **live negative/private and
-positive/public probes before each tunnel startup**. Failure or absent
-permissions blocks tunnel startup. It cannot create firewall privileges.
-The root system unit starts after Docker, applying and probing host nft
-rules on boot (retries until the crawler is available). The user tunnel
-starts only once the probe has passed. If boot ordering races, systemd may
-mark the tunnel failed after limited attempts: check the system firewall
-service and then manually restart the tunnel.
+The noninteractive `ExecStartPre` runs a fixed **root-owned tunnel gate**
+before each startup. If Crawl4AI is running, the gate requires the full
+negative/private and positive/public live probes. If it is intentionally
+stopped, the gate requires the previously installed nftables host/forward
+rules on the same verified private Docker bridge; it **does not claim a live
+probe passed**. The existing on-demand crawler wake path must separately
+run a stopped-container firewall preflight **before** starting Crawl4AI and
+a fresh live `--probe` **after** starting it, before any fetching. A
+missing/mismatched rule, Docker uncertainty or absent sudo permission blocks
+tunnel startup. The gate cannot create firewall privileges.
+
+The root system unit now calls `--startup` after Docker is available. It
+atomically installs the scoped firewall rule table for the verified bridge,
+then runs a live probe if the crawler is running or a stopped-container
+preflight if it is sleeping. It does **not** automatically wake a sleeping
+backend, modify Docker restart policies, or expose the crawler API.
+With backend restart policy `no`, this permits secure boot without running
+the heavyweight containers until their first actual MCP requests.
+
+**Boot-race limitation:** systemd user services do not have reliable direct
+ordering against this root system service. If the tunnel starts before the
+root guard is installed, its gate fails closed and systemd retries subject to
+the existing restart limits; the operator must diagnose any exhausted limit.
+The root service itself retries failures. Complete unattended reboot recovery
+still needs a live reboot test, including checks that no other startup path
+launches Crawl4AI before nftables coverage is installed.
 
 IMPORTANT LIMITATION: This protects **startup**. A running tunnel is
 NOT automatically stopped if an administrator flushes nftables, Docker
@@ -88,6 +107,44 @@ immediately stopping tunnel access, reapplying/reprobing the guard and
 restarting the tunnel. This is not continuous runtime enforcement.
 Container restart policy and firewall reinstallation still need monitoring
 and operator tests. Do not claim permanent sandboxing from these templates.
+
+## Updating an existing protected installation
+
+This is a security-sensitive, explicit migration, **not** an automatic
+upgrade. Existing root-owned helper/service files, the two-command sudoers
+policy and the user tunnel drop-in will deliberately fail the wizard's
+same-content checks until the operator reconciles them. Do not delete or
+blindly overwrite a modified sudoers file.
+
+Before copying the new templates, inspect the existing installed files and
+ownership; back up/compare exact differences to the known project versions.
+Stop the tunnel first with
+`systemctl --user stop local-search-mcp-tunnel.service`; leave the nftables
+table installed during the entire migration. Only then, after review, install
+the root helper at the fixed root-owned path with mode 0755 and install the
+root systemd service with mode 0644, as illustrated above. Run
+`sudo systemctl daemon-reload` and restart the root service. Its
+`--startup` command must pass with the verified crawler either running or
+sleeping. Do not start the user tunnel until it passes.
+
+Stage the exact three-line sudoers policy for the current operator and check
+it with `sudo visudo -cf /path/to/staged-file`. Install it root-owned mode
+0440 **only after explicitly confirming any existing file has no unrelated
+rules**; then verify the installed file with `sudo visudo -cf
+/etc/sudoers.d/local-search-mcp-crawler`. Inspect the effective systemd
+tunnel unit, then replace **only the previously reviewed, matching managed
+drop-in** with the new `--tunnel-gate` template and run
+`systemctl --user daemon-reload`. Start the tunnel only after
+`sudo -n /usr/bin/python3
+/usr/local/libexec/local-search-mcp/crawler_egress_guard.py --container
+crawl4ai --tunnel-gate` succeeds and the effective unit has exactly one
+non-ignored `ExecStartPre=+` running the same command.
+
+If any file differs unexpectedly, ownership cannot be proven, or the firewall
+gate fails, **leave the tunnel stopped** and inspect before retrying. Do not
+install user-writable Python code as root, disable the startup guard or weaken
+nftables to recover availability. Re-enable the previous protected design
+only with the matching prior root guard, sudoers policy, unit and drop-in.
 
 Rollback without deleting existing Docker data:
 
