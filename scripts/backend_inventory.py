@@ -74,18 +74,35 @@ def _private_files(base: Path) -> tuple[set[str], bool] | None:
         return None
 
 
-def _inspect(ident: str) -> tuple[dict, str] | None:
+def _inspect(ident: str) -> tuple[dict, str, str | None] | None:
     raw_labels = _run("inspect", "--type=container", "--format",
                       "{{json .Config.Labels}}", ident)
     running = _run("inspect", "--type=container", "--format",
                    "{{.State.Running}}", ident)
+    raw_policy = _run("inspect", "--type=container", "--format",
+                      "{{json .HostConfig.RestartPolicy}}", ident)
     if raw_labels is None or running is None or running.strip() not in ("true", "false"):
         return None
     try:
         labels = json.loads(raw_labels)
     except (ValueError, TypeError):
         return None
-    return (labels, running.strip()) if isinstance(labels, dict) else None
+    if not isinstance(labels, dict):
+        return None
+    # Restart-policy lookup is a separate eligibility gate: missing/malformed
+    # policy must not erase otherwise verified container ownership or state.
+    policy_name = None
+    if raw_policy is not None:
+        try:
+            policy = json.loads(raw_policy)
+        except (ValueError, TypeError):
+            policy = None
+        if isinstance(policy, dict) and type(policy.get("Name")) is str:
+            # Docker may encode "no restart" as either an empty string or "no".
+            mode = policy["Name"]
+            if mode in ("", "no", "always", "unless-stopped", "on-failure"):
+                policy_name = "no" if mode == "" else mode
+    return labels, running.strip(), policy_name
 
 
 def report(*, config_base: Path | None = None) -> dict:
@@ -100,6 +117,7 @@ def report(*, config_base: Path | None = None) -> dict:
         "managed_running": 0,
         "managed_stopped": 0,
         "verified_services": {"crawl4ai": 0, "searxng": 0},
+        "verified_restart_policies": {"crawl4ai": None, "searxng": None},
         "unverified_project_containers": 0,
         "other_published_crawlers": None,
         "security_note": ("Docker ownership is not firewall/egress proof; "
@@ -124,7 +142,7 @@ def report(*, config_base: Path | None = None) -> dict:
         if data is None:
             output["unverified_project_containers"] += 1
             continue
-        labels, running = data
+        labels, running, restart_policy = data
         raw_files = labels.get("com.docker.compose.project.config_files")
         service = labels.get("com.docker.compose.service")
         if not isinstance(raw_files, str):
@@ -149,6 +167,7 @@ def report(*, config_base: Path | None = None) -> dict:
         # A matching Compose project label alone is insufficient for a
         # lifecycle action: two crawlers cannot substitute for one searcher.
         output["verified_services"][service] += 1
+        output["verified_restart_policies"][service] = restart_policy
         if running == "true":
             output["managed_running"] += 1
         else:

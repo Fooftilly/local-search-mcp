@@ -30,3 +30,19 @@ project, regardless of their running/stopped mix. Two crawler containers
 cannot masquerade as the required pair. Legacy or incomplete count-only
 reports fail closed. Even a matching pair remains a read-only candidate:
 `can_activate` is always `false`; there is no lifecycle operation yet.
+
+## Read-only restart policy audit
+
+A candidate must also have a readable Docker `HostConfig.RestartPolicy` for each
+verified backend. The inventory exposes only the four fixed Docker policy names
+(`no`, `always`, `unless-stopped`, `on-failure`), never raw inspect output,
+container IDs or private configuration. Unreadable or unexpected policies
+block the candidate. The `restart_policy_review` field reports
+`requires_coordinated_change` if either backend would be restarted by Docker,
+or `no_change_observed` when both currently use `no`.
+
+The project's current Compose templates deliberately use
+`restart: unless-stopped`. This diagnostic does **not** change those settings,
+call `docker update`, or suggest the runtime is safe to sleep: shutdown policy
+restoration and full-stop coordination must be implemented and tested in a
+separate PR before any on-demand activation. `can_activate` stays `false`.
