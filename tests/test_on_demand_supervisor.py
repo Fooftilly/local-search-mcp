@@ -52,6 +52,20 @@ class OnDemandSupervisorTests(unittest.TestCase):
             stopper.assert_any_call("searxng")
             self.assertEqual(manager.snapshot()["searxng"]["state"], "sleeping")
 
+    def test_quick_concurrent_requests_share_wake_and_probe(self):
+        manager = self.new_supervisor()
+        with (patch.object(manager, "_enabled", return_value=True),
+              patch.object(sup.docker, "start", return_value=False) as starter):
+            with manager.lease("crawl4ai"):
+                pass
+            with manager.lease("crawl4ai"):
+                pass
+            starter.assert_called_once()
+            manager._verified_at["crawl4ai"] = 0.0
+            with manager.lease("crawl4ai"):
+                pass
+            self.assertEqual(starter.call_count, 2)
+
     def test_settings_disable_suppresses_stop_before_mutation(self):
         manager = self.new_supervisor()
         self.now[0] += 100
