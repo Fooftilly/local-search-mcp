@@ -10,13 +10,16 @@ from web_templates import render_template
 class DashboardTemplateTests(unittest.TestCase):
     def test_fixed_templates_exist_without_inline_css_or_javascript(self):
         folder = Path(__file__).resolve().parents[1] / "web" / "templates"
-        for name in ("policy", "history"):
+        for name in ("policy", "history", "status"):
             with self.subTest(name=name):
                 raw = (folder / (name + ".html")).read_text()
                 self.assertIn('href="/dashboard.css"', raw)
                 self.assertNotIn("<style>", raw)
                 self.assertNotIn("<script>", raw)
-                self.assertIn('src="/dashboard-live.js"', raw)
+                if name in ("policy", "history"):
+                    self.assertIn('src="/dashboard-live.js"', raw)
+                else:
+                    self.assertNotIn("<script", raw)
 
     def test_unknown_template_is_rejected(self):
         for name in ("../secrets", "/etc/passwd", "x", "policy.html"):
