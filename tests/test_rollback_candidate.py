@@ -28,6 +28,8 @@ class RollbackCandidateTests(unittest.TestCase):
         self.git("config", "user.email", "rollback@example.invalid")
         (self.root / "bridge.py").write_text("old behavior\n")
         (self.root / "requirements.txt").write_text("httpx>=0.28,<1\n")
+        (self.root / "start.sh").write_text("#!/bin/sh\necho safe\n")
+        (self.root / "start.sh").chmod(0o755)
         self.git("add", ".")
         self.git("commit", "-qm", "baseline")
         self.target = self.git("rev-parse", "HEAD")
@@ -61,6 +63,10 @@ class RollbackCandidateTests(unittest.TestCase):
         self.assertEqual((self.dir / "source" / "bridge.py").read_text(),
                          "old behavior\n")
         self.assertEqual((self.root / "bridge.py").read_text(), "new behavior\n")
+        self.assertEqual(stat.S_IMODE(
+            (self.dir / "source" / "start.sh").stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(
+            (self.dir / "source" / "bridge.py").stat().st_mode), 0o600)
         self.assertEqual(self.git("rev-parse", "HEAD"), self.current)
         self.assertTrue((self.dir / "state" / "domains.sqlite3").exists())
         self.assertEqual(stat.S_IMODE(self.dir.stat().st_mode), 0o700)
