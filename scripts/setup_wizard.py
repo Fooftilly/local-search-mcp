@@ -400,7 +400,7 @@ def print_local_client_steps(client: str) -> None:
         print("it needs separately authenticated HTTPS access, not the OpenAI tunnel.")
     elif client == "claude":
         print("Claude Code CLI running on THIS HOST (not Claude.ai cloud):")
-        print("Choose an UNUSED MCP name; do not overwrite an existing entry.")
+        print("Choose an unused MCP name; do not overwrite an existing entry.")
         print("Inspect current names before adding anything: claude mcp list")
         print("Local/project-specific registration (run manually):")
         print("  claude mcp add --transport http local-search " + endpoint)
