@@ -137,7 +137,9 @@ class SecureTunnelSetupTests(unittest.TestCase):
                 raise secure.InstallError("mock partial tunnel start")
             return subprocess.CompletedProcess(args, 0,
                 "inactive" if "is-active" in args else
-                "LoadState=loaded" if "show" in args else "", "")
+                "LoadState=loaded" if "show" in args else
+                "ExecStartPre=+/usr/bin/sudo -n /usr/bin/python3" if "cat" in args
+                else "", "")
 
         with (patch.object(secure, "preview", return_value=self.inventory()),
               patch.object(secure, "_run", side_effect=systemctl),
