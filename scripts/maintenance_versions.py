@@ -96,7 +96,7 @@ def report(*, check_remote: bool = False) -> dict:
     try:
         result["tunnel_client"] = check_tunnel_version.version_report(
             check_remote=check_remote)
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, http.client.HTTPException):
         result["tunnel_client"] = _unavailable("Tunnel client inspection unavailable")
     if check_remote:
         try:
