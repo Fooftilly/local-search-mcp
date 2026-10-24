@@ -443,6 +443,8 @@ def dry_run() -> dict:
              "action": "validate dedicated backends; install fixed egress guard, restricted sudoers and protected ChatGPT tunnel"},
             {"menu": "12", "effect": "read-only",
              "action": "show optional local Cursor or Hermes HTTP MCP instructions; never edit third-party config"},
+            {"menu": "13", "effect": "read-only",
+             "action": "inspect on-demand reboot prerequisites; no sudo, Docker mutation or live firewall probes"},
         ],
         "limitations": "Optional on-demand backend sleep/wake is implemented and off by default; reboot/fault-recovery still requires host validation",
     }
@@ -482,6 +484,7 @@ def menu() -> int:
         print("10 Configure optional on-demand backends (privileged checks)")
         print("11 Install protected ChatGPT tunnel (sudo; explicit confirmation)")
         print("12 Connect another local MCP client (read-only Cursor/Hermes guidance)")
+        print("13 Audit on-demand reboot prerequisites (read-only)")
         print("0  Exit")
         try:
             choice = input("Choose: ").strip()
@@ -530,6 +533,9 @@ def menu() -> int:
             except (ValueError, OSError, EOFError, KeyboardInterrupt) as exc:
                 print("On-demand change was not fully applied: " +
                       type(exc).__name__ + "; inspect status before retrying")
+        elif choice == "13":
+            from scripts import on_demand_boot_audit
+            print(json.dumps(on_demand_boot_audit.audit(), indent=2, ensure_ascii=True))
         elif choice == "12":
             try:
                 client = input("Client (cursor/hermes), or enter to cancel: ").strip().lower()
@@ -591,6 +597,7 @@ def make_parser() -> argparse.ArgumentParser:
   ./setup.sh --docker-status       Read-only verified Compose/Docker ownership inventory
   ./setup.sh --update-status       Read-only LOCAL revision/baseline check; no network fetch
   ./setup.sh --on-demand-status    Read-only Docker ownership/eligibility and configured mode
+  ./setup.sh --boot-audit          Read-only systemd, firewall-install and Docker restart-policy prerequisites
   ./setup.sh --secure-tunnel-preview
                                   Read-only preview of guarded production tunnel setup
   ./setup.sh --secure-tunnel --confirm-secure-tunnel SECURE
@@ -624,6 +631,8 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="inspect local Git update baseline; never fetch/pull/restart")
     choices.add_argument("--on-demand-status", action="store_true",
                          help="read-only configured on-demand and runtime state; no Docker changes")
+    choices.add_argument("--boot-audit", action="store_true",
+                         help="read-only reboot prerequisites; no sudo, Docker mutations or firewall probes")
     choices.add_argument("--secure-tunnel-preview", action="store_true",
                          help="read-only preview of production firewall/tunnel setup")
     choices.add_argument("--secure-tunnel", action="store_true",
@@ -695,6 +704,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.on_demand_status:
         print(json.dumps(on_demand_status(), indent=2, ensure_ascii=True))
         return 0
+    if args.boot_audit:
+        from scripts import on_demand_boot_audit
+        report = on_demand_boot_audit.audit()
+        print(json.dumps(report, indent=2, ensure_ascii=True))
+        return 0 if report["state"] == "ready_for_manual_reboot_test" else 1
     if args.status:
         print(json.dumps(status_report(), indent=2, ensure_ascii=True))
         return 0
