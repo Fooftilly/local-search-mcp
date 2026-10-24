@@ -150,8 +150,8 @@ The guarded action:
    two narrowly scoped `NOPASSWD` sudoers rules (fixed `--probe` and
    optional on-demand `--preflight` commands) for the actual OS user.
    `visudo -cf` validates this rule both before and after installation.
-5. Requires the fixed root-owned live private-denial/public-HTTPS egress
-   probe to pass *without prompting*.
+5. Requires the fixed root-owned live private-denial and public DNS/TCP-443
+   reachability probe to pass *without prompting*. This does not verify TLS.
 6. Installs the fixed user tunnel `ExecStartPre=+` drop-in, reloads user
    systemd, and enables the tunnel and health timer only after confirming the
    drop-in is loaded.
