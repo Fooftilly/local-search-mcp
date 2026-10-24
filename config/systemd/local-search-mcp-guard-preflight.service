@@ -1,0 +1,12 @@
+# Managed by local-search-mcp; contains no credentials.
+[Unit]
+Description=On-demand Crawl4AI stopped-container firewall preflight
+Documentation=https://github.com/Fooftilly/local-search-mcp/blob/master/docs/EGRESS-SYSTEMD.md
+
+[Service]
+Type=oneshot
+UMask=0077
+# Runs only the reviewed root-owned helper via an exact restricted sudoers
+# entry. The unprivileged bridge is never granted general nft/Docker root.
+ExecStart=/usr/bin/sudo -n /usr/bin/python3 /usr/local/libexec/local-search-mcp/crawler_egress_guard.py --container crawl4ai --preflight
+TimeoutStartSec=30s
