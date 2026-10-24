@@ -130,8 +130,31 @@ class ReadonlyBootAuditTests(unittest.TestCase):
             source.write_text("print('safe')\n")
             actual.write_bytes(source.read_bytes())
             alias.symlink_to(actual)
-            self.assertFalse(audit._reviewed_root_file(alias, source, 0o755))
-            self.assertFalse(audit._reviewed_root_file(folder / "absent", source, 0o755))
+            # Isolate kernel O_NOFOLLOW: otherwise the user-owned /tmp path
+            # rejects before reaching os.open and the test gives a false pass.
+            with (patch.object(audit, "_trusted_root_parents", return_value=True),
+                  patch.object(audit, "_trusted_root_fd", return_value=True)):
+                self.assertTrue(audit._reviewed_root_file(actual, source, 0o755))
+                self.assertFalse(audit._reviewed_root_file(alias, source, 0o755))
+                self.assertFalse(audit._reviewed_root_file(folder / "absent", source, 0o755))
+
+    def test_installed_file_validation_still_rejects_untrusted_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            source = folder / "source.py"
+            target = folder / "target.py"
+            source.write_text("immutable review baseline")
+            target.write_bytes(source.read_bytes())
+            with patch.object(audit, "_trusted_root_parents", return_value=False):
+                self.assertFalse(audit._reviewed_root_file(target, source, 0o755))
+            with (patch.object(audit, "_trusted_root_parents", return_value=True),
+                  patch.object(audit, "_trusted_root_fd", return_value=False)):
+                self.assertFalse(audit._reviewed_root_file(target, source, 0o755))
+            with (patch.object(audit, "_trusted_root_parents", return_value=True),
+                  patch.object(audit, "_trusted_root_fd", return_value=True)):
+                self.assertTrue(audit._reviewed_root_file(target, source, 0o755))
+                target.write_text("content differs, never grant readiness")
+                self.assertFalse(audit._reviewed_root_file(target, source, 0o755))
 
     def test_run_rejects_mutating_commands_and_redacts_errors(self):
         with self.assertRaises(ValueError):
