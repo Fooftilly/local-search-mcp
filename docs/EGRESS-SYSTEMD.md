@@ -115,8 +115,8 @@ sudo, applies nftables, wakes Docker, or replaces privileged files. An
 all-green report is **not** verification of nftables enforcement or boot
 ordering. Confirm the fixed sudoers policy manually, perform the live
 guard probe when Crawl4AI is running, and verify guarded cold wake during
-an attended reboot. Both managed containers must use Docker restart policy
-`no` before reboot; otherwise Docker may auto-start the crawler ahead of
+an attended reboot. Both Crawl4AI and SearXNG managed containers must use
+Docker restart policy `no` before reboot; otherwise Docker may auto-start the crawler ahead of
 the root firewall service.
 
 ## Updating an existing protected installation
