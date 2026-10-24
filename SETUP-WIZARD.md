@@ -148,8 +148,9 @@ The guarded action:
    unit as root-owned copies. Root never executes an editable Git checkout.
 4. Enables the firewall service and checks it is active, then writes exactly
    two narrowly scoped `NOPASSWD` sudoers rules (fixed `--probe` and
-   optional on-demand `--preflight` commands) for the actual OS user.
-   `visudo -cf` validates this rule both before and after installation.
+   `--preflight` commands) for the actual OS user. Both are installed;
+   only later use of `--preflight` for on-demand backends is optional.
+   `visudo -cf` validates both rules before and after installation.
 5. Requires the fixed root-owned live private-denial and public DNS/TCP-443
    reachability probe to pass *without prompting*. This does not verify TLS.
 6. Installs the fixed user tunnel `ExecStartPre=+` drop-in, reloads user
