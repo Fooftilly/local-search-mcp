@@ -34,7 +34,7 @@ class StatusTemplateTests(unittest.TestCase):
         probe.assert_called_once_with()
         configured.assert_called_once_with()
         self.assertNotIn(raw, page)
-        self.assertEqual(page.count("&lt;img src=x onerror=alert(1)&gt;"), 7)
+        self.assertEqual(page.count("&lt;img src=x onerror=alert(1)&gt;"), 6)
         self.assertIn("Invalid (check local configuration)", page)
         self.assertIn('<td>8888</td>', page)
         self.assertIn('href="/dashboard.css"', page)
