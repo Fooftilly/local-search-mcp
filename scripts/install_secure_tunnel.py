@@ -126,9 +126,11 @@ def _sudoers_line() -> str:
     fixed = (name + " ALL=(root) NOPASSWD: /usr/bin/python3 "
              "/usr/local/libexec/local-search-mcp/crawler_egress_guard.py "
              "--container crawl4ai ")
-    # Both operations are fixed, narrow and documented; preflight is used
-    # only when explicitly enabling opt-in on-demand backends later.
-    return fixed + "--probe\n" + fixed + "--preflight\n"
+    # All operations are fixed, read-only host checks; only the privileged
+    # system unit may apply firewall rules. The tunnel gate accepts a stopped
+    # crawler only after it confirms the installed nftables policy.
+    return (fixed + "--probe\n" + fixed + "--preflight\n"
+            + fixed + "--tunnel-gate\n")
 
 
 def _install_sudoers() -> None:
@@ -216,7 +218,7 @@ def preview() -> dict:
         "privileged_install": [
             "Install missing fixed root-owned crawler egress guard and systemd service",
             "Enable and verify the root firewall service (live nftables checks)",
-            "Validate and install two exact NOPASSWD sudoers rules: root-owned --probe and --preflight (the latter reserved for future on-demand use)",
+            "Validate three exact NOPASSWD read-only guard commands: --probe, --preflight and --tunnel-gate",
         ],
         "user_install": [
             "Install only the fixed tunnel egress-probe drop-in",
@@ -233,7 +235,7 @@ def preview() -> dict:
 _REQUIRED_PROBE_ARGV = (
     "/usr/bin/sudo -n /usr/bin/python3 "
     "/usr/local/libexec/local-search-mcp/crawler_egress_guard.py "
-    "--container crawl4ai --probe"
+    "--container crawl4ai --tunnel-gate"
 )
 
 
@@ -281,12 +283,12 @@ def install() -> None:
     print("Validating the restricted firewall-probe sudoers policy...")
     _install_sudoers()
     _sudo("-n", "/usr/bin/python3", str(ROOT_GUARD),
-          "--container", "crawl4ai", "--probe", timeout=180)
+          "--container", "crawl4ai", "--tunnel-gate", timeout=180)
     print("Installing tunnel pre-start protection...")
     _install_user_dropin()
     _run("systemctl", "--user", "daemon-reload")
     _verify_effective_tunnel_probe()
-    # Only after a successful live root-owned probe can the tunnel be started.
+    # Only after the root-owned tunnel gate succeeds may the tunnel start.\n    # A sleeping crawler is live-probed by the on-demand supervisor on wake.
     try:
         _run("systemctl", "--user", "enable", "--now", USER_TUNNEL, timeout=180)
         active = _run("systemctl", "--user", "is-active", USER_TUNNEL)
