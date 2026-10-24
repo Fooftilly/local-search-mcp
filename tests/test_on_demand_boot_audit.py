@@ -203,8 +203,18 @@ class ReadonlyBootAuditTests(unittest.TestCase):
                 self.assertFalse(audit._reviewed_root_file(target, source, 0o755))
 
     def test_run_rejects_mutating_commands_and_redacts_errors(self):
-        with self.assertRaises(ValueError):
-            audit._run("docker", "start", "crawl4ai")
+        with patch.object(audit.subprocess, "run") as run:
+            for command in (
+                ("docker", "start", "crawl4ai"),
+                ("systemctl", "restart", audit.ROOT_SERVICE),
+                ("systemctl", "--user", "disable", audit.USER_SERVICES[0]),
+                ("loginctl", "enable-linger", "root"),
+                ("systemctl", "--user", "show",
+                 "untrusted.service", "-p", "ExecStart", "--value"),
+            ):
+                with self.subTest(command=command), self.assertRaises(ValueError):
+                    audit._run(*command)
+            run.assert_not_called()
         with patch.object(audit.subprocess, "run", return_value=subprocess.CompletedProcess(
                 args=["systemctl"], returncode=1,
                 stdout="SECRET_TOKEN", stderr="SECRET_TOKEN")):
