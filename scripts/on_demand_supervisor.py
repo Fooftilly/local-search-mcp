@@ -111,18 +111,21 @@ class Supervisor:
         lease_started = False
         try:
             with lock:
-                with coordination.exclusive():
-                    # The operator may have disabled mode while we waited
-                    # for an existing stop or wake to finish.
-                    if not self._enabled():
-                        raise BackendUnavailable("On-demand mode disabled; retry")
-                    self.tracker.begin_work(service)
-                    lease_started = True
-                    current = self.tracker.snapshot(service)
-                    needs_verification = (
-                        self._state[service] != "running" or not current["armed"]
-                        or time.monotonic() - self._verified_at[service] >= VERIFY_SECONDS)
-                    if needs_verification:
+                if not self._enabled():
+                    raise BackendUnavailable("On-demand mode disabled; retry")
+                self.tracker.begin_work(service)
+                lease_started = True
+                current = self.tracker.snapshot(service)
+                needs_verification = (
+                    self._state[service] != "running" or not current["armed"]
+                    or time.monotonic() - self._verified_at[service] >= VERIFY_SECONDS)
+                if needs_verification:
+                    # Only Docker transitions share the cross-process lock.
+                    # Routine warm requests to independent backends do not
+                    # queue behind each other's cold start or idle shutdown.
+                    with coordination.exclusive():
+                        if not self._enabled():
+                            raise BackendUnavailable("On-demand mode disabled; retry")
                         self._state[service] = "waking"
                         docker.start(
                             service, health=_healthy,
@@ -130,10 +133,8 @@ class Supervisor:
                             crawler_preflight=_preflight_crawler if service == "crawl4ai" else None)
                         self.tracker.arm_running(service)
                         self._verified_at[service] = time.monotonic()
-                    self._state[service] = "running"
+                self._state[service] = "running"
         except Exception as exc:
-            # TypeErrors or unexpected probe errors must also release the
-            # lease: otherwise an idle stop can be blocked until restart.
             if lease_started:
                 self.tracker.finish_work(service)
                 self._state[service] = "failed"
