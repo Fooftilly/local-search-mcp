@@ -53,10 +53,11 @@ The local systemd unit preview and dependency inspection reuse their existing
 read-only helpers. Update guidance performs no Git fetch/pull, pip install,
 image download, or service restart.
 
-Not yet provided in this initial slice: full managed Docker migration and
-repair, direct updates with rollback plans, third-party client installers,
-and optional on-demand backend sleep (issue #75; planned default idle timeout:
-30 minutes). These remain separate reviewed follow-up work.
+Not yet provided: full managed Docker migration and repair, direct updates
+with rollback plans, and third-party client installers. These remain separate
+reviewed follow-up work. Optional on-demand backend sleep/wake is implemented
+for verified dedicated containers, with an explicit wizard confirmation and
+a 30-minute default idle timeout; unattended reboot recovery remains unverified.
 
 On a fresh host, first verify the backend prerequisites (SearXNG JSON mode,
 Crawl4AI 0.9.5+ stable, crawler firewall isolation), then run the existing
