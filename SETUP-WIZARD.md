@@ -13,7 +13,35 @@ Read-only commands (no prompts, writes, downloads, restarts or root privileges):
 ./setup.sh --status
 ./setup.sh --dry-run
 ./setup.sh --chatgpt
+./setup.sh --client cursor
+./setup.sh --client hermes
 ```
+
+Local integrations for other clients are explicitly opt-in, and the
+wizard **only prints** manual instructions without editing third-party
+configurations:
+
+```sh
+./setup.sh --client cursor
+./setup.sh --client hermes
+```
+
+Cursor IDE (including the Grok model running *inside Cursor*) can use the
+existing loopback Streamable HTTP MCP endpoint
+`http://127.0.0.1:8790/mcp` via an `mcpServers.local-search.url` entry in
+`~/.cursor/mcp.json`. Preserve any existing MCP entries. Hermes Agent on
+the same host can use
+`hermes mcp add local-search --url http://127.0.0.1:8790/mcp`,
+followed by `hermes mcp test local-search` and `/reload-mcp` in chat.
+Both share the existing bridge, crawler safety guard and optional backend
+idle timer. No new Docker resources are needed.
+
+A **remote** Cursor/Grok bot or Docker-containerized Hermes process does
+not reach the Linux host via its own `127.0.0.1`. Never expose loopback MCP
+or the local approval dashboard on `0.0.0.0`; cloud agents require a separate
+authenticated HTTPS MCP ingress. The OpenAI tunnel is not a generic ingress
+for other providers. No enrollment, credential changes, client installation
+or remote proxy setup is performed by these preview commands.
 
 `--check` shows redacted configuration sources, Python prerequisites,
 local health and user systemd state. It exits nonzero if the local stack is not
