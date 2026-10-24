@@ -106,7 +106,8 @@ class ScopedDockerTests(unittest.TestCase):
         self.assertEqual(self.operations, [])
         with self.assertRaisesRegex(docker.LifecycleError, "egress probe failed"):
             docker.start("crawl4ai", config_base=self.base,
-                         health=lambda _: True, crawler_probe=lambda: False)
+                         health=lambda _: True, crawler_probe=lambda: False,
+                         crawler_preflight=lambda: True)
         self.assertEqual(self.operations,
                          [("crawl4ai", CRAWLER, False),
                           ("crawl4ai", CRAWLER, True)])
@@ -124,7 +125,8 @@ class ScopedDockerTests(unittest.TestCase):
             with self.assertRaises(docker.LifecycleError):
                 docker.start("crawl4ai", config_base=self.base,
                              health=lambda _: True,
-                             crawler_probe=lambda: True)
+                             crawler_probe=lambda: True,
+                             crawler_preflight=lambda: True)
         self.assertEqual(self.operations, [
             ("crawl4ai", CRAWLER, False), ("crawl4ai", CRAWLER, True)])
 
@@ -144,8 +146,41 @@ class ScopedDockerTests(unittest.TestCase):
             with self.assertRaises(docker.LifecycleError):
                 docker.start("crawl4ai", config_base=self.base,
                              health=lambda _: True,
-                             crawler_probe=lambda: True)
+                             crawler_probe=lambda: True,
+                             crawler_preflight=lambda: True)
         self.assertEqual(self.operations[-1], ("crawl4ai", CRAWLER, True))
+
+    def test_missing_or_failed_prestart_guard_cannot_wake_crawler(self):
+        self.setup_mocks()
+        self.running["crawl4ai"] = False
+        with self.assertRaisesRegex(docker.LifecycleError, "pre-start firewall"):
+            docker.start("crawl4ai", config_base=self.base,
+                         health=lambda _: True, crawler_probe=lambda: True)
+        self.assertEqual(self.operations, [])
+        for callback in (lambda: False, lambda: None,
+                         lambda: 1, lambda: (_ for _ in ()).throw(OSError("private"))):
+            with self.subTest(callback=callback), self.assertRaisesRegex(
+                    docker.LifecycleError, "pre-start firewall"):
+                docker.start("crawl4ai", config_base=self.base,
+                             health=lambda _: True, crawler_probe=lambda: True,
+                             crawler_preflight=callback)
+            self.assertEqual(self.operations, [])
+
+    def test_crawler_verified_prestart_and_live_probe_both_required(self):
+        self.setup_mocks()
+        self.running["crawl4ai"] = False
+        events = []
+        def preflight():
+            events.append("preflight")
+            return True
+        def live():
+            events.append("live")
+            return True
+        self.assertTrue(docker.start("crawl4ai", config_base=self.base,
+                                     health=lambda _: True,
+                                     crawler_preflight=preflight, crawler_probe=live))
+        self.assertEqual(events, ["preflight", "live"])
+        self.assertEqual(self.operations, [("crawl4ai", CRAWLER, False)])
 
     def test_always_restart_policy_rejected_without_change(self):
         self.setup_mocks()
