@@ -625,6 +625,11 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, OSError):
                 return self._respond(400,
                     'Cache settings unavailable; inspect permissions and file contents')
+        if path.path=='/on-demand-state':
+            if not self._read_origin_valid():return self._respond(403,'Forbidden')
+            from scripts import on_demand_supervisor
+            return self._respond(200, json.dumps(on_demand_supervisor.local_status()),
+                                 'application/json; charset=utf-8')
         if path.path=='/status':
             if not self._read_origin_valid():return self._respond(403,'Forbidden')
             return self._respond(200,status_page())

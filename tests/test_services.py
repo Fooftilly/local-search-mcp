@@ -30,15 +30,15 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("OnUnitActiveSec=2min", units["local-search-mcp-health.timer"])
 
     def test_units_are_rendered_from_version_controlled_templates(self):
-        expected = set(installer.NAMES)
+        expected = set(installer.NAMES) | {installer.GUARD_PROBE, installer.GUARD_PREFLIGHT}
         self.assertEqual({p.name for p in installer.TEMPLATE_DIR.iterdir()
                           if p.is_file()}, expected)
         units = unit_files("/usr/bin/python3", Path("/tmp/demo"),
-                           auto_restart=True,
+                           auto_restart=True, guard_probe=True,
                            reflog_path=Path("/tmp/demo/.git/logs/HEAD"),
                            state_path=Path("/tmp/service-state"))
         self.assertEqual(set(units), expected)
-        for name in installer.NAMES:
+        for name in expected:
             template = (installer.TEMPLATE_DIR / name).read_text()
             self.assertTrue(template.startswith(installer.MARKER))
             self.assertNotIn("CRAWL4AI_API_TOKEN=", template)
@@ -63,6 +63,41 @@ class ServiceTests(unittest.TestCase):
             with patch.object(installer, "TEMPLATE_DIR", folder):
                 with self.assertRaises(FileNotFoundError):
                     unit_files("/usr/bin/python3", Path("/tmp/project"))
+
+    def test_foreground_start_allows_only_verified_intentional_sleep(self):
+        from scripts.on_demand_docker import LifecycleError, Target
+        def verified(name):
+            return Target(name, "a" * 64, False, "unless-stopped")
+        with (patch.object(bootstrap, "http_ok", return_value=False),
+              patch.object(bootstrap, "urlopen", side_effect=OSError("sleeping")),
+              patch("scripts.on_demand_settings.read",
+                    return_value={"enabled": True, "idle_minutes": 30}),
+              patch("scripts.on_demand_docker._safe_target", side_effect=verified)):
+            bootstrap.check_services()
+        with (patch.object(bootstrap, "http_ok", return_value=False),
+              patch("scripts.on_demand_settings.read",
+                    return_value={"enabled": False, "idle_minutes": 30})):
+            with self.assertRaises(bootstrap.SetupError):
+                bootstrap.check_services()
+        with (patch.object(bootstrap, "http_ok", return_value=False),
+              patch("scripts.on_demand_settings.read",
+                    return_value={"enabled": True, "idle_minutes": 30}),
+              patch("scripts.on_demand_docker._safe_target",
+                    side_effect=LifecycleError("foreign container"))):
+            with self.assertRaises(bootstrap.SetupError):
+                bootstrap.check_services()
+
+    def test_running_crawler_still_requires_hardened_api(self):
+        with (patch.object(bootstrap, "http_ok", return_value=True),
+              patch.object(bootstrap, "urlopen", side_effect=OSError("bad health")),
+              patch("scripts.on_demand_settings.read",
+                    return_value={"enabled": True, "idle_minutes": 30}),
+              patch("scripts.on_demand_docker._safe_target",
+                    return_value=__import__(
+                        "scripts.on_demand_docker", fromlist=["Target"]
+                    ).Target("crawl4ai", "a" * 64, True, "unless-stopped"))):
+            with self.assertRaises(bootstrap.SetupError):
+                bootstrap.check_services()
 
     def test_bridge_exec_uses_prepared_private_state(self):
         config = {

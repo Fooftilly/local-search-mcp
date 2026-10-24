@@ -75,9 +75,27 @@ def snapshot() -> dict:
     states["mcp_listener"] = listening(8790)
     states["dashboard_http"] = dashboard_ok()
     states["tunnel_listener"] = listening(8080)
-    status = "healthy" if all(states.values()) else ("degraded" if states["mcp_listener"] else "unavailable")
+    expected_sleeping = []
+    # An opted-in stopped backend is expected, not evidence that the MCP
+    # bridge/tunnel needs restarting. Never wake anything from health checks.
+    try:
+        from scripts import on_demand_settings, on_demand_docker
+        if on_demand_settings.read()["enabled"]:
+            for backend in ("searxng", "crawl4ai"):
+                if not states[backend]:
+                    target = on_demand_docker._safe_target(backend)
+                    if not target.running:
+                        expected_sleeping.append(backend)
+    except (OSError, ValueError, RuntimeError, ImportError):
+        expected_sleeping = []
+    required = [value for name, value in states.items()
+                if name not in expected_sleeping]
+    status = ("healthy" if all(states.values()) else
+              "sleeping" if expected_sleeping and all(required) else
+              "degraded" if states["mcp_listener"] else "unavailable")
     return {
         "status": status,
+        "expected_sleeping_backends": expected_sleeping,
         "checks": states,
         "note": "TCP listener checks do not prove remote tunnel registration or MCP-tool correctness.",
     }
@@ -96,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         for name, good in result["checks"].items():
             print(f"{name}: {'healthy' if good else 'unavailable'}")
         print(result["note"])
-    return 0 if result["status"] == "healthy" else 1
+    return 0 if result["status"] in ("healthy", "sleeping") else 1
 
 
 if __name__ == "__main__":

@@ -8,6 +8,15 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
+
+if __package__:
+    from . import on_demand_settings, on_demand_coordination
+else:
+    # stop.sh intentionally launches this script by path, placing only
+    # scripts/ on sys.path. Restore the repository root for package imports.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts import on_demand_settings, on_demand_coordination
 
 PROJECT = "local-search-crawler"
 ROOT_GUARD = "local-search-mcp-crawler-egress.service"
@@ -24,9 +33,13 @@ UNITS = (
     "local-search-mcp-health.service",
     "local-search-mcp-tunnel.service",
     "local-search-mcp-bridge.service",
+    "local-search-mcp-guard-probe.service",
+    "local-search-mcp-guard-preflight.service",
 )
 TUNNEL = "local-search-mcp-tunnel.service"
-CHECKERS = {"local-search-mcp-health.service", "local-search-mcp-update.service"}
+CHECKERS = {"local-search-mcp-health.service", "local-search-mcp-update.service",
+            "local-search-mcp-guard-probe.service",
+            "local-search-mcp-guard-preflight.service"}
 
 
 def config_home() -> Path:
@@ -38,6 +51,18 @@ class Stop:
     def __init__(self):
         self.errors: list[str] = []
         self.tunnel_safe = False
+
+    def inhibit_on_demand(self) -> None:
+        """Disarm future wake before stopping any bridge/tunnel services."""
+        try:
+            with on_demand_coordination.exclusive():
+                saved = on_demand_settings.read()
+                if saved["enabled"]:
+                    on_demand_settings.save(enabled=False,
+                                            idle_minutes=saved["idle_minutes"])
+                    print("On-demand wake: disabled before full stop")
+        except (OSError, ValueError):
+            self.error("On-demand wake suppression could not be verified")
 
     def error(self, detail: str) -> None:
         self.errors.append(detail)
@@ -272,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
     if os.geteuid() == 0:
         parser.error("Run as normal user; root guard requires separate authorization")
     job = Stop()
+    job.inhibit_on_demand()
     job.user_units()
     if job.tunnel_safe:
         job.compose()

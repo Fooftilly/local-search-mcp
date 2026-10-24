@@ -21,6 +21,8 @@ NAMES = (
     "local-search-mcp-update.path",
     "local-search-mcp-update.timer",
 )
+GUARD_PROBE = "local-search-mcp-guard-probe.service"
+GUARD_PREFLIGHT = "local-search-mcp-guard-preflight.service"
 
 
 def quote(value: str) -> str:
@@ -40,6 +42,7 @@ def _render_unit(name: str, substitutions: dict[str, str]) -> str:
 
 
 def unit_files(python: str, root: Path, *, auto_restart: bool = False,
+               guard_probe: bool = False,
                reflog_path: Path | None = None, state_path: Path | None = None) -> dict[str, str]:
     """Render version-controlled systemd units, substituting local paths only."""
     fields = {
@@ -72,6 +75,8 @@ def unit_files(python: str, root: Path, *, auto_restart: bool = False,
             "WATCH_PATH": watch_path.replace("%", "%%"),
         })
         names = NAMES
+    if guard_probe:
+        names = (*names, GUARD_PROBE, GUARD_PREFLIGHT)
     return {name: _render_unit(name, fields) for name in names}
 
 
@@ -106,9 +111,13 @@ def main(argv: list[str] | None = None) -> int:
     modes.add_argument("--remove", action="store_true")
     modes.add_argument("--remove-auto-restart", action="store_true")
     parser.add_argument("--auto-restart", action="store_true", help="Include opt-in local Git change watcher and timer")
+    parser.add_argument("--guard-probe", action="store_true",
+                        help="include the optional fixed on-demand egress probe unit")
     args = parser.parse_args(argv)
     if os.geteuid() == 0:
         parser.error("Run as your normal user, not root")
+    if args.guard_probe and (args.remove or args.remove_auto_restart):
+        parser.error("--guard-probe is only valid for preview or --install")
     if args.auto_restart and (args.remove or args.remove_auto_restart):
         parser.error("--auto-restart is only valid for preview or --install")
     folder = destination()
@@ -120,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
             from restart_on_update import state_file
         pinned_state = state_file().absolute()
     files = unit_files(sys.executable, ROOT, auto_restart=args.auto_restart,
-                       state_path=pinned_state)
+                       guard_probe=args.guard_probe, state_path=pinned_state)
     if args.install:
         if args.auto_restart:
             if __package__:
@@ -133,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
             write_owned(folder / name, content)
         print("Installed user units. Run systemctl --user daemon-reload")
     elif args.remove or args.remove_auto_restart:
-        for name in (NAMES[4:] if args.remove_auto_restart else NAMES):
+        for name in (NAMES[4:] if args.remove_auto_restart else (*NAMES, GUARD_PROBE, GUARD_PREFLIGHT)):
             path = folder / name
             if path.is_symlink():
                 raise ValueError(f"Refusing symlink: {path}")

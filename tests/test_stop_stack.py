@@ -113,6 +113,26 @@ class ShutdownTests(unittest.TestCase):
         self.assertFalse(any(c in ("down", "prune", "rm", "pull", "--remove-orphans")
                              for args in self.calls for c in args))
 
+    def test_optional_static_probe_is_stopped_but_not_disabled(self):
+        self.install_units()
+        def static_probe(argv, **kw):
+            result = self.fake_run(argv, **kw)
+            if argv[0] == "systemctl" and "show" in argv and argv[-1] == (
+                    "local-search-mcp-guard-probe.service"):
+                return response(argv, 0,
+                                "LoadState=loaded\nActiveState=inactive\n"
+                                "UnitFileState=static\n")
+            return result
+        result, _ = self.job(static_probe)
+        self.assertFalse(result.errors)
+        self.assertTrue(result.tunnel_safe)
+        probe_actions = [x for x in self.calls if x[0] == "systemctl" and
+                         x[-1] == "local-search-mcp-guard-probe.service" and
+                         "show" not in x]
+        self.assertEqual(probe_actions, [[
+            "systemctl", "--user", "stop",
+            "local-search-mcp-guard-probe.service"]])
+
     def test_missing_components_and_empty_project_are_harmless(self):
         self.containers = {}
         result, _ = self.job()
