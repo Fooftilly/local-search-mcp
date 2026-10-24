@@ -239,8 +239,8 @@ class SecureTunnelSetupTests(unittest.TestCase):
                 raise secure.InstallError("mock partial tunnel start")
             return subprocess.CompletedProcess(args, 0,
                 "inactive" if "is-active" in args else
-                "LoadState=loaded" if "show" in args else
-                self.effective_probe() if "--property=ExecStartPre" in args
+                self.effective_probe() if "--property=ExecStartPre" in args else
+                "LoadState=loaded" if "--property=LoadState" in args
                 else "", "")
 
         with (patch.object(secure, "preview", return_value=self.inventory()),
@@ -275,9 +275,9 @@ class SecureTunnelSetupTests(unittest.TestCase):
                     return subprocess.CompletedProcess(
                         args, 0,
                         "inactive" if "is-active" in args else
-                        "LoadState=loaded" if "show" in args else
                         self.effective_probe()
-                        if "--property=ExecStartPre" in args else "", "")
+                        if "--property=ExecStartPre" in args else
+                        "LoadState=loaded" if "--property=LoadState" in args else "", "")
 
                 stderr = io.StringIO()
                 with (patch.object(secure, "preview", return_value=self.inventory()),
@@ -310,9 +310,9 @@ class SecureTunnelSetupTests(unittest.TestCase):
             return subprocess.CompletedProcess(
                 args, 0,
                 "inactive" if "is-active" in args else
-                "LoadState=loaded" if "show" in args else
                 self.effective_probe()
-                if "--property=ExecStartPre" in args else "", "")
+                if "--property=ExecStartPre" in args else
+                "LoadState=loaded" if "--property=LoadState" in args else "", "")
 
         with (patch.object(secure, "preview", return_value=self.inventory()),
               patch.object(secure, "_run", side_effect=interrupted_systemctl),
