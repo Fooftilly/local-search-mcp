@@ -8,11 +8,15 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 
 if __package__:
     from . import on_demand_settings
 else:
-    import on_demand_settings
+    # stop.sh intentionally launches this script by path, placing only
+    # scripts/ on sys.path. Restore the repository root for package imports.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts import on_demand_settings
 
 PROJECT = "local-search-crawler"
 ROOT_GUARD = "local-search-mcp-crawler-egress.service"
