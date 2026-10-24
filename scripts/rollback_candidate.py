@@ -176,8 +176,6 @@ def _copy_git_blobs(root: Path, target: str, destination: Path) -> int:
                 os.fsync(output.fileno())
 
     walk(tree_oid, (), 0)
-    if count == 0:
-        raise ValueError("Empty target Git tree")
     return count
 
 
@@ -196,6 +194,8 @@ def prepare(target: str, archive: Path, destination: Path,
         code = destination / "source"
         code.mkdir(mode=0o700)
         files = _copy_git_blobs(root, target, code)
+        if files < 1:
+            raise ValueError("Target Git tree contains no regular source files")
         backup_state.restore(archive, destination / "state")
         if (update.head(root, read_only=True) != source_head or
                 update.busy(root, read_only=True)
