@@ -144,12 +144,21 @@ class Supervisor:
                     lock.release()
 
     def snapshot(self) -> dict:
-        return {
-            name: {
+        output = {}
+        for name in self._locks:
+            info = self.tracker.snapshot(name)
+            elapsed = info["idle_seconds"]
+            output[name] = {
                 "state": self._state[name],
-                **self.tracker.snapshot(name),
-            } for name in self._locks
-        }
+                "armed": info["armed"],
+                "active_requests": info["active_requests"],
+                "last_activity_ago_seconds": elapsed,
+                "next_idle_stop_seconds": (
+                    max(0.0, self.tracker.idle_seconds - elapsed)
+                    if elapsed is not None and info["armed"] else None),
+                "stop_claimed": info["stop_claimed"],
+            }
+        return output
 
     def shutdown(self) -> None:
         self._stop_event.set()
