@@ -23,6 +23,7 @@ before installing), since `-f` requires an explicit pathname:
 
 ```sudoers
 YOUR_USER ALL=(root) NOPASSWD: /usr/bin/python3 /usr/local/libexec/local-search-mcp/crawler_egress_guard.py --container crawl4ai --probe
+YOUR_USER ALL=(root) NOPASSWD: /usr/bin/python3 /usr/local/libexec/local-search-mcp/crawler_egress_guard.py --container crawl4ai --preflight
 ```
 
 Install it manually as /etc/sudoers.d/local-search-mcp-crawler (root-owned,
@@ -56,6 +57,20 @@ After installation, inspect the combined user unit with
 `systemctl --user cat local-search-mcp-tunnel.service` and verify the
 live start and journal; offline tests and systemd-analyze verify alone cannot
 prove the host-specific sudo policy and privileges.
+
+For optional #75 on-demand cold wake, also install the fixed
+`local-search-mcp-guard-preflight.service` alongside the fixed
+`local-search-mcp-guard-probe.service` via
+`python3 scripts/install_user_services.py --install --guard-probe`,
+followed by `systemctl --user daemon-reload`. The preflight unit calls the
+**root-owned** helper with exactly `--container crawl4ai --preflight` while
+the crawler is stopped. It verifies installed nftables bridge coverage
+without claiming that live negative/public probes succeeded. After Docker
+wake, the separate `--probe` oneshot performs the mandatory live tests.
+Both commands must be authorized narrowly; a service unit does not grant
+privilege on its own. Refresh the operator-installed root-owned guard when
+the reviewed helper source changes; never execute the editable checkout
+as root.
 
 The noninteractive `ExecStartPre` runs the **live negative/private and
 positive/public probes before each tunnel startup**. Failure or absent
