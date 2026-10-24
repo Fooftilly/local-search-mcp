@@ -297,6 +297,21 @@ def require_root() -> None:
 
 
 
+def pin_container_id(container: str) -> str:
+    """Resolve the fixed Docker name to an immutable full ID before validation.
+
+    Never use the reusable name again for topology, state or live Docker exec.
+    A replaced/removed container ID fails rather than switching the target.
+    """
+    ident = command([
+        'docker', 'inspect', '--type=container', '--format', '{{.Id}}',
+        validated_container(container),
+    ]).strip()
+    if not re.fullmatch(r'[a-f0-9]{64}', ident):
+        raise GuardError('Cannot pin verified Crawl4AI container identity')
+    return ident
+
+
 def container_running(container: str) -> bool:
     """Read one fixed container's state; uncertain Docker state fails closed."""
     value = command([
@@ -382,8 +397,12 @@ def main(argv: list[str] | None = None) -> int:
                 command(['nft', 'delete', 'table', 'inet', TABLE])
             print('Removed local-search-mcp crawler firewall table')
             return 0
+        # Pin identity before accepting boot/tunnel-gate state changes. Docker
+        # names can be reused for a different container between subprocesses.
+        target = (pin_container_id(args.container)
+                  if args.startup or args.tunnel_gate else args.container)
         name, bridge = network_for(
-            args.container, allow_stopped=(
+            target, allow_stopped=(
                 args.preflight or args.startup or args.tunnel_gate))
         generated = rules(bridge)
         if args.print:
@@ -397,12 +416,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.probe or args.tunnel_gate:
             require_root()
             verify_installed(bridge)
-            if args.tunnel_gate and not container_running(args.container):
+            if args.tunnel_gate and not container_running(target):
                 print('PASS: guarded tunnel startup with sleeping crawler; live probe required on wake')
                 return 0
             # --probe always insists on a running crawler and never degrades to
             # a stopped-container check; on-demand cold wake relies on this.
-            probe(args.container, name)
+            probe(target, name)
             return 0
         require_root()
         if args.apply or args.startup:
@@ -413,8 +432,8 @@ def main(argv: list[str] | None = None) -> int:
             command(['nft', '-f', '-'], stdin=batch)
             if args.startup:
                 verify_installed(bridge)
-                if container_running(args.container):
-                    probe(args.container, name)
+                if container_running(target):
+                    probe(target, name)
                 else:
                     print('PASS: boot firewall installed for sleeping crawler; live probe required on wake')
             else:
