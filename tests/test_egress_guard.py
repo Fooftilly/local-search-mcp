@@ -23,6 +23,30 @@ def fixture(networks=None, cap=None, privileged=False, members=True, driver='bri
              'Containers':{('c'*64):{}} if members else {}}
     return [container], [network]
 
+def nft_listing(bridge: str) -> str:
+    """Comment-free, stateless nft -s list table shape, not an input rules file.
+
+    Keep this independent of guard.rules(): a generated template includes
+    comments and does not represent the kernel's serialized listing.
+    """
+    networks = ', '.join(guard.BLOCKED_IPV4)
+    return f'''table inet {guard.TABLE} {{
+    counter blocked_ipv4 {{
+    }}
+    chain block_forward {{
+        type filter hook forward priority -200; policy accept;
+        iifname "{bridge}" ip daddr {{ {networks} }} counter name blocked_ipv4 reject
+        iifname "{bridge}" meta nfproto ipv6 counter reject
+    }}
+    chain block_host {{
+        type filter hook input priority -200; policy accept;
+        iifname "{bridge}" ct state established ct direction reply accept
+        iifname "{bridge}" counter reject
+    }}
+}}
+'''
+
+
 class GuardTests(unittest.TestCase):
     def test_rules_only_act_on_selected_bridge_and_block_ipv6(self):
         """Verify bridge scoping and deny rules for IPv4 and IPv6."""
@@ -71,7 +95,7 @@ class GuardTests(unittest.TestCase):
                 guard.network_for("crawl4ai")
 
     def test_preflight_fails_closed_without_any_docker_exec(self):
-        expected = guard.rules("br-aaaaaaaaaaaa")
+        expected = nft_listing("br-aaaaaaaaaaaa")
         with (patch.object(guard, "network_for",
                            return_value=("crawler-egress", "br-aaaaaaaaaaaa")) as net,
               patch.object(guard, "require_root"),
@@ -91,7 +115,7 @@ class GuardTests(unittest.TestCase):
 
     def test_installed_rules_must_match_both_complete_guarded_chains(self):
         bridge = 'br-aaaaaaaaaaaa'
-        expected = guard.rules(bridge)
+        expected = nft_listing(bridge)
         with (patch.object(guard, 'table_exists', return_value=True),
               patch.object(guard, 'command', return_value=expected) as cmd):
             guard.verify_installed(bridge)
@@ -112,6 +136,9 @@ class GuardTests(unittest.TestCase):
                              'meta nfproto ipv6'),
             expected.replace(f'iifname "{bridge}" counter reject',
                              'iifname "br-bbbbbbbbbbbb" counter reject'),
+            # Dormant tables preserve rules but unregister their base chains.
+            expected.replace(f'table inet {guard.TABLE} {{',
+                             f'table inet {guard.TABLE} {{\n    flags dormant'),
         )
         for text in tampered:
             with (self.subTest(text=text[:80]),
