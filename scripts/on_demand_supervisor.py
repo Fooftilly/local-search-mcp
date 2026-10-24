@@ -22,6 +22,7 @@ from scripts import on_demand_settings as settings
 from scripts.backend_idle_activity import IdleActivity
 
 PROBE_UNIT = "local-search-mcp-guard-probe.service"
+PREFLIGHT_UNIT = "local-search-mcp-guard-preflight.service"
 # A short verification lease coalesces wake storms without permanently trusting
 # a firewall or Docker state that may change while the bridge stays running.
 VERIFY_SECONDS = 10
@@ -58,6 +59,21 @@ def _probe_crawler() -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return p.returncode == 0
+
+
+def _preflight_crawler() -> bool:
+    """Verify root-owned installed nftables protection before cold wake.
+
+    This is not the live negative/public probe; that must pass separately
+    after Docker start. No elevated script in the Git checkout is executed.
+    """
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "start", PREFLIGHT_UNIT],
+            capture_output=True, text=True, timeout=32, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
 
 class Supervisor:
@@ -107,8 +123,10 @@ class Supervisor:
                     or time.monotonic() - self._verified_at[service] >= VERIFY_SECONDS)
                 if needs_verification:
                     self._state[service] = "waking"
-                    docker.start(service, health=_healthy,
-                                 crawler_probe=_probe_crawler if service == "crawl4ai" else None)
+                    docker.start(
+                        service, health=_healthy,
+                        crawler_probe=_probe_crawler if service == "crawl4ai" else None,
+                        crawler_preflight=_preflight_crawler if service == "crawl4ai" else None)
                     self.tracker.arm_running(service)
                     self._verified_at[service] = time.monotonic()
                 self._state[service] = "running"
