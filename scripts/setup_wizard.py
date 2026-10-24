@@ -380,6 +380,34 @@ def print_chatgpt_steps() -> None:
     print("No settings for Cursor, Claude, or Hermes are installed or changed.")
 
 
+def print_local_client_steps(client: str) -> None:
+    """Print opt-in, local-only MCP configuration instructions without writes."""
+    endpoint = "http://127.0.0.1:8790/mcp"
+    if client == "cursor":
+        print("Cursor IDE (including Grok selected as the model):")
+        print("Add this entry under mcpServers in ~/.cursor/mcp.json:")
+        print(json.dumps({"mcpServers": {"local-search": {"url": endpoint}}},
+                         indent=2))
+        print("Merge this entry with existing servers; do not replace the file.")
+        print("Restart or refresh Cursor MCP connections and verify web_search.")
+        print("This loopback URL is for Cursor running on THIS HOST only.")
+        print("A remote Cursor/Grok cloud bot cannot use 127.0.0.1 on your laptop;")
+        print("it needs separately authenticated HTTPS access, not the OpenAI tunnel.")
+    elif client == "hermes":
+        print("Hermes Agent running on THIS HOST:")
+        print("  hermes mcp add local-search --url " + endpoint)
+        print("  hermes mcp test local-search")
+        print("  hermes mcp list")
+        print("Within a running Hermes chat: /reload-mcp")
+        print("Hermes also supports url-based entries in ~/.hermes/config.yaml.")
+        print("Do not change any existing mcp_servers entries or agent secrets.")
+        print("If Hermes runs inside Docker or remotely, 127.0.0.1 is not this")
+        print("laptop; use a separately secured and reachable endpoint.")
+    else:
+        raise ValueError("Unsupported optional MCP client")
+    print("No client configuration, service, Docker resource or credential was changed.")
+
+
 def dry_run() -> dict:
     return {
         "mode": "preview-only",
@@ -405,6 +433,8 @@ def dry_run() -> dict:
              "action": "configure validated on-demand backends with operator confirmation"},
             {"menu": "11", "effect": "privileged system changes only after confirmation",
              "action": "validate dedicated backends; install fixed egress guard, restricted sudoers and protected ChatGPT tunnel"},
+            {"menu": "12", "effect": "read-only",
+             "action": "show optional local Cursor or Hermes HTTP MCP instructions; never edit third-party config"},
         ],
         "limitations": "Optional on-demand backend sleep/wake is implemented and off by default; reboot/fault-recovery still requires host validation",
     }
@@ -443,6 +473,7 @@ def menu() -> int:
         print("9  Inspect on-demand backend configuration and eligibility")
         print("10 Configure optional on-demand backends (privileged checks)")
         print("11 Install protected ChatGPT tunnel (sudo; explicit confirmation)")
+        print("12 Connect another local MCP client (read-only Cursor/Hermes guidance)")
         print("0  Exit")
         try:
             choice = input("Choose: ").strip()
@@ -491,6 +522,15 @@ def menu() -> int:
             except (ValueError, OSError, EOFError, KeyboardInterrupt) as exc:
                 print("On-demand change was not fully applied: " +
                       type(exc).__name__ + "; inspect status before retrying")
+        elif choice == "12":
+            try:
+                client = input("Client (cursor/hermes), or enter to cancel: ").strip().lower()
+                if client in ("cursor", "hermes"):
+                    print_local_client_steps(client)
+                else:
+                    print("Cancelled; no client settings changed")
+            except (EOFError, KeyboardInterrupt):
+                print("Cancelled; no client settings changed")
         elif choice == "11":
             if run_existing("scripts/install_secure_tunnel.py") != 0:
                 print("Read-only prerequisites were not met; no privileged installation attempted.")
@@ -538,6 +578,8 @@ def make_parser() -> argparse.ArgumentParser:
   ./setup.sh --status              Read-only health and systemd status
   ./setup.sh --dry-run             Read-only menu action preview
   ./setup.sh --chatgpt             Read-only manual ChatGPT connector instructions
+  ./setup.sh --client cursor       Read-only local Cursor / Grok-in-Cursor MCP instructions
+  ./setup.sh --client hermes       Read-only local Hermes Agent MCP instructions
   ./setup.sh --docker-status       Read-only verified Compose/Docker ownership inventory
   ./setup.sh --update-status       Read-only LOCAL revision/baseline check; no network fetch
   ./setup.sh --on-demand-status    Read-only Docker ownership/eligibility and configured mode
@@ -566,6 +608,8 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="preview wizard commands and effects without prompts or writes")
     choices.add_argument("--chatgpt", action="store_true",
                          help="show manual ChatGPT/OpenAI tunnel connection steps")
+    choices.add_argument("--client", choices=("cursor", "hermes"),
+                         help="read-only instructions for one optional local HTTP MCP client")
     choices.add_argument("--docker-status", action="store_true",
                          help="read-only Docker ownership audit (pinned local daemon, no changes)")
     choices.add_argument("--update-status", action="store_true",
@@ -630,6 +674,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.chatgpt:
         print_chatgpt_steps()
+        return 0
+    if args.client:
+        print_local_client_steps(args.client)
         return 0
     if args.docker_status:
         print(json.dumps(docker_status(), indent=2, ensure_ascii=True))
