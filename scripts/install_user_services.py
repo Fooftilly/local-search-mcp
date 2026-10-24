@@ -22,6 +22,7 @@ NAMES = (
     "local-search-mcp-update.timer",
 )
 GUARD_PROBE = "local-search-mcp-guard-probe.service"
+GUARD_PREFLIGHT = "local-search-mcp-guard-preflight.service"
 
 
 def quote(value: str) -> str:
@@ -75,7 +76,7 @@ def unit_files(python: str, root: Path, *, auto_restart: bool = False,
         })
         names = NAMES
     if guard_probe:
-        names = (*names, GUARD_PROBE)
+        names = (*names, GUARD_PROBE, GUARD_PREFLIGHT)
     return {name: _render_unit(name, fields) for name in names}
 
 
@@ -141,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
             write_owned(folder / name, content)
         print("Installed user units. Run systemctl --user daemon-reload")
     elif args.remove or args.remove_auto_restart:
-        for name in (NAMES[4:] if args.remove_auto_restart else (*NAMES, GUARD_PROBE)):
+        for name in (NAMES[4:] if args.remove_auto_restart else (*NAMES, GUARD_PROBE, GUARD_PREFLIGHT)):
             path = folder / name
             if path.is_symlink():
                 raise ValueError(f"Refusing symlink: {path}")
