@@ -148,7 +148,10 @@ def on_demand_runtime_status() -> dict:
         if type(data) is not dict or set(data) != {"mode", "enabled", "idle_minutes", "backends"}:
             raise ValueError("Invalid activity response")
         # Prevent any future unexpected field from being echoed to the CLI.
-        if type(data["enabled"]) is not bool or type(data["idle_minutes"]) is not int:
+        if (type(data["enabled"]) is not bool
+                or type(data["idle_minutes"]) is not int
+                or not 1 <= data["idle_minutes"] <= 1440
+                or data["mode"] not in ("on-demand", "disabled")):
             raise ValueError("Invalid activity fields")
         backends = data["backends"]
         if backends is not None and (
@@ -159,6 +162,20 @@ def on_demand_runtime_status() -> dict:
                     "last_activity_ago_seconds", "next_idle_stop_seconds",
                     "stop_claimed"} for row in backends.values())):
             raise ValueError("Unexpected activity fields")
+        if backends is not None:
+            for row in backends.values():
+                if (row["state"] not in (
+                        "running", "sleeping", "waking", "stopping", "failed")
+                        or type(row["armed"]) is not bool
+                        or type(row["active_requests"]) is not int
+                        or row["active_requests"] < 0
+                        or type(row["stop_claimed"]) is not bool):
+                    raise ValueError("Invalid backend status fields")
+                for field in ("last_activity_ago_seconds", "next_idle_stop_seconds"):
+                    value = row[field]
+                    if (value is not None and (
+                            type(value) not in (int, float) or not 0 <= value <= 86400 * 7)):
+                        raise ValueError("Invalid backend timer fields")
         return data
     except (OSError, ValueError, TypeError):
         return {"state": "unavailable", "note": "Running bridge activity not verified"}
@@ -178,14 +195,24 @@ def on_demand_status(*, inventory: dict | None = None) -> dict:
         report["idle_minutes"] = saved["idle_minutes"]
         report["can_activate"] = False  # A read-only report cannot grant activation.
         report["activation_note"] = (
-            "can_activate is always false for read-only diagnostics; "
-            "use enabled and runtime_activity to inspect an active setup")
+            "can_activate is a read-only diagnostic and never changes the persisted "
+            "enabled setting or supervisor state; inspect runtime_activity for live state")
         runtime = on_demand_runtime_status()
         report["runtime_activity"] = runtime
         if saved["enabled"]:
             # Never conceal a newly discovered shared/foreign/unverified
             # Docker deployment just because the bridge was already enabled.
             if report.get("state") != "manual_verification_required":
+                # Keep the ownership blocker primary, but do not hide an
+                # independent supervisor failure when it is reported as well.
+                backends = runtime.get("backends")
+                if (runtime.get("mode") == "on-demand"
+                        and runtime.get("enabled") is True
+                        and isinstance(backends, dict)
+                        and any(isinstance(row, dict) and row.get("state") == "failed"
+                                for row in backends.values())):
+                    report["reason"] = report.get("reason", "Docker ownership unverified") + (
+                        "; the running supervisor also reports a failed backend")
                 return report
             report["next_gates"] = [
                 "Validate cold-boot recovery and fault handling before unattended use"]
