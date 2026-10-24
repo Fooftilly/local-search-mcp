@@ -204,7 +204,7 @@ class SetupWizardTests(unittest.TestCase):
             rc, output = self.call("--dry-run")
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(output)["default_client"].split()[0], "ChatGPT")
-        self.assertEqual(len(json.loads(output)["actions"]), 10)
+        self.assertEqual(len(json.loads(output)["actions"]), 11)
 
     def test_status_returns_only_allowlisted_service_state(self):
         with (patch.object(wizard, "health",
