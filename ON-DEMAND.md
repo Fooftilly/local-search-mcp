@@ -35,7 +35,10 @@ containers, invoking sudo or executing a firewall probe:
 ```
 
 This returns a redacted JSON report with individual gates and exits nonzero
-if anything is missing. It requires both dedicated containers' **actual**
+if anything is missing. On-demand mode must already be explicitly enabled
+with a validated idle timeout; the disabled-by-default installation will
+intentionally report `blocked`. The audit also requires both dedicated containers'
+**actual**
 Docker restart policies to be `no` to prevent Docker itself from starting
 the crawler before the root firewall rules are installed. It also verifies
 the root-owned installed helper and systemd unit match the reviewed checkout
