@@ -49,7 +49,7 @@ def _valid_member(name: str) -> tuple[str, ...]:
     parts = rel.parts
     if (not parts or rel.is_absolute() or any(
             p in ("", ".", "..") or "\\" in p or "\x00" in p for p in parts)
-            or name.startswith("./") or name.endswith("//")):
+            or name != "/".join(parts)):
         raise ValueError("Unsafe archive member path")
     return parts
 
