@@ -16,18 +16,18 @@ jobs:
       matrix:
         run_number: [1, 2, 3, 4, 5]
     env:
-      MERGIFY_TEST_JOB_NAME: python (3.13)
+      MERGIFY_TEST_JOB_NAME: python (3.11)
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.11'
 
       - name: Install libpsl
         run: sudo apt-get update && sudo apt-get install -y libpsl5
 
-      # Match the tested Python 3.13 dependency versions; install wheels only.
+      # Match the minimum supported Python 3.11 in PR CI; install wheels only.
       # Keep these pins in sync with the supported ranges in requirements.txt.
       - name: Install dependencies
         run: |
