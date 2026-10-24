@@ -153,6 +153,42 @@ class SecureTunnelSetupTests(unittest.TestCase):
         self.assertIn(("systemctl", "--user", "disable", "--now",
                        secure.USER_TUNNEL), commands)
 
+    def test_ctrl_c_during_tunnel_start_disables_partial_activation(self):
+        commands = []
+
+        def interrupted_systemctl(*args, **_kwargs):
+            commands.append(args)
+            if (args[:4] == ("systemctl", "--user", "enable", "--now")
+                    and secure.USER_TUNNEL in args):
+                raise KeyboardInterrupt()
+            return subprocess.CompletedProcess(
+                args, 0,
+                "inactive" if "is-active" in args else
+                "LoadState=loaded" if "show" in args else
+                "ExecStartPre=+/usr/bin/sudo -n /usr/bin/python3"
+                if "cat" in args else "", "")
+
+        with (patch.object(secure, "preview", return_value=self.inventory()),
+              patch.object(secure, "_run", side_effect=interrupted_systemctl),
+              patch.object(secure, "_sudo", return_value=subprocess.CompletedProcess(
+                  [], 0, "active", "")),
+              patch.object(secure, "_install_root_file"),
+              patch.object(secure, "_install_sudoers"),
+              patch.object(secure, "_install_user_dropin"),
+              self.assertRaises(KeyboardInterrupt)):
+            secure.install()
+        self.assertIn(("systemctl", "--user", "disable", "--now",
+                       secure.USER_TUNNEL), commands)
+
+    def test_preview_discloses_probe_and_preflight_permissions(self):
+        with (patch("scripts.backend_inventory.report", return_value=self.inventory()),
+              patch("health_cli.snapshot", return_value=self.healthy())):
+            report = secure.preview()
+        privileged = " ".join(report["privileged_install"])
+        self.assertIn("--probe", privileged)
+        self.assertIn("--preflight", privileged)
+        self.assertIn("NOPASSWD", privileged)
+
     def test_readonly_tunnel_option_is_separate_from_confirmation(self):
         with patch.object(setup_wizard, "run_existing", return_value=0) as run:
             self.assertEqual(setup_wizard.main(["--secure-tunnel-preview"]), 0)
