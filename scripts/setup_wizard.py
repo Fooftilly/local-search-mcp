@@ -385,7 +385,11 @@ def print_local_client_steps(client: str) -> None:
     endpoint = "http://127.0.0.1:8790/mcp"
     if client == "cursor":
         print("Cursor IDE (including Grok selected as the model):")
-        print("Add the following MEMBER inside mcpServers in ~/.cursor/mcp.json:")
+        print("Open ~/.cursor/mcp.json; if absent, create it with")
+        print('  {"mcpServers": {}}')
+        print("If mcpServers is missing from an existing JSON object, add it")
+        print("as an object without deleting other settings or servers.")
+        print("Then add this MEMBER inside the mcpServers object:")
         print(json.dumps({"local-search": {"url": endpoint}}, indent=2))
         print("Do not nest another mcpServers wrapper or replace the whole file.")
         print("If local-search already exists, choose an unused server name")
