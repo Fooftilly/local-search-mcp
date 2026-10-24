@@ -136,7 +136,7 @@ class DockerOwnershipTests(unittest.TestCase):
 
     def test_read_only_restart_policy_never_updates_docker(self):
         from scripts import on_demand_eligibility
-        (self.project_dir / "searxng.compose.yaml").write_text("services: {}\\n")
+        (self.project_dir / "searxng.compose.yaml").write_text("services: {}\n")
         self.project_ids = [CRAWLER, SEARCH]
         self.published_ids = [CRAWLER, SEARCH]
         self.labels[SEARCH] = self.labels_for("searxng")
