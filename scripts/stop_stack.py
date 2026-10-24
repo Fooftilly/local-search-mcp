@@ -34,10 +34,12 @@ UNITS = (
     "local-search-mcp-tunnel.service",
     "local-search-mcp-bridge.service",
     "local-search-mcp-guard-probe.service",
+    "local-search-mcp-guard-preflight.service",
 )
 TUNNEL = "local-search-mcp-tunnel.service"
 CHECKERS = {"local-search-mcp-health.service", "local-search-mcp-update.service",
-            "local-search-mcp-guard-probe.service"}
+            "local-search-mcp-guard-probe.service",
+            "local-search-mcp-guard-preflight.service"}
 
 
 def config_home() -> Path:
