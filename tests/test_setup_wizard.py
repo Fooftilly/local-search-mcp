@@ -565,7 +565,11 @@ class SetupWizardTests(unittest.TestCase):
                         "http://127.0.0.1:8790/mcp", "cloud bot")),
             ("hermes", ("hermes mcp add local-search --url",
                         "hermes mcp test local-search", "/reload-mcp",
-                        "http://127.0.0.1:8790/mcp"))):
+                        "http://127.0.0.1:8790/mcp")),
+            ("claude", ("Claude Code CLI", "claude mcp list",
+                        "claude mcp add --transport http local-search",
+                        "http://127.0.0.1:8790/mcp", "/mcp",
+                        "--scope user", "Claude.ai", "HTTPS"))):
             with (self.subTest(client=client),
                   patch.object(wizard, "run_existing",
                                side_effect=AssertionError("No launched process")),
@@ -584,6 +588,31 @@ class SetupWizardTests(unittest.TestCase):
                 self.assertIn('{"mcpServers": {}}', output)
                 self.assertIn('If mcpServers is missing', output)
                 self.assertIn('"local-search": {', output)
+
+    def test_claude_is_manual_opt_in_no_config_or_subprocess_side_effects(self):
+        with (patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("No shell commands")),
+              patch.object(wizard, "docker_status",
+                           side_effect=AssertionError("No Docker access")),
+              patch.object(wizard, "check_report",
+                           side_effect=AssertionError("No network access")),
+              patch.object(wizard.os, "geteuid",
+                           side_effect=AssertionError("No privilege checks"))):
+            result, output = self.call("--client", "claude")
+        self.assertEqual(result, 0)
+        self.assertIn("Local/project-specific registration", output)
+        self.assertIn("not Claude.ai cloud", output)
+        self.assertNotIn("Authorization: Bearer", output)
+        self.assertIn("No client configuration", output)
+
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input", side_effect=["12", "claude", "0"]),
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("No program invocation")),
+              contextlib.redirect_stdout(io.StringIO()) as captured):
+            self.assertEqual(wizard.main([]), 0)
+        self.assertIn("claude mcp add --transport http", captured.getvalue())
 
     def test_only_one_client_can_be_selected(self):
         with self.assertRaises(SystemExit):
