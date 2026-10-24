@@ -309,17 +309,53 @@ def container_running(container: str) -> bool:
 
 
 def verify_installed(bridge: str) -> None:
-    """Require the scoped firewall table and both host/forward deny hooks."""
+    """Verify exact hooked deny chains for this bridge, not table-wide words.
+
+    A mention of our bridge in the INPUT chain must never disguise stale
+    FORWARD rules. Reject extra accept/jump rules or missing deny destinations.
+    The textual check expects the fixed rules emitted by our own template;
+    unexpected nft serialization fails closed and needs operator inspection.
+    """
+    if not re.fullmatch(r'[a-zA-Z0-9_.-]{1,15}', bridge):
+        raise GuardError('Invalid bridge name')
     if not table_exists():
         raise GuardError('Pre-start firewall table is absent')
     live = command(['nft', 'list', 'table', 'inet', TABLE])
-    required = (
-        f'iifname "{bridge}"', 'hook forward', 'hook input',
-        'meta nfproto ipv6', 'ct direction reply',
-        'ip daddr', 'reject', 'blocked_ipv4',
-    )
-    if not all(token in live for token in required):
-        raise GuardError('Pre-start firewall coverage is incomplete')
+    if not re.search(r'\btable\s+inet\s+' + TABLE + r'\s*\{', live):
+        raise GuardError('Installed firewall table identity is incorrect')
+
+    def chain_lines(name: str) -> list[str]:
+        pattern = r'^\s*chain\s+' + name + r'\s*\{(.*?)^\s*\}'
+        matches = list(re.finditer(pattern, live, flags=re.MULTILINE | re.DOTALL))
+        if len(matches) != 1:
+            raise GuardError('Missing or ambiguous installed firewall chain')
+        return [re.sub(r'\s+', ' ', line.strip()).rstrip(';')
+                for line in matches[0].group(1).splitlines() if line.strip()]
+
+    forward = chain_lines('block_forward')
+    host = chain_lines('block_host')
+    if len(forward) != 3 or len(host) != 3:
+        raise GuardError('Unexpected firewall rules in guarded chains')
+    if (forward[0] != 'type filter hook forward priority -200; policy accept'
+            or host[0] != 'type filter hook input priority -200; policy accept'):
+        raise GuardError('Firewall hooks or priorities differ from guard template')
+
+    prefix = f'iifname "{bridge}" ip daddr {{ '
+    suffix_pattern = r' \} counter name "?blocked_ipv4"? reject'
+    match = (re.fullmatch(re.escape(prefix) + r'(.+?)' + suffix_pattern,
+                          forward[1]))
+    if match is None:
+        raise GuardError('Crawler FORWARD IPv4 deny rule is missing or stale')
+    actual_networks = [part.strip() for part in match.group(1).split(',')]
+    if (len(actual_networks) != len(BLOCKED_IPV4)
+            or set(actual_networks) != set(BLOCKED_IPV4)):
+        raise GuardError('Crawler FORWARD deny destinations differ')
+    if forward[2] != f'iifname "{bridge}" meta nfproto ipv6 counter reject':
+        raise GuardError('Crawler FORWARD IPv6 deny rule is missing or stale')
+    if host[1:] != [
+            f'iifname "{bridge}" ct state established ct direction reply accept',
+            f'iifname "{bridge}" counter reject']:
+        raise GuardError('Crawler host INPUT protection is missing or stale')
 
 
 def main(argv: list[str] | None = None) -> int:
