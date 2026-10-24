@@ -89,6 +89,36 @@ class GuardTests(unittest.TestCase):
                   patch.object(guard, "command", return_value=bad)):
                 self.assertEqual(guard.main(["--preflight"]), 1)
 
+    def test_installed_rules_must_match_both_complete_guarded_chains(self):
+        bridge = 'br-aaaaaaaaaaaa'
+        expected = guard.rules(bridge)
+        with (patch.object(guard, 'table_exists', return_value=True),
+              patch.object(guard, 'command', return_value=expected)):
+            guard.verify_installed(bridge)
+
+        tampered = (
+            # FORWARD uses stale bridge but INPUT mentions the correct bridge.
+            expected.replace(
+                f'iifname "{bridge}" ip daddr',
+                'iifname "br-bbbbbbbbbbbb" ip daddr'),
+            # A permissive rule before the denial would bypass the guard.
+            expected.replace('chain block_forward {',
+                             'chain block_forward {\n        accept'),
+            expected.replace('192.168.0.0/16', '192.168.0.0/24'),
+            expected.replace('hook forward priority -200',
+                             'hook forward priority 0'),
+            expected.replace(f'iifname "{bridge}" meta nfproto ipv6',
+                             'meta nfproto ipv6'),
+            expected.replace(f'iifname "{bridge}" counter reject',
+                             'iifname "br-bbbbbbbbbbbb" counter reject'),
+        )
+        for text in tampered:
+            with (self.subTest(text=text[:80]),
+                  patch.object(guard, 'table_exists', return_value=True),
+                  patch.object(guard, 'command', return_value=text),
+                  self.assertRaises(guard.GuardError)):
+                guard.verify_installed(bridge)
+
     def test_apply_requires_root_before_nft_writes(self):
         """Never call nft to mutate rules without root privileges."""
         c,n=fixture()
