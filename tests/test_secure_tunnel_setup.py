@@ -391,6 +391,16 @@ class SecureTunnelSetupTests(unittest.TestCase):
              "managed tunnel user unit is missing"),
             ("Existing tunnel drop-in differs; refuse overwrite",
              "existing tunnel startup drop-in differs"),
+            ("Privileged security-file metadata or ownership is unsafe",
+             "unsafe ownership or metadata"),
+            ("Existing privileged file owner or mode is unsafe",
+             "root-owned security file has incorrect permissions"),
+            ("Installed security file differs; review it manually before replacing",
+             "differs from the reviewed template"),
+            ("Effective tunnel firewall startup probe is not enforced",
+             "not the exact non-ignored root-owned firewall probe"),
+            ("Run the wizard as the normal user",
+             "normal Linux user, not with sudo"),
         )
         for reason, expected in scenarios:
             with self.subTest(reason=reason):
