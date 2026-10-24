@@ -137,7 +137,7 @@ class ScopedDockerTests(unittest.TestCase):
             calls[0] += 1
             # Inventory fails after the container is started, but the
             # already verified 64-character ID is still a safe stop target.
-            if calls[0] >= 7:
+            if calls[0] >= 5:
                 return None
             return original_inspect(ident)
         with patch.object(docker.inv, "_inspect", side_effect=intermittent):
