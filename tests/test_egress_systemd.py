@@ -40,7 +40,7 @@ class GuardSystemdTests(unittest.TestCase):
 
 
     def test_rollback_disables_tunnel_before_any_explicit_nft_removal(self):
-        documentation = (ROOT / "EGRESS-SYSTEMD.md").read_text()
+        documentation = (ROOT / "docs" / "EGRESS-SYSTEMD.md").read_text()
         rollback = documentation.split("Rollback without deleting existing Docker data:", 1)[1]
         self.assertIn("systemctl --user disable --now local-search-mcp-tunnel.service", rollback)
         self.assertIn("sudo systemctl disable --now local-search-mcp-crawler-egress.service", rollback)
