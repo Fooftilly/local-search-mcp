@@ -296,13 +296,43 @@ def require_root() -> None:
         raise GuardError('Firewall changes require root; review --print first and use sudo --apply/--remove')
 
 
+
+def container_running(container: str) -> bool:
+    """Read one fixed container's state; uncertain Docker state fails closed."""
+    value = command([
+        'docker', 'inspect', '--type=container', '--format',
+        '{{json .State.Running}}', validated_container(container),
+    ]).strip()
+    if value not in ('true', 'false'):
+        raise GuardError('Cannot verify Crawl4AI running state')
+    return value == 'true'
+
+
+def verify_installed(bridge: str) -> None:
+    """Require the scoped firewall table and both host/forward deny hooks."""
+    if not table_exists():
+        raise GuardError('Pre-start firewall table is absent')
+    live = command(['nft', 'list', 'table', 'inet', TABLE])
+    required = (
+        f'iifname "{bridge}"', 'hook forward', 'hook input',
+        'meta nfproto ipv6', 'ct direction reply',
+        'ip daddr', 'reject', 'blocked_ipv4',
+    )
+    if not all(token in live for token in required):
+        raise GuardError('Pre-start firewall coverage is incomplete')
+
+
 def main(argv: list[str] | None = None) -> int:
     """Validate operator action, then preview, apply, inspect, probe or remove."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--container', default='crawl4ai', type=validated_container, help='Running Crawl4AI Docker container name or ID')
+    parser.add_argument('--container', default='crawl4ai', type=validated_container, help='Verified Crawl4AI Docker container name or ID')
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument('--print', action='store_true', help='Preview nftables rules; makes no changes')
     modes.add_argument('--apply', action='store_true', help='Install isolated nftables table as root')
+    modes.add_argument('--startup', action='store_true',
+                       help='Install guard at boot; live-probe a running crawler or preflight a sleeping one')
+    modes.add_argument('--tunnel-gate', action='store_true',
+                       help='Read-only guarded tunnel startup: live probe if running, preflight if sleeping')
     modes.add_argument('--status', action='store_true', help='Display installed rules and check current bridge')
     modes.add_argument('--preflight', action='store_true',
                        help='Verify installed firewall coverage while crawler is stopped (not a live probe)')
@@ -316,42 +346,43 @@ def main(argv: list[str] | None = None) -> int:
                 command(['nft', 'delete', 'table', 'inet', TABLE])
             print('Removed local-search-mcp crawler firewall table')
             return 0
-        name, bridge = network_for(args.container, allow_stopped=args.preflight)
+        name, bridge = network_for(
+            args.container, allow_stopped=(
+                args.preflight or args.startup or args.tunnel_gate))
         generated = rules(bridge)
         if args.print:
             print(f'# Docker network: {name}; bridge: {bridge}\n{generated}')
             return 0
         if args.preflight:
             require_root()
-            if not table_exists():
-                raise GuardError('Pre-start firewall table is absent')
-            live = command(['nft', 'list', 'table', 'inet', TABLE])
-            required = (
-                f'iifname "{bridge}"', 'hook forward', 'hook input',
-                'meta nfproto ipv6', 'ct direction reply',
-                'ip daddr', 'reject', 'blocked_ipv4',
-            )
-            if not all(token in live for token in required):
-                raise GuardError('Pre-start firewall coverage is incomplete')
+            verify_installed(bridge)
             print('PASS: installed private bridge guard preflight; live probe is still required after wake')
             return 0
-        if args.probe:
+        if args.probe or args.tunnel_gate:
             require_root()
-            if not table_exists():
-                raise GuardError('Apply firewall before probing')
-            live = command(['nft', 'list', 'table', 'inet', TABLE])
-            if f'iifname "{bridge}"' not in live or 'hook forward' not in live or 'hook input' not in live:
-                raise GuardError('Current bridge not covered by an installed guard')
+            verify_installed(bridge)
+            if args.tunnel_gate and not container_running(args.container):
+                print('PASS: guarded tunnel startup with sleeping crawler; live probe required on wake')
+                return 0
+            # --probe always insists on a running crawler and never degrades to
+            # a stopped-container check; on-demand cold wake relies on this.
             probe(args.container, name)
             return 0
         require_root()
-        if args.apply:
+        if args.apply or args.startup:
             # nft -f processes the delete/create as one transaction. Never
             # modify Docker-managed tables, and never apply a partial ruleset.
             batch = (f'delete table inet {TABLE}\n' if table_exists() else '') + generated
             command(['nft', '-c', '-f', '-'], stdin=batch)
             command(['nft', '-f', '-'], stdin=batch)
-            print(f'Installed {TABLE} for {name} on {bridge}; rules require reapplication after host reboot.')
+            if args.startup:
+                verify_installed(bridge)
+                if container_running(args.container):
+                    probe(args.container, name)
+                else:
+                    print('PASS: boot firewall installed for sleeping crawler; live probe required on wake')
+            else:
+                print(f'Installed {TABLE} for {name} on {bridge}; rules require reapplication after host reboot.')
             return 0
         if not table_exists():
             raise GuardError('Guard table absent; preview --print, then sudo --apply')
