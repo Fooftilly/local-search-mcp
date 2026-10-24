@@ -469,36 +469,17 @@ def cache_settings_page(message="", kind="success", submitted=None):
     sources = ''.join('<li>' + esc(key) + ': ' +
                       ('environment override' if info["environment_override"][key]
                        else 'saved or default') + '</li>' for key in vals)
-    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
-            f'<meta name="referrer" content="no-referrer">'
-            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>Local Search MCP — Cache lifetimes</title><link rel="stylesheet" href="/dashboard.css">'
-            '</head><body><main><h1>Cache lifetimes</h1>' +
-            alert + '<p>Changes apply to new cache entries without restarting '
-            'the bridge. Existing entries keep their original expiration. '
-            'Cache size limits and domain authorization are unchanged; '
-            'cached responses remain in memory only.</p><ul>' + sources + '</ul>' +
-            ('<p class="alert error">An environment override is present. '
-             'Remove it from the service environment and restart before '
-             'editing these saved settings.</p>' if locked else '') +
-            '<form method="post" action="/cache-settings">'
-            '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
-            '<input type="hidden" name="state" value="' + esc(shown["state"]) + '">'
-            '<label>Search cache lifetime (5–900 seconds) '
-            '<input type="number" name="search_seconds" min="5" max="900" '
-            'required value="' + esc(shown["search_seconds"]) + '"></label>'
-            '<label>Fetch cache lifetime (5–1800 seconds) '
-            '<input type="number" name="fetch_seconds" min="5" max="1800" '
-            'required value="' + esc(shown["fetch_seconds"]) + '"></label>'
-            '<label>Type APPLY <input name="confirm" required pattern="APPLY" '
-            'maxlength="5"></label><button type="submit"' +
-            (' disabled' if locked else '') + '>Apply cache TTLs</button>'
-            '</form><p class="subtle">This separate owner-only file stores '
-            'only two validated integers. It never reads or changes credentials, '
-            'domain permissions, history data, endpoint URLs or service ports. '
-            'Existing cached entries keep their original expiry.</p>'
-            '<p><a href="/settings">History settings</a> · '
-            '<a href="/">Return to domain approvals</a></p></main></body></html>')
+    locked_notice = ('<p class="alert error">An environment override is present. '
+                     'Remove it from the service environment and restart before '
+                     'editing these saved settings.</p>' if locked else '')
+    return render_template(
+        "cache-settings", alert=alert, sources=sources,
+        locked_notice=locked_notice, csrf=esc(CSRF),
+        state=esc(shown["state"]),
+        search_seconds=esc(shown["search_seconds"]),
+        fetch_seconds=esc(shown["fetch_seconds"]),
+        disabled=" disabled" if locked else "",
+    )
 
 
 def status_page():
