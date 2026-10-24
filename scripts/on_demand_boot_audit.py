@@ -1,0 +1,256 @@
+"""Read-only host preflight for an explicitly configured on-demand reboot.
+
+This never modifies systemd, Docker, sudoers or nftables, performs no sudo,
+and never substitutes for a live crawler firewall probe or reboot test.
+"""
+from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
+import pwd
+import re
+import stat
+import subprocess
+
+from scripts import backend_inventory, on_demand_settings
+
+ROOT = Path(__file__).resolve().parents[1]
+GUARD_SOURCE = ROOT / "scripts" / "crawler_egress_guard.py"
+SERVICE_SOURCE = ROOT / "config" / "systemd-system" / "local-search-mcp-crawler-egress.service"
+GUARD_TARGET = Path("/usr/local/libexec/local-search-mcp/crawler_egress_guard.py")
+SERVICE_TARGET = Path("/etc/systemd/system/local-search-mcp-crawler-egress.service")
+ROOT_SERVICE = "local-search-mcp-crawler-egress.service"
+USER_SERVICES = ("local-search-mcp-bridge.service", "local-search-mcp-tunnel.service")
+MAX_FILE = 256 * 1024
+EXPECTED_EXEC = (
+    "/usr/bin/python3 /usr/local/libexec/local-search-mcp/"
+    "crawler_egress_guard.py --container crawl4ai --startup"
+)
+
+
+def _run(*args: str) -> str | None:
+    """Only fixed, read-only systemd/loginctl queries; redact command errors."""
+    root_query = ("systemctl", "show", ROOT_SERVICE,
+                  "-p", "ExecStart", "--value")
+    user_guard_units = (
+        "local-search-mcp-guard-preflight.service",
+        "local-search-mcp-guard-probe.service")
+    read_only = (
+        args == root_query
+        or (len(args) == 3 and args[:2] == ("systemctl", "is-enabled")
+            and args[2] == ROOT_SERVICE)
+        or (len(args) == 3 and args[:2] == ("systemctl", "is-active")
+            and args[2] == ROOT_SERVICE)
+        or (len(args) == 4 and args[:3] in (
+                ("systemctl", "--user", "is-enabled"),
+                ("systemctl", "--user", "is-active"))
+            and args[3] in USER_SERVICES)
+        or (len(args) == 7 and args[:3] == ("systemctl", "--user", "show")
+            and args[3] in user_guard_units
+            and args[4] == "-p" and args[5] in ("LoadState", "ExecStart")
+            and args[6] == "--value")
+    )
+    if not read_only and len(args) == 6 and args[:2] == ("loginctl", "show-user"):
+        try:
+            read_only = (args[2] == pwd.getpwuid(os.getuid()).pw_name
+                         and args[3:] == ("-p", "Linger", "--value"))
+        except (KeyError, OSError):
+            pass
+    if not read_only:
+        raise ValueError("Unsupported audit command")
+    try:
+        value = subprocess.run(
+            args, capture_output=True, text=True, timeout=8, check=False,
+            env={**os.environ, "SYSTEMD_PAGER": "", "SYSTEMD_COLORS": "0"})
+    except (OSError, subprocess.TimeoutExpired, UnicodeError):
+        return None
+    if value.returncode or len(value.stdout) > 8192:
+        return None
+    return value.stdout.strip()
+
+
+def _trusted_root_parents(target: Path) -> bool:
+    """Require every parent of privileged files to be root-owned and unwritable."""
+    for parent in target.parents:
+        metadata = parent.lstat()
+        if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0
+                or metadata.st_mode & 0o022):
+            return False
+    return True
+
+
+def _trusted_root_fd(fd: int, *, mode: int, size: int) -> bool:
+    metadata = os.fstat(fd)
+    return (stat.S_ISREG(metadata.st_mode) and metadata.st_uid == 0
+            and metadata.st_gid == 0 and stat.S_IMODE(metadata.st_mode) == mode
+            and metadata.st_size == size)
+
+
+def _reviewed_root_file(target: Path, source: Path, mode: int) -> bool:
+    """Inspect without following symlinks; compare installed bytes to checkout."""
+    fd = None
+    try:
+        if not _trusted_root_parents(target):
+            return False
+        expected = source.read_bytes()
+        if not expected or len(expected) > MAX_FILE:
+            return False
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if nofollow is None:
+            return False  # Linux privilege audit must never follow target links.
+        fd = os.open(target, os.O_RDONLY | nofollow)
+        if not _trusted_root_fd(fd, mode=mode, size=len(expected)):
+            return False
+        with os.fdopen(fd, "rb") as stream:
+            fd = None
+            installed = stream.read(MAX_FILE + 1)
+        return hashlib.sha256(installed).digest() == hashlib.sha256(expected).digest()
+    except (OSError, ValueError):
+        return False
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def _root_effective_start() -> bool:
+    """Inspect the *effective* systemd command, not merely a drop-in file."""
+    raw = _run("systemctl", "show", ROOT_SERVICE, "-p", "ExecStart", "--value")
+    if raw is None or len(raw) > 8192:
+        return False
+    commands = re.findall(r"\{([^{}]*)\}", raw)
+    if len(commands) != 1:
+        return False
+    fields = {}
+    for item in commands[0].split(";"):
+        key, sep, value = item.strip().partition("=")
+        if sep:
+            fields[key] = value.strip()
+    return (fields.get("path") == "/usr/bin/python3"
+            and fields.get("argv[]") == EXPECTED_EXEC
+            and fields.get("ignore_errors") == "no")
+
+
+def _user_guard_unit(unit: str, mode: str) -> bool:
+    """Validate both owner-triggered guard services without executing them."""
+    if (unit, mode) not in (
+            ("local-search-mcp-guard-preflight.service", "preflight"),
+            ("local-search-mcp-guard-probe.service", "probe")):
+        return False
+    base = ("systemctl", "--user", "show", unit)
+    if _run(*base, "-p", "LoadState", "--value") != "loaded":
+        return False
+    raw = _run(*base, "-p", "ExecStart", "--value")
+    if raw is None:
+        return False
+    entries = re.findall(r"\{([^{}]*)\}", raw)
+    if len(entries) != 1:
+        return False
+    fields = {}
+    for item in entries[0].split(";"):
+        key, sep, value = item.strip().partition("=")
+        if sep:
+            fields[key] = value.strip()
+    expected = (
+        "/usr/bin/sudo -n /usr/bin/python3 "
+        "/usr/local/libexec/local-search-mcp/crawler_egress_guard.py "
+        "--container crawl4ai --" + mode)
+    return (fields.get("path") == "/usr/bin/sudo"
+            and fields.get("argv[]") == expected
+            and fields.get("ignore_errors") == "no")
+
+
+def _is_enabled_and_active(service: str, *, user: bool) -> bool:
+    prefix = ("systemctl", "--user") if user else ("systemctl",)
+    return (_run(*prefix, "is-enabled", service) == "enabled"
+            and _run(*prefix, "is-active", service) == "active")
+
+
+def audit(*, inventory: dict | None = None, settings: dict | None = None) -> dict:
+    """Static candidate gate only; does not claim that boot security is proven."""
+    checks = {
+        "on_demand_enabled": False,
+        "dedicated_docker_ownership": False,
+        "backends_have_no_boot_restart": False,
+        "root_guard_matches_checkout": False,
+        "root_service_matches_checkout": False,
+        "root_service_effective_startup_gate": False,
+        "root_firewall_service_enabled_active": False,
+        "bridge_enabled_active": False,
+        "tunnel_enabled_active": False,
+        "user_linger_enabled": False,
+        "tunnel_effective_gate": False,
+        "cold_wake_preflight_unit": False,
+        "cold_wake_live_probe_unit": False,
+    }
+    try:
+        selected = on_demand_settings.read() if settings is None else settings
+        checks["on_demand_enabled"] = (
+            type(selected) is dict and selected.get("enabled") is True
+            and type(selected.get("idle_minutes")) is int
+            and 1 <= selected["idle_minutes"] <= 1440)
+    except (OSError, ValueError, TypeError):
+        pass
+
+    try:
+        docker = backend_inventory.report() if inventory is None else inventory
+        services = docker.get("verified_services")
+        policies = docker.get("verified_restart_policies")
+        checks["dedicated_docker_ownership"] = (
+            docker.get("state") in ("running", "stopped", "partially_running")
+            and type(docker.get("managed_running")) is int
+            and type(docker.get("managed_stopped")) is int
+            and docker["managed_running"] + docker["managed_stopped"] == 2
+            and docker.get("unverified_project_containers") == 0
+            and docker.get("other_published_crawlers") == 0
+            and services == {"crawl4ai": 1, "searxng": 1})
+        checks["backends_have_no_boot_restart"] = (
+            checks["dedicated_docker_ownership"]
+            and policies == {"crawl4ai": "no", "searxng": "no"})
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+
+    checks["root_guard_matches_checkout"] = _reviewed_root_file(
+        GUARD_TARGET, GUARD_SOURCE, 0o755)
+    checks["root_service_matches_checkout"] = _reviewed_root_file(
+        SERVICE_TARGET, SERVICE_SOURCE, 0o644)
+    checks["root_service_effective_startup_gate"] = _root_effective_start()
+    checks["root_firewall_service_enabled_active"] = _is_enabled_and_active(
+        ROOT_SERVICE, user=False)
+    checks["bridge_enabled_active"] = _is_enabled_and_active(
+        USER_SERVICES[0], user=True)
+    checks["tunnel_enabled_active"] = _is_enabled_and_active(
+        USER_SERVICES[1], user=True)
+    try:
+        account = pwd.getpwuid(os.getuid()).pw_name
+        checks["user_linger_enabled"] = (
+            _run("loginctl", "show-user", account, "-p", "Linger", "--value")
+            == "yes")
+    except (KeyError, OSError):
+        pass
+    checks["cold_wake_preflight_unit"] = _user_guard_unit(
+        "local-search-mcp-guard-preflight.service", "preflight")
+    checks["cold_wake_live_probe_unit"] = _user_guard_unit(
+        "local-search-mcp-guard-probe.service", "probe")
+    try:
+        from scripts import install_secure_tunnel
+        install_secure_tunnel._verify_effective_tunnel_probe()
+        checks["tunnel_effective_gate"] = True
+    except (OSError, ValueError, RuntimeError):
+        pass
+
+    ready = all(checks.values())
+    return {
+        "mode": "read-only",
+        "state": "ready_for_manual_reboot_test" if ready else "blocked",
+        "checks": checks,
+        "safe_to_reboot_proven": False,
+        "note": (
+            "Static checks only: neither nftables runtime enforcement nor "
+            "cross-manager boot ordering or successful cold wake is proven. "
+            "Review the sudoers policy, run the guarded live probe and perform "
+            "an attended reboot test before unattended use."),
+        "next_steps": (
+            "See docs/EGRESS-SYSTEMD.md for operator-reviewed privileged "
+            "migration and ON-DEMAND.md for controlled host reboot testing."),
+    }
