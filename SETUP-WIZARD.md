@@ -147,7 +147,8 @@ The guarded action:
 3. Installs missing **fixed, repository-reviewed** guard and root systemd
    unit as root-owned copies. Root never executes an editable Git checkout.
 4. Enables the firewall service and checks it is active, then writes exactly
-   one narrowly scoped `NOPASSWD` sudoers probe rule for the actual OS user.
+   two narrowly scoped `NOPASSWD` sudoers rules (fixed `--probe` and
+   optional on-demand `--preflight` commands) for the actual OS user.
    `visudo -cf` validates this rule both before and after installation.
 5. Requires the fixed root-owned live private-denial/public-HTTPS egress
    probe to pass *without prompting*.
