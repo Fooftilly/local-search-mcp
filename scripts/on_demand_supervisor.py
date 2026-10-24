@@ -22,6 +22,9 @@ from scripts import on_demand_settings as settings
 from scripts.backend_idle_activity import IdleActivity
 
 PROBE_UNIT = "local-search-mcp-guard-probe.service"
+# A short verification lease coalesces wake storms without permanently trusting
+# a firewall or Docker state that may change while the bridge stays running.
+VERIFY_SECONDS = 10
 _supervisor = None
 _start_lock = threading.Lock()
 
@@ -64,6 +67,7 @@ class Supervisor:
         self.tracker = IdleActivity(idle_seconds=idle_minutes * 60)
         self._locks = {name: threading.Lock() for name in ("crawl4ai", "searxng")}
         self._state = {"crawl4ai": "sleeping", "searxng": "sleeping"}
+        self._verified_at = {"crawl4ai": 0.0, "searxng": 0.0}
         self._stop_event = threading.Event()
         # Do not start Docker here, only arm verified already-running backends.
         for name in self._locks:
@@ -97,10 +101,16 @@ class Supervisor:
             except Exception as exc:
                 raise BackendUnavailable("Backend busy; retry the request") from exc
             try:
-                self._state[service] = "waking"
-                docker.start(service, health=_healthy,
-                             crawler_probe=_probe_crawler if service == "crawl4ai" else None)
-                self.tracker.arm_running(service)
+                current = self.tracker.snapshot(service)
+                needs_verification = (
+                    self._state[service] != "running" or not current["armed"]
+                    or time.monotonic() - self._verified_at[service] >= VERIFY_SECONDS)
+                if needs_verification:
+                    self._state[service] = "waking"
+                    docker.start(service, health=_healthy,
+                                 crawler_probe=_probe_crawler if service == "crawl4ai" else None)
+                    self.tracker.arm_running(service)
+                    self._verified_at[service] = time.monotonic()
                 self._state[service] = "running"
             except (docker.LifecycleError, OSError, ValueError) as exc:
                 self.tracker.finish_work(service)
@@ -145,6 +155,7 @@ class Supervisor:
                 else:
                     if stopped:
                         self._state[service] = "sleeping"
+                        self._verified_at[service] = 0.0
                 finally:
                     self.tracker.finish_stop(service, stopped=stopped)
             finally:
