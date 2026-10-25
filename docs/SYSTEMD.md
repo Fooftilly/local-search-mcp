@@ -48,12 +48,6 @@ The optional timer checks local services every approximately two minutes. It pro
 
 **Limitations:** A listening port does not prove MCP tools function or the remote tunnel is actually registered with OpenAI. A healthy report does not prove crawler network isolation. Failures of SearXNG/Crawl4AI are reported as degradation but do not cause the bridge to modify the upstream services. Full end-to-end connection monitoring and firewall startup ordering remain follow-up work on issues #3 and #2.
 
-> **Deprecated for normal operation:** the attended `./setup.sh --update`
-> workflow is now the supported update method. The optional legacy Git
-> watcher described below remains in the repository temporarily for existing
-> installations, but the attended update disables its path and timer and does
-> not reenable them. Do not newly install or enable this watcher.
-
 ## Retiring the optional Git-change watcher
 
 The supported update command is now **`./setup.sh --update`**. Do not
@@ -69,9 +63,9 @@ systemctl --user daemon-reload
 ```
 
 This does not stop Docker, delete policy/history/credentials or modify the
-root-owned crawler egress guard. The old watcher scripts and unit templates
-remain available temporarily for backward-safe migration of existing users;
-they are **not an alternative recommended update method**.
+root-owned crawler egress guard. The legacy watcher script and source templates
+are no longer shipped. Existing managed unit files must be disabled before
+removal. There is no second supported update mechanism.
 
 ## Optional public bridge revision check (no automatic upgrades)
 
@@ -85,7 +79,7 @@ python3 scripts/check_bridge_version.py --check-remote
 It makes one bounded HTTPS request to a pinned public GitHub API endpoint,
 bypasses proxies, rejects redirects and sends no runtime credentials or
 configuration. It never runs Git fetch/pull, installs packages, changes the
-checkout, writes the update baseline, or restarts services.
+checkout, writes update state, or restarts services.
 
 A differing SHA **does not prove an update is available**: local commits,
 divergence and force-pushes are possible. Inspect history, release notes,
