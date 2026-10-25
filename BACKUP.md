@@ -300,9 +300,12 @@ python3 scripts/maintenance_readiness.py --candidate \
 This gate checks only the known project-owned bridge/tunnel, update watcher,
 health timer and guard-probe user units. Every installed file must carry the
 managed marker, be user-owned and not symlinked or group/world-writable;
-the systemd manager must point to the same effective file without a drop-in.
-Every loaded unit must be inactive and have no enabled trigger, and the
-on-demand wake preference must be disabled. Missing units are accepted only
+the systemd manager must point to the same effective file with
+`NeedDaemonReload=no`. Only the exact reviewed tunnel crawler-egress startup
+guard drop-in is accepted; other overrides are blocked. Every loaded unit
+must be inactive (or a stopped failed unit) and have no enabled trigger.
+A stopped failed oneshot may need `systemctl --user reset-failed` before
+normal service operation resumes. The on-demand wake preference must be disabled. Missing units are accepted only
 when systemd also reports them not found. The candidate is re-verified
 read-only when specified. Errors are redacted; an unknown systemd bus,
 unrecognized override, active tunnel, unverified unit or invalid candidate
