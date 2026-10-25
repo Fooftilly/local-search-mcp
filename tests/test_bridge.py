@@ -641,6 +641,14 @@ class BridgeTests(unittest.TestCase):
             {"url": "https://example.org/a\x00b", "title": "NUL"},
             {"url": "https://example.org/a\x7fb", "title": "DEL"},
             {"url": "https://example.org:8080/", "title": "Unsupported port"},
+            {"url": "https://bad host.example.org/", "title": "Hostname space"},
+            {"url": "https://host<angle>.example.org/", "title": "Hostname angle brackets"},
+            {"url": "https://host>angle.example.org/", "title": "Hostname greater than"},
+            {"url": "https://bad_name.example.org/", "title": "Underscore in hostname"},
+            {"url": "https://localhost/", "title": "Local-only hostname"},
+            {"url": "http://127.0.0.1/", "title": "IP address"},
+            {"url": "https://co.uk/", "title": "Bare public suffix"},
+            {"url": "https://faß.de/", "title": "Ambiguous IDN"},
             {"url": "https://example.org/leading ", "title": "Whitespace"},
             {"url": "x" * 3000, "title": "Too long"},
             {"url": "https://example.org/first", "title": "Valid first"},
@@ -659,6 +667,29 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual([row["title"] for row in results],
                              ["Valid first", "Valid second"])
             self.assertEqual(len(calls), 1)
+
+    def test_search_domain_policy_filter_is_pure_without_approval_or_dns(self):
+        """Search results must match fetch host validation without changing policy."""
+        original = httpx.Client
+        rows = [
+            {"url": "https://bad host.example.org/", "title": "Bad host"},
+            {"url": "https://faß.de/", "title": "Ambiguous IDN"},
+            {"url": "https://example.org:443/ok", "title": "Valid"},
+        ]
+        def handler(request):
+            return httpx.Response(200, json={"results": rows})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with (patch.object(self.module.httpx, "Client", side_effect=client),
+              patch.object(domain_policy, "request",
+                           side_effect=AssertionError("search must not queue domains")),
+              patch.object(domain_policy.socket, "getaddrinfo",
+                           side_effect=AssertionError("search must not resolve DNS"))):
+            results = self.module.web_search("search policy is read only", fresh=True)
+        self.assertEqual(results, [{
+            "title": "Valid", "url": "https://example.org:443/ok",
+            "snippet": "", "engine": "",
+        }])
 
     def test_search_all_unusable_links_return_uncached_failure(self):
         original = httpx.Client
