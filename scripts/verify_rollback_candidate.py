@@ -25,7 +25,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("Do not run rollback inspections as root")
     try:
         result = rollback_candidate.inspect(args.candidate)
-    except (ValueError, OSError, subprocess.SubprocessError):
+    except (ValueError, OSError, RecursionError, subprocess.SubprocessError):
         # Do not print filenames, filesystem errors, or private archive paths.
         print("Rollback candidate integrity check failed; inspect your private "
               "staging directory and permissions locally", file=sys.stderr)
