@@ -106,6 +106,25 @@ class RecoveryCheckpointTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.create()  # never overwrite an existing checkpoint
 
+    def test_real_application_reader_restores_checkpoint_in_isolation(self):
+        # Unlike mocked race tests, this calls the real current-schema
+        # domain-policy reader through restore_smoke.smoke().
+        import domain_policy
+        xdg = self.home / "application-xdg"
+        self.state = xdg / "local-search-mcp"
+        self.state.mkdir(parents=True, mode=0o700)
+        with patch.dict(os.environ, {"XDG_STATE_HOME": str(xdg),
+                                     "ALLOWED_CRAWL_DOMAINS": ""},
+                        clear=False):
+            domain_policy.initialize()
+            domain_policy.decide("example.org", "allow", scope="exact")
+            self.smoke.stop()
+            result = self.create()
+        self.assertTrue(result["checkpoint_verified"])
+        self.assertFalse(result["ready_for_live_use"])
+        self.assertEqual(
+            checkpoint.restore_smoke.smoke(self.dest / checkpoint.ARCHIVE)[0], 1)
+
     def test_integrity_digest_and_incomplete_write_fail_closed(self):
         self.create()
         archive = self.dest / checkpoint.ARCHIVE
