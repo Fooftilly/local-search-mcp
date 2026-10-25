@@ -84,11 +84,14 @@ versions, local Git update baseline, tunnel-client fingerprint and the
 fixed loopback Crawl4AI version/health check. It does not query public
 websites, fetch Git objects, install packages, pull images or restart services.
 
-`./setup.sh --maintenance-versions-remote` requests only the existing
-bounded public PyPI/GitHub release metadata lookups. Interactive option 14
-requires choosing `REMOTE` and then typing `PUBLIC` to opt in. A different
-response cancels without public requests. Public release differences are
-informational only; they do not establish compatibility, availability of
+`./setup.sh --maintenance-versions-remote` requests the existing
+bounded public PyPI release metadata and GitHub release **and repository
+commit** metadata checks (including the public bridge `/commits/master`
+endpoint). Interactive option 14 requires choosing `REMOTE` and then
+typing `PUBLIC` to opt in. A different response cancels without public
+requests. Interrupting an in-flight lookup may leave some public requests
+already sent; it does not apply updates. Public release or revision differences
+are informational only; they do not establish compatibility, availability of
 container images, or safe installation. Neither mode applies upgrades,
 edits credentials, or changes MCP connections. See
 `docs/DEPENDENCY-UPDATES.md` and `BACKUP.md` before any manual update.
