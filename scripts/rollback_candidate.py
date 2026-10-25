@@ -422,7 +422,13 @@ def main(argv: list[str] | None = None) -> int:
             if args.confirm != "STAGE":
                 raise ValueError("Type --confirm STAGE to create a candidate")
             report = prepare(args.target, args.archive, args.destination)
-            print(json.dumps(report, sort_keys=True))
+            # The full private inventory belongs only in candidate.json.
+            # Do not expose tracked source filenames, file hashes or paths
+            # through terminal logs / automated agent transcripts.
+            summary = {name: report[name] for name in (
+                "schema", "source_files", "state_files",
+                "activation_performed", "ready_for_live_use")}
+            print(json.dumps(summary, sort_keys=True))
         return 0
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print("Rollback candidate not prepared: " + type(exc).__name__,
