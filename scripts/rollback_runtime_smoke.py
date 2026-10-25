@@ -176,6 +176,10 @@ def _limit_child() -> None:
     # Historical SQLite readers must be free to write a temporary index.
     # We bound only the parent-captured stdout separately, not file writes.
     resource.setrlimit(resource.RLIMIT_CPU, (25, 25))
+    # SQLite needs pages and journals much larger than stdout's 2 KiB cap.
+    # Bound individual disposable files independently of captured output.
+    resource.setrlimit(resource.RLIMIT_FSIZE, (512 * 1024 * 1024,
+                                               512 * 1024 * 1024))
     resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
 
 
