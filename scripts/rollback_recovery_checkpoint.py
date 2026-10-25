@@ -284,6 +284,10 @@ def create(candidate: Path, destination: Path, *,
     backup_state.backup(destination / ARCHIVE,
                         state_dir=state_dir, config_dir=config_dir)
     digest, size, files = _archive_identity(destination / ARCHIVE)
+    # A staged candidate inventory alone does not establish that its target
+    # still exists locally or is a strict ancestor. Reuse the hardened,
+    # no-network Git preflight against this exact newly archived checkpoint.
+    rollback_preflight.preflight(target, destination / ARCHIVE, root=root)
     restore_smoke.smoke(destination / ARCHIVE)
     _maintenance_ready(candidate)
     _verify_effective_environment(state_dir=state_dir, config_dir=config_dir)
