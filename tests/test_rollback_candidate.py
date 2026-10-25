@@ -187,6 +187,20 @@ class RollbackCandidateTests(unittest.TestCase):
             result = candidate.inspect(self.dir)
         self.assertTrue(result["integrity_verified"])
 
+    def test_malicious_deeply_nested_manifest_is_redacted(self):
+        from scripts import verify_rollback_candidate
+        with patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)):
+            candidate.prepare(self.target, self.archive, self.dir, root=self.root)
+        manifest = self.dir / "candidate.json"
+        manifest.write_text("[" * 600 + '"SECRET_INTERNAL_DATA"' + "]" * 600)
+        manifest.chmod(0o600)
+        with (redirect_stdout(io.StringIO()) as output,
+              redirect_stderr(io.StringIO()) as errors):
+            self.assertEqual(verify_rollback_candidate.main([str(self.dir)]), 1)
+        self.assertEqual(output.getvalue(), "")
+        self.assertNotIn("SECRET_INTERNAL_DATA", errors.getvalue())
+        self.assertNotIn(str(self.dir), errors.getvalue())
+
     def test_oversize_candidate_inventory_refuses_stage_without_leaks(self):
         giant = {"source/" + str(i).zfill(6) + "-" + "x" * 500:
                  "F:0600:" + "f" * 64 for i in range(3500)}
