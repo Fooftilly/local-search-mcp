@@ -203,6 +203,26 @@ class HistoricalSandboxTests(unittest.TestCase):
             runner._sandbox_output([
                 sys.executable, "-c", "import sys; sys.stdout.write('x'*10000)"])
 
+    def test_sqlite_can_write_real_multi_page_index_under_child_limits(self):
+        # A real trusted child writes >2 KiB to the isolated test fixture DB.
+        # RLIMIT_FSIZE must not inherit stdout's small capture cap.
+        db = self.home / "trusted-index.sqlite3"
+        script = ("import sqlite3,sys; "
+                  "c=sqlite3.connect(sys.argv[1]); "
+                  "c.execute('CREATE TABLE rows (payload BLOB)'); "
+                  "c.execute('INSERT INTO rows VALUES (?)', (b'X'*8192,)); "
+                  "c.commit(); c.close(); print('ok')")
+        self.assertEqual(runner._sandbox_output([
+            sys.executable, "-c", script, str(db)]), b"ok\n")
+        self.assertGreater(db.stat().st_size, runner._LIMIT)
+
+    def test_lib64_loader_uses_only_trusted_system_directory(self):
+        args = runner._lib64_args()
+        self.assertIn(args[0], ("--symlink", "--ro-bind"))
+        self.assertEqual(args[-1], "/lib64")
+        if args[0] == "--symlink":
+            self.assertIn(args[1], ("usr/lib", "usr/lib64"))
+
     def test_history_worker_checks_dependency_metadata_inside_sandbox(self):
         # Regression: do not run audit(candidate, python=historical_python),
         # which would execute the untrusted interpreter on the host.
