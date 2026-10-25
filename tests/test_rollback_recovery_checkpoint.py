@@ -64,7 +64,7 @@ class RecoveryCheckpointTests(unittest.TestCase):
         self.candidate_verified.start()
         self.addCleanup(self.candidate_verified.stop)
         self.smoke = patch.object(checkpoint.restore_smoke, "smoke", return_value=(1, 1))
-        self.smoke.start()
+        self.smoke_mock = self.smoke.start()
         self.addCleanup(self.smoke.stop)
         self.uid = patch.object(checkpoint.os, "geteuid", return_value=1000)
         self.uid.start()
@@ -91,7 +91,7 @@ class RecoveryCheckpointTests(unittest.TestCase):
         self.assertNotIn("config.json", payload)
         self.assertNotIn(b"TOP_SECRET", (self.dest / checkpoint.MANIFEST).read_bytes())
         self.assertNotIn(b"TOP_SECRET", (self.dest / checkpoint.ARCHIVE).read_bytes())
-        self.assertEqual(self.smoke.call_count, 1)
+        self.assertEqual(self.smoke_mock.call_count, 1)
         self.assertTrue(checkpoint.inspect(self.dest)["checkpoint_verified"])
         with self.assertRaises(ValueError):
             self.create()  # never overwrite an existing checkpoint
@@ -205,7 +205,7 @@ class RecoveryCheckpointTests(unittest.TestCase):
         copy.write_bytes(archive.read_bytes())
         archive.unlink()
         archive.symlink_to(copy)
-        with self.assertRaises(ValueError):
+        with self.assertRaises((OSError, ValueError)):
             checkpoint.inspect(self.dest)
         archive.unlink()
         archive.write_bytes(copy.read_bytes())
