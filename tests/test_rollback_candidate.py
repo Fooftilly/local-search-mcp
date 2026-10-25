@@ -299,6 +299,32 @@ class RollbackCandidateTests(unittest.TestCase):
         self.assertEqual((self.dir / "source" / "bridge.py").read_text(),
                          "old behavior\n")
 
+    def test_cli_staging_summary_never_prints_private_inventory(self):
+        private = "NEVER_PRINT_SOURCE_SECRET_FILE.txt"
+        report = {
+            "schema": "local-search-mcp/rollback-candidate/v2",
+            "source_commit": self.current,
+            "target_commit": self.target,
+            "source_files": 1,
+            "state_files": 1,
+            "activation_performed": False,
+            "ready_for_live_use": False,
+            "inventory": {"source/" + private: "F:0600:" + "a" * 64},
+        }
+        with (patch.object(candidate, "prepare", return_value=report),
+              redirect_stdout(io.StringIO()) as output,
+              redirect_stderr(io.StringIO()) as errors):
+            self.assertEqual(candidate.main([
+                "--target", self.target, "--archive", str(self.archive),
+                "--destination", str(self.dir), "--confirm", "STAGE"]), 0)
+        self.assertEqual(errors.getvalue(), "")
+        printed = json.loads(output.getvalue())
+        self.assertEqual(set(printed), {
+            "schema", "source_files", "state_files",
+            "activation_performed", "ready_for_live_use"})
+        self.assertNotIn(private, output.getvalue())
+        self.assertNotIn(self.target, output.getvalue())
+
     def test_cli_never_applies_unconfirmed_rollback(self):
         with patch.object(candidate, "prepare",
                           side_effect=AssertionError("Do not stage")):
