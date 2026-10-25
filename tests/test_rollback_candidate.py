@@ -213,6 +213,29 @@ class RollbackCandidateTests(unittest.TestCase):
         self.assertNotIn("SECRET_INTERNAL_DATA", errors.getvalue())
         self.assertNotIn(str(self.dir), errors.getvalue())
 
+    def test_wide_source_tree_verifies_with_low_fd_budget(self):
+        import resource
+        with patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)):
+            def stage_many(_root, _target, directory):
+                for index in range(300):
+                    child = directory / ("sub" + str(index))
+                    child.mkdir(mode=0o700)
+                    file = child / "part.py"
+                    file.write_text("VALUE = 1\n")
+                    file.chmod(0o600)
+                return 300
+            with patch.object(candidate, "_copy_git_blobs",
+                              side_effect=stage_many):
+                candidate.prepare(self.target, self.archive, self.dir, root=self.root)
+        before = resource.getrlimit(resource.RLIMIT_NOFILE)
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (min(before[0], 64), before[1]))
+            report = candidate.inspect(self.dir)
+        finally:
+            resource.setrlimit(resource.RLIMIT_NOFILE, before)
+        self.assertTrue(report["integrity_verified"])
+        self.assertEqual(report["source_files"], 300)
+
     def test_oversize_candidate_inventory_refuses_stage_without_leaks(self):
         giant = {"source/" + str(i).zfill(6) + "-" + "x" * 500:
                  "F:0600:" + "f" * 64 for i in range(3500)}
