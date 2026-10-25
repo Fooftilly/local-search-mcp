@@ -54,7 +54,8 @@ def _text(value: object, limit: int) -> str:
 
 def _engine_text(value: object) -> str:
     """Use one bounded, readable representation for all source names."""
-    return str(value).encode("utf-8", "backslashreplace").decode("utf-8")[:100]
+    return str(value).replace("\\", "\\\\").encode(
+        "utf-8", "backslashreplace").decode("utf-8")[:100]
 
 
 def _engines(row: dict) -> list[str]:
@@ -70,7 +71,8 @@ def _engines(row: dict) -> list[str]:
             # Only count a source when its escaped name remains within
             # the established 100-character bound. An overlong malformed
             # source cannot provide reliable, distinguishable attribution.
-            name = raw_name.encode("utf-8", "backslashreplace").decode("utf-8")
+            name = raw_name.replace("\\", "\\\\").encode(
+                "utf-8", "backslashreplace").decode("utf-8")
             if len(name) <= 100 and name not in seen:
                 names.append(name)
                 seen.add(name)
@@ -89,7 +91,7 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
     if not deduplicate and ranking == "searxng":
         return [
             {"title": _text(r.get("title", ""), 240),
-             "url": _text(r.get("url", ""), 2048),
+             "url": str(r.get("url", "")),
              "snippet": _text(r.get("content", ""), 1100),
              "engine": _engine_text(r.get("engine", ""))}
             for r in rows[:max_results]
@@ -104,7 +106,7 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
         else:
             entry = {
                 "title": _text(row.get("title", ""), 240),
-                "url": _text(row.get("url", ""), 2048),
+                "url": str(row.get("url", "")),
                 "snippet": _text(row.get("content", ""), 1100),
                 "engine": _engine_text(row.get("engine", "")),
                 "source_engines": [],
