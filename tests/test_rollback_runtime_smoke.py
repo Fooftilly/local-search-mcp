@@ -120,8 +120,17 @@ class HistoricalSandboxTests(unittest.TestCase):
                             ["--ro-bind", str(self.python.parent.parent), "/venv"]
                             for i in range(len(cmd) - 2)))
         self.assertTrue(any(cmd[i:i + 3] ==
-                            ["--bind", str(scratch), "/work"]
+                            ["--ro-bind", str(scratch), "/input"]
                             for i in range(len(cmd) - 2)))
+        self.assertNotIn("--bind", cmd)  # No host directory mounted writable
+        self.assertTrue(any(cmd[i:i + 6] == [
+                            "--size", str(512 * 1024 * 1024),
+                            "--perms", "0700", "--tmpfs", "/work"]
+                            for i in range(len(cmd) - 5)))
+        self.assertTrue(any(cmd[i:i + 6] == [
+                            "--size", str(16 * 1024 * 1024),
+                            "--perms", "0700", "--tmpfs", "/tmp"]
+                            for i in range(len(cmd) - 5)))
         self.assertNotIn("/home", cmd)
         self.assertNotIn("/etc", cmd)
         self.assertFalse(any(x in cmd for x in ("--share-net", "--bind-try",
@@ -202,6 +211,38 @@ class HistoricalSandboxTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "oversized output"):
             runner._sandbox_output([
                 sys.executable, "-c", "import sys; sys.stdout.write('x'*10000)"])
+
+    def test_subprocess_crash_is_rejected_without_disclosing_stderr(self):
+        # Run a trusted fixture, not a staged historical interpreter.
+        with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_TUNNEL_TOKEN": "TOP_SECRET"}):
+            with self.assertRaisesRegex(ValueError, "exited unsuccessfully"):
+                runner._sandbox_output([
+                    sys.executable, "-c",
+                    "import sys; sys.stderr.write('TOP_SECRET'); sys.exit(19)"])
+
+    def test_sandbox_child_environment_excludes_host_secrets(self):
+        code = ("import json,os; print(json.dumps(dict(os.environ), "
+                "sort_keys=True))")
+        with patch.dict(os.environ, {
+                "HOME": "/tmp/private-home", "HTTP_PROXY": "http://private",
+                "HTTPS_PROXY": "http://private", "PYTHONPATH": "/tmp/inject",
+                "LOCAL_SEARCH_MCP_TUNNEL_TOKEN": "TOP_SECRET",
+                "BWRAP_TEST_SECRET": "TOP_SECRET"}):
+            raw = runner._sandbox_output([sys.executable, "-c", code])
+        env = json.loads(raw)
+        self.assertEqual(env, {"PATH": "/usr/bin:/bin"})
+        self.assertNotIn("TOP_SECRET", raw.decode())
+
+    def test_worker_validates_dependencies_before_inserting_untrusted_source(self):
+        code = runner.WORKER
+        self.assertLess(code.index("metadata.version(req.name)"),
+                        code.index("sys.path.insert(0, '/app')"))
+        self.assertLess(code.index("from packaging.requirements"),
+                        code.index("sys.path.insert(0, '/app')"))
+        self.assertLess(code.index("shutil.copyfileobj"),
+                        code.index("import domain_policy"))
+        self.assertIn("Path('/input')", code)
+        self.assertIn("Path('/work')", code)
 
     def test_sqlite_can_write_real_multi_page_index_under_child_limits(self):
         # A real trusted child writes >2 KiB to the isolated test fixture DB.
