@@ -204,11 +204,10 @@ def _copy_git_blobs(root: Path, target: str, destination: Path) -> int:
 
 
 def _inventory(destination: Path) -> dict[str, str]:
-    """Verify a private staged tree using retained no-follow directory handles.
+    """Verify a private staged tree with retained no-follow directory handles.
 
-    Directory names are always opened relative to a verified parent descriptor,
-    never followed by pathname after lstat. This checks staged integrity only,
-    not the old release's runtime or dependency compatibility.
+    Visit each directory depth-first: at most the capped tree depth remains
+    open, so a wide Git tree does not exhaust file descriptors.
     """
     flags = os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW
     result: dict[str, str] = {}
@@ -221,102 +220,99 @@ def _inventory(destination: Path) -> dict[str, str]:
                 or root_info.st_mode & 0o077):
             raise ValueError("Rollback candidate root is unsafe")
         for section in ("source", "state"):
-            pending: list[tuple[int, tuple[str, ...]]] = [
-                (os.open(section, flags, dir_fd=root_fd), (section,))]
             count = 0
             total = 0
+
+            def visit(dir_fd: int, folder_parts: tuple[str, ...]) -> None:
+                nonlocal visits, count, total
+                folder_info = os.fstat(dir_fd)
+                if (not stat.S_ISDIR(folder_info.st_mode)
+                        or folder_info.st_uid != os.getuid()
+                        or stat.S_IMODE(folder_info.st_mode) != 0o700):
+                    raise ValueError("Rollback candidate has an unsafe directory")
+                visits += 1
+                if visits > MAX_TREE_ENTRIES:
+                    raise ValueError("Rollback candidate has too many entries")
+                with os.scandir(dir_fd) as entries:
+                    for entry in entries:
+                        parts = (*folder_parts, entry.name)
+                        key = "/".join(parts)
+                        _valid_member(key)
+                        if len(parts) > 26:
+                            raise ValueError("Rollback candidate path is too deep")
+                        info = os.stat(entry.name, dir_fd=dir_fd,
+                                       follow_symlinks=False)
+                        if stat.S_ISDIR(info.st_mode) and section == "source":
+                            child_fd = os.open(entry.name, flags, dir_fd=dir_fd)
+                            try:
+                                opened = os.fstat(child_fd)
+                                if ((opened.st_dev, opened.st_ino) !=
+                                        (info.st_dev, info.st_ino)
+                                        or opened.st_uid != os.getuid()
+                                        or stat.S_IMODE(opened.st_mode) != 0o700):
+                                    raise ValueError("Rollback candidate directory changed")
+                                result[key + "/"] = "D:0700"
+                                visit(child_fd, parts)
+                            finally:
+                                os.close(child_fd)
+                            continue
+                        if (not stat.S_ISREG(info.st_mode)
+                                or info.st_uid != os.getuid()
+                                or info.st_mode & 0o077 or info.st_nlink != 1):
+                            raise ValueError("Rollback candidate contains an unsafe file")
+                        if section == "state" and (
+                                len(parts) != 2
+                                or parts[1] not in backup_state.ALLOWED_FILES):
+                            raise ValueError("Rollback candidate has unexpected state file")
+                        limit = (MAX_INDIVIDUAL if section == "source" else
+                                 backup_state.MAX_DB_FILE
+                                 if parts[1] == backup_state.DB_NAME else
+                                 backup_state.MAX_SETTINGS_FILE
+                                 if parts[1] in backup_state.SETTINGS_NAMES else
+                                 backup_state.MAX_HISTORY_FILE)
+                        if info.st_size > limit:
+                            raise ValueError("Rollback candidate file exceeds size limit")
+                        count += 1
+                        total += info.st_size
+                        if (count > (MAX_FILES if section == "source"
+                                     else len(backup_state.ALLOWED_FILES))
+                                or total > (MAX_TOTAL_SOURCE if section == "source"
+                                           else backup_state.MAX_TOTAL)):
+                            raise ValueError("Rollback candidate exceeds size limits")
+                        fd = os.open(entry.name, os.O_RDONLY | _NOFOLLOW,
+                                     dir_fd=dir_fd)
+                        with os.fdopen(fd, "rb") as stream:
+                            opened = os.fstat(stream.fileno())
+                            if (not stat.S_ISREG(opened.st_mode)
+                                    or opened.st_uid != os.getuid()
+                                    or opened.st_mode & 0o077 or opened.st_nlink != 1
+                                    or (opened.st_dev, opened.st_ino, opened.st_size)
+                                    != (info.st_dev, info.st_ino, info.st_size)):
+                                raise ValueError("Rollback candidate changed during inspection")
+                            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                            if section == "state" and (
+                                    parts[1] == backup_state.DB_NAME
+                                    or parts[1] in backup_state.SETTINGS_NAMES):
+                                stream.seek(0)
+                                content = stream.read(limit + 1)
+                                if len(content) > limit:
+                                    raise ValueError("Rollback state exceeds size limit")
+                                if parts[1] == backup_state.DB_NAME:
+                                    backup_state._verify_sqlite(content)
+                                else:
+                                    backup_state._verify_nonsecret_setting(parts[1], content)
+                            after = os.fstat(stream.fileno())
+                            if (after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (
+                                    opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns):
+                                raise ValueError("Rollback candidate changed during hashing")
+                        result[key] = ("F:" + format(stat.S_IMODE(opened.st_mode),
+                                                     "04o") + ":" + digest)
+
+            section_fd = os.open(section, flags, dir_fd=root_fd)
             try:
-                while pending:
-                    dir_fd, folder_parts = pending.pop()
-                    try:
-                        folder_info = os.fstat(dir_fd)
-                        if (not stat.S_ISDIR(folder_info.st_mode)
-                                or folder_info.st_uid != os.getuid()
-                                or stat.S_IMODE(folder_info.st_mode) != 0o700):
-                            raise ValueError("Rollback candidate has an unsafe directory")
-                        visits += 1
-                        if visits > MAX_TREE_ENTRIES:
-                            raise ValueError("Rollback candidate has too many entries")
-                        with os.scandir(dir_fd) as entries:
-                            for entry in entries:
-                                parts = (*folder_parts, entry.name)
-                                key = "/".join(parts)
-                                _valid_member(key)
-                                if len(parts) > 26:
-                                    raise ValueError("Rollback candidate path is too deep")
-                                info = os.stat(entry.name, dir_fd=dir_fd,
-                                               follow_symlinks=False)
-                                if stat.S_ISDIR(info.st_mode) and section == "source":
-                                    child_fd = os.open(entry.name, flags, dir_fd=dir_fd)
-                                    try:
-                                        opened = os.fstat(child_fd)
-                                        if ((opened.st_dev, opened.st_ino) !=
-                                                (info.st_dev, info.st_ino)
-                                                or opened.st_uid != os.getuid()
-                                                or stat.S_IMODE(opened.st_mode) != 0o700):
-                                            raise ValueError("Rollback candidate directory changed")
-                                        result[key + "/"] = "D:0700"
-                                        pending.append((child_fd, parts))
-                                    except BaseException:
-                                        os.close(child_fd)
-                                        raise
-                                    continue
-                                if (not stat.S_ISREG(info.st_mode)
-                                        or info.st_uid != os.getuid()
-                                        or info.st_mode & 0o077 or info.st_nlink != 1):
-                                    raise ValueError("Rollback candidate contains an unsafe file")
-                                if section == "state" and (
-                                        len(parts) != 2
-                                        or parts[1] not in backup_state.ALLOWED_FILES):
-                                    raise ValueError("Rollback candidate has unexpected state file")
-                                limit = (MAX_INDIVIDUAL if section == "source" else
-                                         backup_state.MAX_DB_FILE
-                                         if parts[1] == backup_state.DB_NAME else
-                                         backup_state.MAX_SETTINGS_FILE
-                                         if parts[1] in backup_state.SETTINGS_NAMES else
-                                         backup_state.MAX_HISTORY_FILE)
-                                if info.st_size > limit:
-                                    raise ValueError("Rollback candidate file exceeds size limit")
-                                count += 1
-                                total += info.st_size
-                                if (count > (MAX_FILES if section == "source"
-                                             else len(backup_state.ALLOWED_FILES))
-                                        or total > (MAX_TOTAL_SOURCE if section == "source"
-                                                   else backup_state.MAX_TOTAL)):
-                                    raise ValueError("Rollback candidate exceeds size limits")
-                                fd = os.open(entry.name, os.O_RDONLY | _NOFOLLOW,
-                                             dir_fd=dir_fd)
-                                with os.fdopen(fd, "rb") as stream:
-                                    opened = os.fstat(stream.fileno())
-                                    if (not stat.S_ISREG(opened.st_mode)
-                                            or opened.st_uid != os.getuid()
-                                            or opened.st_mode & 0o077 or opened.st_nlink != 1
-                                            or (opened.st_dev, opened.st_ino, opened.st_size)
-                                            != (info.st_dev, info.st_ino, info.st_size)):
-                                        raise ValueError("Rollback candidate changed during inspection")
-                                    digest = hashlib.file_digest(stream, "sha256").hexdigest()
-                                    if section == "state" and (
-                                            parts[1] == backup_state.DB_NAME
-                                            or parts[1] in backup_state.SETTINGS_NAMES):
-                                        stream.seek(0)
-                                        content = stream.read(limit + 1)
-                                        if len(content) > limit:
-                                            raise ValueError("Rollback state exceeds size limit")
-                                        if parts[1] == backup_state.DB_NAME:
-                                            backup_state._verify_sqlite(content)
-                                        else:
-                                            backup_state._verify_nonsecret_setting(parts[1], content)
-                                    after = os.fstat(stream.fileno())
-                                    if (after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (
-                                            opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns):
-                                        raise ValueError("Rollback candidate changed during hashing")
-                                result[key] = (
-                                    "F:" + format(stat.S_IMODE(opened.st_mode), "04o") + ":" + digest)
-                    finally:
-                        os.close(dir_fd)
+                visit(section_fd, (section,))
             finally:
-                for open_fd, _parts in pending:
-                    os.close(open_fd)
+                os.close(section_fd)
             if section == "source" and count < 1:
                 raise ValueError("Rollback candidate contains no source")
             if section == "state" and "state/domains.sqlite3" not in result:
