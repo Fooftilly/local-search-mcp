@@ -30,7 +30,7 @@ class SetupWizardTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as exc:
                 wizard.main(["--help"])
         self.assertEqual(exc.exception.code, 0)
-        for option in ("--check", "--status", "--dry-run", "--chatgpt", "--update-status", "--maintenance-versions", "--maintenance-versions-remote", "--on-demand-status", "--boot-audit"):
+        for option in ("--check", "--status", "--dry-run", "--chatgpt", "--update-status", "--maintenance-versions", "--maintenance-versions-remote", "--backup-verify", "--restore-smoke", "--on-demand-status", "--boot-audit"):
             self.assertIn(option, out.getvalue())
         self.assertIn("30 minutes", out.getvalue())
 
@@ -204,7 +204,7 @@ class SetupWizardTests(unittest.TestCase):
             rc, output = self.call("--dry-run")
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(output)["default_client"].split()[0], "ChatGPT")
-        self.assertEqual(len(json.loads(output)["actions"]), 14)
+        self.assertEqual(len(json.loads(output)["actions"]), 15)
 
     def test_maintenance_versions_cli_offline_by_default_and_remote_explicit(self):
         inventory = {"schema": "local-search-mcp/maintenance-versions/v1",
@@ -305,6 +305,100 @@ class SetupWizardTests(unittest.TestCase):
             check.assert_not_called()
             self.assertIn("Cancelled; no public version checks run", out.getvalue())
             self.assertNotIn("lookups may have started", out.getvalue())
+
+    def test_backup_verify_uses_existing_verifier_without_secrets_or_service_calls(self):
+        from scripts import backup_state
+        archive = Path("/private/path/DO_NOT_ECHO.zip")
+        with (patch.object(backup_state, "verified_payload",
+                           return_value={"domains.sqlite3": b"db",
+                                         "history.jsonl": b"history"}) as checker,
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("No subprocess")),
+              patch.object(wizard, "configure_on_demand",
+                           side_effect=AssertionError("No service changes"))):
+            code, output = self.call("--backup-verify", str(archive))
+        checker.assert_called_once_with(archive)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output), {
+            "mode": "archive-integrity", "status": "passed",
+            "live_restore_performed": False, "remote_checked": False,
+            "verified_files": 2,
+        })
+        self.assertNotIn(str(archive), output)
+        self.assertNotIn("history", output)
+
+    def test_backup_smoke_uses_isolated_existing_reader_with_aggregate_results(self):
+        from scripts import restore_smoke
+        archive = Path("/private/path/SECRET.zip")
+        with (patch.object(restore_smoke, "smoke", return_value=(3, 8)) as smoke,
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("No subprocess")),
+              patch.object(wizard, "configure_on_demand",
+                           side_effect=AssertionError("No service changes"))):
+            code, output = self.call("--restore-smoke", str(archive))
+        self.assertEqual(code, 0)
+        smoke.assert_called_once_with(archive)
+        result = json.loads(output)
+        self.assertEqual(result["mode"], "isolated-fresh-install-smoke")
+        self.assertEqual((result["policy_entries"], result["recent_indexed_events"]),
+                         (3, 8))
+        self.assertFalse(result["live_restore_performed"])
+        self.assertNotIn("SECRET", output)
+
+    def test_bad_or_unsafe_archive_errors_are_redacted_and_nonzero(self):
+        from scripts import backup_state, restore_smoke
+        archive = Path("/private/SECRET-archive.zip")
+        for flag, module, attr in (
+            ("--backup-verify", backup_state, "verified_payload"),
+            ("--restore-smoke", restore_smoke, "smoke"),
+        ):
+            with (self.subTest(flag=flag),
+                  patch.object(module, attr,
+                               side_effect=ValueError("SECRET domain, token and private path"))
+                  as verifier,
+                  patch.object(wizard, "run_existing",
+                               side_effect=AssertionError("Never invoke setup"))):
+                code, output = self.call(flag, str(archive))
+            verifier.assert_called_once_with(archive)
+            self.assertEqual(code, 1)
+            self.assertEqual(json.loads(output)["status"], "failed")
+            self.assertNotIn("SECRET", output)
+            self.assertNotIn(str(archive), output)
+        with self.assertRaises(SystemExit):
+            wizard.make_parser().parse_args([
+                "--backup-verify", "one.zip", "--restore-smoke", "two.zip"])
+
+    def test_backup_menu_cancel_default_verify_and_isolated_smoke(self):
+        from scripts import backup_state, restore_smoke
+        # No input archive should touch any validation or service routine.
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input", side_effect=["15", "", "0"]),
+              patch.object(backup_state, "verified_payload",
+                           side_effect=AssertionError("No archive access")) as verify,
+              patch.object(restore_smoke, "smoke",
+                           side_effect=AssertionError("No archive access")) as smoke,
+              contextlib.redirect_stdout(io.StringIO()) as out):
+            self.assertEqual(wizard.main([]), 0)
+        verify.assert_not_called()
+        smoke.assert_not_called()
+        self.assertIn("Cancelled; no archive read", out.getvalue())
+
+        for selector, expect_smoke in (("", False), ("SMOKE", True)):
+            with (self.subTest(selector=selector),
+                  patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+                  patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch("builtins.input",
+                        side_effect=["15", "/private/ARCHIVE.zip", selector, "0"]),
+                  patch.object(wizard, "backup_check",
+                               return_value={"status": "passed"}) as check,
+                  patch.object(wizard, "run_existing",
+                               side_effect=AssertionError("No subprocess")),
+                  contextlib.redirect_stdout(io.StringIO()) as out):
+                self.assertEqual(wizard.main([]), 0)
+            check.assert_called_once_with(Path("/private/ARCHIVE.zip"),
+                                          smoke=expect_smoke)
+            self.assertNotIn("/private/ARCHIVE.zip", out.getvalue())
 
     def test_menu_boot_audit_is_read_only(self):
         from scripts import on_demand_boot_audit
