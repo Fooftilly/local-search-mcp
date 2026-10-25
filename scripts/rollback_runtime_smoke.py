@@ -10,6 +10,9 @@ import argparse
 import hashlib
 import json
 import os
+import selectors
+import signal
+import time
 from pathlib import Path
 import resource
 import stat
@@ -33,22 +36,37 @@ import json
 import sys
 sys.path.insert(0, '/app')
 try:
+    import importlib.metadata as metadata
+    try:
+        from packaging.requirements import Requirement
+    except ImportError:
+        from pip._vendor.packaging.requirements import Requirement
+    requirements = json.loads(sys.argv[1])
+    if type(requirements) is not list or not requirements or len(requirements) > 64:
+        raise ValueError('invalid requirements')
+    for raw in requirements:
+        req = Requirement(raw)
+        if req.extras or req.marker or req.url:
+            raise ValueError('unsupported dependency')
+        if metadata.version(req.name) not in req.specifier:
+            raise ValueError('historical dependency mismatch')
+
     import domain_policy
     import history_index
     domain_policy.initialize()
-    policy = domain_policy.counts()
+    counts = domain_policy.counts()
     history_index.sync_history()
     history = history_index.search_history(limit=25)
-    if not isinstance(history, list):
-        raise ValueError('invalid indexed history')
-    if not isinstance(policy, dict):
-        raise ValueError('invalid policy counts')
-    print(json.dumps({'historical_policy_reader': True,
+    if not isinstance(history, list) or not isinstance(counts, dict):
+        raise ValueError('historical reader output mismatch')
+    print(json.dumps({'historical_dependency_versions': True,
+                      'historical_policy_reader': True,
                       'historical_history_reader': True,
                       'recent_history_count': len(history)}))
 except BaseException:
-    # Never disclose private history or policy values from this subprocess.
-    print(json.dumps({'historical_policy_reader': False,
+    # Never disclose private history, approvals or dependency details.
+    print(json.dumps({'historical_dependency_versions': False,
+                      'historical_policy_reader': False,
                       'historical_history_reader': False,
                       'recent_history_count': 0}))
     raise SystemExit(2)
@@ -123,18 +141,21 @@ def _copy_candidate_state(candidate: Path, scratch: Path) -> int:
     return copied
 
 
-def _sandbox_command(candidate: Path, python: Path, scratch: Path) -> list[str]:
-    # No inherited HOME, config, API tokens, proxy, PATH or network. The only
-    # host paths mounted are OS libraries, the explicitly selected venv and
-    # the already verified historical source; scratch is disposable.
+def _sandbox_command(candidate: Path, python: Path, scratch: Path,
+                     requirements: list[str]) -> list[str]:
+    # Only OS executables and shared libraries, not the whole /usr tree.
+    # No inherited HOME, API tokens, proxy, PATH, network, Docker or systemd.
     executable = "/venv/bin/" + python.name
     return [
         str(_trusted_bwrap()), "--die-with-parent", "--new-session",
         "--unshare-all", "--clearenv",
-        "--ro-bind", "/usr", "/usr",
+        "--dir", "/usr",
+        "--ro-bind", "/usr/bin", "/usr/bin",
+        "--ro-bind", "/usr/lib", "/usr/lib",
+        "--ro-bind-try", "/usr/lib64", "/usr/lib64",
         "--symlink", "usr/bin", "/bin",
         "--symlink", "usr/lib", "/lib",
-        "--symlink", "usr/lib64", "/lib64",
+        "--symlink", "usr/lib", "/lib64",
         "--dir", "/venv", "--ro-bind", str(python.parent.parent), "/venv",
         "--dir", "/app", "--ro-bind", str(candidate / "source"), "/app",
         "--dir", "/work", "--bind", str(scratch), "/work",
@@ -148,48 +169,86 @@ def _sandbox_command(candidate: Path, python: Path, scratch: Path) -> list[str]:
         "--setenv", "LANG", "C.UTF-8",
         "--setenv", "PATH", "/usr/bin:/bin",
         "--chdir", "/app", executable, "-I", "-B", "-c", WORKER,
+        json.dumps(requirements, separators=(",", ":")),
     ]
 
-
 def _limit_child() -> None:
-    # An untrusted historical Python runtime must not flood captured logs.
-    resource.setrlimit(resource.RLIMIT_FSIZE, (_LIMIT, _LIMIT))
+    # Historical SQLite readers must be free to write a temporary index.
+    # We bound only the parent-captured stdout separately, not file writes.
     resource.setrlimit(resource.RLIMIT_CPU, (25, 25))
     resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
+
+
+def _sandbox_output(command: list[str]) -> bytes:
+    """Capture at most 2048 bytes; kill the isolated process group on failure."""
+    process = subprocess.Popen(
+        command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, close_fds=True,
+        env={"PATH": "/usr/bin:/bin"}, start_new_session=True,
+        preexec_fn=_limit_child,
+    )
+    data = bytearray()
+    deadline = time.monotonic() + 40
+    try:
+        assert process.stdout is not None
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise ValueError("Historical reader sandbox timed out")
+                if not selector.select(left):
+                    raise ValueError("Historical reader sandbox timed out")
+                chunk = os.read(process.stdout.fileno(), _LIMIT + 1)
+                if not chunk:
+                    break
+                data.extend(chunk)
+                if len(data) > _LIMIT:
+                    raise ValueError("Historical reader produced oversized output")
+        if process.wait(timeout=max(0.1, deadline - time.monotonic())) != 0:
+            raise ValueError("Historical reader sandbox exited unsuccessfully")
+        return bytes(data)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError("Historical reader sandbox unavailable") from exc
+    finally:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+        if process.stdout is not None:
+            process.stdout.close()
 
 
 def run(candidate: Path, *, python: Path) -> dict[str, object]:
     if os.geteuid() == 0:
         raise ValueError("Run historical rehearsal as an unprivileged operator")
-    # Fail closed unless BOTH v2 integrity and separately prepared environment
-    # verification succeed. The audit never executes historical Python.
-    gate = rollback_release_audit.audit(candidate, python=python)
-    if not gate["offline_checks_passed"]:
-        raise ValueError("Historical source or dependency audit did not pass")
+    # Do not execute an operator-selected historical interpreter on the host.
+    # Static contracts and filesystem-only venv validation are safe; version
+    # metadata and historical readers both run *inside* the networkless sandbox.
+    static = rollback_release_audit.audit(candidate, python=None)
+    if (not static["static_contracts_passed"]
+            or static["blockers"] != [
+                "independent historical Python environment not provided"]):
+        raise ValueError("Historical source static audit did not pass")
+    requirements = rollback_release_audit._requirements(candidate)
+    rollback_release_audit._venv_layout(python, candidate)
     with tempfile.TemporaryDirectory(prefix="mcp-historical-restore-") as folder:
         scratch = Path(folder)
         files = _copy_candidate_state(candidate, scratch)
-        # Detect candidate changes after the private snapshot was copied.
         rollback_candidate.inspect(candidate)
-        command = _sandbox_command(candidate, python, scratch)
-        with tempfile.TemporaryFile(mode="w+b") as output:
-            result = subprocess.run(
-                command, stdin=subprocess.DEVNULL, stdout=output,
-                stderr=subprocess.DEVNULL, timeout=40, check=False,
-                close_fds=True, env={"PATH": "/usr/bin:/bin"},
-                preexec_fn=_limit_child,
-            )
-            output.seek(0)
-            raw = output.read(_LIMIT + 1)
-    if result.returncode != 0 or len(raw) > _LIMIT:
-        raise ValueError("Historical reader sandbox could not finish successfully")
+        command = _sandbox_command(candidate, python, scratch, requirements)
+        raw = _sandbox_output(command)
     try:
         data = json.loads(raw)
     except (ValueError, UnicodeError, RecursionError) as exc:
         raise ValueError("Historical reader returned an invalid summary") from exc
     if (type(data) is not dict
-            or set(data) != {"historical_policy_reader",
-                             "historical_history_reader", "recent_history_count"}
+            or set(data) != {"historical_dependency_versions",
+                             "historical_policy_reader", "historical_history_reader",
+                             "recent_history_count"}
+            or data["historical_dependency_versions"] is not True
             or data["historical_policy_reader"] is not True
             or data["historical_history_reader"] is not True
             or type(data["recent_history_count"]) is not int
@@ -197,6 +256,7 @@ def run(candidate: Path, *, python: Path) -> dict[str, object]:
         raise ValueError("Historical reader failed compatibility checks")
     return {
         "sandboxed_old_state_readers_passed": True,
+        "sandboxed_dependency_versions_passed": True,
         "staged_files": files,
         "recent_history_count": data["recent_history_count"],
         "network_access_enabled": False,
