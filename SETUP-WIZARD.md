@@ -75,6 +75,34 @@ authenticated HTTPS MCP ingress. The OpenAI tunnel is not a generic ingress
 for other providers. No enrollment, credential changes, client installation
 or remote proxy setup is performed by these preview commands.
 
+## Verify private backups and test isolated recovery (issues #74 / #15)
+
+To verify an existing private archive without changing your installation:
+
+```sh
+./setup.sh --backup-verify "$HOME/local-search-state-2026.zip"
+```
+
+This reuses the existing `backup_state.verified_payload` validator for
+archive permissions, SHA-256 manifests, allowed settings and SQLite integrity.
+For a fuller offline fresh-install simulation, use:
+
+```sh
+./setup.sh --restore-smoke "$HOME/local-search-state-2026.zip"
+```
+
+The smoke mode calls the existing `restore_smoke.smoke` implementation,
+which writes **only disposable temporary files** and exercises the
+application's real policy, history and nonsecret settings readers under
+isolated XDG directories. Alternatively, choose interactive menu option 15,
+provide the path and select VERIFY (default) or SMOKE. Neither operation
+creates a backup, replaces active files, installs services or activates a
+rollback. The JSON result contains only aggregate counts or a generic
+failure message, never file paths, approvals, search terms or credentials.
+Invalid/private-ownership archives fail with a nonzero CLI exit code.
+Archives themselves can contain sensitive history: keep them on trusted
+private storage and refer to [BACKUP.md](BACKUP.md) for compatibility limits.
+
 ## Optional maintenance version inventory (issue #74 / #15)
 
 Run `./setup.sh --maintenance-versions` or select interactive option 14
