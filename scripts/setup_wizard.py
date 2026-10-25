@@ -466,6 +466,8 @@ def dry_run() -> dict:
              "action": "show optional local Cursor, Claude Code or Hermes HTTP MCP instructions; never edit third-party config"},
             {"menu": "13", "effect": "read-only",
              "action": "inspect on-demand reboot prerequisites; no sudo, Docker mutation or live firewall probes"},
+            {"menu": "14", "effect": "read-only; public HTTPS requests only after explicit confirmation",
+             "action": "reuse existing consolidated local maintenance versions report; optional bounded public PyPI/GitHub lookups"},
         ],
         "limitations": "Optional on-demand backend sleep/wake is implemented and off by default; reboot/fault-recovery still requires host validation",
     }
@@ -476,6 +478,12 @@ def confirm(word: str) -> bool:
         return input("Type " + word + " to confirm, anything else cancels: ").strip() == word
     except (EOFError, KeyboardInterrupt):
         return False
+
+
+def maintenance_versions_report(*, check_remote: bool = False) -> dict:
+    """Reuse one existing checker; importing it does not request public URLs."""
+    from scripts import maintenance_versions
+    return maintenance_versions.report(check_remote=check_remote)
 
 
 def menu() -> int:
@@ -506,6 +514,7 @@ def menu() -> int:
         print("11 Install protected ChatGPT tunnel (sudo; explicit confirmation)")
         print("12 Connect another local MCP client (Cursor/Claude Code/Hermes guidance)")
         print("13 Audit on-demand reboot prerequisites (read-only)")
+        print("14 Maintenance version inventory (offline; optional confirmed public lookups)")
         print("0  Exit")
         try:
             choice = input("Choose: ").strip()
@@ -557,6 +566,23 @@ def menu() -> int:
         elif choice == "13":
             from scripts import on_demand_boot_audit
             print(json.dumps(on_demand_boot_audit.audit(), indent=2, ensure_ascii=True))
+        elif choice == "14":
+            try:
+                mode = input("Versions: LOCAL (default), REMOTE, or cancel: ").strip().upper()
+                if mode in ("", "LOCAL"):
+                    print(json.dumps(maintenance_versions_report(), indent=2, ensure_ascii=True))
+                elif mode == "REMOTE":
+                    print("REMOTE checks request public PyPI/GitHub metadata over HTTPS.")
+                    print("No downloads, installs, Git fetch, Docker changes or restarts.")
+                    if confirm("PUBLIC"):
+                        print(json.dumps(maintenance_versions_report(check_remote=True),
+                                         indent=2, ensure_ascii=True))
+                    else:
+                        print("Cancelled; no public version checks run")
+                else:
+                    print("Cancelled; no public version checks run")
+            except (EOFError, KeyboardInterrupt):
+                print("Cancelled; no public version checks run")
         elif choice == "12":
             try:
                 client = input("Client (cursor/claude/hermes), or enter to cancel: ").strip().lower()
@@ -618,6 +644,9 @@ def make_parser() -> argparse.ArgumentParser:
   ./setup.sh --client claude       Read-only local Claude Code HTTP MCP instructions
   ./setup.sh --docker-status       Read-only verified Compose/Docker ownership inventory
   ./setup.sh --update-status       Read-only LOCAL revision/baseline check; no network fetch
+  ./setup.sh --maintenance-versions  Read-only local dependency, Git, crawler, tunnel inventory
+  ./setup.sh --maintenance-versions-remote
+                                  Explicit public PyPI/GitHub metadata lookups; no updates
   ./setup.sh --on-demand-status    Read-only Docker ownership/eligibility and configured mode
   ./setup.sh --boot-audit          Read-only systemd, firewall-install and Docker restart-policy prerequisites
   ./setup.sh --secure-tunnel-preview
@@ -651,6 +680,10 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="read-only Docker ownership audit (pinned local daemon, no changes)")
     choices.add_argument("--update-status", action="store_true",
                          help="inspect local Git update baseline; never fetch/pull/restart")
+    choices.add_argument("--maintenance-versions", action="store_true",
+                         help="read-only local maintenance versions; no public requests or changes")
+    choices.add_argument("--maintenance-versions-remote", action="store_true",
+                         help="explicit public PyPI/GitHub release checks; never download or apply updates")
     choices.add_argument("--on-demand-status", action="store_true",
                          help="read-only configured on-demand and runtime state; no Docker changes")
     choices.add_argument("--boot-audit", action="store_true",
@@ -722,6 +755,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.update_status:
         print(json.dumps(local_update_status(), indent=2, ensure_ascii=True))
+        return 0
+    if args.maintenance_versions or args.maintenance_versions_remote:
+        report = maintenance_versions_report(check_remote=args.maintenance_versions_remote)
+        print(json.dumps(report, indent=2, ensure_ascii=True))
         return 0
     if args.on_demand_status:
         print(json.dumps(on_demand_status(), indent=2, ensure_ascii=True))
