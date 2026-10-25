@@ -172,10 +172,11 @@ class AttendedUpdateTests(unittest.TestCase):
             return subprocess.run(["git", *args], cwd=self.root, text=True,
                                   capture_output=True, check=True).stdout.strip()
         git("init", "-q", "-b", "master")
+        (self.root / ".gitignore").write_text(".venv/\n")
         git("config", "user.name", "Test")
         git("config", "user.email", "test@example.invalid")
         (self.root / "note").write_text("initial\n")
-        git("add", "note")
+        git("add", "note", ".gitignore")
         git("commit", "-qm", "initial")
         git("remote", "add", "origin", "https://example.invalid/untrusted")
         with self.assertRaisesRegex(app.UpdateError, "Origin"):
