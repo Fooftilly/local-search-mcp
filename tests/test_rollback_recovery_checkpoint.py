@@ -108,6 +108,22 @@ class RecoveryCheckpointTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             checkpoint.inspect(self.dest)
 
+    def test_changed_or_replaced_archive_during_validation_fails_closed(self):
+        self.create()
+        archive = self.dest / checkpoint.ARCHIVE
+        original = checkpoint.backup_state.verified_payload
+
+        def change_after_validation(path):
+            result = original(path)
+            with path.open("ab") as output:
+                output.write(b"changed-during-validation")
+            return result
+
+        with patch.object(checkpoint.backup_state, "verified_payload",
+                          side_effect=change_after_validation):
+            with self.assertRaisesRegex(ValueError, "changed during validation"):
+                checkpoint.inspect(self.dest)
+
     def test_missing_manifest_and_extra_entries_rejected(self):
         self.create()
         (self.dest / checkpoint.MANIFEST).unlink()
@@ -206,7 +222,7 @@ class RecoveryCheckpointTests(unittest.TestCase):
         copy.write_bytes(archive.read_bytes())
         archive.unlink()
         archive.symlink_to(copy)
-        with self.assertRaises((OSError, ValueError)):
+        with self.assertRaises(ValueError):
             checkpoint.inspect(self.dest)
         archive.unlink()
         archive.write_bytes(copy.read_bytes())
@@ -234,6 +250,16 @@ class RecoveryCheckpointTests(unittest.TestCase):
         self.assertNotIn("TOP_SECRET", errors.getvalue())
         self.assertNotIn(str(self.home), errors.getvalue())
         self.assertFalse(self.dest.exists())
+
+    def test_inspect_rejects_ambiguous_destination_option(self):
+        with (redirect_stdout(io.StringIO()) as output,
+              redirect_stderr(io.StringIO()) as errors):
+            with self.assertRaises(SystemExit) as invalid:
+                checkpoint.main(["--inspect", str(self.dest),
+                                 "--destination", str(self.home / "other")])
+        self.assertEqual(invalid.exception.code, 2)
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("--destination cannot be combined", errors.getvalue())
 
     def test_cli_errors_redact_private_data_and_paths(self):
         with (patch.object(checkpoint, "create",
