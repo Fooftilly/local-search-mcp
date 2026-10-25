@@ -237,26 +237,28 @@ mandatory before allowing remote crawling. The wizard never claims
 ownership of the existing Hermes Web stack.
 
 
-## Local update status (third slice)
+## Attended software update
 
-Run `./setup.sh --update-status` or choose menu option 6 for an **offline,
-read-only** comparison of local Git HEAD with the service update watcher's
-saved baseline. This reuses `scripts/restart_on_update.py --status`'s
-existing inspection logic and does not modify its saved state. A missing,
-corrupted or inaccessible baseline is reported conservatively. No Git fetch,
-pull, package installation, image download, unit restart, baseline reset or
-rollback is performed.
+Run `./setup.sh --update` (or interactive menu option 6) for the one
+supported update procedure. The operator must approve `FETCH` before any
+GitHub network request, review the proposed revision and changed file list,
+then approve `UPDATE` before project services, state backup, Git checkout or
+Python dependencies are changed. Temporary MCP downtime is expected.
 
-This checks only revisions already available in the **local Git repository**.
-It cannot tell whether a newer commit exists on GitHub; it does not indicate
-whether an available remote update should be applied. An update must be
-separately reviewed and approved by the operator, including security,
-dependency and backup/rollback decisions. The wizard still offers no
-automatic update operation.
+The workflow stops only verified project-owned systemd units, saves the
+existing private policy/history archive, fast-forwards the reviewed GitHub
+master, and starts previously active bridge/tunnel units. It does not modify
+Docker, the root-owned egress firewall or unrelated services. A failed update
+does not automatically roll back Git/state; consult [BACKUP.md](BACKUP.md)
+for safe manual recovery.
 
-For explicit manual source updates, consult docs/SYSTEMD.md, BACKUP.md and
-docs/DEPENDENCY-UPDATES.md. The existing optional `git pull`-triggered
-restart watcher remains unchanged.
+`./setup.sh --update-status` remains available as a **read-only local
+revision** report; it no longer reads a watcher baseline and does not contact
+GitHub. Optional public version metadata checks remain explicitly opt-in.
+The retired Git watcher is not installed by the service installer. On hosts
+where the old watcher was previously installed, disable both legacy
+path/timer triggers before removing their managed unit files as described
+in [docs/SYSTEMD.md](docs/SYSTEMD.md).
 
 ## On-demand eligibility preview (fourth slice)
 
