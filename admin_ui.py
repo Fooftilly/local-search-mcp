@@ -23,6 +23,7 @@ import portable_settings
 import history_index
 from web_assets import LIVE_SCRIPT, STYLESHEET
 from web_templates import render_template
+from runtime_ports import MCP_PORT
 
 HOST='127.0.0.1'
 PORT=int(os.environ.get('LOCAL_SEARCH_MCP_DASHBOARD_PORT','8791'))
@@ -537,14 +538,15 @@ def status_page():
         '<tr><td>Dashboard</td><td>' + esc(PORT) +
         '</td><td>active listener</td><td>Bridge restart and health-monitor '
         'coordination required for a port change</td></tr>'
-        '<tr><td>MCP</td><td>8790</td><td>fixed loopback listener</td>'
+        '<tr><td>MCP</td><td>' + esc(MCP_PORT) + '</td><td>fixed loopback listener</td>'
         '<td>Not configurable through the dashboard</td></tr>'
     )
     limits = ''.join(
         '<tr><td>' + esc(item['name']) + '</td><td>' +
         esc(item['value']) + '</td><td>' + esc(item['apply']) +
         '</td></tr>' for item in service_status.fixed_safety_limits())
-    return render_template("status", rows=rows, ports=ports, limits=limits)
+    return render_template("status", rows=rows, ports=ports, limits=limits,
+                           mcp_port=esc(MCP_PORT))
 
 
 def history_page(kind="", status="", domain="", hours=0, filter_error=""):
