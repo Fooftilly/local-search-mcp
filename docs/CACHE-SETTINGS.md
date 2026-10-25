@@ -22,5 +22,9 @@ Optional `LOCAL_SEARCH_MCP_CACHE_SEARCH_TTL` and
 and lock dashboard editing until removed and the service restarted.
 Malformed storage or overrides fail back to the previous TTL defaults at
 runtime, with a warning, but the file is never silently repaired.
-Port controls and backup/restore of these optional settings are out of
-scope and remain tracked separately.
+The versioned cache TTL preferences are supported by the private state archive
+and isolated restore smoke checks (see [BACKUP.md](../BACKUP.md)). A separate
+[settings transfer](CONFIGURATION.md#portable-nonsecret-settings-transfer-issue-13)
+page exports and previews/imports these two nonsecret values. Fixed cache
+capacity limits and deployment ports are read-only on the local
+`/status` page; port changes and restarts are managed outside the dashboard.
