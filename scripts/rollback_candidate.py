@@ -177,7 +177,7 @@ def _copy_git_blobs(root: Path, target: str, destination: Path) -> int:
             total += len(data)
             if total > MAX_TOTAL_SOURCE:
                 raise ValueError("Tracked source exceeds total size limit")
-            if len("/".join(parts)) > 1024:
+            if len("source/" + "/".join(parts)) > 1024:
                 raise ValueError("Tracked source path is too long")
             output_path = destination.joinpath(*parts)
             parent = destination
