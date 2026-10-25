@@ -12,6 +12,17 @@ def row(url, engine, title="", content="", engines=None):
 
 
 class SearchResultTests(unittest.TestCase):
+    def test_invalid_unicode_search_metadata_cannot_break_mcp_json(self):
+        import json
+        value = "bad\ud800text"
+        rows = [row("https://example.com/path", value, value, value)]
+        plain = enrich_search_results(rows, 1)
+        grouped = enrich_search_results(rows + rows, 1, deduplicate=True)
+        for answer in (plain, grouped):
+            self.assertNotIn("\ud800", str(answer))
+            self.assertIn("\ufffd", str(answer))
+            json.dumps(answer, ensure_ascii=False).encode("utf-8", "strict")
+
     def test_conservative_url_canonicalization(self):
         good = "https://example.com/path?x=1&y=2"
         self.assertEqual(normalized_url("HTTPS://EXAMPLE.COM:443/path?x=1&y=2#fragment"),
