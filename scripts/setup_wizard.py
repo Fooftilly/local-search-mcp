@@ -567,15 +567,17 @@ def menu() -> int:
             from scripts import on_demand_boot_audit
             print(json.dumps(on_demand_boot_audit.audit(), indent=2, ensure_ascii=True))
         elif choice == "14":
+            public_started = False
             try:
                 mode = input("Versions: LOCAL (default), REMOTE, or cancel: ").strip().upper()
                 if mode in ("", "LOCAL"):
                     print(json.dumps(maintenance_versions_report(check_remote=False),
                                      indent=2, ensure_ascii=True))
                 elif mode == "REMOTE":
-                    print("REMOTE checks request public PyPI/GitHub metadata over HTTPS.")
+                    print("REMOTE checks request public PyPI/GitHub release and commit metadata over HTTPS.")
                     print("No downloads, installs, Git fetch, Docker changes or restarts.")
                     if confirm("PUBLIC"):
+                        public_started = True
                         print(json.dumps(maintenance_versions_report(check_remote=True),
                                          indent=2, ensure_ascii=True))
                     else:
@@ -583,7 +585,11 @@ def menu() -> int:
                 else:
                     print("Cancelled; no public version checks run")
             except (EOFError, KeyboardInterrupt):
-                print("Cancelled; no public version checks run")
+                if public_started:
+                    print("Interrupted; public version lookups may have started; "
+                          "no updates or service changes were made")
+                else:
+                    print("Cancelled; no public version checks run")
         elif choice == "12":
             try:
                 client = input("Client (cursor/claude/hermes), or enter to cancel: ").strip().lower()
