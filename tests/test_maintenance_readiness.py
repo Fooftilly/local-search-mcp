@@ -97,7 +97,8 @@ class MaintenanceGateTests(unittest.TestCase):
             ("local-search-mcp-update.timer", "UnitFileState", "enabled"),
             ("local-search-mcp-update.path", "ActiveState", "active"),
             ("local-search-mcp-tunnel.service", "DropInPaths", "/tmp/secret.conf"),
-            ("local-search-mcp-bridge.service", "FragmentPath", "/etc/systemd/user/foreign"),
+            ("local-search-mcp-bridge.service", "FragmentPath",
+             str(self.units / "local-search-mcp-tunnel.service")),
             ("local-search-mcp-tunnel.service", "NeedDaemonReload", "yes"),
         ]
         for name, key, value in cases:
@@ -159,7 +160,7 @@ class MaintenanceGateTests(unittest.TestCase):
             self.assertTrue(kwargs["capture_output"])
             self.assertFalse(kwargs["check"])
             self.assertEqual(kwargs["timeout"], 15)
-            self.assertEqual(argv[:3], ["systemctl", "--user", "show"])
+            self.assertEqual(argv[:3], ["/usr/bin/systemctl", "--user", "show"])
             values = self.state(argv[3])
             output = "".join(f"{k}={v}\n" for k, v in values.items())
             return subprocess.CompletedProcess(argv, 0, stdout=output.encode(),
@@ -179,8 +180,9 @@ class MaintenanceGateTests(unittest.TestCase):
                     gate.subprocess, "run",
                     return_value=subprocess.CompletedProcess(["systemctl"], 0,
                                                               stdout=payload, stderr=b"SECRET")):
-                self.assertFalse(gate.inspect(config_home=self.home)[
-                    "ready_for_offline_maintenance"])
+                report = gate.inspect(config_home=self.home)
+                self.assertFalse(report["ready_for_offline_maintenance"])
+                self.assertNotIn("SECRET", json.dumps(report))
 
     def test_cli_failure_is_redacted_and_nonzero(self):
         with (patch.object(gate, "inspect",
