@@ -271,7 +271,7 @@ def create(candidate: Path, destination: Path, *,
     roots = (root.resolve(strict=True), candidate.resolve(strict=True),
              (state_dir or backup_state.state_directory()).resolve(),
              (config_dir or backup_state.settings_directory()).resolve())
-    target = destination.absolute()
+    target = parent / destination.name
     if any(target == base or base in target.parents for base in roots):
         raise ValueError("Recovery checkpoint must be outside live and candidate paths")
     source, target, candidate_digest = _candidate_identity(candidate)
