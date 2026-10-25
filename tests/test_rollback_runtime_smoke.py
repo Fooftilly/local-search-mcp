@@ -85,8 +85,10 @@ class HistoricalSandboxTests(unittest.TestCase):
         self.put("domains.sqlite3", b"fake policy fixture bytes")
         (self.state / "history.jsonl").unlink()
         (self.state / "history.jsonl").symlink_to(self.home / "PRIVATE_CREDS")
+        other = self.home / "scratch-2"
+        other.mkdir(mode=0o700)
         with self.assertRaises((OSError, ValueError)):
-            runner._copy_candidate_state(self.candidate, scratch)
+            runner._copy_candidate_state(self.candidate, other)
 
     def test_unverified_archive_never_starts_sandbox(self):
         with (patch.object(runner.rollback_release_audit, "audit",
@@ -113,7 +115,7 @@ class HistoricalSandboxTests(unittest.TestCase):
         self.assertNotIn("/etc", cmd)
         self.assertFalse(any(x in cmd for x in ("--share-net", "--bind-try",
                                                "--cap-add", "--ro-bind-data")))
-        self.assertEqual(cmd[-4:-1], ["-B", "-c", runner.WORKER][-3:])
+        self.assertEqual(cmd[-4:], ["-I", "-B", "-c", runner.WORKER])
 
     def test_run_uses_sandbox_only_and_never_passes_private_environment(self):
         payload = {
