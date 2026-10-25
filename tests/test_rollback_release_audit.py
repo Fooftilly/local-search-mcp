@@ -23,7 +23,20 @@ class HistoricalCompatibilityTests(unittest.TestCase):
         source = self.candidate / "source"
         source.mkdir(parents=True, mode=0o700)
         self.source = source
-        for name, functions in audit.REQUIRED.items():
+        expected = {
+            "bridge.py": ("web_search", "web_fetch"),
+            "bootstrap.py": ("run_unattended_service",),
+            "domain_policy.py": ("initialize",),
+            "history_index.py": ("sync_history",),
+            "history_log.py": ("logged_tool", "history_path", "append_history"),
+            "health_cli.py": ("snapshot",),
+        }
+        self.assertEqual(audit.REQUIRED, expected)
+        self.assertEqual(audit.UNITS, {
+            "config/systemd/local-search-mcp-bridge.service": "bridge",
+            "config/systemd/local-search-mcp-tunnel.service": "tunnel",
+        })
+        for name, functions in expected.items():
             if name == "bridge.py":
                 body = ("@mcp.tool()\ndef web_search(query):\n    return query\n"
                         "@mcp.tool()\nasync def web_fetch(url):\n    return url\n")
@@ -31,12 +44,14 @@ class HistoricalCompatibilityTests(unittest.TestCase):
                 body = "".join(f"def {func}():\n    return True\n"
                                for func in functions) or "pass\n"
             self.put(name, body)
-        for name in audit.UNITS:
+        for name in ("config/systemd/local-search-mcp-bridge.service",
+                     "config/systemd/local-search-mcp-tunnel.service"):
             self.put(name, (audit.ROOT / name).read_text(encoding="utf-8"))
         self.put("requirements.txt", "fastmcp>=4,<5\nhttpx>=0.28,<1\nidna>=3,<4\n")
         self.python = self.home / "independent-venv" / "bin" / "python"
         self.python.parent.mkdir(parents=True)
-        (self.python.parent.parent / "pyvenv.cfg").write_text("home = /usr/bin\n")
+        (self.python.parent.parent / "pyvenv.cfg").write_text(
+            "home = /usr/bin\ninclude-system-site-packages = false\n")
         self.python.write_text("not executable fixture")
         self.python.chmod(0o700)
         self.uid = patch.object(audit.os, "geteuid", return_value=1000)
@@ -105,7 +120,8 @@ class HistoricalCompatibilityTests(unittest.TestCase):
     def test_candidate_contained_virtualenv_is_rejected(self):
         nested = self.source / "internal-env" / "bin" / "python"
         nested.parent.mkdir(parents=True)
-        (nested.parent.parent / "pyvenv.cfg").write_text("home=/usr/bin\n")
+        (nested.parent.parent / "pyvenv.cfg").write_text(
+            "home=/usr/bin\ninclude-system-site-packages = false\n")
         nested.write_text("fake")
         with self.assertRaisesRegex(ValueError, "independent"):
             audit._environment(nested, ["httpx>=0.28,<1"], self.candidate)
@@ -136,22 +152,38 @@ class HistoricalCompatibilityTests(unittest.TestCase):
 
     def test_replaced_source_symlink_and_insecure_permissions_fail_closed(self):
         original = self.source / "bridge.py"
+        approved = original.read_text()
+        outside = self.home / "PRIVATE_SOURCE_SECRET.py"
+        outside.write_text(approved)
         original.unlink()
-        original.symlink_to(self.home / "PRIVATE_SOURCE_SECRET.py")
-        result = audit.audit(self.candidate)
-        self.assertFalse(result["offline_checks_passed"])
+        original.symlink_to(outside)
+        with patch.object(audit, "_environment", return_value={
+                "checked": 3, "satisfied": 3, "all_satisfied": True}):
+            result = audit.audit(self.candidate, python=self.python)
+        self.assertFalse(result["static_contracts_passed"])
+        self.assertIn("historical Python contract unavailable", result["blockers"])
         original.unlink()
-        self.put("bridge.py", "def web_search():\n pass\n")
+        self.put("bridge.py", approved)
         original.chmod(0o644)
-        result = audit.audit(self.candidate)
-        self.assertFalse(result["offline_checks_passed"])
+        with patch.object(audit, "_environment", return_value={
+                "checked": 3, "satisfied": 3, "all_satisfied": True}):
+            result = audit.audit(self.candidate, python=self.python)
+        self.assertFalse(result["static_contracts_passed"])
+        self.assertIn("historical Python contract unavailable", result["blockers"])
+        self.put("bridge.py", approved)
+        with patch.object(audit, "_environment", return_value={
+                "checked": 3, "satisfied": 3, "all_satisfied": True}):
+            result = audit.audit(self.candidate, python=self.python)
+        self.assertTrue(result["static_contracts_passed"])
+        self.assertTrue(result["offline_checks_passed"])
 
     def test_dependency_environment_subprocess_is_isolated_no_install(self):
         calls = []
         def runner(args, **kwargs):
             calls.append((args, kwargs))
-            self.assertEqual(args[:2], [str(self.python), "-I"])
-            self.assertEqual(args[2], "-c")
+            self.assertEqual(args[:4], [str(self.python), "-I", "-B", "-c"])
+            self.assertIs(kwargs["stderr"], subprocess.DEVNULL)
+            self.assertIs(kwargs["stdout"], subprocess.PIPE)
             self.assertNotIn("install", args)
             self.assertEqual(kwargs["timeout"], 20)
             self.assertEqual(kwargs["env"]["PYTHONNOUSERSITE"], "1")
@@ -190,7 +222,10 @@ class HistoricalCompatibilityTests(unittest.TestCase):
     def test_no_historical_code_is_executed(self):
         marker = self.home / "old-code-ran"
         self.put("history_log.py", "from pathlib import Path\n"
-                 f"Path({str(marker)!r}).write_text('not allowed')\n")
+                 f"Path({str(marker)!r}).write_text('not allowed')\n"
+                 "def logged_tool():\n    pass\n"
+                 "def history_path():\n    pass\n"
+                 "def append_history():\n    pass\n")
         with patch.object(audit, "_environment",
                           return_value={"checked": 3, "satisfied": 3,
                                         "all_satisfied": True}):
