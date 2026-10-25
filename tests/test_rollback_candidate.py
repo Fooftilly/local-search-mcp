@@ -91,6 +91,7 @@ class RollbackCandidateTests(unittest.TestCase):
                            side_effect=AssertionError("must not write baseline")),
               patch.object(candidate, "_copy_git_blobs",
                            side_effect=AssertionError("must not access Git")),
+              patch.object(verify_rollback_candidate.os, "geteuid", return_value=1000),
               redirect_stdout(io.StringIO()) as output,
               redirect_stderr(io.StringIO()) as errors):
             self.assertEqual(verify_rollback_candidate.main([str(self.dir)]), 0,
@@ -137,7 +138,8 @@ class RollbackCandidateTests(unittest.TestCase):
             candidate.inspect(self.dir)
         unexpected.unlink()
         outside = self.base / "PRIVATE_INTERNAL_ARCHIVE_PATH.zip"
-        with redirect_stderr(io.StringIO()) as errors:
+        with (patch.object(verify_rollback_candidate.os, "geteuid", return_value=1000),
+              redirect_stderr(io.StringIO()) as errors):
             self.assertEqual(verify_rollback_candidate.main([str(outside)]), 1)
         self.assertNotIn(str(outside), errors.getvalue())
 
@@ -194,7 +196,8 @@ class RollbackCandidateTests(unittest.TestCase):
         manifest = self.dir / "candidate.json"
         manifest.write_text("[" * 600 + '"SECRET_INTERNAL_DATA"' + "]" * 600)
         manifest.chmod(0o600)
-        with (redirect_stdout(io.StringIO()) as output,
+        with (patch.object(verify_rollback_candidate.os, "geteuid", return_value=1000),
+              redirect_stdout(io.StringIO()) as output,
               redirect_stderr(io.StringIO()) as errors):
             self.assertEqual(verify_rollback_candidate.main([str(self.dir)]), 1)
         self.assertEqual(output.getvalue(), "")
