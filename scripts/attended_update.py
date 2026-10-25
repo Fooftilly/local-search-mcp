@@ -94,9 +94,9 @@ def approved_units() -> dict[str, bool]:
                 or not path.read_text(encoding="utf-8").startswith(MARKER)
                 or state.get("LoadState") != "loaded"
                 or state.get("FragmentPath") != str(path)
-                or state.get("ActiveState") not in ("inactive", "active", "failed")):
+                or state.get("ActiveState") not in ("inactive", "active", "failed", "activating")):
             raise UpdateError("Unknown or unverified systemd unit: " + name)
-        result[name] = state["ActiveState"] == "active"
+        result[name] = state["ActiveState"] in ("active", "activating")
     return result
 
 
@@ -194,7 +194,10 @@ def update() -> int:
         return 0
     if checkout() != old or git("rev-parse", "FETCH_HEAD") != target:
         raise UpdateError("Checkout or reviewed target changed; update cancelled")
-    if approved_units() != units:
+    latest = approved_units()
+    # A short-lived health/update oneshot may finish during operator review.
+    if any(latest[name] != units[name] for name in
+           (*WATCHERS, HEALTH, TUNNEL, BRIDGE)):
         raise UpdateError("Service states changed during review; update cancelled")
     archive = None
     changed = False
@@ -206,7 +209,9 @@ def update() -> int:
                      str(Path.home() / ".config")) / "systemd" / "user" / name).is_file():
                 command(["systemctl", "--user", "disable", "--now", name])
         for name in (HEALTH, *CHECKERS, TUNNEL, BRIDGE):
-            if units.get(name):
+            # A oneshot checker may start after the initial state inspection.
+            # Stop the verified owned checker even if it was previously idle.
+            if units.get(name) or name in CHECKERS:
                 command(["systemctl", "--user", "stop", name])
         ensure_stopped()
         archive = backup_path(old)
@@ -251,8 +256,12 @@ def update() -> int:
 def main() -> int:
     try:
         return update()
-    except (OSError, ValueError, UpdateError,
-            subprocess.SubprocessError, KeyboardInterrupt) as exc:
+    except UpdateError as exc:
+        # Locally authored messages never include private subprocess output.
+        print("Update refused: " + str(exc), file=sys.stderr)
+        return 1
+    except (OSError, ValueError, subprocess.SubprocessError,
+            KeyboardInterrupt) as exc:
         print("Update not started or completed (" + type(exc).__name__ +
               "); review local setup and Git status.", file=sys.stderr)
         return 1
