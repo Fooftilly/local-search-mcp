@@ -490,6 +490,22 @@ def maintenance_versions_report(*, check_remote: bool = False) -> dict:
     return maintenance_versions.report(check_remote=check_remote)
 
 
+def _operator_archive_path(filename: Path) -> Path:
+    """Resolve relative archive names against the setup.sh caller's directory.
+
+    setup.sh changes to the repository directory before launching Python.
+    Direct module callers instead naturally use their own working directory.
+    The caller directory is provided by the fixed shell wrapper only.
+    """
+    filename = filename.expanduser()
+    if filename.is_absolute():
+        return filename
+    base = Path(os.environ.get("LOCAL_SEARCH_MCP_SETUP_CALLER_CWD") or os.getcwd())
+    if not base.is_absolute() or not base.is_dir() or base.is_symlink():
+        raise ValueError("Invalid invoking directory")
+    return base / filename
+
+
 def backup_check(archive: Path, *, smoke: bool = False) -> dict:
     """Reuse existing offline archive checks; never restore to live paths.
 
@@ -505,7 +521,7 @@ def backup_check(archive: Path, *, smoke: bool = False) -> dict:
     try:
         # Expand the operator's home only inside the redaction boundary:
         # a missing home account may raise RuntimeError containing local data.
-        archive = archive.expanduser()
+        archive = _operator_archive_path(archive)
         if smoke:
             from scripts import restore_smoke
             policies, events = restore_smoke.smoke(archive)
@@ -537,14 +553,7 @@ def create_private_backup(destination: Path) -> dict:
               "live_restore_performed": False, "remote_checked": False}
     try:
         from scripts import backup_state
-        destination = destination.expanduser()
-        if not destination.is_absolute():
-            base = Path(os.environ.get("LOCAL_SEARCH_MCP_SETUP_CALLER_CWD")
-                        or os.getcwd())
-            if not base.is_absolute() or not base.is_dir() or base.is_symlink():
-                raise ValueError("Invalid invoking directory")
-            destination = base / destination
-        backup_state.backup(destination)
+        backup_state.backup(_operator_archive_path(destination))
         report["status"] = "created"
     except Exception:
         report["note"] = ("Private backup creation failed; verify the destination "
