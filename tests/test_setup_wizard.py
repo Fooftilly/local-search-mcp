@@ -568,7 +568,8 @@ class SetupWizardTests(unittest.TestCase):
                         "http://127.0.0.1:8790/mcp")),
             ("claude", ("Claude Code CLI", "claude mcp list",
                         "claude mcp add --transport http local-search",
-                        "http://127.0.0.1:8790/mcp", "/mcp",
+                        "http://127.0.0.1:8790/mcp", "within Claude Code use /mcp",
+                        "replace the example name with an unused",
                         "--scope user", "Claude.ai", "HTTPS"))):
             with (self.subTest(client=client),
                   patch.object(wizard, "run_existing",
@@ -600,7 +601,8 @@ class SetupWizardTests(unittest.TestCase):
                            side_effect=AssertionError("No privilege checks"))):
             result, output = self.call("--client", "claude")
         self.assertEqual(result, 0)
-        self.assertIn("Local/project-specific registration", output)
+        self.assertIn("Local-scope registration", output)
+        self.assertIn("verify that name with claude mcp list", output)
         self.assertIn("not Claude.ai cloud", output)
         self.assertNotIn("Authorization: Bearer", output)
         self.assertIn("No client configuration", output)
