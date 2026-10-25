@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 import sqlite3
 import stat
+import struct
 import tempfile
 import unittest
 import warnings
@@ -113,7 +114,7 @@ class BackupTests(unittest.TestCase):
                     zipped.writestr(name, original.read(name))
         forged.chmod(0o600)
         target = self.base / "must-not-restore-unsupported"
-        with self.assertRaisesRegex(ValueError, "Unsafe backup entry"):
+        with self.assertRaisesRegex(ValueError, "^Corrupt backup archive$"):
             backup.verified_payload(forged)
         with self.assertRaises(ValueError):
             backup.restore(forged, target)
@@ -121,6 +122,44 @@ class BackupTests(unittest.TestCase):
         with redirect_stderr(io.StringIO()) as err:
             self.assertEqual(backup.main(["verify", str(forged)]), 1)
         self.assertNotIn("Traceback", err.getvalue())
+
+    def test_real_corrupt_deflate_member_is_normalized_without_restoration(self):
+        # Corrupt actual compressed bytes while leaving ZIP headers and the
+        # central directory intact. 0b111 is an invalid raw-DEFLATE block
+        # type, and Python's ZipExtFile must reach the real zlib decoder.
+        backup.backup(self.archive, state_dir=self.state)
+        forged = self.base / "corrupt-deflate.zip"
+        with zipfile.ZipFile(self.archive) as source:
+            entry = source.getinfo(backup.MANIFEST)
+            self.assertEqual(entry.compress_type, zipfile.ZIP_DEFLATED)
+            self.assertGreater(entry.compress_size, 0)
+            data = bytearray(self.archive.read_bytes())
+            offset = entry.header_offset
+            self.assertEqual(data[offset:offset + 4], b"PK\\x03\\x04")
+            name_size, extra_size = struct.unpack_from("<HH", data, offset + 26)
+            compressed_at = offset + 30 + name_size + extra_size
+            data[compressed_at] = 0x07  # BFINAL=1, BTYPE=3 (reserved/invalid)
+            forged.write_bytes(data)
+        forged.chmod(0o600)
+        # Confirm that the real zipfile decoder, without mocks, encounters
+        # the corruption rather than only detecting an unrelated CRC mismatch.
+        with zipfile.ZipFile(forged) as archive:
+            with self.assertRaises(zlib.error):
+                archive.read(backup.MANIFEST)
+
+        dest = self.base / "no-corrupt-restore"
+        with self.assertRaisesRegex(ValueError, "^Corrupt backup archive$"):
+            backup.verified_payload(forged)
+        with self.assertRaisesRegex(ValueError, "^Corrupt backup archive$"):
+            backup.restore(forged, dest)
+        self.assertFalse(dest.exists())
+        with redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(backup.main(["verify", str(forged)]), 1)
+            self.assertEqual(backup.main([
+                "restore", str(forged), "--target-dir", str(dest)]), 1)
+        self.assertNotIn("Traceback", err.getvalue())
+        self.assertNotIn("invalid block type", err.getvalue())
+        self.assertFalse(dest.exists())
 
     def test_decompression_errors_are_normalized_for_direct_cli_and_restore(self):
         backup.backup(self.archive, state_dir=self.state)
