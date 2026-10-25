@@ -122,3 +122,30 @@ def configured_ports() -> list[dict]:
             "valid": target is not None,
         })
     return results
+
+
+
+def fixed_safety_limits() -> list[dict]:
+    """Report fixed, nonsecret guardrails without reading private configuration.
+
+    These caps are security boundaries, not editable runtime preferences.
+    This function does no filesystem, network or service operations.
+    """
+    import domain_policy
+    import request_cache
+
+    limits = (
+        ("Pending requests, total", domain_policy.MAX_PENDING_TOTAL),
+        ("New pending requests, global/hour",
+         domain_policy.MAX_NEW_PENDING_GLOBAL_PER_HOUR),
+        ("Pending requests, per site", domain_policy.MAX_PENDING_PER_SITE),
+        ("New pending requests, per site/hour",
+         domain_policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR),
+        ("Cached results, total entries", request_cache.MAX_ITEMS),
+        ("Cached results, total bytes", request_cache.MAX_BYTES),
+        ("Cached result, maximum bytes", request_cache.MAX_ENTRY_BYTES),
+        ("Cache key, maximum bytes", request_cache.MAX_KEY_BYTES),
+    )
+    return [{"name": label, "value": value,
+             "apply": "Fixed safeguard; code change and bridge restart"}
+            for label, value in limits]
