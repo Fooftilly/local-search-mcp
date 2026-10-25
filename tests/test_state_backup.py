@@ -513,7 +513,7 @@ class BackupTests(unittest.TestCase):
                 with redirect_stderr(io.StringIO()) as err:
                     self.assertEqual(backup.main(args), 1)
                 output = err.getvalue()
-                self.assertIn("State backup failed (", output)
+                self.assertIn(f"State {args[0]} failed (", output)
                 self.assertNotIn(private, output)
                 self.assertNotIn(str(self.base), output)
                 self.assertNotIn("Traceback", output)
