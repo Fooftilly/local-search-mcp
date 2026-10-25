@@ -168,9 +168,11 @@ def create(candidate: Path, destination: Path, *,
     # Prevent private output being placed inside a tracked source, candidate,
     # or running state directory. Such placement would change what is audited.
     parent = destination.parent.resolve(strict=True)
+    # Optional live state/settings roots need not exist on a fresh install;
+    # resolving without strict=True still lets us exclude nested destinations.
     roots = (root.resolve(strict=True), candidate.resolve(strict=True),
-             (state_dir or backup_state.state_directory()).resolve(strict=True),
-             (config_dir or backup_state.settings_directory()).resolve(strict=True))
+             (state_dir or backup_state.state_directory()).resolve(),
+             (config_dir or backup_state.settings_directory()).resolve())
     if any(parent == base or base in parent.parents for base in roots):
         raise ValueError("Recovery checkpoint must be outside live and candidate paths")
     source, target, candidate_digest = _candidate_identity(candidate)
