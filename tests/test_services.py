@@ -34,9 +34,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual({p.name for p in installer.TEMPLATE_DIR.iterdir()
                           if p.is_file()}, expected)
         units = unit_files("/usr/bin/python3", Path("/tmp/demo"),
-                           auto_restart=True, guard_probe=True,
-                           reflog_path=Path("/tmp/demo/.git/logs/HEAD"),
-                           state_path=Path("/tmp/service-state"))
+                           guard_probe=True)
         self.assertEqual(set(units), expected)
         for name in expected:
             template = (installer.TEMPLATE_DIR / name).read_text()
