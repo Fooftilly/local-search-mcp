@@ -36,6 +36,26 @@ class SearchResultTests(unittest.TestCase):
         for name in results[0]["source_engines"]:
             name.encode("utf-8", "strict")
 
+    def test_overlong_escaped_engine_names_are_not_counted_as_sources(self):
+        malformed = "\ud800" * 100
+        rows = [row("https://example.com/", malformed, "Page",
+                    engines=[malformed])]
+        enriched = enrich_search_results(rows, 1, deduplicate=True)
+        self.assertEqual(enriched[0]["source_engines"], [])
+        self.assertEqual(enriched[0]["source_count"], 0)
+        self.assertLessEqual(len(enriched[0]["engine"]), 100)
+        self.assertTrue(enriched[0]["engine"].isascii())
+        self.assertEqual(enriched[0]["engine"],
+                         enriched[0]["engine"].encode("utf-8").decode("utf-8"))
+
+    def test_malformed_primary_and_attribution_names_use_same_representation(self):
+        malformed = "engine\ud800"
+        results = enrich_search_results(
+            [row("https://a.example", malformed, "One")],
+            1, deduplicate=True)
+        self.assertEqual(results[0]["engine"], r"engine\ud800")
+        self.assertEqual(results[0]["source_engines"], [r"engine\ud800"])
+
     def test_conservative_url_canonicalization(self):
         good = "https://example.com/path?x=1&y=2"
         self.assertEqual(normalized_url("HTTPS://EXAMPLE.COM:443/path?x=1&y=2#fragment"),
