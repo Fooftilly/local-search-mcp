@@ -62,7 +62,10 @@ def _engines(row: dict) -> list[str]:
         possible.extend(raw)
     for raw_name in possible:
         if isinstance(raw_name, str) and raw_name and len(raw_name) <= 100:
-            name = _text(raw_name, 100)
+            # Keep malformed-but-distinct source identities distinguishable:
+            # '?' replacement would collapse different upstream surrogates
+            # and incorrectly lower source_count/ranking.
+            name = raw_name.encode("utf-8", "backslashreplace").decode("utf-8")
             if name not in seen:
                 names.append(name)
                 seen.add(name)
