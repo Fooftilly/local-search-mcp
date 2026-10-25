@@ -533,7 +533,18 @@ def status_page():
         '</td><td>' + esc(item['source']) + '</td><td>' +
         esc(item['apply']) + '</td></tr>'
         for item in service_status.configured_ports())
-    return render_template("status", rows=rows, ports=ports)
+    ports += (
+        '<tr><td>Dashboard</td><td>' + esc(PORT) +
+        '</td><td>active listener</td><td>Bridge restart and health-monitor '
+        'coordination required for a port change</td></tr>'
+        '<tr><td>MCP</td><td>8790</td><td>fixed loopback listener</td>'
+        '<td>Not configurable through the dashboard</td></tr>'
+    )
+    limits = ''.join(
+        '<tr><td>' + esc(item['name']) + '</td><td>' +
+        esc(item['value']) + '</td><td>' + esc(item['apply']) +
+        '</td></tr>' for item in service_status.fixed_safety_limits())
+    return render_template("status", rows=rows, ports=ports, limits=limits)
 
 
 def history_page(kind="", status="", domain="", hours=0, filter_error=""):
