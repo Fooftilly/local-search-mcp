@@ -497,6 +497,40 @@ class BackupTests(unittest.TestCase):
         self.assertIn("history-settings.json", backup.verified_payload(self.archive))
         self.assertIn("upstream-timeouts.json", backup.verified_payload(self.archive))
 
+    def test_direct_cli_errors_redact_private_names_and_untrusted_details(self):
+        private = "NEVER_ECHO_SEARCH_OR_TOKEN"
+        # Validate all three direct operations, including errors generated
+        # by shared path/permission validators outside the setup wizard.
+        scenarios = (
+            ["backup", str(self.base / (private + ".zip")),
+             "--state-dir", str(self.base / (private + "-missing-state"))],
+            ["verify", str(self.base / (private + "-missing-archive.zip"))],
+            ["restore", str(self.base / (private + "-missing-archive.zip")),
+             "--target-dir", str(self.base / "new-target")],
+        )
+        for args in scenarios:
+            with self.subTest(operation=args[0]):
+                with redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(backup.main(args), 1)
+                output = err.getvalue()
+                self.assertIn(f"State {args[0]} failed (", output)
+                self.assertNotIn(private, output)
+                self.assertNotIn(str(self.base), output)
+                self.assertNotIn("Traceback", output)
+                self.assertNotIn("\\n\\n", output)
+        self.assertFalse((self.base / "new-target").exists())
+
+    def test_direct_cli_redacts_exception_details_from_nested_unsafe_inputs(self):
+        # Even a future validator that embeds a sensitive filename must not
+        # put that detail in stderr or status fields.
+        secret = "PRIVATE_DOMAIN_AND_TOKEN_DO_NOT_ECHO"
+        with patch.object(backup, "verified_payload",
+                          side_effect=ValueError(secret)):
+            with redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(backup.main(["verify", str(self.archive)]), 1)
+        self.assertNotIn(secret, err.getvalue())
+        self.assertIn("ValueError", err.getvalue())
+
     def test_cli_backup_verify_restore_and_refusal_of_existing_target(self):
         self.assertEqual(backup.main(["backup", str(self.archive),
                                       "--state-dir", str(self.state)]), 0)

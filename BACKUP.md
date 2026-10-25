@@ -13,6 +13,8 @@ python3 scripts/backup_state.py backup "$HOME/local-search-state-2026.zip"
 python3 scripts/backup_state.py verify "$HOME/local-search-state-2026.zip"
 ```
 
+The direct `scripts/backup_state.py` CLI reports a generic error category on failure without printing source paths, history contents, domain decisions or underlying exception messages. A failure requires a local check of ownership, archive integrity and permissions; it never authorizes overwriting an existing destination.
+
 Backup reads the live SQLite database using SQLite's online backup API (including committed WAL content), and separately copies the JSONL history files. **Cross-file atomicity is not guaranteed while services are writing**. Stop the services first if you need policy/history to represent the same moment. Source permissions must be private; the resulting archive is mode `0600`, is written atomically without replacing an existing archive, and includes a versioned SHA-256 manifest plus SQLite integrity validation. Back up only to local storage that you trust. No archive is uploaded automatically.
 
 For a custom source state directory, pass `--state-dir /absolute/path/to/local-search-mcp` to `backup`. The default is `$XDG_STATE_HOME/local-search-mcp`, or `~/.local/state/local-search-mcp` if unset.
