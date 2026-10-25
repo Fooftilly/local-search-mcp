@@ -230,7 +230,10 @@ class HistoricalSandboxTests(unittest.TestCase):
                 "BWRAP_TEST_SECRET": "TOP_SECRET"}):
             raw = runner._sandbox_output([sys.executable, "-c", code])
         env = json.loads(raw)
-        self.assertEqual(env, {"PATH": "/usr/bin:/bin"})
+        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+        # Python may add a fixed LC_CTYPE=C.UTF-8 through locale coercion;
+        # that is not an inherited host secret.
+        self.assertFalse(set(env) - {"PATH", "LC_CTYPE"})
         self.assertNotIn("TOP_SECRET", raw.decode())
 
     def test_worker_validates_dependencies_before_inserting_untrusted_source(self):
