@@ -555,7 +555,7 @@ def create_private_backup(destination: Path) -> dict:
         from scripts import backup_state
         backup_state.backup(_operator_archive_path(destination))
         report["status"] = "created"
-    except Exception:
+    except (Exception, KeyboardInterrupt):
         report["note"] = ("Private backup creation failed; verify the destination "
                           "and source permissions locally before retrying. "
                           "An existing archive is never overwritten.")
@@ -592,7 +592,7 @@ def menu() -> int:
         print("13 Audit on-demand reboot prerequisites (read-only)")
         print("14 Maintenance version inventory (offline; optional confirmed public lookups)")
         print("15 Verify private backup / isolated fresh-install smoke (offline)")
-        print("16 Create private offline backup (type BACKUP to confirm)")
+        print("16 Create private local backup (type BACKUP to confirm)")
         print("0  Exit")
         try:
             choice = input("Choose: ").strip()
@@ -692,6 +692,7 @@ def menu() -> int:
                     print("This creates a private local archive of policy and history")
                     print("and validated nonsecret settings. It contains sensitive data.")
                     print("It never overwrites an existing archive or stops services.")
+                    print("Stop writing services first for a consistent multi-file snapshot.")
                     if confirm("BACKUP"):
                         print(json.dumps(create_private_backup(Path(name)),
                                          indent=2, ensure_ascii=True))
@@ -839,6 +840,9 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
 
 def main(argv: list[str] | None = None) -> int:
     args = make_parser().parse_args(argv)
+    # Validate confirmation flags before any early-returning command dispatch.
+    if args.confirm_backup is not None and args.backup_create is None:
+        raise SystemExit("--confirm-backup requires --backup-create")
     if args.secure_tunnel or args.secure_tunnel_preview:
         if args.confirm_on_demand is not None or args.wake_before_disable:
             raise SystemExit("Unrelated on-demand options cannot be combined with tunnel setup")
@@ -878,8 +882,6 @@ def main(argv: list[str] | None = None) -> int:
         report = create_private_backup(args.backup_create)
         print(json.dumps(report, indent=2, ensure_ascii=True))
         return 0 if report["status"] == "created" else 1
-    if args.confirm_backup is not None:
-        raise SystemExit("--confirm-backup requires --backup-create")
     if args.dry_run:
         print(json.dumps(dry_run(), indent=2))
         return 0
