@@ -141,6 +141,23 @@ def _copy_candidate_state(candidate: Path, scratch: Path) -> int:
     return copied
 
 
+def _lib64_args() -> list[str]:
+    """Reproduce only the host's vetted ELF loader mount layout."""
+    entry = Path("/lib64")
+    try:
+        if entry.is_symlink():
+            resolved = entry.resolve(strict=True)
+            if resolved not in (Path("/usr/lib"), Path("/usr/lib64")):
+                raise ValueError("Unrecognized host ELF loader link")
+            return ["--symlink", str(resolved).lstrip("/"), "/lib64"]
+        info = entry.lstat()
+        if stat.S_ISDIR(info.st_mode) and info.st_uid == 0:
+            return ["--ro-bind", "/lib64", "/lib64"]
+    except OSError as exc:
+        raise ValueError("Host ELF loader directory unavailable") from exc
+    raise ValueError("Unrecognized host ELF loader location")
+
+
 def _sandbox_command(candidate: Path, python: Path, scratch: Path,
                      requirements: list[str]) -> list[str]:
     # Only OS executables and shared libraries, not the whole /usr tree.
@@ -155,7 +172,7 @@ def _sandbox_command(candidate: Path, python: Path, scratch: Path,
         "--ro-bind-try", "/usr/lib64", "/usr/lib64",
         "--symlink", "usr/bin", "/bin",
         "--symlink", "usr/lib", "/lib",
-        "--symlink", "usr/lib", "/lib64",
+        *_lib64_args(),
         "--dir", "/venv", "--ro-bind", str(python.parent.parent), "/venv",
         "--dir", "/app", "--ro-bind", str(candidate / "source"), "/app",
         "--dir", "/work", "--bind", str(scratch), "/work",
