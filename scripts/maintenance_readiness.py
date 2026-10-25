@@ -67,7 +67,7 @@ def _verified_guard_dropin(path: Path) -> bool:
 
 
 def _unit_state(name: str) -> dict[str, str]:
-    command = ["systemctl", "--user", "show", name,
+    command = ["/usr/bin/systemctl", "--user", "show", name,
                *(f"--property={key}" for key in PROPS)]
     # No shell; captured diagnostics can contain local paths and are never emitted.
     result = subprocess.run(command, capture_output=True, check=False,
@@ -128,7 +128,7 @@ def inspect(*, config_home: Path | None = None,
         except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
             blocked.append(name + ": state/ownership could not be verified")
     try:
-        if on_demand_settings.read()["enabled"]:
+        if on_demand_settings.read(folder=base.parent.parent / "local-search-mcp")["enabled"]:
             blocked.append("on-demand wake remains enabled")
     except (OSError, ValueError, KeyError, TypeError):
         blocked.append("on-demand preference could not be verified")
