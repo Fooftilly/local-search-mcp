@@ -176,7 +176,9 @@ def _environment(python: Path, requirements: list[str], candidate: Path) -> dict
     staged_root = candidate.resolve(strict=True)
     if (resolved_root in (active_root, staged_root)
             or active_root in resolved_root.parents
-            or staged_root in resolved_root.parents):
+            or staged_root in resolved_root.parents
+            or root == ROOT or ROOT in root.parents
+            or root == candidate or candidate in root.parents):
         raise ValueError("Select a virtualenv outside the active checkout and candidate")
     info = root.stat()
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
