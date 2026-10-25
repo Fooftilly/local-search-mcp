@@ -156,6 +156,53 @@ class GuardTests(unittest.TestCase):
                   self.assertRaises(guard.GuardError)):
                 guard.verify_installed(bridge)
 
+    def test_kernel_canonicalization_preserves_exact_guard_semantics(self):
+        """Accept actual nft rendering while rejecting altered deny coverage/actions."""
+        bridge = "lsm-crawler0"
+        canonical = nft_listing(bridge).replace(
+            "224.0.0.0/4, 240.0.0.0/4", "224.0.0.0/3"
+        ).replace(
+            "counter name blocked_ipv4 reject",
+            'counter name "blocked_ipv4" reject with icmp port-unreachable'
+        ).replace(
+            "meta nfproto ipv6 counter reject",
+            "meta nfproto ipv6 counter reject with icmpv6 port-unreachable"
+        )
+        with (patch.object(guard, "table_exists", return_value=True),
+              patch.object(guard, "command", return_value=canonical)):
+            guard.verify_installed(bridge)
+
+        # Any weakened or unfamiliar action/denial stays fail-closed.
+        corruptions = (
+            canonical.replace("224.0.0.0/3", "224.0.0.0/4"),
+            canonical.replace("192.168.0.0/16", "192.168.0.0/24"),
+            canonical.replace("reject with icmp port-unreachable",
+                              "reject with icmp host-unreachable"),
+            canonical.replace("reject with icmp port-unreachable", "accept"),
+            canonical.replace("reject with icmpv6 port-unreachable",
+                              "reject with icmpv6 no-route"),
+            canonical.replace("meta nfproto ipv6 counter reject with icmpv6 port-unreachable",
+                              "meta nfproto ipv6 counter accept"),
+            canonical.replace('counter name "blocked_ipv4"',
+                              'counter name "wrong_counter"'),
+        )
+        for corrupt in corruptions:
+            with (self.subTest(rule=corrupt[:90]),
+                  patch.object(guard, "table_exists", return_value=True),
+                  patch.object(guard, "command", return_value=corrupt),
+                  self.assertRaises(guard.GuardError)):
+                guard.verify_installed(bridge)
+
+    def test_equivalent_prefix_splits_and_merges_are_checked_by_coverage(self):
+        """More or fewer textual CIDRs may encode exactly the same deny set."""
+        bridge = "lsm-crawler0"
+        split = nft_listing(bridge).replace(
+            "192.168.0.0/16", "192.168.0.0/17, 192.168.128.0/17"
+        )
+        with (patch.object(guard, "table_exists", return_value=True),
+              patch.object(guard, "command", return_value=split)):
+            guard.verify_installed(bridge)
+
     def test_apply_requires_root_before_nft_writes(self):
         """Never call nft to mutate rules without root privileges."""
         c,n=fixture()

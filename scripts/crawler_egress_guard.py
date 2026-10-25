@@ -328,8 +328,8 @@ def verify_installed(bridge: str) -> None:
 
     A mention of our bridge in the INPUT chain must never disguise stale
     FORWARD rules. Reject extra accept/jump rules or missing deny destinations.
-    The textual check expects the fixed rules emitted by our own template;
-    unexpected nft serialization fails closed and needs operator inspection.
+    Accept only known nftables canonicalizations (adjacent CIDRs coalesced and
+    explicit ICMP reject responses); all other differences fail closed.
     """
     if not re.fullmatch(r'[a-zA-Z0-9_.-]{1,15}', bridge):
         raise GuardError('Invalid bridge name')
@@ -363,16 +363,26 @@ def verify_installed(bridge: str) -> None:
         raise GuardError('Firewall hooks or priorities differ from guard template')
 
     prefix = f'iifname "{bridge}" ip daddr {{ '
-    suffix_pattern = r' \} counter name "?blocked_ipv4"? reject'
+    # nft renders a plain "reject" as "reject with icmp port-unreachable"
+    # and can merge adjacent prefixes (e.g. 224/4 + 240/4 into 224/3).
+    # Require the identical address SET, not the same textual prefix list.
+    suffix_pattern = r' \} counter name "?blocked_ipv4"? reject(?: with icmp port-unreachable)?'
     match = (re.fullmatch(re.escape(prefix) + r'(.+?)' + suffix_pattern,
                           forward[1]))
     if match is None:
         raise GuardError('Crawler FORWARD IPv4 deny rule is missing or stale')
-    actual_networks = [part.strip() for part in match.group(1).split(',')]
-    if (len(actual_networks) != len(BLOCKED_IPV4)
-            or set(actual_networks) != set(BLOCKED_IPV4)):
+    try:
+        actual_networks = list(ipaddress.collapse_addresses(
+            ipaddress.IPv4Network(part.strip(), strict=True)
+            for part in match.group(1).split(',')))
+        expected_networks = list(ipaddress.collapse_addresses(
+            ipaddress.IPv4Network(part) for part in BLOCKED_IPV4))
+    except ValueError as exc:
+        raise GuardError('Crawler FORWARD IPv4 deny destinations are invalid') from exc
+    if actual_networks != expected_networks:
         raise GuardError('Crawler FORWARD deny destinations differ')
-    if forward[2] != f'iifname "{bridge}" meta nfproto ipv6 counter reject':
+    ipv6 = f'iifname "{bridge}" meta nfproto ipv6 counter reject'
+    if forward[2] not in (ipv6, ipv6 + ' with icmpv6 port-unreachable'):
         raise GuardError('Crawler FORWARD IPv6 deny rule is missing or stale')
     if host[1:] != [
             f'iifname "{bridge}" ct state established ct direction reply accept',
