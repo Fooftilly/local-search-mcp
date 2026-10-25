@@ -20,7 +20,7 @@ class SearchResultTests(unittest.TestCase):
         grouped = enrich_search_results(rows + rows, 1, deduplicate=True)
         for answer in (plain, grouped):
             self.assertNotIn("\ud800", str(answer))
-            self.assertIn("\ufffd", str(answer))
+            self.assertIn("bad?text", str(answer))
             json.dumps(answer, ensure_ascii=False).encode("utf-8", "strict")
 
     def test_conservative_url_canonicalization(self):
