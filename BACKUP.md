@@ -435,7 +435,14 @@ The tool **never stops/restarts any service** and does not alter the Git
 checkout, on-disk live state, or a prior checkpoint. It requires the candidate
 inventory to match the exact installed Git revision and strict
 inactive/project-owned systemd gate to pass **both before and after** the
-snapshot. It creates a private ZIP using the existing SQLite-consistent
+snapshot. The tool also verifies that the interactive shell and both managed
+systemd services use the **same** effective HOME, XDG state/config and optional
+history-log locations. It rejects per-service Environment/EnvironmentFile
+overrides and any mismatched manager environment, rather than silently
+archiving a valid database that belongs to a different session. If this check
+fails, inspect `systemctl --user show-environment` locally and adjust the
+invocation environment to match the reviewed service (do not copy secret
+values into messages or scripts). It creates a private ZIP using the existing SQLite-consistent
 snapshot API and allowlisted nonsecret settings, verifies every archive member
 and runs an isolated fresh-install reader smoke test. It then rechecks the
 candidate and checkout, and writes `checkpoint.json` last with a SHA-256
