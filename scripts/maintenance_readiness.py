@@ -51,25 +51,19 @@ def _verified_guard_dropin(path: Path) -> bool:
     expected = (Path(__file__).resolve().parents[1] / "config" / "systemd" /
                 "guards" / "10-crawler-egress.conf")
     try:
-        if path.is_symlink() or expected.is_symlink():
+        if path.is_symlink() or expected.is_symlink() or not expected.is_file():
             return False
-        if not _private_public_file(path):
-            return False
-        if not expected.is_file():
-            return False
-        # Compare bounded bytes; don't print the local path or template.
-        return (path.stat().st_size <= 8192
-                and path.read_bytes() == expected.read_bytes())
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | NOFOLLOW)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_nlink != 1 or info.st_mode & 0o022
+                    or info.st_size > 8192):
+                return False
+            content = stream.read(8193)
+        return len(content) <= 8192 and content == expected.read_bytes()
     except (OSError, ValueError):
         return False
-
-
-def _private_public_file(path: Path) -> bool:
-    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | NOFOLLOW)
-    with os.fdopen(fd, "rb") as stream:
-        info = os.fstat(stream.fileno())
-        return (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
-                and info.st_nlink == 1 and not info.st_mode & 0o022)
 
 
 def _unit_state(name: str) -> dict[str, str]:
