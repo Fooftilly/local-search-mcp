@@ -52,6 +52,11 @@ def _text(value: object, limit: int) -> str:
     return str(value)[:limit].encode("utf-8", "replace").decode("utf-8")
 
 
+def _engine_text(value: object) -> str:
+    """Use one bounded, readable representation for all source names."""
+    return str(value).encode("utf-8", "backslashreplace").decode("utf-8")[:100]
+
+
 def _engines(row: dict) -> list[str]:
     """Read all valid upstream engine names without an arbitrary count cap."""
     names = []
@@ -62,11 +67,11 @@ def _engines(row: dict) -> list[str]:
         possible.extend(raw)
     for raw_name in possible:
         if isinstance(raw_name, str) and raw_name and len(raw_name) <= 100:
-            # Keep malformed-but-distinct source identities distinguishable:
-            # '?' replacement would collapse different upstream surrogates
-            # and incorrectly lower source_count/ranking.
+            # Only count a source when its escaped name remains within
+            # the established 100-character bound. An overlong malformed
+            # source cannot provide reliable, distinguishable attribution.
             name = raw_name.encode("utf-8", "backslashreplace").decode("utf-8")
-            if name not in seen:
+            if len(name) <= 100 and name not in seen:
                 names.append(name)
                 seen.add(name)
     return names
@@ -86,7 +91,7 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
             {"title": _text(r.get("title", ""), 240),
              "url": _text(r.get("url", ""), 2048),
              "snippet": _text(r.get("content", ""), 1100),
-             "engine": _text(r.get("engine", ""), 100)}
+             "engine": _engine_text(r.get("engine", ""))}
             for r in rows[:max_results]
         ]
 
@@ -101,7 +106,7 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
                 "title": _text(row.get("title", ""), 240),
                 "url": _text(row.get("url", ""), 2048),
                 "snippet": _text(row.get("content", ""), 1100),
-                "engine": _text(row.get("engine", ""), 100),
+                "engine": _engine_text(row.get("engine", "")),
                 "source_engines": [],
                 "source_count": 0,
                 "duplicate_count": 0,
@@ -121,7 +126,7 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
             # The first occurrence is already represented by the primary
             # engine/title/snippet. Only retain actual alternative matches.
             entry["source_matches"].append({
-                "engine": _text(row.get("engine", ""), 100),
+                "engine": _engine_text(row.get("engine", "")),
                 "title": _text(row.get("title", ""), 240),
                 "snippet": _text(row.get("content", ""), 1100),
             })
