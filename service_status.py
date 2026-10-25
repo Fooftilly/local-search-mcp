@@ -5,6 +5,7 @@ isolation. The dashboard never invokes Docker, systemctl, or remote URLs.
 """
 from __future__ import annotations
 
+import errno
 import os
 import socket
 from urllib.parse import urlsplit
@@ -37,9 +38,40 @@ def _endpoint(raw: str) -> tuple[str, int] | None:
         return None
 
 
+def _supervisor_activity() -> dict | None:
+    """Snapshot in-process supervisor state only; never wake or inspect Docker."""
+    try:
+        from scripts import on_demand_supervisor
+        return on_demand_supervisor.local_status()
+    except (ImportError, OSError, ValueError, RuntimeError):
+        return None
+
+
+def _expected_sleeping(activity: dict | None, backend: str) -> bool:
+    """Only an actual initialized on-demand supervisor may explain an absent TCP listener.
+
+    Snapshot state is advisory, not a substitute for verified Docker/egress
+    health; preserve "TCP unavailable" for failed or ambiguous states.
+    """
+    if (type(activity) is not dict or activity.get("enabled") is not True
+            or activity.get("mode") != "on-demand"):
+        return False
+    entries = activity.get("backends")
+    if type(entries) is not dict or set(entries) != {"searxng", "crawl4ai"}:
+        return False
+    row = entries.get(backend)
+    return (type(row) is dict and row.get("state") == "sleeping"
+            and row.get("armed") is False
+            and type(row.get("active_requests")) is int
+            and row["active_requests"] == 0
+            and row.get("stop_claimed") is False)
+
+
 def probe_services(*, connector=socket.create_connection) -> list[dict]:
-    """Return transport-only results. Never disclose configured endpoint URLs."""
+    """Return transport results annotated by optional *reported* idle state."""
     results = []
+    activity = None
+    checked_activity = False
     for label, variable, default in SERVICES:
         target = _endpoint(os.environ.get(variable, default))
         if target is None:
@@ -50,8 +82,22 @@ def probe_services(*, connector=socket.create_connection) -> list[dict]:
         try:
             with connector(target, timeout=0.3):
                 status = "TCP reachable"
-        except (OSError, TimeoutError):
+        except OSError as exc:
             status = "TCP unavailable"
+            # An absent listener normally refuses a TCP connection. Timeouts,
+            # address/routing errors and local socket exhaustion are failures,
+            # not evidence that Docker intentionally stopped a backend.
+            refused = (isinstance(exc, ConnectionRefusedError)
+                       or getattr(exc, "errno", None) == errno.ECONNREFUSED)
+            # The supervisor only owns the fixed loopback backend endpoints;
+            # an overridden URL may refer to an unrelated service.
+            if refused and target == _endpoint(default):
+                if not checked_activity:
+                    activity = _supervisor_activity()
+                    checked_activity = True
+                backend = "searxng" if label == "SearXNG" else "crawl4ai"
+                if _expected_sleeping(activity, backend):
+                    status = "TCP unavailable (supervisor reports sleeping)"
         results.append({"service": label, "status": status,
                         "source": "environment" if variable in os.environ
                         else "default"})

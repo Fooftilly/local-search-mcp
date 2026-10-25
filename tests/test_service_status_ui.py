@@ -1,4 +1,5 @@
 """Read-only service status, localhost-only probes and origin protections."""
+import errno
 import os
 import tempfile
 import threading
@@ -96,6 +97,130 @@ class StatusTests(unittest.TestCase):
                 connector=lambda *a, **k: (_ for _ in ()).throw(
                     ConnectionRefusedError("refused")))
         self.assertTrue(all(x["status"] == "TCP unavailable" for x in report))
+
+    def test_unavailable_tcp_can_be_reported_as_expected_sleeping_without_wake(self):
+        sleeping = {"state": "sleeping", "armed": False,
+                    "active_requests": 0, "stop_claimed": False}
+        active = {"state": "running", "armed": True,
+                  "active_requests": 0, "stop_claimed": False}
+        scenarios = (
+            ({"mode": "on-demand", "enabled": True, "backends": {
+                "searxng": sleeping, "crawl4ai": active}},
+             ["TCP unavailable (supervisor reports sleeping)", "TCP unavailable"]),
+            ({"mode": "on-demand", "enabled": True, "backends": {
+                "searxng": sleeping, "crawl4ai": sleeping}},
+             ["TCP unavailable (supervisor reports sleeping)"] * 2),
+            ({"mode": "on-demand", "enabled": False, "backends": {
+                "searxng": sleeping, "crawl4ai": sleeping}},
+             ["TCP unavailable"] * 2),
+            ({"mode": "on-demand", "enabled": True, "backends": None},
+             ["TCP unavailable"] * 2),
+            ({"mode": "on-demand", "enabled": True, "backends": {
+                "searxng": {**sleeping, "active_requests": 1},
+                "crawl4ai": {**sleeping, "stop_claimed": True}}},
+             ["TCP unavailable"] * 2),
+        )
+        for activity, expected in scenarios:
+            with (self.subTest(expected=expected),
+                  patch.dict(os.environ, {}, clear=True),
+                  patch.object(service_status, "_supervisor_activity",
+                               return_value=activity) as snapshot):
+                result = service_status.probe_services(
+                    connector=lambda *a, **k: (_ for _ in ()).throw(
+                        ConnectionRefusedError("private error")))
+                self.assertEqual([row["status"] for row in result], expected)
+                snapshot.assert_called_once_with()
+                self.assertNotIn("private error", repr(result))
+
+    def test_only_refused_connections_can_be_supervisor_reported_sleep(self):
+        sleeping = {"state": "sleeping", "armed": False,
+                    "active_requests": 0, "stop_claimed": False}
+        activity = {"mode": "on-demand", "enabled": True, "backends": {
+            "searxng": sleeping, "crawl4ai": sleeping}}
+        cases = (
+            (ConnectionRefusedError(errno.ECONNREFUSED, "secret"), True),
+            (OSError(errno.ECONNREFUSED, "secret"), True),
+            (TimeoutError("secret"), False),
+            (OSError(errno.ENETUNREACH, "secret"), False),
+            (OSError(errno.EACCES, "secret"), False),
+            (OSError(errno.EMFILE, "secret"), False),
+            (OSError("secret"), False),
+        )
+        for error, refused in cases:
+            with (self.subTest(error=repr(error)),
+                  patch.dict(os.environ, {}, clear=True),
+                  patch.object(service_status, "_supervisor_activity",
+                               return_value=activity) as snapshot):
+                def connector(*_args, **_kwargs):
+                    raise error
+                result = service_status.probe_services(connector=connector)
+            label = ("TCP unavailable (supervisor reports sleeping)"
+                     if refused else "TCP unavailable")
+            self.assertEqual([row["status"] for row in result], [label] * 2)
+            self.assertNotIn("secret", repr(result))
+            if refused:
+                snapshot.assert_called_once_with()
+            else:
+                snapshot.assert_not_called()
+
+    def test_custom_loopback_ports_are_not_mislabelled_as_supervisor_sleep(self):
+        asleep = {"state": "sleeping", "armed": False,
+                  "active_requests": 0, "stop_claimed": False}
+        active_mode = {"mode": "on-demand", "enabled": True, "backends": {
+            "searxng": asleep, "crawl4ai": asleep}}
+        with (patch.dict(os.environ, {
+                "SEARXNG_URL": "http://127.0.0.1:9000",
+                "CRAWL4AI_URL": "http://localhost:9111"}, clear=True),
+              patch.object(service_status, "_supervisor_activity",
+                           return_value=active_mode)):
+            result = service_status.probe_services(
+                connector=lambda *a, **k: (_ for _ in ()).throw(ConnectionRefusedError()))
+        self.assertEqual([item["status"] for item in result], ["TCP unavailable"] * 2)
+
+        # An explicit environment URL for the same managed port is still
+        # the actual supervised TCP listener and may report sleeping.
+        with (patch.dict(os.environ, {
+                "SEARXNG_URL": "http://localhost:8888",
+                "CRAWL4AI_URL": "http://127.0.0.1:11235"}, clear=True),
+              patch.object(service_status, "_supervisor_activity",
+                           return_value=active_mode)):
+            result = service_status.probe_services(
+                connector=lambda *a, **k: (_ for _ in ()).throw(ConnectionRefusedError()))
+        self.assertEqual([item["status"] for item in result],
+                         ["TCP unavailable (supervisor reports sleeping)"] * 2)
+
+    def test_reachable_or_invalid_backend_never_needs_supervisor_state(self):
+        with (patch.dict(os.environ, {}, clear=True),
+              patch.object(service_status, "_supervisor_activity",
+                           side_effect=AssertionError("No optional status access"))):
+            result = service_status.probe_services(connector=lambda *a, **k: FakeConnection())
+        self.assertEqual([row["status"] for row in result], ["TCP reachable"] * 2)
+        with (patch.dict(os.environ, {
+                "SEARXNG_URL": "https://outside.invalid/SECRET",
+                "CRAWL4AI_URL": "http://127.0.0.1:0"}, clear=True),
+              patch.object(service_status, "_supervisor_activity",
+                           side_effect=AssertionError("Unsafe config must not query state"))):
+            result = service_status.probe_services(
+                connector=lambda *a, **k: self.fail("Invalid endpoint probed"))
+        self.assertEqual([row["status"] for row in result], ["configuration invalid"] * 2)
+
+    def test_reported_sleep_state_is_not_trusted_without_verified_snapshot(self):
+        sleeping = {"state": "sleeping", "armed": False,
+                    "active_requests": 0, "stop_claimed": False}
+        for candidate in (
+            {"mode": "on-demand", "enabled": True, "backends": {"searxng": sleeping}},
+            {"mode": "on-demand", "enabled": True, "backends": {
+                "searxng": {**sleeping, "armed": True}, "crawl4ai": sleeping}},
+            {"mode": "on-demand", "enabled": True, "backends": {
+                "searxng": {**sleeping, "active_requests": True}, "crawl4ai": sleeping}},
+            {"mode": "on-demand", "enabled": True, "backends": {
+                "searxng": {**sleeping, "state": "failed"}, "crawl4ai": sleeping}},
+            {"mode": "unavailable", "enabled": True, "backends": {
+                "searxng": sleeping, "crawl4ai": sleeping}},
+            None,
+        ):
+            with self.subTest(candidate=candidate):
+                self.assertFalse(service_status._expected_sleeping(candidate, "searxng"))
 
     def test_port_report_only_numeric_local_ports(self):
         with patch.dict(os.environ, {
