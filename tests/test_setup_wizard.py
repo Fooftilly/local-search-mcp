@@ -340,6 +340,40 @@ class SetupWizardTests(unittest.TestCase):
         self.assertFalse(report["remote_checked"])
         self.assertNotIn("DO_NOT_ECHO", out)
 
+    def test_backup_confirmation_guard_precedes_early_dispatch(self):
+        # No other command may consume or silently ignore backup consent.
+        for command in ("--secure-tunnel-preview", "--status", "--dry-run",
+                        "--on-demand-status", "--maintenance-versions"):
+            with (self.subTest(command=command),
+                  patch.object(wizard, "run_existing",
+                               side_effect=AssertionError("No subprocess")),
+                  patch.object(wizard, "status_report",
+                               side_effect=AssertionError("No status probe")),
+                  patch.object(wizard, "dry_run",
+                               side_effect=AssertionError("No preview")),
+                  patch.object(wizard, "on_demand_status",
+                               side_effect=AssertionError("No on-demand probe")),
+                  patch.object(wizard, "maintenance_versions_report",
+                               side_effect=AssertionError("No version lookup"))):
+                with self.assertRaisesRegex(SystemExit,
+                                            "--confirm-backup requires --backup-create"):
+                    wizard.main([command, "--confirm-backup", "BACKUP"])
+
+    def test_backup_creation_interruption_is_redacted_and_nonzero(self):
+        from scripts import backup_state
+        target = Path("/private/NEVER_PRINT_DESTINATION.zip")
+        with patch.object(backup_state, "backup",
+                          side_effect=KeyboardInterrupt()) as writer:
+            code, output = self.call("--backup-create", str(target),
+                                     "--confirm-backup", "BACKUP")
+        writer.assert_called_once_with(target)
+        self.assertEqual(code, 1)
+        report = json.loads(output)
+        self.assertEqual(report["status"], "failed")
+        self.assertIn("inspect the destination", report["note"])
+        self.assertNotIn("NEVER_PRINT_DESTINATION", output)
+        self.assertNotIn("Traceback", output)
+
     def test_shell_backup_create_resolves_relative_destination_from_caller(self):
         from scripts import backup_state
         root = Path(__file__).resolve().parents[1]
@@ -350,9 +384,10 @@ class SetupWizardTests(unittest.TestCase):
             state = workspace / "state" / "local-search-mcp"
             state.mkdir(parents=True, mode=0o700)
             db = state / "domains.sqlite3"
-            with sqlite3.connect(db) as connection:
+            with contextlib.closing(sqlite3.connect(db)) as connection:
                 connection.execute("CREATE TABLE domains (domain TEXT)")
                 connection.execute("INSERT INTO domains VALUES ('example.org')")
+                connection.commit()
             db.chmod(0o600)
             archive_name = "caller-" + workspace.name + ".zip"
             env = dict(os.environ)
@@ -474,6 +509,7 @@ class SetupWizardTests(unittest.TestCase):
             self.assertEqual(wizard.main([]), 0)
         writer.assert_called_once_with(target)
         self.assertIn('"status": "created"', output.getvalue())
+        self.assertIn("Stop writing services first", output.getvalue())
         self.assertNotIn("SENSITIVE_BACKUP", output.getvalue())
 
     def test_backup_verify_uses_existing_verifier_without_secrets_or_service_calls(self):
