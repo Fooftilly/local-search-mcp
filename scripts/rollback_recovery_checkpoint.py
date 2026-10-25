@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import sys
 
 if __package__:
@@ -225,7 +226,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         report = (inspect(args.inspect_path, candidate=args.candidate)
                   if args.inspect_path else create(args.candidate, args.destination))
-    except (OSError, ValueError, KeyError, TypeError, RecursionError):
+    except (OSError, ValueError, KeyError, TypeError, RecursionError,
+            subprocess.SubprocessError):
         print("Private recovery checkpoint incomplete or unavailable; review local "
               "maintenance state and checkpoint directory", file=sys.stderr)
         return 1
