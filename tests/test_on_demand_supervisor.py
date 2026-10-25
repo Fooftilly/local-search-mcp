@@ -77,6 +77,7 @@ class OnDemandSupervisorTests(unittest.TestCase):
         # lease: first actual MCP request must still invoke guarded docker.start.
         self.assertEqual(manager._verified_at["crawl4ai"], 0.0)
         with (patch.object(manager, "_enabled", return_value=True),
+              patch.object(sup.time, "monotonic", return_value=5.0),
               patch.object(sup.docker, "start", return_value=False) as guarded):
             with manager.lease("crawl4ai"):
                 pass
