@@ -218,6 +218,7 @@ class RecoveryCheckpointTests(unittest.TestCase):
         self.assertFalse(missing.exists())
 
     def test_user_manager_environment_differences_fail_closed(self):
+        self.manager_env.stop()  # Exercise the actual verifier, not fixture mock.
         import subprocess
         def show(args, **kwargs):
             if "show-environment" in args:
@@ -239,6 +240,36 @@ class RecoveryCheckpointTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "active"):
                 self.create()
         self.assertFalse(self.dest.exists())
+
+    def test_missing_manager_home_and_optional_environmentfiles_handling(self):
+        self.manager_env.stop()
+        import subprocess
+        def show(args, **kwargs):
+            if "show-environment" in args:
+                text = "XDG_STATE_HOME=/tmp/state\n"
+            else:
+                # Empty EnvironmentFiles property is genuinely omitted on
+                # some systemd versions. Do not interpret that as an override.
+                text = ("Environment=\nPassEnvironment=\n"
+                        "UnsetEnvironment=\n")
+            return subprocess.CompletedProcess(args, 0, stdout=text.encode(),
+                                               stderr=b"")
+        with patch.object(checkpoint.subprocess, "run", side_effect=show):
+            with self.assertRaisesRegex(ValueError, "HOME"):
+                checkpoint._verify_effective_environment()
+        def manager_home(args, **kwargs):
+            if "show-environment" in args:
+                text = "HOME=" + str(Path.home()) + "\n"
+            else:
+                text = ("Environment=\nPassEnvironment=\n"
+                        "UnsetEnvironment=\n")
+            return subprocess.CompletedProcess(args, 0, stdout=text.encode(),
+                                               stderr=b"")
+        with (patch.object(checkpoint.subprocess, "run", side_effect=manager_home),
+              patch.dict(os.environ, {"XDG_STATE_HOME": "",
+                                      "XDG_CONFIG_HOME": "",
+                                      "LOCAL_SEARCH_MCP_HISTORY_FILE": ""})):
+            checkpoint._verify_effective_environment()
 
     def test_second_quiescence_check_blocks_manifest_publication(self):
         calls = 0
