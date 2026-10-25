@@ -273,6 +273,39 @@ class SetupWizardTests(unittest.TestCase):
         checker.assert_called_once_with(check_remote=True)
         self.assertIn('"remote_requested": true', out.getvalue())
 
+    def test_interrupted_remote_lookup_does_not_claim_no_network_requests(self):
+        # A KeyboardInterrupt after PUBLIC confirmation can arrive during a
+        # real HTTP request. It must not report that zero lookups occurred.
+        for interrupted in (KeyboardInterrupt, EOFError):
+            with (self.subTest(interrupted=interrupted),
+                  patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+                  patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch("builtins.input", side_effect=["14", "REMOTE", "PUBLIC", "0"]),
+                  patch.object(wizard, "maintenance_versions_report",
+                               side_effect=interrupted) as checked,
+                  patch.object(wizard, "run_existing",
+                               side_effect=AssertionError("no child commands")),
+                  contextlib.redirect_stdout(io.StringIO()) as out):
+                self.assertEqual(wizard.main([]), 0)
+            checked.assert_called_once_with(check_remote=True)
+            self.assertIn("public version lookups may have started", out.getvalue())
+            self.assertNotIn("Cancelled; no public version checks run", out.getvalue())
+
+    def test_remote_menu_interrupted_before_confirmation_does_not_call_checker(self):
+        for inputs in (["14", KeyboardInterrupt(), "0"],
+                       ["14", "REMOTE", KeyboardInterrupt(), "0"]):
+            with (self.subTest(inputs=inputs[:2]),
+                  patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+                  patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch("builtins.input", side_effect=inputs),
+                  patch.object(wizard, "maintenance_versions_report",
+                               side_effect=AssertionError("no lookups")) as check,
+                  contextlib.redirect_stdout(io.StringIO()) as out):
+                self.assertEqual(wizard.main([]), 0)
+            check.assert_not_called()
+            self.assertIn("Cancelled; no public version checks run", out.getvalue())
+            self.assertNotIn("lookups may have started", out.getvalue())
+
     def test_menu_boot_audit_is_read_only(self):
         from scripts import on_demand_boot_audit
         sample = {"state": "blocked", "checks": {"root_guard_matches_checkout": False}}
