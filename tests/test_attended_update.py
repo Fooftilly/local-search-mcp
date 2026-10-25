@@ -51,6 +51,8 @@ class AttendedUpdateTests(unittest.TestCase):
         self.addCleanup(self.stdin.stop)
 
     def git_result(self, *args, **kwargs):
+        if args[:2] == ("ls-remote", "--get-url"):
+            return app.SOURCE
         if args[0] == "fetch":
             return ""
         if args[:2] == ("rev-parse", "--verify"):
@@ -185,6 +187,23 @@ class AttendedUpdateTests(unittest.TestCase):
         self.assertIn("fetch.recurseSubmodules=false", cmd)
         self.assertEqual(invoke.call_args.kwargs["env"]["GIT_CONFIG_GLOBAL"],
                          "/dev/null")
+
+    def test_local_git_url_rewrite_is_detected_without_network(self):
+        def rewritten(*args, **kwargs):
+            if args[:2] == ("ls-remote", "--get-url"):
+                return "https://example.invalid/mirror.git"
+            if args[0] == "fetch":
+                raise AssertionError("untrusted source must not be fetched")
+            return self.git_result(*args, **kwargs)
+        with (patch.object(app, "checkout", return_value=self.old),
+              patch.object(app, "approved_units", return_value=self.units),
+              patch.object(app, "listener_ready", return_value=True),
+              patch.object(app, "confirmation", return_value=True),
+              patch.object(app, "git", side_effect=rewritten),
+              redirect_stderr(io.StringIO()) as errors,
+              redirect_stdout(io.StringIO())):
+            self.assertEqual(app.main(), 1)
+        self.assertIn("URL rewriting", errors.getvalue())
 
     def test_foreground_bridge_blocks_update_without_fetch(self):
         only_foreground = {name: False for name in app.UNITS}
