@@ -181,13 +181,22 @@ class RollbackCandidateTests(unittest.TestCase):
         for folder in (destination / "nested", destination / "nested" / "inner"):
             self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o700)
 
-    def test_inspection_never_reopens_stage_files_after_hash_checks(self):
+    def test_inspection_uses_dir_handles_and_opens_staged_state_once(self):
         with patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)):
             candidate.prepare(self.target, self.archive, self.dir, root=self.root)
-        with patch.object(Path, "read_bytes", side_effect=AssertionError(
-                "Staged state was reopened by path")):
+        original_open = os.open
+        original_scan = os.scandir
+        with (patch.object(candidate.os, "open", wraps=original_open) as opens,
+              patch.object(candidate.os, "scandir", wraps=original_scan) as scans):
             result = candidate.inspect(self.dir)
         self.assertTrue(result["integrity_verified"])
+        self.assertTrue(scans.call_args_list)
+        self.assertTrue(all(isinstance(call.args[0], int)
+                            for call in scans.call_args_list))
+        db_opens = [call for call in opens.call_args_list
+                    if call.args and call.args[0] == "domains.sqlite3"]
+        self.assertEqual(len(db_opens), 1)
+        self.assertIsInstance(db_opens[0].kwargs.get("dir_fd"), int)
 
     def test_malicious_deeply_nested_manifest_is_redacted(self):
         from scripts import verify_rollback_candidate
