@@ -101,7 +101,9 @@ does not modify live state, start/stop services, run a restore, or upload data.
 
 ## Verify private backups and test isolated recovery (issues #74 / #15)
 
-To verify an existing private archive without changing your installation:
+To verify an existing private archive without changing your installation
+(relative archive paths use the directory where `setup.sh` was invoked,
+just like `--backup-create` and the interactive menu):
 
 ```sh
 ./setup.sh --backup-verify "$HOME/local-search-state-2026.zip"
