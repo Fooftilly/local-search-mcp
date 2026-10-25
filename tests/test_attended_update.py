@@ -33,6 +33,14 @@ class AttendedUpdateTests(unittest.TestCase):
         self.units[app.HEALTH] = True
         self.stopped = {name: False for name in app.UNITS}
         self.target = self.root / "backup.zip"
+        unit_dir = self.root / "config" / "systemd" / "user"
+        unit_dir.mkdir(parents=True)
+        for name in app.WATCHERS:
+            (unit_dir / name).write_text(app.MARKER + "\n")
+        self.config_env = patch.dict(
+            os.environ, {"XDG_CONFIG_HOME": str(self.root / "config")})
+        self.config_env.start()
+        self.addCleanup(self.config_env.stop)
         self.privileged = patch.object(app.os, "geteuid", return_value=1000)
         self.privileged.start()
         self.addCleanup(self.privileged.stop)
@@ -174,7 +182,7 @@ class AttendedUpdateTests(unittest.TestCase):
             return subprocess.run(["git", *args], cwd=self.root, text=True,
                                   capture_output=True, check=True).stdout.strip()
         git("init", "-q", "-b", "master")
-        (self.root / ".gitignore").write_text(".venv/\n")
+        (self.root / ".gitignore").write_text(".venv/\nconfig/\n")
         git("config", "user.name", "Test")
         git("config", "user.email", "test@example.invalid")
         (self.root / "note").write_text("initial\n")
