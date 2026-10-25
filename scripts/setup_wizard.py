@@ -459,7 +459,7 @@ MENU_GROUPS = {
         ("14", "Maintenance versions (offline; opt-in public lookup)"),
     )),
     "4": ("Update", (
-        ("6", "Attended MCP update (FETCH then UPDATE; downtime)"),
+        ("6", "Attended MCP update (FETCH then UPDATE; temporary downtime)"),
     )),
     "5": ("Advanced", (
         ("10", "Configure optional on-demand backends (requires confirmation)"),
