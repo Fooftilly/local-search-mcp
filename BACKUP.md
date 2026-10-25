@@ -23,6 +23,24 @@ The history writer supports up to **100,000,000 bytes per generation** (with up 
 
 Archives have fixed, bounded file names. Backup and verification reject unsafe symlinks, unexpectedly large contents, corrupt SQLite, archive traversal entries, duplicate names, and hash mismatches. The archive stores no original absolute host paths.
 
+The ChatGPT-first setup wizard also wraps the **same** verification and
+isolated smoke routines without duplicating the archive parser:
+
+```sh
+./setup.sh --backup-verify "$HOME/local-search-state-2026.zip"
+./setup.sh --restore-smoke "$HOME/local-search-state-2026.zip"
+```
+
+The first command verifies the existing private archive and returns a
+JSON result with status and safety flags plus a `verified_files` count;
+the second runs a fresh-install smoke test in disposable temporary
+directories and reports the total policy count and **up to 25 recent indexed
+history events** (not a total recovered-history count). Both leave the private archive and live installation untouched;
+the second creates only temporary scratch state. Menu option 15 offers these
+two checks interactively. All failures are redacted, with a nonzero CLI
+exit status. Neither command performs a live restore, rolls back code,
+starts Docker or downloads updates.
+
 ## Fresh-install functional smoke test
 
 After creating and verifying an archive, run:

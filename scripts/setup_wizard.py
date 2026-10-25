@@ -468,6 +468,8 @@ def dry_run() -> dict:
              "action": "inspect on-demand reboot prerequisites; no sudo, Docker mutation or live firewall probes"},
             {"menu": "14", "effect": "read-only; public HTTPS requests only after explicit confirmation",
              "action": "reuse existing consolidated local maintenance versions report; optional bounded public PyPI/GitHub lookups"},
+            {"menu": "15", "effect": "offline validation; disposable temporary files for smoke tests",
+             "action": "verify a selected private state backup or smoke-test isolated fresh-install recovery; never activate live restore"},
         ],
         "limitations": "Optional on-demand backend sleep/wake is implemented and off by default; reboot/fault-recovery still requires host validation",
     }
@@ -484,6 +486,42 @@ def maintenance_versions_report(*, check_remote: bool = False) -> dict:
     """Reuse one existing checker; importing it does not request public URLs."""
     from scripts import maintenance_versions
     return maintenance_versions.report(check_remote=check_remote)
+
+
+def backup_check(archive: Path, *, smoke: bool = False) -> dict:
+    """Reuse existing offline archive checks; never restore to live paths.
+
+    Do not expose archive filenames, domain approvals, search history, or
+    underlying exception text in a user-facing response.
+    """
+    result = {
+        "mode": "isolated-fresh-install-smoke" if smoke else "archive-integrity",
+        "status": "failed",
+        "live_restore_performed": False,
+        "remote_checked": False,
+    }
+    try:
+        # Expand the operator's home only inside the redaction boundary:
+        # a missing home account may raise RuntimeError containing local data.
+        archive = archive.expanduser()
+        if smoke:
+            from scripts import restore_smoke
+            policies, events = restore_smoke.smoke(archive)
+            result["policy_entries"] = policies
+            result["recent_indexed_events"] = events
+        else:
+            from scripts import backup_state
+            result["verified_files"] = len(backup_state.verified_payload(archive))
+        result["status"] = "passed"
+    except Exception:
+        # Privacy boundary: ZIP decompression, compression-method, SQLite and
+        # filesystem failures can raise different exception classes. Never
+        # expose exception text or traceback from a selected private archive.
+        result["note"] = (
+            "Archive validation failed; inspect permissions, integrity and "
+            "format locally without exposing private archive contents"
+        )
+    return result
 
 
 def menu() -> int:
@@ -515,6 +553,7 @@ def menu() -> int:
         print("12 Connect another local MCP client (Cursor/Claude Code/Hermes guidance)")
         print("13 Audit on-demand reboot prerequisites (read-only)")
         print("14 Maintenance version inventory (offline; optional confirmed public lookups)")
+        print("15 Verify private backup / isolated fresh-install smoke (offline)")
         print("0  Exit")
         try:
             choice = input("Choose: ").strip()
@@ -590,6 +629,21 @@ def menu() -> int:
                           "no updates or service changes were made")
                 else:
                     print("Cancelled; no public version checks run")
+        elif choice == "15":
+            try:
+                name = input("Private backup archive path (blank cancels): ").strip()
+                if not name:
+                    print("Cancelled; no archive read")
+                else:
+                    variant = input("Check: VERIFY (default) or SMOKE (isolated): ").strip().upper()
+                    if variant in ("", "VERIFY", "SMOKE"):
+                        check = backup_check(Path(name), smoke=variant == "SMOKE")
+                        print(json.dumps(check, indent=2, ensure_ascii=True))
+                    else:
+                        print("Cancelled; no archive read")
+            except (EOFError, KeyboardInterrupt):
+                print("Archive validation interrupted; any temporary scratch "
+                      "files are managed by the existing validators; no live restore requested")
         elif choice == "12":
             try:
                 client = input("Client (cursor/claude/hermes), or enter to cancel: ").strip().lower()
@@ -654,6 +708,10 @@ def make_parser() -> argparse.ArgumentParser:
   ./setup.sh --maintenance-versions  Read-only local dependency, Git, crawler, tunnel inventory
   ./setup.sh --maintenance-versions-remote
                                   Explicit public PyPI/GitHub metadata lookups; no updates
+  ./setup.sh --backup-verify PRIVATE.zip
+                                  Offline integrity and SQLite check; archive is not modified
+  ./setup.sh --restore-smoke PRIVATE.zip
+                                  Offline isolated fresh-install smoke; disposable temp files only
   ./setup.sh --on-demand-status    Read-only Docker ownership/eligibility and configured mode
   ./setup.sh --boot-audit          Read-only systemd, firewall-install and Docker restart-policy prerequisites
   ./setup.sh --secure-tunnel-preview
@@ -691,6 +749,10 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="read-only local maintenance versions; no public requests or changes")
     choices.add_argument("--maintenance-versions-remote", action="store_true",
                          help="explicit public PyPI/GitHub release checks; never download or apply updates")
+    choices.add_argument("--backup-verify", type=Path, metavar="PRIVATE.zip",
+                         help="verify private backup archive and SQLite integrity; no live restore")
+    choices.add_argument("--restore-smoke", type=Path, metavar="PRIVATE.zip",
+                         help="offline recovery test in temporary isolated state; no live restore")
     choices.add_argument("--on-demand-status", action="store_true",
                          help="read-only configured on-demand and runtime state; no Docker changes")
     choices.add_argument("--boot-audit", action="store_true",
@@ -767,6 +829,12 @@ def main(argv: list[str] | None = None) -> int:
         report = maintenance_versions_report(check_remote=args.maintenance_versions_remote)
         print(json.dumps(report, indent=2, ensure_ascii=True))
         return 0
+    if args.backup_verify is not None or args.restore_smoke is not None:
+        report = backup_check(
+            args.backup_verify if args.backup_verify is not None else args.restore_smoke,
+            smoke=args.restore_smoke is not None)
+        print(json.dumps(report, indent=2, ensure_ascii=True))
+        return 0 if report["status"] == "passed" else 1
     if args.on_demand_status:
         print(json.dumps(on_demand_status(), indent=2, ensure_ascii=True))
         return 0
