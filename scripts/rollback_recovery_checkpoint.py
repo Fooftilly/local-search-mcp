@@ -134,8 +134,13 @@ def _verify_effective_environment(*, state_dir: Path | None = None,
                     "PassEnvironment", "UnsetEnvironment"}:
                 raise ValueError("Unrecognized unit environment response")
             values[key] = value
-        if (set(values) != {"Environment", "EnvironmentFiles",
-                            "PassEnvironment", "UnsetEnvironment"}
+        # systemctl can omit EnvironmentFiles entirely when no file exists.
+        # Omitted *other* properties remain ambiguous, and nonempty overrides
+        # of any of the four are never accepted.
+        if (set(values) not in (
+                {"Environment", "EnvironmentFiles",
+                 "PassEnvironment", "UnsetEnvironment"},
+                {"Environment", "PassEnvironment", "UnsetEnvironment"})
                 or any(values.values())):
             raise ValueError("Unit has unverified environment overrides")
 
@@ -151,8 +156,11 @@ def _verify_effective_environment(*, state_dir: Path | None = None,
             if key in values:
                 raise ValueError("Duplicate service state environment")
             values[key] = value
-    import pwd
-    manager_home = Path(values.get("HOME") or pwd.getpwuid(os.getuid()).pw_dir)
+    if not values.get("HOME"):
+        # A passwd fallback may not reflect the HOME visible to a service.
+        # Missing manager HOME is ambiguous: require an explicit match.
+        raise ValueError("User manager HOME is not available for verification")
+    manager_home = Path(values["HOME"])
     shell_home = Path.home()
     if manager_home != shell_home:
         raise ValueError("Shell home differs from the user manager home")
