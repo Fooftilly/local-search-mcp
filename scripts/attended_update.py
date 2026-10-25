@@ -107,6 +107,11 @@ def ensure_stopped() -> None:
     for name, active in approved_units().items():
         if active:
             raise UpdateError("Project-owned service unexpectedly active: " + name)
+    for _ in range(20):
+        if not listener_ready():
+            return
+        time.sleep(0.25)
+    raise UpdateError("MCP bridge listener is still active after stop")
 
 
 def backup_path(previous: str) -> Path:
@@ -167,6 +172,8 @@ def update() -> int:
     if not (ROOT / ".venv" / "bin" / "python").is_file():
         raise UpdateError("Existing project virtualenv is required; use guided setup first")
     units = approved_units()
+    if listener_ready() and not units.get(BRIDGE):
+        raise UpdateError("Unmanaged bridge is listening; stop the foreground ./start.sh session first")
     print("Current revision:", old)
     print("Update source: official Fooftilly/local-search-mcp origin, master.")
     print("FETCH contacts GitHub but does not update running services.")
@@ -202,6 +209,8 @@ def update() -> int:
     if any(latest[name] != units[name] for name in
            (*WATCHERS, HEALTH, TUNNEL, BRIDGE)):
         raise UpdateError("Service states changed during review; update cancelled")
+    if listener_ready() and not latest.get(BRIDGE):
+        raise UpdateError("Unmanaged bridge started during review; stop it before updating")
     archive = None
     changed = False
     try:
