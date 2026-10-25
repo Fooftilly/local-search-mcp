@@ -336,7 +336,8 @@ class RollbackPreflightTests(unittest.TestCase):
                 rollback.main(["--target", "invalid",
                                "--archive", str(self.archive)]), 1,
             )
-        self.assertIn("exact lowercase full Git commit SHA", errors.getvalue())
+        self.assertIn("Offline rollback preflight failed (ValueError)", errors.getvalue())
+        self.assertNotIn("exact lowercase full Git commit SHA", errors.getvalue())
         self.assertEqual(self.git("rev-parse", "HEAD"), self.current)
 
 
