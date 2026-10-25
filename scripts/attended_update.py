@@ -55,7 +55,16 @@ def command(args: list[str], *, timeout: int = 30, env: dict | None = None) -> s
 def git(*args: str, timeout: int = 30) -> str:
     # Do not inherit agent-injected Git environment or invoke checkout hooks.
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update({"GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_TERMINAL_PROMPT": "0"})
     return command(["git", "-c", "core.hooksPath=/dev/null",
+                    "-c", "core.fsmonitor=false",
+                    "-c", "credential.helper=",
+                    "-c", "diff.external=",
+                    "-c", "fetch.recurseSubmodules=false",
+                    "-c", "submodule.recurse=false",
+                    "-c", "protocol.ext.allow=never",
                     "--no-optional-locks", *args], timeout=timeout, env=env)
 
 
@@ -158,6 +167,25 @@ def restart(previously_active: dict[str, bool]) -> None:
             raise UpdateError("Bridge did not listen on loopback after restart")
 
 
+def stop_partial_restart() -> bool:
+    """Contain failed activation without touching Docker or other services."""
+    safe = True
+    for name in (TUNNEL, BRIDGE):
+        if not unit_file(name).is_file():
+            continue
+        try:
+            command(["systemctl", "--user", "stop", name])
+        except UpdateError:
+            safe = False
+    try:
+        statuses = approved_units()
+        if statuses.get(BRIDGE) or statuses.get(TUNNEL):
+            safe = False
+    except UpdateError:
+        safe = False
+    return safe
+
+
 def confirmation(word: str) -> bool:
     try:
         return input(f"Type {word} to proceed (anything else cancels): ").strip() == word
@@ -172,6 +200,8 @@ def update() -> int:
     if not (ROOT / ".venv" / "bin" / "python").is_file():
         raise UpdateError("Existing project virtualenv is required; use guided setup first")
     units = approved_units()
+    if units.get(TUNNEL) and not units.get(BRIDGE):
+        raise UpdateError("Tunnel active with bridge inactive; reconcile units before updating")
     if listener_ready() and not units.get(BRIDGE):
         raise UpdateError("Unmanaged bridge is listening; stop the foreground ./start.sh session first")
     print("Current revision:", old)
@@ -180,7 +210,11 @@ def update() -> int:
     if not confirmation("FETCH"):
         print("Cancelled before network access")
         return 0
-    git("fetch", "--no-tags", "--", "origin", "master", timeout=180)
+    # Fetch the fixed public HTTPS repository, never an operator-supplied
+    # command, SSH transport, URL helper or remote refspec.
+    git("fetch", "--no-tags", "--no-recurse-submodules", "--",
+        "https://github.com/Fooftilly/local-search-mcp.git", "master",
+        timeout=180)
     target = git("rev-parse", "--verify", "FETCH_HEAD^{commit}")
     # No stdout on success; git() raises if the target isn't a descendant.
     git("merge-base", "--is-ancestor", old, target)
@@ -242,13 +276,19 @@ def update() -> int:
                  str(ROOT / "requirements.txt")], timeout=360)
         restart(units)
     except (OSError, ValueError, UpdateError, KeyboardInterrupt) as exc:
-        if not changed:
-            # No code/dependency changes were made; restore previously active
-            # services, but leave deprecated watcher disabled.
+        if changed:
+            # A failed tunnel start or listener probe can leave the bridge
+            # running with only part of its dependencies updated.
+            if not stop_partial_restart():
+                print("WARNING: bridge/tunnel shutdown could not be verified; "
+                      "stop them manually before recovery.", file=sys.stderr)
+        else:
+            # No code/dependency changes were made; restore prior services.
             try:
                 restart(units)
             except UpdateError:
-                pass
+                print("WARNING: original services could not be restarted; "
+                      "inspect them manually.", file=sys.stderr)
         print("Update interrupted. Do not run automatic rollback.", file=sys.stderr)
         print("Previous revision:", old, file=sys.stderr)
         if archive:
