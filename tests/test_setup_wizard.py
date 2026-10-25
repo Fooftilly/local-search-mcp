@@ -368,6 +368,41 @@ class SetupWizardTests(unittest.TestCase):
             wizard.make_parser().parse_args([
                 "--backup-verify", "one.zip", "--restore-smoke", "two.zip"])
 
+    def test_unsupported_or_corrupted_backup_compression_fails_redacted(self):
+        import zlib
+        from scripts import backup_state, restore_smoke
+        archive = Path("/private/SECRET-archive.zip")
+        for error in (zlib.error("PRIVATE decompression failure"),
+                      NotImplementedError("PRIVATE compression type"),
+                      RuntimeError("PRIVATE home directory")):
+            for flag, module, method in (
+                ("--backup-verify", backup_state, "verified_payload"),
+                ("--restore-smoke", restore_smoke, "smoke"),
+            ):
+                with (self.subTest(error=type(error).__name__, flag=flag),
+                      patch.object(module, method, side_effect=error) as read,
+                      patch.object(wizard, "run_existing",
+                                   side_effect=AssertionError("No child execution"))):
+                    code, output = self.call(flag, str(archive))
+                read.assert_called_once_with(archive)
+                self.assertEqual(code, 1)
+                self.assertEqual(json.loads(output)["status"], "failed")
+                self.assertNotIn("SECRET", output)
+                self.assertNotIn("PRIVATE", output)
+                self.assertNotIn("Traceback", output)
+
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input",
+                    side_effect=["15", "/private/SECRET-archive.zip", "VERIFY", "0"]),
+              patch.object(backup_state, "verified_payload",
+                           side_effect=zlib.error("PRIVATE corrupt compressed ZIP")),
+              contextlib.redirect_stdout(io.StringIO()) as output):
+            self.assertEqual(wizard.main([]), 0)
+        self.assertIn('"status": "failed"', output.getvalue())
+        self.assertNotIn("PRIVATE", output.getvalue())
+        self.assertNotIn("SECRET", output.getvalue())
+
     def test_backup_menu_cancel_default_verify_and_isolated_smoke(self):
         from scripts import backup_state, restore_smoke
         # No input archive should touch any validation or service routine.
