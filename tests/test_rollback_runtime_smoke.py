@@ -113,6 +113,15 @@ class HistoricalSandboxTests(unittest.TestCase):
             self.assertIn(critical, cmd)
         self.assertIn(str(self.src), cmd)
         self.assertIn(str(scratch), cmd)
+        self.assertTrue(any(cmd[i:i + 3] ==
+                            ["--ro-bind", str(self.src), "/app"]
+                            for i in range(len(cmd) - 2)))
+        self.assertTrue(any(cmd[i:i + 3] ==
+                            ["--ro-bind", str(self.python.parent.parent), "/venv"]
+                            for i in range(len(cmd) - 2)))
+        self.assertTrue(any(cmd[i:i + 3] ==
+                            ["--bind", str(scratch), "/work"]
+                            for i in range(len(cmd) - 2)))
         self.assertNotIn("/home", cmd)
         self.assertNotIn("/etc", cmd)
         self.assertFalse(any(x in cmd for x in ("--share-net", "--bind-try",
