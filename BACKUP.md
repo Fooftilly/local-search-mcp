@@ -4,6 +4,21 @@ Issue #15 maintenance slice. The backup CLI is **opt-in** and runs entirely loca
 
 The archive contains the domain-policy SQLite database (`domains.sqlite3`) and, when present, the active and three rotated JSONL history files. It **never copies** the launcher configuration, API/tunnel tokens, systemd units, `.venv`, or the derived history SQLite index. The history index can be rebuilt from JSONL after restoring. An archive may contain **sensitive search terms and domain decisions**, so treat it as private data even though no credentials are intentionally exported.
 
+The setup wizard also offers **explicit, no-overwrite archive creation**:
+
+```sh
+./setup.sh --backup-create "$HOME/local-search-state-2026.zip" --confirm-backup BACKUP
+```
+
+Interactive menu option 16 requires typing `BACKUP` before writing.
+Both call the same `backup_state.backup` implementation and return only
+a generic status, not the archive's contents or pathname. Existing
+archives are not replaced. The wizard does **not** stop the bridge or
+guarantee a cross-file consistent snapshot while writers are active;
+stop services manually before backup if consistency is required.
+On failure, inspect the destination locally before retrying because
+an archive may already have been published.
+
 ## Create and verify a backup
 
 For the most consistent policy and history snapshot, first **stop the local bridge and tunnel yourself**, then run:
