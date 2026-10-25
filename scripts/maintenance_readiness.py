@@ -25,7 +25,7 @@ UNITS = stop_stack.UNITS
 NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 PROPS = ("LoadState", "ActiveState", "UnitFileState",
          "FragmentPath", "DropInPaths", "NeedDaemonReload")
-INACTIVE = ("inactive", "failed")
+INACTIVE = ("inactive",)
 QUIET_UNIT_FILES = ("disabled", "masked", "static", "not-found", "")
 MAX_OUTPUT = 8192
 
@@ -67,7 +67,21 @@ def _verified_guard_dropin(path: Path) -> bool:
 
 
 def _unit_state(name: str) -> dict[str, str]:
-    command = ["/usr/bin/systemctl", "--user", "show", name,
+    # Search only fixed, root-owned distro locations. Never use PATH or
+    # a user-supplied systemctl binary for a safety-critical readiness gate.
+    trusted = None
+    for entry in ("/usr/bin/systemctl", "/bin/systemctl"):
+        try:
+            info = Path(entry).stat()
+            if (stat.S_ISREG(info.st_mode) and info.st_uid == 0
+                    and not info.st_mode & 0o022):
+                trusted = entry
+                break
+        except OSError:
+            continue
+    if trusted is None:
+        raise ValueError("Trusted systemd manager tool unavailable")
+    command = [trusted, "--user", "show", name,
                *(f"--property={key}" for key in PROPS)]
     # No shell; captured diagnostics can contain local paths and are never emitted.
     result = subprocess.run(command, capture_output=True, check=False,
