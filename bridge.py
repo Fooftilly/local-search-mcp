@@ -14,6 +14,7 @@ from domain_policy import (evaluate_fetch_url, expired_grant_without_active_fall
                            is_domain_currently_allowed)
 import domain_policy
 from admin_ui import create_dashboard_server
+from runtime_ports import MCP_PORT
 from crawler_security import local_container_warning, verify_health
 import threading
 from urllib.parse import urlsplit, urlunsplit
@@ -37,9 +38,8 @@ _BATCH_PERMANENT_ONLY = ContextVar("local_search_batch_permanent_only", default=
 # request authority and browser Origin: binding localhost alone cannot prevent
 # a DNS-rebinding attack from an untrusted browser tab.
 MCP_BIND_HOST = "127.0.0.1"
-MCP_PORT = 8790
-MCP_ALLOWED_HOSTS = ["127.0.0.1:8790", "localhost:8790"]
-MCP_ALLOWED_ORIGINS = ["http://127.0.0.1:8790", "http://localhost:8790"]
+MCP_ALLOWED_HOSTS = [f"127.0.0.1:{MCP_PORT}", f"localhost:{MCP_PORT}"]
+MCP_ALLOWED_ORIGINS = [f"http://127.0.0.1:{MCP_PORT}", f"http://localhost:{MCP_PORT}"]
 CRAWLER_SECURITY_WARNING = local_container_warning()
 
 

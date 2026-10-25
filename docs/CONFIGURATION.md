@@ -61,12 +61,28 @@ may apply imports. The preview does not write. The importing operator should
 review any existing environment override or mismatching profile **before**
 applying; unchanged existing profile values are not conflicts.
 
-Deployment **ports are intentionally read-only** at `/status`. Editing a
-runtime port through the browser would require restarting coordinated bridge,
-dashboard, tunnel, monitoring and Docker/systemd components; this feature
-does **not** offer unsafe partial port changes or automatic restarts. The
-approval request link now uses a validated dashboard-port environment
-override instead of assuming port 8791.
+Deployment **ports are intentionally read-only** at `/status`. The
+status inventory displays the effective dashboard listener port, the fixed
+local MCP listener port, and validated backend ports, without exposing the
+full URLs, token-bearing paths, or secrets. Changing a runtime port requires
+coordinating the bridge environment, Docker bindings, dashboard, tunnel,
+systemd and health monitoring; the fixed monitor probes may otherwise report
+degraded service. No unsafe partial port edits or automatic restarts are
+offered. The approval request link uses a validated dashboard-port
+environment override instead of assuming port 8791.
 
-The existing settings pages still apply integer updates live; no MCP tool
-signatures are changed.
+The status inventory also displays the fixed anti-abuse pending-queue caps
+and in-memory cache capacity/entry/key limits directly from runtime
+constants. These are intentionally **not editable** through the browser:
+raising them weakens security and resource bounds, and needs a reviewed code
+change, tests and a bridge restart. The editable safe limits are the
+separately validated history retention, history rotation size, upstream
+timeouts and cache TTLs (linked from `/status`). Their saved values apply to
+future operations live; environment overrides lock editing until a service
+restart. Importing one versioned nonsecret profile uses validation, preview
+and explicit confirmation, with no cross-profile partial update.
+
+All dashboard POST routes share Host, Origin/Fetch Metadata and CSRF checks.
+Neither a browser settings form nor an MCP tool can alter credentials, tunnel
+permissions, deployment topology or hard-coded resource safeguards. Existing
+`web_search` and `web_fetch` tool signatures remain unchanged.
