@@ -160,6 +160,33 @@ class RollbackCandidateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported fields"):
             candidate.inspect(self.dir)
 
+    def test_nested_source_parents_created_private_with_usual_umask(self):
+        self.git("checkout", "-q", "--detach", self.target)
+        deep = self.root / "nested" / "inner" / "module.py"
+        deep.parent.mkdir(parents=True)
+        deep.write_text("print('historical fixture')\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "nested historical source")
+        target = self.git("rev-parse", "HEAD")
+        destination = self.base / "private-raw-copy"
+        destination.mkdir(mode=0o700)
+        old_mask = os.umask(0o022)
+        try:
+            files = candidate._copy_git_blobs(self.root, target, destination)
+        finally:
+            os.umask(old_mask)
+        self.assertGreaterEqual(files, 4)
+        for folder in (destination / "nested", destination / "nested" / "inner"):
+            self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o700)
+
+    def test_inspection_never_reopens_stage_files_after_hash_checks(self):
+        with patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)):
+            candidate.prepare(self.target, self.archive, self.dir, root=self.root)
+        with patch.object(Path, "read_bytes", side_effect=AssertionError(
+                "Staged state was reopened by path")):
+            result = candidate.inspect(self.dir)
+        self.assertTrue(result["integrity_verified"])
+
     def test_oversize_candidate_inventory_refuses_stage_without_leaks(self):
         giant = {"source/" + str(i).zfill(6) + "-" + "x" * 500:
                  "F:0600:" + "f" * 64 for i in range(3500)}
