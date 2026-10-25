@@ -120,6 +120,7 @@ class Supervisor:
                 current = self.tracker.snapshot(service)
                 needs_verification = (
                     self._state[service] != "running" or not current["armed"]
+                    or self._verified_at[service] == 0.0
                     or time.monotonic() - self._verified_at[service] >= VERIFY_SECONDS)
                 if needs_verification:
                     # Only Docker transitions share the cross-process lock.
