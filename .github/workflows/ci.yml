@@ -86,13 +86,10 @@ jobs:
           from pathlib import Path
           from scripts.install_user_services import unit_files
           folder = Path(os.environ['UNIT_DIR'])
-          reflog = folder / 'head.log'
-          reflog.touch()
-          for name, contents in unit_files('/usr/bin/python3', Path.cwd(),
-                                           auto_restart=True, reflog_path=reflog).items():
+          for name, contents in unit_files('/usr/bin/python3', Path.cwd()).items():
               (folder / name).write_text(contents)
           PY
-          SYSTEMD_UNIT_PATH="$UNIT_DIR:/usr/lib/systemd/system:/lib/systemd/system" systemd-analyze verify "$UNIT_DIR"/*.service "$UNIT_DIR"/*.timer "$UNIT_DIR"/*.path
+          SYSTEMD_UNIT_PATH="$UNIT_DIR:/usr/lib/systemd/system:/lib/systemd/system" systemd-analyze verify "$UNIT_DIR"/*.service "$UNIT_DIR"/*.timer
           mkdir -p "$UNIT_DIR/local-search-mcp-tunnel.service.d"
           cp config/systemd/guards/10-crawler-egress.conf "$UNIT_DIR/local-search-mcp-tunnel.service.d/10-crawler-egress.conf"
           cp config/systemd-system/local-search-mcp-crawler-egress.service "$UNIT_DIR/"

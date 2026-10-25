@@ -1,49 +1,50 @@
-"""Read-only local Git update report for the setup wizard.
+"""Read-only local Git revision inspection for the attended setup updater.
 
-Reuses the existing service update watcher's offline inspection; does not
-fetch, pull, install, restart, reset baselines or access Git remotes.
+No watcher baseline, Git network access, service action or tracked-file scan.
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import re
 import subprocess
+
+ROOT = Path(__file__).resolve().parents[1]
+_SHA = re.compile(r"[0-9a-f]{40,64}\Z")
+
+
+def local_revision(root: Path | None = None) -> str:
+    root = root or ROOT
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith("GIT_")}
+    environment.update({"GIT_CONFIG_NOSYSTEM": "1",
+                        "GIT_CONFIG_GLOBAL": "/dev/null",
+                        "GIT_TERMINAL_PROMPT": "0"})
+    def run(*args: str) -> str:
+        result = subprocess.run(
+            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+             "--no-optional-locks", "-C", str(root), *args],
+            cwd=root, env=environment, capture_output=True, text=True,
+            check=False, timeout=10)
+        if result.returncode:
+            raise ValueError("Local checkout unavailable")
+        return result.stdout.strip()
+    if run("rev-parse", "--show-toplevel") != str(root.resolve()):
+        raise ValueError("Git repository root mismatch")
+    head = run("rev-parse", "--verify", "HEAD^{commit}")
+    if not _SHA.fullmatch(head):
+        raise ValueError("Unexpected commit identifier")
+    return head
 
 
 def report() -> dict:
-    result = {
-        "mode": "read-only",
-        "remote_checked": False,
-        "updates_applied": False,
-        "state": "unknown",
-        "local_revision": "not inspected",
-        "next_step": (
-            "Review docs/DEPENDENCY-UPDATES.md, docs/SYSTEMD.md and BACKUP.md before "
-            "any manual update; no Git fetch/pull or service action was run"
-        ),
-    }
+    result = {"mode": "read-only", "remote_checked": False,
+              "updates_applied": False, "state": "unavailable",
+              "local_revision": "Local Git revision unavailable",
+              "next_step": "Use ./setup.sh --update for an attended reviewed update"}
     try:
-        from scripts import restart_on_update
-        note = restart_on_update.inspect_status()
-        if not isinstance(note, str) or len(note) > 1800:
-            raise ValueError("Invalid local status")
-        # Only recognized messages produced by inspect_status are displayable.
-        prefixes = (
-            "No local update baseline;",
-            "No local commit change since saved baseline;",
-            "Git operation or tracked runtime edits in progress;",
-            "Required Git objects are unavailable locally;",
-            "Git checkout changed during inspection;",
-            "Local revision differs from saved baseline ",
-        )
-        if not note.startswith(prefixes):
-            raise ValueError("Unexpected update status")
+        result["local_revision"] = local_revision()[:12]
         result["state"] = "inspected"
-        result["local_revision"] = note
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError,
-            ImportError):
-        # Do not echo arbitrary local paths, Git stderr, credentials or args.
-        result["state"] = "unavailable"
-        result["local_revision"] = (
-            "Cannot safely inspect local Git revision and update baseline; "
-            "review local checkout/state permissions manually"
-        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
     return result

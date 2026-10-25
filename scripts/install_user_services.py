@@ -17,6 +17,9 @@ NAMES = (
     "local-search-mcp-tunnel.service",
     "local-search-mcp-health.service",
     "local-search-mcp-health.timer",
+)
+# Already-installed watcher units may still exist on user systems.
+LEGACY_UPDATE_NAMES = (
     "local-search-mcp-update.service",
     "local-search-mcp-update.path",
     "local-search-mcp-update.timer",
@@ -41,42 +44,15 @@ def _render_unit(name: str, substitutions: dict[str, str]) -> str:
     return Template(template).substitute(substitutions)
 
 
-def unit_files(python: str, root: Path, *, auto_restart: bool = False,
-               guard_probe: bool = False,
-               reflog_path: Path | None = None, state_path: Path | None = None) -> dict[str, str]:
-    """Render version-controlled systemd units, substituting local paths only."""
+def unit_files(python: str, root: Path, *,
+               guard_probe: bool = False) -> dict[str, str]:
+    """Render only the supported project-owned units (no Git watcher)."""
     fields = {
         "EXE": quote(str(Path(python).resolve())),
         "LAUNCH": quote(str(root / "bootstrap.py")),
         "HEALTH": quote(str(root / "health_cli.py")),
     }
-    names = NAMES[:4]
-    if auto_restart:
-        if reflog_path is None:
-            if __package__:
-                from .restart_on_update import reflog
-            else:
-                from restart_on_update import reflog
-            reflog_path = reflog(root)
-        watch_path = str(reflog_path)
-        if "\n" in watch_path or "\r" in watch_path:
-            raise ValueError("Refusing newline in systemd path")
-        if state_path is None:
-            if __package__:
-                from .restart_on_update import state_file
-            else:
-                from restart_on_update import state_file
-            state_path = state_file().absolute()
-        if not state_path.is_absolute():
-            raise ValueError("Auto-restart state path must be absolute")
-        fields.update({
-            "CHECKER": quote(str(root / "scripts" / "restart_on_update.py")),
-            "STATE_ARGUMENT": quote(str(state_path)),
-            "WATCH_PATH": watch_path.replace("%", "%%"),
-        })
-        names = NAMES
-    if guard_probe:
-        names = (*names, GUARD_PROBE, GUARD_PREFLIGHT)
+    names = (*NAMES, GUARD_PROBE, GUARD_PREFLIGHT) if guard_probe else NAMES
     return {name: _render_unit(name, fields) for name in names}
 
 
@@ -104,13 +80,13 @@ def write_owned(path: Path, content: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Preview by default; explicit flags are necessary to install/remove."""
+    """Preview by default; install core units or retire owned legacy files."""
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--install", action="store_true")
     modes.add_argument("--remove", action="store_true")
-    modes.add_argument("--remove-auto-restart", action="store_true")
-    parser.add_argument("--auto-restart", action="store_true", help="Include opt-in local Git change watcher and timer")
+    modes.add_argument("--remove-auto-restart", action="store_true",
+                       help="remove already-disabled legacy Git watcher unit files")
     parser.add_argument("--guard-probe", action="store_true",
                         help="include the optional fixed on-demand egress probe unit")
     args = parser.parse_args(argv)
@@ -118,31 +94,17 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("Run as your normal user, not root")
     if args.guard_probe and (args.remove or args.remove_auto_restart):
         parser.error("--guard-probe is only valid for preview or --install")
-    if args.auto_restart and (args.remove or args.remove_auto_restart):
-        parser.error("--auto-restart is only valid for preview or --install")
     folder = destination()
-    pinned_state = None
-    if args.auto_restart:
-        if __package__:
-            from .restart_on_update import state_file
-        else:
-            from restart_on_update import state_file
-        pinned_state = state_file().absolute()
-    files = unit_files(sys.executable, ROOT, auto_restart=args.auto_restart,
-                       guard_probe=args.guard_probe, state_path=pinned_state)
+    files = unit_files(sys.executable, ROOT, guard_probe=args.guard_probe)
     if args.install:
-        if args.auto_restart:
-            if __package__:
-                from .restart_on_update import initialize
-            else:
-                from restart_on_update import initialize
-            initialize(ROOT, path=pinned_state)
         folder.mkdir(parents=True, exist_ok=True)
         for name, content in files.items():
             write_owned(folder / name, content)
         print("Installed user units. Run systemctl --user daemon-reload")
     elif args.remove or args.remove_auto_restart:
-        for name in (NAMES[4:] if args.remove_auto_restart else (*NAMES, GUARD_PROBE, GUARD_PREFLIGHT)):
+        selected = (LEGACY_UPDATE_NAMES if args.remove_auto_restart
+                    else (*NAMES, *LEGACY_UPDATE_NAMES, GUARD_PROBE, GUARD_PREFLIGHT))
+        for name in selected:
             path = folder / name
             if path.is_symlink():
                 raise ValueError(f"Refusing symlink: {path}")
@@ -150,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
                 if not path.read_text().startswith(MARKER):
                     raise ValueError(f"Refusing unmanaged unit: {path}")
                 path.unlink()
-        print("Removed requested user units. Run systemctl --user daemon-reload")
+        print("Removed requested owned user unit files. Run systemctl --user daemon-reload")
     else:
         for name, content in files.items():
             print(f"===== {name} =====\n{content}")

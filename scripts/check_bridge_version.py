@@ -13,10 +13,10 @@ import urllib.error
 import urllib.request
 
 if __package__:
-    from . import restart_on_update as update
+    from . import update_preflight as update
 else:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from scripts import restart_on_update as update
+    from scripts import update_preflight as update
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE_URL = "https://api.github.com/repos/Fooftilly/local-search-mcp/commits/master"
@@ -63,8 +63,7 @@ def check(*, root: Path | None = None) -> str:
     """Report a revision difference, never asserting that remote is newer."""
     if root is None:
         root = ROOT
-    update.verify_checkout(root, read_only=True)
-    local = update.head(root, read_only=True)
+    local = update.local_revision(root)
     if not _SHA.fullmatch(local):
         raise ValueError("Local checkout lacks a valid Git commit SHA")
     remote = remote_head()
