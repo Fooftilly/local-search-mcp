@@ -121,9 +121,7 @@ class BridgeTests(unittest.TestCase):
         original = httpx.Client
         def handler(request):
             calls.append(dict(request.url.params))
-            return httpx.Response(200, content=json.dumps(
-                {"results": rows}, ensure_ascii=True).encode("utf-8"),
-                headers={"content-type": "application/json"})
+            return httpx.Response(200, json={"results": rows})
         def client(**kwargs):
             return original(transport=httpx.MockTransport(handler))
         with patch.object(self.module.httpx, "Client", side_effect=client):
