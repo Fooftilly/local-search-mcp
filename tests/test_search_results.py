@@ -56,6 +56,24 @@ class SearchResultTests(unittest.TestCase):
         self.assertEqual(results[0]["engine"], r"engine\ud800")
         self.assertEqual(results[0]["source_engines"], [r"engine\ud800"])
 
+    def test_literal_backslash_engine_distinct_from_invalid_unicode_escape(self):
+        invalid = "engine\ud800"
+        literal = r"engine\ud800"
+        rows = [row("https://same.example", invalid, "Article",
+                    engines=[invalid, literal])]
+        result = enrich_search_results(rows, 1, deduplicate=True)[0]
+        self.assertEqual(result["source_count"], 2)
+        self.assertEqual(result["source_engines"],
+                         [r"engine\ud800", r"engine\\ud800"])
+        self.assertEqual(result["engine"], result["source_engines"][0])
+
+    def test_search_enrichment_never_silently_truncates_result_urls(self):
+        long_url = "https://example.com/" + "x" * 2100
+        # The bridge rejects overlong source links before enrichment. Keep
+        # this lower-level formatter from silently returning a *different* URL.
+        self.assertEqual(enrich_search_results(
+            [row(long_url, "test")], 1)[0]["url"], long_url)
+
     def test_conservative_url_canonicalization(self):
         good = "https://example.com/path?x=1&y=2"
         self.assertEqual(normalized_url("HTTPS://EXAMPLE.COM:443/path?x=1&y=2#fragment"),
