@@ -603,6 +603,11 @@ class SetupWizardTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("Local-scope registration", output)
         self.assertIn("verify that name with claude mcp list", output)
+        # Inspect names before suggesting a write: checking for both command
+        # strings somewhere is insufficient to enforce their safe order.
+        list_hint = output.index("claude mcp list")
+        add_hint = output.index("claude mcp add --transport http local-search")
+        self.assertLess(list_hint, add_hint)
         self.assertIn("not Claude.ai cloud", output)
         self.assertNotIn("Authorization: Bearer", output)
         self.assertIn("No client configuration", output)
@@ -614,7 +619,10 @@ class SetupWizardTests(unittest.TestCase):
                            side_effect=AssertionError("No program invocation")),
               contextlib.redirect_stdout(io.StringIO()) as captured):
             self.assertEqual(wizard.main([]), 0)
-        self.assertIn("claude mcp add --transport http", captured.getvalue())
+        menu_output = captured.getvalue()
+        self.assertIn("claude mcp add --transport http", menu_output)
+        self.assertLess(menu_output.index("claude mcp list"),
+                        menu_output.index("claude mcp add --transport http local-search"))
 
     def test_only_one_client_can_be_selected(self):
         with self.assertRaises(SystemExit):
