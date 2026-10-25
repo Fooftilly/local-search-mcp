@@ -28,6 +28,7 @@ WATCHERS = ("local-search-mcp-update.path", "local-search-mcp-update.timer")
 CHECKERS = ("local-search-mcp-update.service", "local-search-mcp-health.service")
 UNITS = (*WATCHERS, HEALTH, *CHECKERS, TUNNEL, BRIDGE)
 MARKER = "# Managed by local-search-mcp; contains no credentials."
+SOURCE = "https://github.com/Fooftilly/local-search-mcp.git"
 REMOTES = {
     "https://github.com/Fooftilly/local-search-mcp",
     "https://github.com/Fooftilly/local-search-mcp.git",
@@ -212,9 +213,12 @@ def update() -> int:
         return 0
     # Fetch the fixed public HTTPS repository, never an operator-supplied
     # command, SSH transport, URL helper or remote refspec.
+    # Repository-local url.*.insteadOf rewriting applies even to explicit
+    # HTTPS fetch URLs. Resolve the effective URL without network first.
+    if git("ls-remote", "--get-url", SOURCE) != SOURCE:
+        raise UpdateError("Local Git URL rewriting would change the trusted update source")
     git("fetch", "--no-tags", "--no-recurse-submodules", "--",
-        "https://github.com/Fooftilly/local-search-mcp.git", "master",
-        timeout=180)
+        SOURCE, "master", timeout=180)
     target = git("rev-parse", "--verify", "FETCH_HEAD^{commit}")
     # No stdout on success; git() raises if the target isn't a descendant.
     git("merge-base", "--is-ancestor", old, target)
@@ -236,7 +240,8 @@ def update() -> int:
     if not confirmation("UPDATE"):
         print("Cancelled before changing services or code")
         return 0
-    if checkout() != old or git("rev-parse", "FETCH_HEAD") != target:
+    if (checkout() != old or git("rev-parse", "FETCH_HEAD") != target
+            or git("ls-remote", "--get-url", SOURCE) != SOURCE):
         raise UpdateError("Checkout or reviewed target changed; update cancelled")
     latest = approved_units()
     # A short-lived health/update oneshot may finish during operator review.
