@@ -166,7 +166,8 @@ def on_demand_runtime_status() -> dict:
         if backends is not None:
             for row in backends.values():
                 if (row["state"] not in (
-                        "running", "sleeping", "waking", "stopping", "failed")
+                        "running", "sleeping", "waking", "stopping", "failed",
+                        "unverified")
                         or type(row["armed"]) is not bool
                         or type(row["active_requests"]) is not int
                         or row["active_requests"] < 0
@@ -237,6 +238,11 @@ def on_demand_status(*, inventory: dict | None = None) -> dict:
                     report["reason"] = (
                         "The running supervisor reports a failed backend; "
                         "inspect bridge, Docker and firewall-guard logs")
+                elif "unverified" in backend_states:
+                    report["state"] = "unverified"
+                    report["reason"] = (
+                        "The supervisor is waiting for Docker inventory verification "
+                        "after startup; no backend is automatically woken")
                 elif not backend_states.issubset({
                         "running", "sleeping", "waking", "stopping"}):
                     report["state"] = "unverified"
