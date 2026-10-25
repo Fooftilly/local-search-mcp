@@ -144,6 +144,22 @@ python history_cli.py --stats
 python history_cli.py --csv --last 5000 > ~/search-history.csv
 ```
 
+## Operator-controlled updates
+
+Use **`./setup.sh --update`** (or interactive menu option 6) when the
+systemd-managed MCP has been installed and you're ready for temporary downtime.
+As your normal Linux user, approve the network fetch (`FETCH`), review the
+proposed fast-forward revision and changed file list, then explicitly approve
+the stop/backup/update/restart (`UPDATE`). The script never updates Docker
+images, unrelated containers or the root-owned egress guard. It saves one
+existing-version private state archive, installs Python requirements into the
+current .venv, restarts only previously active MCP units and leaves the legacy
+Git watcher disabled. **It does not automatically roll back** if the update
+fails after the checkout changes. Keep the previous SHA and archive location
+for operator-controlled recovery; see [BACKUP.md](BACKUP.md).
+If running `./start.sh` in a foreground session, stop that session first.
+No update controls are exposed in the local dashboard or MCP tools.
+
 ## Optional private state backup and staged restore
 
 For an offline, integrity-checked backup of domain approvals and JSONL history, use `python3 scripts/backup_state.py backup ARCHIVE.zip`. Verify with `python3 scripts/backup_state.py verify ARCHIVE.zip` and stage recovery into a **new directory only** with `python3 scripts/backup_state.py restore ARCHIVE.zip --target-dir DIRECTORY`. Archives are private, may contain sensitive history, exclude credentials, and never overwrite live state. Stop services before backup for coordinated policy/history snapshots. See [BACKUP.md](BACKUP.md) for safety and restoration limitations. Live replacement and rollback are not automated.
@@ -156,7 +172,7 @@ For operators using a dedicated Crawl4AI Docker bridge, see [EGRESS-ISOLATION.md
 
 For independently supervised bridge/tunnel processes and periodic health diagnostics, see [SYSTEMD.md](docs/SYSTEMD.md). These are opt-in and not installed by `./start.sh`; run `./start.sh --setup-only` before installing. The foreground launcher remains available.
 
-Optional offline auto-restart after **locally performed** `git pull`/checkout/merge is available with `python3 scripts/install_user_services.py --install --auto-restart`. Enable the installed `local-search-mcp-update.path` and `local-search-mcp-update.timer` user units as described in [SYSTEMD.md](docs/SYSTEMD.md). No Git fetching, downloads or dependency installations occur automatically; runtime code changes restart active services only, documentation-only changes do not, and changed Python requirements require explicit manual preparation.
+The older Git-change auto-restart watcher is deprecated. Use the one attended `./setup.sh --update` workflow instead. Existing installed watcher units can be retired using the migration steps in [SYSTEMD.md](docs/SYSTEMD.md).
 
 ## Connecting through OpenAI tunnel
 

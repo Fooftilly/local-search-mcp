@@ -183,9 +183,39 @@ additional rollback staging utilities.
 
 A service update may temporarily stop the bridge and tunnel. The operator
 controls Git and dependency changes, and preserves the previous revision for
-manual recovery. The attended single-entry `./setup.sh` update command is
-tracked in [issue #15](https://github.com/Fooftilly/local-search-mcp/issues/15).
-Until that implementation is reviewed, the existing installation and manual
-update controls are unchanged. Do not assume this cleanup makes updates or
-live rollback automatic. The archive intentionally excludes credentials, so
+manual recovery. The `./setup.sh --update` command is the single supported attended
+software update path (see below and [issue #15](https://github.com/Fooftilly/local-search-mcp/issues/15)).
+It does **not** provide automatic live rollback. The archive intentionally excludes credentials, so
 restore requires keeping existing secure credentials/configuration separately.
+
+
+## Attended software update and basic manual recovery
+
+The single supported software update entry point is `./setup.sh --update`.
+Use it from a **clean master checkout** with the prepared `.venv` and
+installed project-owned systemd user units. It requires an interactive
+non-root operator and two confirmations: `FETCH` contacts the official GitHub
+origin (without altering code); `UPDATE` permits service stops, one private
+backup, a fast-forward to the reviewed commit, Python dependency installation
+and restart of previously active bridge/tunnel/health units. Planned downtime
+is expected. Docker, the firewall, and unrelated systemd units are untouched.
+
+The update disables the older Git-change watcher units so an unattended restart
+cannot race the explicit update. Previously active project services are started
+again after a successful update. The old watcher is not reenabled.
+
+If dependency installation or startup fails after the Git checkout was changed,
+**do not assume an automatic recovery occurred**. Keep the bridge/tunnel
+stopped, use the printed **previous commit SHA**, inspect the checkout,
+confirm you want to return to that historical commit, then as the operator
+run `git switch --detach PREVIOUS_SHA` from a clean checkout. Reinstall
+requirements from that checked-out version and inspect whether data needs
+recovery. If necessary, verify the saved archive with
+`./setup.sh --backup-verify ARCHIVE.zip`, then stage it to a new private
+directory using `scripts/backup_state.py restore`; inspect it before moving
+any files into the live state (there is intentionally no automatic overwrite).
+Keep existing secret config and tunnel credentials; they are never in the
+archive. Restart the previously active project services and check the real
+agent search/fetch connection. The procedure is intentionally **not** a
+universal downgrade tool: incompatible state schema or missing dependencies
+may require manual repair.

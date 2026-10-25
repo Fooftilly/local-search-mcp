@@ -48,180 +48,30 @@ The optional timer checks local services every approximately two minutes. It pro
 
 **Limitations:** A listening port does not prove MCP tools function or the remote tunnel is actually registered with OpenAI. A healthy report does not prove crawler network isolation. Failures of SearXNG/Crawl4AI are reported as degradation but do not cause the bridge to modify the upstream services. Full end-to-end connection monitoring and firewall startup ordering remain follow-up work on issues #3 and #2.
 
-## Optional automatic restart after local Git updates (no auto-upgrades)
+> **Deprecated for normal operation:** the attended `./setup.sh --update`
+> workflow is now the supported update method. The optional legacy Git
+> watcher described below remains in the repository temporarily for existing
+> installations, but the attended update disables its path and timer and does
+> not reenable them. Do not newly install or enable this watcher.
 
-The bridge and tunnel can restart after a **local Git revision change** caused by
-your own `git pull`, checkout, reset, cherry-pick or merge. This feature never
-runs `git fetch`, `git pull`, `pip install`, or downloads anything. GitHub
-updates remain entirely manual. Changes to documentation, tests and CI alone
-do not restart the services.
+## Retiring the optional Git-change watcher
 
-Install the optional watcher **after** the core user services have been set up:
-
-```sh
-# Preview the additional units (does not modify anything):
-python3 scripts/install_user_services.py --auto-restart
-# Install their unit files and initialize the current checkout as the baseline:
-python3 scripts/install_user_services.py --install --auto-restart
-systemctl --user daemon-reload
-systemctl --user enable --now local-search-mcp-update.path local-search-mcp-update.timer
-```
-
-Before applying a local Git update or planning a manual rollback, inspect
-the local revision comparison without affecting services or stored state:
+The supported update command is now **`./setup.sh --update`**. Do not
+install or enable the old Git-change path/timer watcher. If it is currently
+installed, the attended update disables both triggers before modifying Git.
+Once it is safely disabled, the operator can remove the owned legacy unit
+files using these existing commands:
 
 ```sh
-python3 scripts/restart_on_update.py --status --state-file '/path/from/checker/journal'
-```
-
-`--status` is strictly **read-only**. It compares the saved watcher baseline
-with local `HEAD`, identifies runtime versus documentation-only changes,
-and flags changed Python dependency inputs (including transitive pip includes).
-It neither initializes a missing baseline nor runs systemctl, accesses remote
-repositories, downloads packages, verifies dependency installations, or
-approves a rollback. Use the *pinned* state-file path from the installed unit
-rather than assuming the interactive shell shares its XDG state directory.
-This is an inspection aid, not a full upgrade or rollback implementation.
-
-The update checker oneshot has a ten-minute timeout to accommodate bounded
-serial Git checks, dependency validation, and two potentially slow systemd
-service restarts. The private update-state directory must be owned by the
-current user and inaccessible to group/other users; correct permissive
-permissions manually before restarting the watcher.
-
-The `.path` unit watches Git's local HEAD reflog; a one-minute fallback timer
-also checks the local commit in case a filesystem event is missed, including
-while a Git operation is unfinished. The handler waits briefly for the
-checkout to settle, declines to act while Git is merging/rebasing or tracked
-runtime files have uncommitted changes, and syntax-checks changed Python
-files before touching active services. It restarts the bridge first and
-then the tunnel; neither inactive service is started. If the update contains
-only non-runtime files, its revision is recorded without a restart.
-It does **not** watch all working-tree edits; only committed local revision
-changes are eligible.
-
-If `requirements.txt` changed, was renamed, or was removed, the restart is
-**deferred**. Review and prepare the dependencies yourself first (this manual
-step *may* access the package index). The checker prints the exact, already
-decoded `--state-file` argument required for manual acknowledgement. Read it
-from the service journal:
-
-```sh
-journalctl --user -u local-search-mcp-update.service -n 50 --no-pager
-# When requirements.txt still exists, install dependencies manually:
-.venv/bin/python -m pip install -r requirements.txt
-# For removed/renamed manifests, prepare replacement dependencies manually.
-# Copy the exact shell-quoted --state-file argument from the journal:
-python3 scripts/restart_on_update.py --state-file '/path/from/checker/journal' --dependencies-ready
-```
-
-The manual dependency gate also covers conventional replacement manifests
-after migrating away from the root `requirements.txt`, including
-`config/dependencies.txt`, `requirements/base.txt`, `constraints.txt`,
-`pyproject.toml`, `uv.lock`, and other recognized Python dependency files.
-Later commits to those files **still require** `--dependencies-ready`.
-Pip-style `-r` (requirements) and `-c` (constraints) references are followed
-recursively within the checkout. **All referenced files remain dependency-gated
-on future commits**, even if called `pins.txt` or `locks/prod.txt` rather than
-`requirements*.txt`, or stored in a documentation directory. The offline
-validator follows the referring manifest to check included files against
-installed distributions; standalone constraints only restrict versions of
-packages that are actually installed, without forcing optional installations.
-Editable requirements and multiline `--hash` forms are accepted after manual
-acknowledgement; `pip check` verifies dependency integrity but cannot verify
-download hashes or provenance. Quoted pip include paths and `${VAR}` environment substitutions are supported,
-provided their resolved files remain within the Git checkout. **Variables
-referenced by pip includes must also exist in the systemd user manager's
-environment**, not only in your interactive shell: for example, use
-`systemctl --user set-environment REQ_DIR=locks` and verify it with
-`systemctl --user show-environment`. For persistence across login sessions,
-configure `~/.config/environment.d/` and reload the user manager. If the
-variable is absent, the watcher fails closed with a diagnostic instead of
-silently treating the dependency graph as complete. Avoid storing secrets in
-a service's environment.
-
-Inside pip
-constraint files, nested `-r` entries are required dependencies, while
-nested `-c` entries remain optional constraints. Missing, cyclic, or
-out-of-checkout referenced files fail validation. For non-pip formats, the offline check validates the
-existing Python environment with `pip check`; **you** must also review and
-prepare the new lockfile/manifest dependencies before acknowledging. If you
-adopt an unconventional manifest name that the watcher does not recognize,
-restart services manually and update the watcher before relying on this gate.
-
-**Use the path printed by the checker, not the raw unit file.** The user
-manager may have a different `XDG_STATE_HOME` from your current shell.
-`systemctl --user cat local-search-mcp-update.service` displays systemd's
-unexpanded `ExecStart` text, which escapes percent signs (`%` as `%%`),
-backslashes and quotes. Copying its raw argument into a shell command can
-refer to the wrong file. The checker's journal message provides the actual
-path, correctly shell-quoted, even when it contains these characters or
-spaces. Do not substitute a guessed state-file location.
-
-The acknowledgement applies the pending local revision once and will not
-change packages or credentials itself. A removed manifest is accepted only
-after that explicit acknowledgement and an offline `pip check` of the existing
-virtual environment; a replacement manifest's dependency constraints must be
-verified manually. For PEP 508 direct-URL requirements, the offline validation
-checks that the named distribution is installed and that `pip check` passes,
-but cannot verify the original download URL or code provenance. Inspect and
-install such dependencies yourself before `--dependencies-ready`; the watcher
-never downloads them. Missing or invalid Python source
-also blocks the automatic restart. Preflight is not a full integration
-test, so check the health report after significant upgrades. If a restarted
-service subsequently fails, the attempted revision is recorded to prevent
-the timer from causing an endless restart loop. Fix the update or roll
-back manually and restart the systemd services.
-
-The state of the last handled revision is stored in the private
-`~/.local/state/local-search-mcp/last-service-commit` file (or under
-`XDG_STATE_HOME`). The installer pins the resolved state-file path into the
-generated user service so it remains the same even if the systemd user manager
-does not inherit the shell's `XDG_STATE_HOME`. Changing that variable or
-relocating the state file requires reinstalling the optional units and
-running `systemctl --user daemon-reload`. The installer preserves an
-existing baseline; it does not overwrite it on reinstallation.
-
-If an older saved commit is unavailable after pruning history, replacing
-the checkout, or installing a shallow clone, the checker **does not** silently
-accept the new checkout or restart services. First manually inspect and
-prepare the checked-out code, dependencies, and currently running services.
-Then acknowledge the **exact** reviewed commit using the shell-quoted
-`--state-file` argument from the checker's journal message:
-
-```sh
-journalctl --user -u local-search-mcp-update.service -n 50 --no-pager
-git rev-parse HEAD
-# After reviewing this commit and preparing/restarting affected services:
-# Copy the exact --state-file argument from the "Previous commit unavailable" journal message:
-python3 scripts/restart_on_update.py --state-file '/path/from/checker/journal' \
-  --reset-baseline "$(git rev-parse HEAD)"
-```
-
-This command only updates the saved baseline. It refuses a mismatched HEAD,
-an in-progress Git operation, or tracked runtime edits; it does not start or
-restart services and it does not download updates. The error message for an
-unavailable old commit also includes the exact `--state-file` argument.
-For both manual commands, use the **shell-quoted argument from the checker
-journal**, not the unexpanded, systemd-escaped spelling in `ExecStart`.
-
-This feature only handles local Git checkouts with an enabled HEAD reflog
-and cannot detect source archives.
-
-```sh
-# Observe update activity:
-systemctl --user status local-search-mcp-update.path local-search-mcp-update.timer
-journalctl --user -u local-search-mcp-update.service -n 50 --no-pager
-
-# Disable the option without stopping the bridge/tunnel:
 systemctl --user disable --now local-search-mcp-update.path local-search-mcp-update.timer
 python3 scripts/install_user_services.py --remove-auto-restart
 systemctl --user daemon-reload
 ```
 
-Updates to the unit generator or the service paths still require an explicit
-rerun of the installer and `systemctl --user daemon-reload`. The feature
-does not manage upstream SearXNG, Crawl4AI or Docker containers.
+This does not stop Docker, delete policy/history/credentials or modify the
+root-owned crawler egress guard. The old watcher scripts and unit templates
+remain available temporarily for backward-safe migration of existing users;
+they are **not an alternative recommended update method**.
 
 ## Optional public bridge revision check (no automatic upgrades)
 

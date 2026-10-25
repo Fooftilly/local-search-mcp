@@ -582,7 +582,7 @@ def menu() -> int:
         print("3  Run existing guided setup (may change configuration)")
         print("4  Preview systemd user units (read-only)")
         print("5  Check installed dependency versions (local-only)")
-        print("6  Review manual update and rollback steps")
+        print("6  Update MCP (attended; temporary downtime)")
         print("7  Stop project-owned services and containers (changes state)")
         print("8  Inspect Docker ownership (read-only; no stop/restart)")
         print("9  Inspect on-demand backend configuration and eligibility")
@@ -720,11 +720,10 @@ def menu() -> int:
             else:
                 print("Cancelled; no privileged installation attempted")
         elif choice == "6":
-            print(json.dumps(local_update_status(), indent=2, ensure_ascii=True))
-            print("No automatic Git fetch, pull, image download, pip install or restart.")
-            print("For a reviewed backup/rollback, see docs/DEPENDENCY-UPDATES.md,")
-            print("BACKUP.md, and docs/SYSTEMD.md. Apply updates explicitly outside")
-            print("this wizard only after examining an operator-approved plan.")
+            print("After FETCH and UPDATE confirmations, this stops owned services,")
+            print("backs up policy/history, fast-forwards master and updates dependencies.")
+            print("Partial failures require operator-controlled recovery.")
+            run_existing("scripts/attended_update.py")
         elif choice in actions:
             word, command = actions[choice]
             if choice == "3":
@@ -761,6 +760,7 @@ def make_parser() -> argparse.ArgumentParser:
   ./setup.sh --client hermes       Read-only local Hermes Agent MCP instructions
   ./setup.sh --client claude       Read-only local Claude Code HTTP MCP instructions
   ./setup.sh --docker-status       Read-only verified Compose/Docker ownership inventory
+  ./setup.sh --update              Attended update, backup and controlled restart (requires TTY)
   ./setup.sh --update-status       Read-only LOCAL revision/baseline check; no network fetch
   ./setup.sh --maintenance-versions  Read-only local dependency, Git, crawler, tunnel inventory
   ./setup.sh --maintenance-versions-remote
@@ -802,6 +802,8 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="read-only manual instructions for Cursor, Claude Code or Hermes")
     choices.add_argument("--docker-status", action="store_true",
                          help="read-only Docker ownership audit (pinned local daemon, no changes)")
+    choices.add_argument("--update", action="store_true",
+                         help="attended Git fast-forward, state backup and controlled restart")
     choices.add_argument("--update-status", action="store_true",
                          help="inspect local Git update baseline; never fetch/pull/restart")
     choices.add_argument("--maintenance-versions", action="store_true",
@@ -876,6 +878,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.wake_before_disable or args.confirm_on_demand is not None:
         raise SystemExit("On-demand options require explicit enable/disable mode")
+    if args.update:
+        if os.geteuid() == 0:
+            raise SystemExit("Run update as the normal user")
+        return run_existing("scripts/attended_update.py")
     if args.backup_create is not None:
         if args.confirm_backup != "BACKUP":
             raise SystemExit("Creating a private archive requires --confirm-backup BACKUP")
