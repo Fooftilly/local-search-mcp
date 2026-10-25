@@ -293,7 +293,8 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
                  "content": "Snippet\ud800"},
             ]}
             return httpx.Response(200, content=json.dumps(
-                response, ensure_ascii=True).encode("utf-8"))
+                response, ensure_ascii=True).encode("utf-8"),
+                headers={"content-type": "application/json"})
         def factory(**kwargs):
             return original(transport=httpx.MockTransport(handler), trust_env=False)
         with patch.object(bridge.httpx, "Client", side_effect=factory):
