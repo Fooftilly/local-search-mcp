@@ -13,18 +13,18 @@ Create an owner-only staging parent and an existing owner-only private backup.
 Select an **exact full ancestor commit SHA available locally**; the source
 checkout must be clean. For example:
 
-\`\`\`sh
+```sh
 mkdir -p -m 700 "$HOME/.local/state/local-search-mcp-rollback"
 python3 scripts/rollback_preflight.py --target "$OLD_COMMIT" --archive "$BACKUP"
 python3 scripts/rollback_candidate.py --target "$OLD_COMMIT" --archive "$BACKUP" \
     --destination "$HOME/.local/state/local-search-mcp-rollback/candidate-1" --confirm STAGE
 python3 scripts/verify_rollback_candidate.py \
     "$HOME/.local/state/local-search-mcp-rollback/candidate-1"
-\`\`\`
+```
 
 The staging command builds a private copy of **raw locally available Git
 objects** and verified state, never runs older code, and records each file's
-SHA-256 digest in the versioned, private \`candidate.json\` manifest.
+SHA-256 digest in the versioned, private `candidate.json` manifest.
 The verification command checks private ownership and modes, symlink and
 hardlink rejection, allowed staged state names, per-file digests, SQLite
 integrity, nonsecret settings schemas and unexpected files. It is read-only.
@@ -36,7 +36,7 @@ the v2 format. Do not relabel or edit the metadata to bypass validation.
 An integrity success does **not** establish that historical application
 code, Python package versions, network/egress guard, Docker image,
 systemd unit configuration or credentials are compatible. In particular,
-\`ready_for_live_use\` remains \`false\`; no command in this workflow
+`ready_for_live_use` remains `false`; no command in this workflow
 performs live rollback.
 
 ## Rollback/recovery conditions
