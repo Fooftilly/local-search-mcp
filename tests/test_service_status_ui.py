@@ -255,6 +255,23 @@ class StatusTests(unittest.TestCase):
         self.assertEqual([x["port"] for x in report], [8888, 11235])
         self.assertEqual([x["source"] for x in report], ["default", "default"])
 
+    def test_fixed_safety_limits_match_runtime_guardrails(self):
+        import domain_policy
+        import request_cache
+        rows = service_status.fixed_safety_limits()
+        self.assertEqual(
+            [r["value"] for r in rows],
+            [domain_policy.MAX_PENDING_TOTAL,
+             domain_policy.MAX_NEW_PENDING_GLOBAL_PER_HOUR,
+             domain_policy.MAX_PENDING_PER_SITE,
+             domain_policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR,
+             request_cache.MAX_ITEMS, request_cache.MAX_BYTES,
+             request_cache.MAX_ENTRY_BYTES, request_cache.MAX_KEY_BYTES])
+        self.assertTrue(all(type(r["value"]) is int and r["value"] > 0
+                            for r in rows))
+        self.assertTrue(all("restart" in r["apply"] for r in rows))
+        self.assertNotIn("SECRET", repr(rows))
+
     def test_status_page_warns_about_restart_and_monitor_port(self):
         with (patch.dict(os.environ, {}, clear=True),
               patch.object(service_status, "probe_services", return_value=[])):
