@@ -34,6 +34,12 @@ The first run provisions a virtual environment and prompts securely for secrets 
 
 For read-only configuration-source diagnostics with credentials redacted, run `python3 bootstrap.py --show-config`. For the source-precedence rules, hardening requirements and migration notes, see [CONFIGURATION.md](docs/CONFIGURATION.md). This report does not query Docker, print private tokens or modify domain approvals.
 
+To inspect an existing private state backup from the same setup interface,
+use `./setup.sh --backup-verify PRIVATE.zip`, or run a disposable offline
+fresh-install test with `./setup.sh --restore-smoke PRIVATE.zip`.
+Neither command activates a live restore or changes the running stack.
+See [BACKUP.md](BACKUP.md).
+
 For a non-destructive shutdown of verified local-search-mcp-managed user
 services and private Compose backends, run `./stop.sh`. It disables automatic
 restart of those existing containers but leaves credentials, history, volumes,
