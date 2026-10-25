@@ -31,11 +31,8 @@ class HistoricalCompatibilityTests(unittest.TestCase):
                 body = "".join(f"def {func}():\n    return True\n"
                                for func in functions) or "pass\n"
             self.put(name, body)
-        for name, component in audit.UNITS.items():
-            self.put(name, (
-                "# Managed by local-search-mcp; contains no credentials.\n"
-                "[Service]\nNoNewPrivileges=true\nUMask=0077\n"
-                "ExecStart=$EXE $LAUNCH --service " + component + "\n"))
+        for name in audit.UNITS:
+            self.put(name, (audit.ROOT / name).read_text(encoding="utf-8"))
         self.put("requirements.txt", "fastmcp>=4,<5\nhttpx>=0.28,<1\nidna>=3,<4\n")
         self.python = self.home / "independent-venv" / "bin" / "python"
         self.python.parent.mkdir(parents=True)
@@ -81,6 +78,38 @@ class HistoricalCompatibilityTests(unittest.TestCase):
         self.assertIn("historical Python contract missing or invalid",
                       result["blockers"])
 
+    def test_renamed_or_dynamic_mcp_registration_fails_closed(self):
+        for decorator in ("@mcp.tool(name='search_v2')",
+                          "@mcp.tool(**dynamic_config)", "@mcp.tool('search_v2')"):
+            with self.subTest(decorator=decorator):
+                self.put("bridge.py", (
+                    decorator + "\ndef web_search(query):\n    return query\n"
+                    "@mcp.tool()\ndef web_fetch(url):\n    return url\n"))
+                result = audit.audit(self.candidate, python=self.python)
+                self.assertFalse(result["static_contracts_passed"])
+
+    def test_overridden_or_extra_systemd_directives_fail_closed(self):
+        unit = next(iter(audit.UNITS))
+        canonical = (audit.ROOT / unit).read_text()
+        for malicious in ("NoNewPrivileges=false\n", "ExecStartPre=/bin/false\n",
+                          "EnvironmentFile=/tmp/private-token\n",
+                          "ExecStart=/bin/false\n", "User=root\n"):
+            with self.subTest(malicious=malicious):
+                self.put(unit, canonical + malicious)
+                report = audit.audit(self.candidate, python=self.python)
+                self.assertFalse(report["static_contracts_passed"])
+                self.assertIn("historical systemd template contract differs",
+                              report["blockers"])
+        self.put(unit, canonical)
+
+    def test_candidate_contained_virtualenv_is_rejected(self):
+        nested = self.source / "internal-env" / "bin" / "python"
+        nested.parent.mkdir(parents=True)
+        (nested.parent.parent / "pyvenv.cfg").write_text("home=/usr/bin\n")
+        nested.write_text("fake")
+        with self.assertRaisesRegex(ValueError, "independent"):
+            audit._environment(nested, ["httpx>=0.28,<1"], self.candidate)
+
     def test_broken_syntax_missing_launcher_and_weak_systemd_fail(self):
         self.put("domain_policy.py", "def initialize(:\n pass\n")
         (self.source / "bootstrap.py").unlink()
@@ -96,7 +125,8 @@ class HistoricalCompatibilityTests(unittest.TestCase):
         for bad in ("-r other.txt\n", "httpx @ https://example.com/package.whl\n",
                     "--extra-index-url https://example.com\n",
                     "httpx>=0.28; python_version > '3.10'\n", "httpx\n",
-                    "fastmcp==4\nidna --hash=xyz\n"):
+                    "fastmcp==4\nidna --hash=xyz\n",
+                    "httpx>=\n", "httpx=0.28\n", "httpx>=1 2\n"):
             with self.subTest(bad=bad):
                 self.put("requirements.txt", bad)
                 result = audit.audit(self.candidate, python=self.python)
