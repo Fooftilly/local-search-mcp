@@ -144,6 +144,22 @@ python history_cli.py --stats
 python history_cli.py --csv --last 5000 > ~/search-history.csv
 ```
 
+## Operator-controlled updates
+
+Use **`./setup.sh --update`** (or interactive menu option 6) when the
+systemd-managed MCP has been installed and you're ready for temporary downtime.
+As your normal Linux user, approve the network fetch (`FETCH`), review the
+proposed fast-forward revision and changed file count, then explicitly approve
+the stop/backup/update/restart (`UPDATE`). The script never updates Docker
+images, unrelated containers or the root-owned egress guard. It saves one
+existing-version private state archive, installs Python requirements into the
+current .venv, restarts only previously active MCP units and leaves the legacy
+Git watcher disabled. **It does not automatically roll back** if the update
+fails after the checkout changes. Keep the previous SHA and archive location
+for operator-controlled recovery; see [BACKUP.md](BACKUP.md).
+If running `./start.sh` in a foreground session, stop that session first.
+No update controls are exposed in the local dashboard or MCP tools.
+
 ## Optional private state backup and staged restore
 
 For an offline, integrity-checked backup of domain approvals and JSONL history, use `python3 scripts/backup_state.py backup ARCHIVE.zip`. Verify with `python3 scripts/backup_state.py verify ARCHIVE.zip` and stage recovery into a **new directory only** with `python3 scripts/backup_state.py restore ARCHIVE.zip --target-dir DIRECTORY`. Archives are private, may contain sensitive history, exclude credentials, and never overwrite live state. Stop services before backup for coordinated policy/history snapshots. See [BACKUP.md](BACKUP.md) for safety and restoration limitations. Live replacement and rollback are not automated.
