@@ -50,7 +50,7 @@ Existing `./start.sh` and `./stop.sh` still work independently.
 The setup wizard also exposes a consolidated **read-only maintenance
 inventory**: `./setup.sh --maintenance-versions` uses only local
 dependency/Git/crawler/tunnel version information. To explicitly request
-bounded public PyPI/GitHub release metadata, run
+bounded public PyPI release and GitHub release/commit metadata, run
 `./setup.sh --maintenance-versions-remote` or select menu option 14 and
 confirm `REMOTE` then `PUBLIC`. Neither mode installs or updates software.
 See [SETUP-WIZARD.md](SETUP-WIZARD.md) for the safety boundary.
