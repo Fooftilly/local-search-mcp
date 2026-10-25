@@ -117,7 +117,7 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
             # The first occurrence is already represented by the primary
             # engine/title/snippet. Only retain actual alternative matches.
             entry["source_matches"].append({
-                "engine": _text(row.get("engine", ""), 100)[:100],
+                "engine": _text(row.get("engine", ""), 100),
                 "title": _text(row.get("title", ""), 240),
                 "snippet": _text(row.get("content", ""), 1100),
             })
