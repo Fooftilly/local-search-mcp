@@ -215,10 +215,12 @@ class HistoricalSandboxTests(unittest.TestCase):
     def test_subprocess_crash_is_rejected_without_disclosing_stderr(self):
         # Run a trusted fixture, not a staged historical interpreter.
         with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_TUNNEL_TOKEN": "TOP_SECRET"}):
-            with self.assertRaisesRegex(ValueError, "exited unsuccessfully"):
+            with self.assertRaisesRegex(ValueError, "exited unsuccessfully") as caught:
                 runner._sandbox_output([
                     sys.executable, "-c",
                     "import sys; sys.stderr.write('TOP_SECRET'); sys.exit(19)"])
+        self.assertNotIn("TOP_SECRET", str(caught.exception))
+        self.assertNotIn("LOCAL_SEARCH_MCP_TUNNEL_TOKEN", str(caught.exception))
 
     def test_sandbox_child_environment_excludes_host_secrets(self):
         code = ("import json,os; print(json.dumps(dict(os.environ), "
