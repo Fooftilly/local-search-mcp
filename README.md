@@ -47,6 +47,14 @@ For the ChatGPT-first interactive setup and maintenance menu, run
 features and mutation boundaries. See [SETUP-WIZARD.md](SETUP-WIZARD.md).
 Existing `./start.sh` and `./stop.sh` still work independently.
 
+The setup wizard also exposes a consolidated **read-only maintenance
+inventory**: `./setup.sh --maintenance-versions` uses only local
+dependency/Git/crawler/tunnel version information. To explicitly request
+bounded public PyPI/GitHub release metadata, run
+`./setup.sh --maintenance-versions-remote` or select menu option 14 and
+confirm `REMOTE` then `PUBLIC`. Neither mode installs or updates software.
+See [SETUP-WIZARD.md](SETUP-WIZARD.md) for the safety boundary.
+
 For an existing dedicated, running crawler/search deployment, `./setup.sh --secure-tunnel-preview`
 provides a read-only firewall/tunnel installation plan. This host firewall
 is a boot-time guard, not a live kill switch; removing nftables does not
