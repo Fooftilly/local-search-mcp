@@ -47,6 +47,17 @@ def normalized_url(value: object) -> str | None:
         return None
 
 
+def _text(value: object, limit: int) -> str:
+    """Keep untrusted search text bounded and encodable by MCP transports."""
+    return str(value)[:limit].encode("utf-8", "replace").decode("utf-8")
+
+
+def _engine_text(value: object) -> str:
+    """Use one bounded, readable representation for all source names."""
+    return str(value).replace("\\", "\\\\").encode(
+        "utf-8", "backslashreplace").decode("utf-8")[:100]
+
+
 def _engines(row: dict) -> list[str]:
     """Read all valid upstream engine names without an arbitrary count cap."""
     names = []
@@ -55,11 +66,16 @@ def _engines(row: dict) -> list[str]:
     possible = [row.get("engine")]
     if isinstance(raw, list):
         possible.extend(raw)
-    for name in possible:
-        if (isinstance(name, str) and name and len(name) <= 100
-                and name not in seen):
-            names.append(name)
-            seen.add(name)
+    for raw_name in possible:
+        if isinstance(raw_name, str) and raw_name and len(raw_name) <= 100:
+            # Only count a source when its escaped name remains within
+            # the established 100-character bound. An overlong malformed
+            # source cannot provide reliable, distinguishable attribution.
+            name = raw_name.replace("\\", "\\\\").encode(
+                "utf-8", "backslashreplace").decode("utf-8")
+            if len(name) <= 100 and name not in seen:
+                names.append(name)
+                seen.add(name)
     return names
 
 
@@ -74,10 +90,10 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
     """
     if not deduplicate and ranking == "searxng":
         return [
-            {"title": str(r.get("title", ""))[:240],
+            {"title": _text(r.get("title", ""), 240),
              "url": str(r.get("url", "")),
-             "snippet": str(r.get("content", ""))[:1100],
-             "engine": str(r.get("engine", ""))}
+             "snippet": _text(r.get("content", ""), 1100),
+             "engine": _engine_text(r.get("engine", ""))}
             for r in rows[:max_results]
         ]
 
@@ -89,10 +105,10 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
             entry = grouped[by_url[normalized]]
         else:
             entry = {
-                "title": str(row.get("title", ""))[:240],
+                "title": _text(row.get("title", ""), 240),
                 "url": str(row.get("url", "")),
-                "snippet": str(row.get("content", ""))[:1100],
-                "engine": str(row.get("engine", "")),
+                "snippet": _text(row.get("content", ""), 1100),
+                "engine": _engine_text(row.get("engine", "")),
                 "source_engines": [],
                 "source_count": 0,
                 "duplicate_count": 0,
@@ -112,9 +128,9 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
             # The first occurrence is already represented by the primary
             # engine/title/snippet. Only retain actual alternative matches.
             entry["source_matches"].append({
-                "engine": str(row.get("engine", ""))[:100],
-                "title": str(row.get("title", ""))[:240],
-                "snippet": str(row.get("content", ""))[:1100],
+                "engine": _engine_text(row.get("engine", "")),
+                "title": _text(row.get("title", ""), 240),
+                "snippet": _text(row.get("content", ""), 1100),
             })
     if ranking == "source_count":
         grouped.sort(key=lambda r: -r["source_count"])

@@ -12,6 +12,68 @@ def row(url, engine, title="", content="", engines=None):
 
 
 class SearchResultTests(unittest.TestCase):
+    def test_invalid_unicode_search_metadata_cannot_break_mcp_json(self):
+        import json
+        value = "bad\ud800text"
+        rows = [row("https://example.com/path", value, value, value)]
+        plain = enrich_search_results(rows, 1)
+        grouped = enrich_search_results(rows + rows, 1, deduplicate=True)
+        for answer in (plain, grouped):
+            self.assertNotIn("\ud800", str(answer))
+            self.assertIn("bad?text", str(answer))
+            json.dumps(answer, ensure_ascii=False).encode("utf-8", "strict")
+
+    def test_malformed_engine_identifiers_do_not_collapse_source_count(self):
+        rows = [row("https://a.example", "engine\ud800", "A",
+                    engines=["engine\ud800", "engine\ud801"]),
+                row("https://b.example", "ordinary", "B")]
+        results = enrich_search_results(rows, 2, deduplicate=True,
+                                        ranking="source_count")
+        self.assertEqual([item["title"] for item in results], ["A", "B"])
+        self.assertEqual(results[0]["source_count"], 2)
+        self.assertEqual(results[0]["source_engines"],
+                         [r"engine\ud800", r"engine\ud801"])
+        for name in results[0]["source_engines"]:
+            name.encode("utf-8", "strict")
+
+    def test_overlong_escaped_engine_names_are_not_counted_as_sources(self):
+        malformed = "\ud800" * 100
+        rows = [row("https://example.com/", malformed, "Page",
+                    engines=[malformed])]
+        enriched = enrich_search_results(rows, 1, deduplicate=True)
+        self.assertEqual(enriched[0]["source_engines"], [])
+        self.assertEqual(enriched[0]["source_count"], 0)
+        self.assertLessEqual(len(enriched[0]["engine"]), 100)
+        self.assertTrue(enriched[0]["engine"].isascii())
+        self.assertEqual(enriched[0]["engine"],
+                         enriched[0]["engine"].encode("utf-8").decode("utf-8"))
+
+    def test_malformed_primary_and_attribution_names_use_same_representation(self):
+        malformed = "engine\ud800"
+        results = enrich_search_results(
+            [row("https://a.example", malformed, "One")],
+            1, deduplicate=True)
+        self.assertEqual(results[0]["engine"], r"engine\ud800")
+        self.assertEqual(results[0]["source_engines"], [r"engine\ud800"])
+
+    def test_literal_backslash_engine_distinct_from_invalid_unicode_escape(self):
+        invalid = "engine\ud800"
+        literal = r"engine\ud800"
+        rows = [row("https://same.example", invalid, "Article",
+                    engines=[invalid, literal])]
+        result = enrich_search_results(rows, 1, deduplicate=True)[0]
+        self.assertEqual(result["source_count"], 2)
+        self.assertEqual(result["source_engines"],
+                         [r"engine\ud800", r"engine\\ud800"])
+        self.assertEqual(result["engine"], result["source_engines"][0])
+
+    def test_search_enrichment_never_silently_truncates_result_urls(self):
+        long_url = "https://example.com/" + "x" * 2100
+        # The bridge rejects overlong source links before enrichment. Keep
+        # this lower-level formatter from silently returning a *different* URL.
+        self.assertEqual(enrich_search_results(
+            [row(long_url, "test")], 1)[0]["url"], long_url)
+
     def test_conservative_url_canonicalization(self):
         good = "https://example.com/path?x=1&y=2"
         self.assertEqual(normalized_url("HTTPS://EXAMPLE.COM:443/path?x=1&y=2#fragment"),

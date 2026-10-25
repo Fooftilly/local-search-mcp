@@ -1,5 +1,6 @@
 """Mocks the upstream HTTP API to prove unsafe crawls never reach POST."""
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import types
@@ -626,6 +627,87 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual(second["status"], "invalid_response")
                 self.assertEqual(len(seen), 2)
                 self.assertFalse(self.module.request_cache._CACHE)
+
+    def test_search_invalid_upstream_links_are_skipped_before_result_limit(self):
+        """Search must not give agents missing, unsafe or unencodable links."""
+        original = httpx.Client
+        rows = [
+            {"title": "Missing URL", "content": "bad"},
+            {"url": None, "title": "Null URL"},
+            {"url": "javascript:alert(1)", "title": "Executable link"},
+            {"url": "https://user:secret@example.org/", "title": "Credentials"},
+            {"url": "https://example.org/\ud800", "title": "Broken Unicode"},
+            {"url": "https://example.org/\ninvalid", "title": "Newline"},
+            {"url": "https://example.org/a\x00b", "title": "NUL"},
+            {"url": "https://example.org/a\x7fb", "title": "DEL"},
+            {"url": "https://example.org:8080/", "title": "Unsupported port"},
+            {"url": "https://bad host.example.org/", "title": "Hostname space"},
+            {"url": "https://host<angle>.example.org/", "title": "Hostname angle brackets"},
+            {"url": "https://host>angle.example.org/", "title": "Hostname greater than"},
+            {"url": "https://bad_name.example.org/", "title": "Underscore in hostname"},
+            {"url": "https://localhost/", "title": "Local-only hostname"},
+            {"url": "http://127.0.0.1/", "title": "IP address"},
+            {"url": "https://co.uk/", "title": "Bare public suffix"},
+            {"url": "https://faß.de/", "title": "Ambiguous IDN"},
+            {"url": "https://example.org/leading ", "title": "Whitespace"},
+            {"url": "x" * 3000, "title": "Too long"},
+            {"url": "https://example.org/first", "title": "Valid first"},
+            {"url": "https://example.org/second", "title": "Valid second"},
+        ]
+        calls = []
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(
+                200, content=json.dumps({"results": rows}, ensure_ascii=True).encode("utf-8"),
+                headers={"content-type": "application/json"})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            results = self.module.web_search("search-link-validation", max_results=2)
+            self.assertEqual([row["title"] for row in results],
+                             ["Valid first", "Valid second"])
+            self.assertEqual(len(calls), 1)
+
+    def test_search_domain_policy_filter_is_pure_without_approval_or_dns(self):
+        """Search results must match fetch host validation without changing policy."""
+        original = httpx.Client
+        rows = [
+            {"url": "https://bad host.example.org/", "title": "Bad host"},
+            {"url": "https://faß.de/", "title": "Ambiguous IDN"},
+            {"url": "https://example.org:443/ok", "title": "Valid"},
+        ]
+        def handler(request):
+            return httpx.Response(200, json={"results": rows})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with (patch.object(self.module.httpx, "Client", side_effect=client),
+              patch.object(domain_policy, "request",
+                           side_effect=AssertionError("search must not queue domains")),
+              patch.object(domain_policy.socket, "getaddrinfo",
+                           side_effect=AssertionError("search must not resolve DNS"))):
+            results = self.module.web_search("search policy is read only", fresh=True)
+        self.assertEqual(results, [{
+            "title": "Valid", "url": "https://example.org:443/ok",
+            "snippet": "", "engine": "",
+        }])
+
+    def test_search_all_unusable_links_return_uncached_failure(self):
+        original = httpx.Client
+        calls = []
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(200, json={"results": [
+                {"url": "file:///etc/passwd", "title": "Not a web page"},
+                {"url": None, "title": "No link"},
+            ]})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            first = self.module.web_search("all-invalid-links")
+            second = self.module.web_search("all-invalid-links")
+        self.assertEqual(first["status"], "invalid_response")
+        self.assertEqual(second["status"], "invalid_response")
+        self.assertEqual(len(calls), 2)  # Do not cache a broken search.
 
     def test_schemeless_urls_bypass_private_search_cache(self):
         hits = []

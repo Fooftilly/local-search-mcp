@@ -23,7 +23,7 @@ import document_pages
 import request_cache
 import cache_settings
 import upstream_settings
-from search_results import enrich_search_results
+from search_results import enrich_search_results, normalized_url
 from batch_fetch import fetch_many
 from scripts import on_demand_supervisor as on_demand
 
@@ -178,13 +178,38 @@ def _run_search_network(params: dict, max_results: int, *,
     if not rows and payload.get("unresponsive_engines"):
         return {"success": False, "status": "upstream_unavailable", "backend": "searxng",
                 "reason": "SearXNG returned no results because one or more engines were unresponsive. Retry later or choose another engine."}
-    # Preserve compatibility with partially malformed SearXNG responses: skip
-    # bad rows before limiting valid results. When *every* nonempty row is
-    # malformed, however, returning [] would misreport/cache a backend failure.
-    valid_rows = [row for row in rows if isinstance(row, dict)]
+    # Search engines may return rows without usable web links. Returning
+    # "None", javascript: URLs or invalid Unicode as clickable results makes
+    # agent tools appear successful while the returned links cannot be fetched.
+    # Validate before the limit so a bad first row does not hide valid results.
+    valid_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        url = row.get("url")
+        if not isinstance(url, str) or not 1 <= len(url) <= 2048:
+            continue
+        if (url != url.strip()
+                or any(ord(c) < 0x20 or ord(c) == 0x7f for c in url)):
+            continue
+        try:
+            url.encode("utf-8", errors="strict")
+            parsed = urlsplit(url)
+            if (normalized_url(url) is None
+                    or parsed.port not in (None, 80, 443)):
+                continue
+            # Match web_fetch's local domain-policy validation without
+            # queuing an approval request or performing a DNS lookup.
+            hostname = parsed.hostname or ""
+            if hostname != hostname.strip():
+                continue
+            domain_policy.normalize_domain(hostname)
+        except (UnicodeError, ValueError):
+            continue
+        valid_rows.append(row)
     if rows and not valid_rows:
         return {"success": False, "status": "invalid_response", "backend": "searxng",
-                "reason": "SearXNG returned results without any valid result objects."}
+                "reason": "SearXNG returned results without any usable HTTP(S) links."}
     return enrich_search_results(
         valid_rows, max_results, deduplicate=deduplicate, ranking=ranking
     )
