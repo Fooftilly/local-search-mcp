@@ -570,7 +570,8 @@ def menu() -> int:
             try:
                 mode = input("Versions: LOCAL (default), REMOTE, or cancel: ").strip().upper()
                 if mode in ("", "LOCAL"):
-                    print(json.dumps(maintenance_versions_report(), indent=2, ensure_ascii=True))
+                    print(json.dumps(maintenance_versions_report(check_remote=False),
+                                     indent=2, ensure_ascii=True))
                 elif mode == "REMOTE":
                     print("REMOTE checks request public PyPI/GitHub metadata over HTTPS.")
                     print("No downloads, installs, Git fetch, Docker changes or restarts.")
