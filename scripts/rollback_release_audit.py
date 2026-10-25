@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -33,7 +32,7 @@ REQUIRED = {
     "bootstrap.py": ("run_unattended_service",),
     "domain_policy.py": ("initialize",),
     "history_index.py": ("sync_history",),
-    "history_log.py": (),
+    "history_log.py": ("logged_tool", "history_path", "append_history"),
     "health_cli.py": ("snapshot",),
 }
 UNITS = {
@@ -172,16 +171,47 @@ def _environment(python: Path, requirements: list[str], candidate: Path) -> dict
             or not (python.parent.parent / "pyvenv.cfg").is_file()):
         raise ValueError("Select an independent prepared virtualenv interpreter")
     root = python.parent.parent
+    resolved_root = root.resolve(strict=True)
+    active_root = ROOT.resolve(strict=True)
+    staged_root = candidate.resolve(strict=True)
+    if (resolved_root in (active_root, staged_root)
+            or active_root in resolved_root.parents
+            or staged_root in resolved_root.parents):
+        raise ValueError("Select a virtualenv outside the active checkout and candidate")
     info = root.stat()
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
             or info.st_mode & 0o022 or not python.is_file()):
         raise ValueError("Selected virtualenv is unsafe")
+    # An environment inheriting global site-packages can appear compatible
+    # while missing the dependencies it should carry independently.
+    config = root / "pyvenv.cfg"
+    if config.is_symlink():
+        raise ValueError("Refusing symlinked virtualenv config")
+    fd = os.open(config, os.O_RDONLY | os.O_NONBLOCK | NOFOLLOW)
+    with os.fdopen(fd, "rb") as stream:
+        cfg_info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(cfg_info.st_mode)
+                or cfg_info.st_uid != os.getuid()
+                or cfg_info.st_mode & 0o022
+                or cfg_info.st_size > 4096):
+            raise ValueError("Unsafe virtualenv configuration")
+        raw = stream.read(4097)
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeError as exc:
+        raise ValueError("Invalid virtualenv configuration") from exc
+    settings = [line.partition("=")[2].strip().lower() for line in lines
+                if line.partition("=")[0].strip().lower()
+                == "include-system-site-packages" and "=" in line]
+    if settings != ["false"]:
+        raise ValueError("Virtualenv must exclude system site packages")
     env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8",
            "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1"}
     try:
-        result = subprocess.run([str(python), "-I", "-c", ENV_CHECK],
+        result = subprocess.run([str(python), "-I", "-B", "-c", ENV_CHECK],
                                 input=json.dumps(requirements).encode(),
-                                capture_output=True, check=False,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                check=False,
                                 timeout=20, env=env)
         if result.returncode or len(result.stdout) > 4096:
             raise ValueError("Isolated virtualenv metadata unavailable")
