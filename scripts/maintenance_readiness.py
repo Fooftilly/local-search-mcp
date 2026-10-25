@@ -24,8 +24,8 @@ else:
 UNITS = stop_stack.UNITS
 NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 PROPS = ("LoadState", "ActiveState", "UnitFileState",
-         "FragmentPath", "DropInPaths")
-INACTIVE = ("inactive",)
+         "FragmentPath", "DropInPaths", "NeedDaemonReload")
+INACTIVE = ("inactive", "failed")
 QUIET_UNIT_FILES = ("disabled", "masked", "static", "not-found", "")
 MAX_OUTPUT = 8192
 
@@ -34,13 +34,42 @@ def _owned_unit(path: Path) -> bool:
     """Require the known installed unit file, not a symlink or foreign override."""
     if path.is_symlink():
         return False
-    fd = os.open(path, os.O_RDONLY | NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | NOFOLLOW)
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                 or info.st_nlink != 1 or info.st_mode & 0o022):
             return False
         return stream.readline(256).rstrip(b"\r\n") == stop_stack.MARKER.encode()
+
+
+def _verified_guard_dropin(path: Path) -> bool:
+    """Accept only the repository-reviewed tunnel egress startup guard.
+
+    Never authorize another drop-in, even one that affects only ExecStartPre.
+    """
+    expected = (Path(__file__).resolve().parents[1] / "config" / "systemd" /
+                "guards" / "10-crawler-egress.conf")
+    try:
+        if path.is_symlink() or expected.is_symlink():
+            return False
+        if not _private_public_file(path):
+            return False
+        if not expected.is_file():
+            return False
+        # Compare bounded bytes; don't print the local path or template.
+        return (path.stat().st_size <= 8192
+                and path.read_bytes() == expected.read_bytes())
+    except (OSError, ValueError):
+        return False
+
+
+def _private_public_file(path: Path) -> bool:
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | NOFOLLOW)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        return (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                and info.st_nlink == 1 and not info.st_mode & 0o022)
 
 
 def _unit_state(name: str) -> dict[str, str]:
@@ -90,8 +119,14 @@ def inspect(*, config_home: Path | None = None,
                   or state["FragmentPath"]):
                 blocked.append(name + ": unmanaged unit is still loaded")
                 continue
+            if state["NeedDaemonReload"] != "no":
+                blocked.append(name + ": systemd definition requires reload")
             if state["DropInPaths"]:
-                blocked.append(name + ": unreviewed systemd drop-in")
+                guard = base / "local-search-mcp-tunnel.service.d" / "10-crawler-egress.conf"
+                if (name != "local-search-mcp-tunnel.service"
+                        or Path(state["DropInPaths"]).resolve() != guard.resolve()
+                        or not _verified_guard_dropin(guard)):
+                    blocked.append(name + ": unreviewed systemd drop-in")
             if state["ActiveState"] not in INACTIVE:
                 blocked.append(name + ": not safely inactive")
             if state["UnitFileState"] not in QUIET_UNIT_FILES:
