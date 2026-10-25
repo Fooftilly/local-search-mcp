@@ -85,7 +85,8 @@ class AttendedUpdateTests(unittest.TestCase):
               patch.object(app, "backup_path", return_value=self.target),
               patch.object(app.backup_state, "backup") as backup,
               patch.object(app.backup_state, "verified_payload") as verified,
-              patch.object(app, "listener_ready", return_value=True),
+              patch.object(app, "listener_ready",
+                           side_effect=[True, True, False, True]),
               redirect_stdout(io.StringIO()),
               redirect_stderr(io.StringIO())):
             status = app.main()
@@ -146,13 +147,34 @@ class AttendedUpdateTests(unittest.TestCase):
                   patch.object(app, "confirmation", side_effect=[True, True]),
                   patch.object(app, "backup_path", return_value=self.target),
                   patch.object(app, "command", return_value="") as command,
-                  patch.object(app, "listener_ready", return_value=True),
+                  patch.object(app, "listener_ready",
+                               side_effect=[True, True, False, True]),
                   redirect_stdout(io.StringIO()),
                   redirect_stderr(io.StringIO()) as errors):
                 status = app.main()
         self.assertEqual(status, 1)
         self.assertNotIn("private policy secret", errors.getvalue())
         self.assertTrue(any("start" in x.args[0] for x in command.call_args_list))
+
+    def test_foreground_bridge_blocks_update_without_fetch(self):
+        only_foreground = {name: False for name in app.UNITS}
+        with (patch.object(app, "checkout", return_value=self.old),
+              patch.object(app, "approved_units", return_value=only_foreground),
+              patch.object(app, "listener_ready", return_value=True),
+              patch.object(app, "git", side_effect=AssertionError("no fetch")),
+              patch.object(app, "command", side_effect=AssertionError("no stop")),
+              redirect_stderr(io.StringIO()) as errors):
+            status = app.main()
+        self.assertEqual(status, 1)
+        self.assertIn("Unmanaged bridge is listening", errors.getvalue())
+
+    def test_closed_units_but_live_listener_cannot_authorize_git_mutation(self):
+        with (patch.object(app, "approved_units", return_value=self.stopped),
+              patch.object(app, "listener_ready", return_value=True),
+              patch.object(app.time, "sleep"),
+              patch.object(app, "git", side_effect=AssertionError("no git"))):
+            with self.assertRaisesRegex(app.UpdateError, "still active"):
+                app.ensure_stopped()
 
     def test_no_noninteractive_or_root_updates(self):
         with patch.object(app, "checkout", side_effect=AssertionError("do not read Git")):
