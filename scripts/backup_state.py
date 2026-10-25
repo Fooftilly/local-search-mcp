@@ -310,12 +310,13 @@ def verified_payload(archive_path: Path) -> dict[str, bytes]:
                          MAX_SETTINGS_FILE if entry.filename in SETTINGS_NAMES else
                          MAX_HISTORY_FILE)
                 # Current writer uses DEFLATED; older/test archives may
-                # be STORED. Other methods would require untrusted/optional
-                # decompressors and cannot be needed by this archive format.
+                # be STORED. Reject any other method before reading members,
+                # with the same generic error used for corrupt ZIP streams.
+                if entry.compress_type not in (
+                        zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                    raise ValueError("Corrupt backup archive")
                 if (entry.is_dir() or stat.S_IFMT(mode) == stat.S_IFLNK or
-                        entry.file_size > limit or entry.flag_bits & 1
-                        or entry.compress_type not in (
-                            zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)):
+                        entry.file_size > limit or entry.flag_bits & 1):
                     raise ValueError("Unsafe backup entry")
             if sum(e.file_size for e in entries) > MAX_TOTAL + 1024 * 1024:
                 raise ValueError("Excessive uncompressed archive size")
