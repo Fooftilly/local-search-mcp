@@ -437,40 +437,73 @@ def print_local_client_steps(client: str) -> None:
     print("No client configuration, service, Docker resource or credential was changed.")
 
 
+# Keep the original action implementation and all CLI flags. This is
+# presentation only: top-level choices organize existing operations.
+MENU_GROUPS = {
+    "1": ("Setup", (
+        ("3", "Guided setup / reconfigure (requires CONFIGURE)"),
+        ("4", "Preview project systemd units (read-only)"),
+        ("7", "Stop verified project services / backends (requires STOP)"),
+    )),
+    "2": ("Connections", (
+        ("2", "Connect ChatGPT (manual account steps)"),
+        ("12", "Connect Cursor, Claude Code or Hermes (manual steps)"),
+        ("11", "Install protected ChatGPT tunnel (sudo; requires SECURE)"),
+    )),
+    "3": ("Status", (
+        ("1", "Check existing setup / status (read-only)"),
+        ("5", "Installed Python dependency versions (read-only)"),
+        ("8", "Docker ownership and shared-backend audit (read-only)"),
+        ("9", "On-demand configuration / eligibility (read-only)"),
+        ("13", "On-demand reboot prerequisites (read-only)"),
+        ("14", "Maintenance versions (offline; opt-in public lookup)"),
+    )),
+    "4": ("Update", (
+        ("6", "Attended MCP update (FETCH then UPDATE; downtime)"),
+    )),
+    "5": ("Advanced", (
+        ("10", "Configure optional on-demand backends (requires confirmation)"),
+        ("15", "Verify private backup / isolated recovery (offline)"),
+        ("16", "Create private state archive (requires BACKUP)"),
+    )),
+}
+
+
 def dry_run() -> dict:
     return {
         "mode": "preview-only",
         "default_client": "ChatGPT (manual account connection)",
+        "groups": [name for name, _ in MENU_GROUPS.values()],
         "actions": [
-            {"menu": "1", "effect": "read-only", "action": "redacted config and local status"},
-            {"menu": "2", "effect": "read-only", "action": "ChatGPT connection instructions"},
-            {"menu": "3", "effect": "potential changes after explicit confirmation",
+            {"menu": "3.1", "effect": "read-only", "action": "redacted config and local status"},
+            {"menu": "2.1", "effect": "read-only", "action": "ChatGPT connection instructions"},
+            {"menu": "1.1", "effect": "potential changes after explicit confirmation",
              "action": "./start.sh --setup-only (may install dependencies, download tunnel client, save credentials/profile)"},
-            {"menu": "4", "effect": "read-only",
+            {"menu": "1.2", "effect": "read-only",
              "action": "preview existing systemd user unit templates"},
-            {"menu": "5", "effect": "read-only",
+            {"menu": "3.2", "effect": "read-only",
              "action": "installed dependencies from project .venv, without PyPI requests"},
-            {"menu": "6", "effect": "attended change after FETCH and UPDATE confirmations",
+            {"menu": "4.1", "effect": "attended change after FETCH and UPDATE confirmations",
              "action": "./setup.sh --update (owned service stop, existing backup, reviewed fast-forward and restart)"},
-            {"menu": "7", "effect": "potential service changes after explicit confirmation",
+            {"menu": "1.3", "effect": "potential service changes after explicit confirmation",
              "action": "./stop.sh (project-owned shutdown only; no shared Hermes Web stack)"},
-            {"menu": "8", "effect": "read-only",
+            {"menu": "3.3", "effect": "read-only",
              "action": "verify ownership of private Compose project; flag foreign published crawlers"},
-            {"menu": "9", "effect": "read-only",
+            {"menu": "3.4", "effect": "read-only",
              "action": "preview optional on-demand eligibility; never enable, sleep or wake"},
-            {"menu": "10", "effect": "optional Docker sleep/wake changes only after confirmation",
+            {"menu": "5.1", "effect": "optional Docker sleep/wake changes only after confirmation",
              "action": "configure validated on-demand backends with operator confirmation"},
-            {"menu": "11", "effect": "privileged system changes only after confirmation",
+            {"menu": "2.3", "effect": "privileged system changes only after confirmation",
              "action": "validate dedicated backends; install fixed egress guard, restricted sudoers and protected ChatGPT tunnel"},
-            {"menu": "12", "effect": "read-only",
+            {"menu": "2.2", "effect": "read-only",
              "action": "show optional local Cursor, Claude Code or Hermes HTTP MCP instructions; never edit third-party config"},
-            {"menu": "13", "effect": "read-only",
+            {"menu": "3.5", "effect": "read-only",
              "action": "inspect on-demand reboot prerequisites; no sudo, Docker mutation or live firewall probes"},
-            {"menu": "14", "effect": "read-only; public HTTPS requests only after explicit confirmation",
+            {"menu": "3.6", "effect": "read-only; public HTTPS requests only after explicit confirmation",
              "action": "reuse existing consolidated local maintenance versions report; optional bounded public PyPI/GitHub lookups"},
-            {"menu": "15", "effect": "offline validation; disposable temporary files for smoke tests",
+            {"menu": "5.2", "effect": "offline validation; disposable temporary files for smoke tests",
              "action": "verify a selected private state backup or smoke-test isolated fresh-install recovery; never activate live restore"},
-            {"menu": "16", "effect": "private archive creation only after explicit BACKUP confirmation",
+            {"menu": "5.3", "effect": "private archive creation only after explicit BACKUP confirmation",
              "action": "create an atomic, private, no-overwrite backup using the existing archive tool; no service changes"},
         ],
         "limitations": "Optional on-demand backend sleep/wake is implemented and off by default; reboot/fault-recovery still requires host validation",
@@ -576,31 +609,40 @@ def menu() -> int:
         "7": ("STOP", ("scripts/stop_stack.py",)),
     }
     while True:
-        print("\nlocal-search-mcp setup (ChatGPT first)")
-        print("1  Check existing setup / status (read-only)")
-        print("2  Connect ChatGPT (manual account steps)")
-        print("3  Run existing guided setup (may change configuration)")
-        print("4  Preview systemd user units (read-only)")
-        print("5  Check installed dependency versions (local-only)")
-        print("6  Update MCP (attended; temporary downtime)")
-        print("7  Stop project-owned services and containers (changes state)")
-        print("8  Inspect Docker ownership (read-only; no stop/restart)")
-        print("9  Inspect on-demand backend configuration and eligibility")
-        print("10 Configure optional on-demand backends (privileged checks)")
-        print("11 Install protected ChatGPT tunnel (sudo; explicit confirmation)")
-        print("12 Connect another local MCP client (Cursor/Claude Code/Hermes guidance)")
-        print("13 Audit on-demand reboot prerequisites (read-only)")
-        print("14 Maintenance version inventory (offline; optional confirmed public lookups)")
-        print("15 Verify private backup / isolated fresh-install smoke (offline)")
-        print("16 Create private local backup (type BACKUP to confirm)")
+        print("\\nlocal-search-mcp setup (ChatGPT first)")
+        for number, (name, _) in MENU_GROUPS.items():
+            print(number + "  " + name)
         print("0  Exit")
         try:
-            choice = input("Choose: ").strip()
+            group = input("Choose group: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nExited without further changes")
+            print("\\nExited without further changes")
             return 0
-        if choice == "0":
+        if group == "0":
             return 0
+        if group not in MENU_GROUPS:
+            print("Unknown group; no changes made")
+            continue
+        title, entries = MENU_GROUPS[group]
+        print("\\n" + title + " actions")
+        for number, (_, description) in enumerate(entries, start=1):
+            print(str(number) + "  " + description)
+        print("0  Back")
+        try:
+            selection = input("Choose action: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\\nExited without further changes")
+            return 0
+        if selection == "0":
+            continue
+        if not selection.isascii() or not selection.isdecimal():
+            print("Unknown action; no changes made")
+            continue
+        position = int(selection)
+        if not 1 <= position <= len(entries):
+            print("Unknown action; no changes made")
+            continue
+        choice = entries[position - 1][0]
         if choice == "1":
             print(json.dumps(check_report(), indent=2, ensure_ascii=True))
         elif choice == "2":
