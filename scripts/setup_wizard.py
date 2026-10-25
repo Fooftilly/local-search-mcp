@@ -12,7 +12,6 @@ import json
 import math
 import os
 from pathlib import Path
-import sqlite3
 import subprocess
 import sys
 
@@ -511,8 +510,10 @@ def backup_check(archive: Path, *, smoke: bool = False) -> dict:
             from scripts import backup_state
             result["verified_files"] = len(backup_state.verified_payload(archive))
         result["status"] = "passed"
-    except (OSError, ValueError, sqlite3.DatabaseError):
-        # Validation exceptions can contain private paths or archive members.
+    except Exception:
+        # Privacy boundary: ZIP decompression, compression-method, SQLite and
+        # filesystem failures can raise different exception classes. Never
+        # expose exception text or traceback from a selected private archive.
         result["note"] = (
             "Archive validation failed; inspect permissions, integrity and "
             "format locally without exposing private archive contents"
@@ -633,7 +634,7 @@ def menu() -> int:
                 else:
                     variant = input("Check: VERIFY (default) or SMOKE (isolated): ").strip().upper()
                     if variant in ("", "VERIFY", "SMOKE"):
-                        check = backup_check(Path(name).expanduser(), smoke=variant == "SMOKE")
+                        check = backup_check(Path(name), smoke=variant == "SMOKE")
                         print(json.dumps(check, indent=2, ensure_ascii=True))
                     else:
                         print("Cancelled; no archive read")
