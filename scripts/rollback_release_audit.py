@@ -40,7 +40,12 @@ UNITS = {
     "config/systemd/local-search-mcp-bridge.service": "bridge",
     "config/systemd/local-search-mcp-tunnel.service": "tunnel",
 }
-REQUIREMENT_LINE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.-]*(?:[<>=!~,\d. ]+)?$")
+_REQ_NAME = r"[a-zA-Z][a-zA-Z0-9_.-]*"
+_REQ_VERSION = r"\d+(?:\.\d+){0,4}(?:a\d+|b\d+|rc\d+|post\d+)?"
+_REQ_OPERATOR = r"(?:==|!=|>=|<=|~=|>|<)"
+REQUIREMENT_LINE = re.compile(
+    rf"^{_REQ_NAME}\s*{_REQ_OPERATOR}\s*{_REQ_VERSION}"
+    rf"(?:\s*,\s*{_REQ_OPERATOR}\s*{_REQ_VERSION})*$")
 
 # Run only with an explicitly supplied, independently prepared venv interpreter.
 # This does not import any historical module or perform package installation.
@@ -88,12 +93,23 @@ def _source_file(candidate: Path, relative: str, *, limit: int = MAX_SOURCE) -> 
 def _registered_tool(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     for decorator in func.decorator_list:
         target = decorator.func if isinstance(decorator, ast.Call) else decorator
-        if (isinstance(target, ast.Attribute) and target.attr == "tool"
-                and isinstance(target.value, ast.Name)
-                and target.value.id == "mcp"):
+        if (not isinstance(target, ast.Attribute) or target.attr != "tool"
+                or not isinstance(target.value, ast.Name)
+                or target.value.id != "mcp"):
+            continue
+        if not isinstance(decorator, ast.Call):
             return True
+        # FastMCP can rename a public MCP tool; dynamic aliases cannot
+        # establish web_search / web_fetch API compatibility.
+        if decorator.args or any(item.arg is None for item in decorator.keywords):
+            return False
+        aliases = [item.value for item in decorator.keywords if item.arg == "name"]
+        if not aliases:
+            return True
+        return (len(aliases) == 1 and isinstance(aliases[0], ast.Constant)
+                and type(aliases[0].value) is str
+                and aliases[0].value == func.name)
     return False
-
 
 def _python_contract(candidate: Path, name: str, names: tuple[str, ...]) -> bool:
     raw = _source_file(candidate, name)
@@ -114,14 +130,18 @@ def _unit_contract(candidate: Path, name: str, component: str) -> bool:
         text = _source_file(candidate, name, limit=16_384).decode("utf-8")
     except UnicodeError:
         return False
-    # This does not authorize any future installed unit or any drop-in.
-    required = ("[Service]", "NoNewPrivileges=true", "UMask=0077",
-                "ExecStart=$EXE $LAUNCH --service " + component)
-    return (all(text.splitlines().count(line) == 1 for line in required)
-            and text.startswith("# Managed by local-search-mcp; contains no credentials.")
-            and not any(line.lstrip().startswith("Environment=")
-                        for line in text.splitlines()))
-
+    # Exact checked-in template match rejects overrides of privilege,
+    # Environment/File, ExecStart/Pre/Post, and service/user identity.
+    # Historical template changes must be independently reviewed.
+    canonical = ROOT / name
+    if canonical.is_symlink():
+        return False
+    try:
+        expected = canonical.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return False
+    return (text == expected
+            and "ExecStart=$EXE $LAUNCH --service " + component in text)
 
 def _requirements(candidate: Path) -> list[str]:
     text = _source_file(candidate, "requirements.txt",
@@ -147,6 +167,8 @@ def _environment(python: Path, requirements: list[str], candidate: Path) -> dict
     if (not python.is_absolute() or python.parent.name != "bin"
             or python.name not in ("python", "python3")
             or python.parent.parent == candidate
+            or candidate.resolve() in python.parent.parent.resolve().parents
+            or python.parent.parent.resolve() == candidate.resolve()
             or not (python.parent.parent / "pyvenv.cfg").is_file()):
         raise ValueError("Select an independent prepared virtualenv interpreter")
     root = python.parent.parent
@@ -212,8 +234,9 @@ def audit(candidate: Path, *, python: Path | None = None) -> dict:
             blockers.append("independent historical virtualenv could not be verified")
     # Crucially: no old reader/imports are run and no host deployment is tested.
     return {
-        "static_contracts_passed": not any("contract" in x or "input" in x
-                                            for x in blockers),
+        "static_contracts_passed": not any(
+            x.startswith(("historical Python", "historical systemd",
+                          "historical dependency input")) for x in blockers),
         "dependency_environment_verified": verified_environment,
         "offline_checks_passed": not blockers,
         "blockers": sorted(set(blockers)),
