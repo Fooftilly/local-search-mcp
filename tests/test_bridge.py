@@ -627,6 +627,51 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual(len(seen), 2)
                 self.assertFalse(self.module.request_cache._CACHE)
 
+    def test_search_invalid_upstream_links_are_skipped_before_result_limit(self):
+        """Search must not give agents missing, unsafe or unencodable links."""
+        original = httpx.Client
+        rows = [
+            {"title": "Missing URL", "content": "bad"},
+            {"url": None, "title": "Null URL"},
+            {"url": "javascript:alert(1)", "title": "Executable link"},
+            {"url": "https://user:secret@example.org/", "title": "Credentials"},
+            {"url": "https://example.org/\ud800", "title": "Broken Unicode"},
+            {"url": "https://example.org/\ninvalid", "title": "Newline"},
+            {"url": "https://example.org/leading ", "title": "Whitespace"},
+            {"url": "x" * 3000, "title": "Too long"},
+            {"url": "https://example.org/first", "title": "Valid first"},
+            {"url": "https://example.org/second", "title": "Valid second"},
+        ]
+        calls = []
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(200, json={"results": rows})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            results = self.module.web_search("search-link-validation", max_results=2)
+            self.assertEqual([row["title"] for row in results],
+                             ["Valid first", "Valid second"])
+            self.assertEqual(len(calls), 1)
+
+    def test_search_all_unusable_links_return_uncached_failure(self):
+        original = httpx.Client
+        calls = []
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(200, json={"results": [
+                {"url": "file:///etc/passwd", "title": "Not a web page"},
+                {"url": None, "title": "No link"},
+            ]})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            first = self.module.web_search("all-invalid-links")
+            second = self.module.web_search("all-invalid-links")
+        self.assertEqual(first["status"], "invalid_response")
+        self.assertEqual(second["status"], "invalid_response")
+        self.assertEqual(len(calls), 2)  # Do not cache a broken search.
+
     def test_schemeless_urls_bypass_private_search_cache(self):
         hits = []
         original = httpx.Client
