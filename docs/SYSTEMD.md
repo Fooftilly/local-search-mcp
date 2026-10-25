@@ -48,6 +48,12 @@ The optional timer checks local services every approximately two minutes. It pro
 
 **Limitations:** A listening port does not prove MCP tools function or the remote tunnel is actually registered with OpenAI. A healthy report does not prove crawler network isolation. Failures of SearXNG/Crawl4AI are reported as degradation but do not cause the bridge to modify the upstream services. Full end-to-end connection monitoring and firewall startup ordering remain follow-up work on issues #3 and #2.
 
+> **Deprecated for normal operation:** the attended `./setup.sh --update`
+> workflow is now the supported update method. The optional legacy Git
+> watcher described below remains in the repository temporarily for existing
+> installations, but the attended update disables its path and timer and does
+> not reenable them. Do not newly install or enable this watcher.
+
 ## Optional automatic restart after local Git updates (no auto-upgrades)
 
 The bridge and tunnel can restart after a **local Git revision change** caused by
