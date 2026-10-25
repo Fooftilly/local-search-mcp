@@ -8,10 +8,11 @@ First, run `./start.sh --setup-only` interactively. It prepares the Python virtu
 
 ## Version-controlled systemd unit templates
 
-All seven canonical unit definitions are now in `config/systemd/` as
-reviewable `.service`, `.timer` and `.path` files. The installer reads
-those checked-in templates and substitutes only the local Python executable,
-checkout paths, private state-file path and Git reflog location. Runtime tokens,
+The four supported bridge/tunnel/health unit templates are in
+`config/systemd/` as reviewable `.service` and `.timer` files. The installer
+substitutes only local Python executable and checkout paths. The optional
+guard probe units can be included explicitly. The old Git-update path/timer
+templates were retired; no new installations can enable them. Runtime tokens,
 credentials and history are never written into the unit files.
 
 You can review or change the service definitions directly in Git before
