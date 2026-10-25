@@ -350,3 +350,54 @@ It cannot establish whether historical SQLite readers support current data,
 whether credentials/tunnel profiles are compatible, whether egress guards will
 work or whether services will start. Those require a separate isolated
 historical runtime rehearsal and the actual host recovery acceptance drill.
+
+
+## Opt-in historical state-reader sandbox rehearsal
+
+After creating the private v2 candidate and independently preparing its
+historical Python virtualenv, the operator may additionally test the **old**
+policy and history readers against disposable copies of the restored files:
+
+```sh
+python3 scripts/rollback_runtime_smoke.py \
+  "$HOME/.local/state/local-search-mcp-rollback/candidate-1" \
+  --python "$HOME/.local/state/rollback-env/bin/python"
+```
+
+Run this Linux-only test **as an unprivileged operator** (never root).
+It requires a trusted root-owned `/usr/bin/bwrap` and
+unprivileged user/mount/PID/network namespaces enabled by the host. It
+fails closed where the sandbox cannot be started; it does not fall back to
+executing old source in the host namespace. The candidate inventory and
+independent Python dependency compatibility audit must pass first.
+
+The command copies only allowlisted owner-only recovery files into a
+disposable XDG state/config input directory. That input is mounted **read-only**
+at `/input` inside a newly isolated bubblewrap namespace, where the worker
+copies the files again to a **512 MiB size-limited writable tmpfs** at `/work`
+for SQLite initialization and history-index generation. A separate 16 MiB
+tmpfs contains `/tmp`. No host directory is mounted writable. Recovery
+archives near these limits may be rejected instead of risking uncontrolled
+disk or memory usage. The historical policy/history readers run with
+**no network** and
+no inherited access to the rest of the operator's home directory, live
+checkout, launcher config, tunnel tokens, Docker socket, or systemd bus.
+The explicitly mounted historical source and prepared venv may themselves
+reside under the operator's home; keep credentials and unrelated private
+files **out of those mounted subtrees**. The only other mounted read-only
+locations are OS executables and runtime libraries under `/usr/bin`,
+`/usr/lib`, and (where present) `/usr/lib64`; when the host uses a real
+root-owned `/lib64` directory instead of a symlink, that loader directory
+is also mounted read-only. Dependency metadata is checked before historical
+`/app` is added to Python's import path, preventing staged files from
+spoofing installed distribution versions. The command reports aggregate
+reader success and a capped recent history count; neither approvals nor
+search terms are printed.
+
+The namespace assumes a Linux system with a merged `/usr` filesystem.
+Missing `bwrap`, disabled unprivileged namespaces, incompatible historical
+Python imports or schema migrations cause a nonzero failure. The test does
+**not** prove service startup, firewall protections, credential migration,
+reboot recovery, or a successful live rollback. The report explicitly
+retains `ready_for_live_use: false`; keep issue #15 open until a
+reviewed reversible cutover and a host-level failure drill pass.
