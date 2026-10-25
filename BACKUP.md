@@ -371,17 +371,28 @@ fails closed where the sandbox cannot be started; it does not fall back to
 executing old source in the host namespace. The candidate inventory and
 independent Python dependency compatibility audit must pass first.
 
-The command copies only allowlisted owner-only recovery files into a new
-disposable XDG state/config location. It starts the historical policy/history
-readers in a newly isolated bubblewrap namespace with **no network** and
+The command copies only allowlisted owner-only recovery files into a
+disposable XDG state/config input directory. That input is mounted **read-only**
+at `/input` inside a newly isolated bubblewrap namespace, where the worker
+copies the files again to a **512 MiB size-limited writable tmpfs** at `/work`
+for SQLite initialization and history-index generation. A separate 16 MiB
+tmpfs contains `/tmp`. No host directory is mounted writable. Recovery
+archives near these limits may be rejected instead of risking uncontrolled
+disk or memory usage. The historical policy/history readers run with
+**no network** and
 no inherited access to the rest of the operator's home directory, live
 checkout, launcher config, tunnel tokens, Docker socket, or systemd bus.
 The explicitly mounted historical source and prepared venv may themselves
 reside under the operator's home; keep credentials and unrelated private
 files **out of those mounted subtrees**. The only other mounted read-only
-locations are OS executables and runtime libraries under /usr/bin, /usr/lib
-and (where present) /usr/lib64. It reports aggregate reader success and a capped recent
-history count; neither approvals nor search terms are printed.
+locations are OS executables and runtime libraries under `/usr/bin`,
+`/usr/lib`, and (where present) `/usr/lib64`; when the host uses a real
+root-owned `/lib64` directory instead of a symlink, that loader directory
+is also mounted read-only. Dependency metadata is checked before historical
+`/app` is added to Python's import path, preventing staged files from
+spoofing installed distribution versions. The command reports aggregate
+reader success and a capped recent history count; neither approvals nor
+search terms are printed.
 
 The namespace assumes a Linux system with a merged `/usr` filesystem.
 Missing `bwrap`, disabled unprivileged namespaces, incompatible historical
