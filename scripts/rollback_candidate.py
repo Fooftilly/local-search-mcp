@@ -191,6 +191,144 @@ def _copy_git_blobs(root: Path, target: str, destination: Path) -> int:
     return count
 
 
+
+def _inventory(destination: Path) -> dict[str, str]:
+    """Hash private staged files without following any source or state links.
+
+    This is an integrity check of our staging result, NOT a proof that old
+    dependencies, service units or state formats are safe to activate.
+    """
+    result: dict[str, str] = {}
+    visits = 0
+    for section in ("source", "state"):
+        root = destination / section
+        pending = [root]
+        count = 0
+        total = 0
+        while pending:
+            folder = pending.pop()
+            info = folder.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077):
+                raise ValueError("Rollback candidate has an unsafe directory")
+            visits += 1
+            if visits > MAX_TREE_ENTRIES:
+                raise ValueError("Rollback candidate has too many entries")
+            for path in folder.iterdir():
+                parts = path.relative_to(destination).parts
+                _valid_member("/".join(parts))
+                if len(parts) > 26:
+                    raise ValueError("Rollback candidate path is too deep")
+                info = path.lstat()
+                if stat.S_ISDIR(info.st_mode) and section == "source":
+                    pending.append(path)
+                    continue
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                        or info.st_mode & 0o077 or info.st_nlink != 1):
+                    raise ValueError("Rollback candidate contains an unsafe file")
+                if section == "state" and (len(parts) != 2
+                                           or parts[1] not in backup_state.ALLOWED_FILES):
+                    raise ValueError("Rollback candidate has an unexpected state file")
+                limit = (MAX_INDIVIDUAL if section == "source" else
+                         backup_state.MAX_DB_FILE if parts[1] == backup_state.DB_NAME else
+                         backup_state.MAX_SETTINGS_FILE
+                         if parts[1] in backup_state.SETTINGS_NAMES else
+                         backup_state.MAX_HISTORY_FILE)
+                if info.st_size > limit:
+                    raise ValueError("Rollback candidate file exceeds size limit")
+                count += 1
+                total += info.st_size
+                if (count > (MAX_FILES if section == "source" else
+                             len(backup_state.ALLOWED_FILES))
+                        or total > (MAX_TOTAL_SOURCE if section == "source"
+                                   else backup_state.MAX_TOTAL)):
+                    raise ValueError("Rollback candidate exceeds size limits")
+                fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
+                with os.fdopen(fd, "rb") as stream:
+                    opened = os.fstat(stream.fileno())
+                    if (not stat.S_ISREG(opened.st_mode)
+                            or opened.st_uid != os.getuid()
+                            or opened.st_mode & 0o077 or opened.st_nlink != 1
+                            or (opened.st_dev, opened.st_ino, opened.st_size)
+                            != (info.st_dev, info.st_ino, info.st_size)):
+                        raise ValueError("Rollback candidate changed during inspection")
+                    digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                    after = os.fstat(stream.fileno())
+                    if (after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (
+                            opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns):
+                        raise ValueError("Rollback candidate changed during hashing")
+                result["/".join(parts)] = digest
+        if section == "source" and count < 1:
+            raise ValueError("Rollback candidate contains no source")
+        if section == "state" and "state/domains.sqlite3" not in result:
+            raise ValueError("Rollback candidate is missing policy state")
+    return dict(sorted(result.items()))
+
+
+def inspect(destination: Path) -> dict[str, object]:
+    """Read-only candidate integrity audit, never executing staged code."""
+    info = destination.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o077):
+        raise ValueError("Rollback candidate must be an owned private directory")
+    if {p.name for p in destination.iterdir()} != {
+            "source", "state", "candidate.json"}:
+        raise ValueError("Rollback candidate has unexpected entries")
+    manifest = destination / "candidate.json"
+    candidate_info = manifest.lstat()
+    if (not stat.S_ISREG(candidate_info.st_mode)
+            or candidate_info.st_uid != os.getuid()
+            or candidate_info.st_mode & 0o077 or candidate_info.st_nlink != 1
+            or candidate_info.st_size > 1_000_000):
+        raise ValueError("Rollback candidate manifest must be a private regular file")
+    fd = os.open(manifest, os.O_RDONLY | _NOFOLLOW)
+    with os.fdopen(fd, "rb") as stream:
+        if os.fstat(stream.fileno()).st_ino != candidate_info.st_ino:
+            raise ValueError("Rollback candidate manifest changed")
+        raw = stream.read(1_000_001)
+    if len(raw) > 1_000_000:
+        raise ValueError("Rollback candidate manifest is too large")
+    try:
+        meta = json.loads(raw)
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError("Rollback candidate manifest is malformed") from exc
+    expected = {"schema", "source_commit", "target_commit", "source_files",
+                "state_files", "activation_performed", "ready_for_live_use",
+                "inventory"}
+    if (type(meta) is not dict or set(meta) != expected
+            or meta["schema"] != "local-search-mcp/rollback-candidate/v2"
+            or type(meta["source_files"]) is not int
+            or type(meta["state_files"]) is not int
+            or meta["activation_performed"] is not False
+            or meta["ready_for_live_use"] is not False
+            or any(not isinstance(meta[k], str) or not _OID.fullmatch(meta[k])
+                   for k in ("source_commit", "target_commit"))
+            or type(meta["inventory"]) is not dict):
+        raise ValueError("Rollback candidate manifest has unsupported fields")
+    inventory = _inventory(destination)
+    if meta["inventory"] != inventory:
+        raise ValueError("Rollback candidate files changed since staging")
+    if (sum(k.startswith("source/") for k in inventory) != meta["source_files"]
+            or sum(k.startswith("state/") for k in inventory) != meta["state_files"]):
+        raise ValueError("Rollback candidate file counts differ")
+    # Verify staged policy DB and opt-in nonsecret JSON schemas as well as
+    # their hashes. No staged Python or subprocesses are ever executed.
+    backup_state._verify_sqlite((destination / "state" / backup_state.DB_NAME).read_bytes())
+    for name in backup_state.SETTINGS_NAMES:
+        if "state/" + name in inventory:
+            backup_state._verify_nonsecret_setting(
+                name, (destination / "state" / name).read_bytes())
+    return {
+        "source_files": meta["source_files"],
+        "state_files": meta["state_files"],
+        "integrity_verified": True,
+        "activation_performed": False,
+        "ready_for_live_use": False,
+        "reason": "Source dependencies, historical settings and service cutover "
+                  "require separate offline and host validation",
+    }
+
+
 def prepare(target: str, archive: Path, destination: Path,
             *, root: Path = ROOT) -> dict:
     """Prepare data only; destination and all live installation paths stay separate."""
@@ -213,12 +351,13 @@ def prepare(target: str, archive: Path, destination: Path,
                 update.busy(root, read_only=True)
                 or not rollback_preflight._clean_checkout(root)):
             raise ValueError("Source checkout changed while preparing rollback")
-        meta = {"schema": "local-search-mcp/rollback-candidate/v1",
+        meta = {"schema": "local-search-mcp/rollback-candidate/v2",
                 "source_commit": source_head, "target_commit": target,
                 "source_files": files,
                 "state_files": len(backup_state.verified_payload(archive)),
                 "activation_performed": False,
-                "ready_for_live_use": False}
+                "ready_for_live_use": False,
+                "inventory": _inventory(destination)}
         data = (json.dumps(meta, sort_keys=True, separators=(",", ":")) + "\n").encode()
         fd = os.open(destination / "candidate.json",
                      os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, 0o600)
