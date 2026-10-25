@@ -124,7 +124,6 @@ def configured_ports() -> list[dict]:
     return results
 
 
-
 def fixed_safety_limits() -> list[dict]:
     """Report fixed, nonsecret guardrails without reading private configuration.
 
@@ -143,7 +142,7 @@ def fixed_safety_limits() -> list[dict]:
          domain_policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR),
         ("Cached results, total entries", request_cache.MAX_ITEMS),
         ("Cached results, total bytes", request_cache.MAX_BYTES),
-        ("Cached result, maximum bytes", request_cache.MAX_ENTRY_BYTES),
+        ("Serialized cached entry + key, maximum bytes", request_cache.MAX_ENTRY_BYTES),
         ("Cache key, maximum bytes", request_cache.MAX_KEY_BYTES),
     )
     return [{"name": label, "value": value,
