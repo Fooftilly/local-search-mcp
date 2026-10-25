@@ -755,21 +755,17 @@ class SetupWizardTests(unittest.TestCase):
         self.assertEqual(json.loads(output), response)
         inspect.assert_called_once_with()
 
-    def test_update_menu_shows_existing_local_preflight_only(self):
-        response = {"mode": "read-only", "state": "unavailable",
-                    "remote_checked": False, "updates_applied": False}
+    def test_update_menu_routes_only_to_one_attended_update(self):
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
               patch.object(wizard.os, "geteuid", return_value=1000),
               patch("builtins.input", side_effect=["6", "0"]),
               patch.object(wizard, "local_update_status",
-                           return_value=response) as inspect,
-              patch.object(wizard, "run_existing",
-                           side_effect=AssertionError("unexpected side effect")),
+                           side_effect=AssertionError("old preflight is not an update")),
+              patch.object(wizard, "run_existing", return_value=0) as run,
               contextlib.redirect_stdout(io.StringIO()) as out):
             self.assertEqual(wizard.main([]), 0)
-        inspect.assert_called_once_with()
-        self.assertIn('"remote_checked": false', out.getvalue())
-        self.assertIn("No automatic Git fetch", out.getvalue())
+        run.assert_called_once_with("scripts/attended_update.py")
+        self.assertIn("temporary downtime", out.getvalue())
 
     def test_on_demand_diagnostic_is_inert_and_uses_single_inventory(self):
         sample = {"state": "unverified", "other_published_crawlers": 2}
