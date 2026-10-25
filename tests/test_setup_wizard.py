@@ -30,7 +30,7 @@ class SetupWizardTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as exc:
                 wizard.main(["--help"])
         self.assertEqual(exc.exception.code, 0)
-        for option in ("--check", "--status", "--dry-run", "--chatgpt", "--update-status", "--maintenance-versions", "--maintenance-versions-remote", "--backup-verify", "--restore-smoke", "--on-demand-status", "--boot-audit"):
+        for option in ("--check", "--status", "--dry-run", "--chatgpt", "--update-status", "--maintenance-versions", "--maintenance-versions-remote", "--backup-create", "--confirm-backup", "--backup-verify", "--restore-smoke", "--on-demand-status", "--boot-audit"):
             self.assertIn(option, out.getvalue())
         self.assertIn("30 minutes", out.getvalue())
 
@@ -204,7 +204,7 @@ class SetupWizardTests(unittest.TestCase):
             rc, output = self.call("--dry-run")
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(output)["default_client"].split()[0], "ChatGPT")
-        self.assertEqual(len(json.loads(output)["actions"]), 15)
+        self.assertEqual(len(json.loads(output)["actions"]), 16)
 
     def test_maintenance_versions_cli_offline_by_default_and_remote_explicit(self):
         inventory = {"schema": "local-search-mcp/maintenance-versions/v1",
@@ -305,6 +305,79 @@ class SetupWizardTests(unittest.TestCase):
             check.assert_not_called()
             self.assertIn("Cancelled; no public version checks run", out.getvalue())
             self.assertNotIn("lookups may have started", out.getvalue())
+
+    def test_backup_creation_cli_requires_explicit_consent_and_redacts_results(self):
+        from scripts import backup_state
+        target = Path("/private/DO_NOT_ECHO_ARCHIVE.zip")
+        with patch.object(backup_state, "backup",
+                          side_effect=AssertionError("Backup must not run")) as write:
+            with self.assertRaises(SystemExit):
+                self.call("--backup-create", str(target))
+            with self.assertRaises(SystemExit):
+                self.call("--confirm-backup", "BACKUP")
+            with self.assertRaises(SystemExit):
+                self.call("--backup-create", str(target),
+                          "--confirm-backup", "WRONG")
+            with self.assertRaises(SystemExit):
+                self.call("--backup-create", str(target), "--backup-verify", str(target))
+            write.assert_not_called()
+
+        with (patch.object(backup_state, "backup", return_value=None) as writer,
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("No child processes")),
+              patch.object(wizard, "configure_on_demand",
+                           side_effect=AssertionError("No services"))):
+            code, out = self.call("--backup-create", str(target),
+                                  "--confirm-backup", "BACKUP")
+        self.assertEqual(code, 0)
+        writer.assert_called_once_with(target)
+        report = json.loads(out)
+        self.assertEqual(report["status"], "created")
+        self.assertFalse(report["live_restore_performed"])
+        self.assertFalse(report["remote_checked"])
+        self.assertNotIn("DO_NOT_ECHO", out)
+
+    def test_backup_creation_failure_is_nonzero_redacted_and_no_retry(self):
+        from scripts import backup_state
+        target = Path("/private/NEVER_ECHO_DESTINATION.zip")
+        with patch.object(backup_state, "backup",
+                          side_effect=ValueError("PRIVATE_TOKEN already exists")) as writer:
+            code, out = self.call("--backup-create", str(target),
+                                  "--confirm-backup", "BACKUP")
+        writer.assert_called_once_with(target)
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(out)["status"], "failed")
+        self.assertNotIn("PRIVATE_TOKEN", out)
+        self.assertNotIn("NEVER_ECHO_DESTINATION", out)
+        self.assertIn("never overwritten", out)
+
+    def test_backup_create_menu_requires_confirmation_and_preserves_state(self):
+        from scripts import backup_state
+        target = Path("/private/SENSITIVE_BACKUP.zip")
+        for answer in ("", "NO", "BACKUp"):
+            with (self.subTest(answer=answer),
+                  patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+                  patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch("builtins.input",
+                        side_effect=["16", str(target), answer, "0"]),
+                  patch.object(backup_state, "backup",
+                               side_effect=AssertionError("No archive write")) as writer,
+                  contextlib.redirect_stdout(io.StringIO()) as output):
+                self.assertEqual(wizard.main([]), 0)
+            writer.assert_not_called()
+            self.assertIn("Cancelled; no backup requested", output.getvalue())
+            self.assertNotIn("SENSITIVE_BACKUP", output.getvalue())
+
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input",
+                    side_effect=["16", str(target), "BACKUP", "0"]),
+              patch.object(backup_state, "backup", return_value=None) as writer,
+              contextlib.redirect_stdout(io.StringIO()) as output):
+            self.assertEqual(wizard.main([]), 0)
+        writer.assert_called_once_with(target)
+        self.assertIn('"status": "created"', output.getvalue())
+        self.assertNotIn("SENSITIVE_BACKUP", output.getvalue())
 
     def test_backup_verify_uses_existing_verifier_without_secrets_or_service_calls(self):
         from scripts import backup_state
