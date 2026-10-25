@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -92,8 +93,9 @@ class HistoricalSandboxTests(unittest.TestCase):
 
     def test_unverified_archive_never_starts_sandbox(self):
         with (patch.object(runner.rollback_release_audit, "audit",
-                           return_value={"offline_checks_passed": False}),
-              patch.object(runner.subprocess, "run",
+                           return_value={"static_contracts_passed": False,
+                                         "blockers": ["historical Python contract missing"]}),
+              patch.object(runner, "_sandbox_output",
                            side_effect=AssertionError("must not start")),
               patch.object(runner, "_copy_candidate_state",
                            side_effect=AssertionError("must not copy"))):
@@ -104,7 +106,7 @@ class HistoricalSandboxTests(unittest.TestCase):
         scratch = self.home / "scratch"
         c = runner._sandbox_command
         with patch.object(runner, "_trusted_bwrap", return_value=Path("/usr/bin/bwrap")):
-            cmd = c(self.candidate, self.python, scratch)
+            cmd = c(self.candidate, self.python, scratch, ["httpx>=0.28,<1"])
         self.assertEqual(cmd[0], "/usr/bin/bwrap")
         for critical in ("--unshare-all", "--clearenv", "--die-with-parent",
                          "--new-session", "--ro-bind", "--setenv", "--tmpfs"):
@@ -115,65 +117,102 @@ class HistoricalSandboxTests(unittest.TestCase):
         self.assertNotIn("/etc", cmd)
         self.assertFalse(any(x in cmd for x in ("--share-net", "--bind-try",
                                                "--cap-add", "--ro-bind-data")))
-        self.assertEqual(cmd[-4:], ["-I", "-B", "-c", runner.WORKER])
+        self.assertEqual(cmd[-5:-1], ["-I", "-B", "-c", runner.WORKER])
+        self.assertEqual(json.loads(cmd[-1]), ["httpx>=0.28,<1"])
 
     def test_run_uses_sandbox_only_and_never_passes_private_environment(self):
         payload = {
+            "historical_dependency_versions": True,
             "historical_policy_reader": True,
             "historical_history_reader": True,
             "recent_history_count": 1,
         }
-        expected = json.dumps(payload).encode()
         calls = []
-        def fake_run(command, **kwargs):
-            calls.append((command, kwargs))
-            self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
-            self.assertEqual(kwargs["stderr"], subprocess.DEVNULL)
-            self.assertTrue(kwargs["close_fds"])
-            self.assertEqual(kwargs["timeout"], 40)
-            self.assertNotIn("HOME", kwargs["env"])
-            self.assertNotIn("HTTP_PROXY", kwargs["env"])
-            self.assertEqual(kwargs["env"], {"PATH": "/usr/bin:/bin"})
-            kwargs["stdout"].write(expected)
-            return subprocess.CompletedProcess(command, 0)
+        def fake_output(command):
+            calls.append(command)
+            self.assertEqual(command[0], "/usr/bin/bwrap")
+            self.assertIn("--unshare-all", command)
+            self.assertIn("--clearenv", command)
+            self.assertIn("--ro-bind", command)
+            self.assertNotIn("PRIVATE-TOKEN", command)
+            self.assertEqual(json.loads(command[-1]), ["httpx>=0.28,<1"])
+            return json.dumps(payload).encode()
+        static = {"static_contracts_passed": True,
+                  "blockers": ["independent historical Python environment not provided"]}
         with (patch.object(runner.rollback_release_audit, "audit",
-                           return_value={"offline_checks_passed": True}) as gate,
+                           return_value=static) as gate,
+              patch.object(runner.rollback_release_audit, "_requirements",
+                           return_value=["httpx>=0.28,<1"]),
+              patch.object(runner.rollback_release_audit, "_venv_layout"),
               patch.object(runner.rollback_candidate, "inspect") as verify,
               patch.object(runner, "_trusted_bwrap", return_value=Path("/usr/bin/bwrap")),
-              patch.object(runner.subprocess, "run", side_effect=fake_run)):
+              patch.object(runner, "_sandbox_output", side_effect=fake_output)):
             with patch.dict(os.environ, {"HTTP_PROXY": "http://secret.invalid:80",
                                         "LOCAL_SEARCH_MCP_TUNNEL_TOKEN": "PRIVATE-TOKEN"}):
                 result = runner.run(self.candidate, python=self.python)
         self.assertTrue(result["sandboxed_old_state_readers_passed"])
+        self.assertTrue(result["sandboxed_dependency_versions_passed"])
         self.assertFalse(result["ready_for_live_use"])
         self.assertFalse(result["credentials_provided"])
         self.assertFalse(result["network_access_enabled"])
         self.assertFalse(result["live_state_changed"])
         self.assertEqual(result["staged_files"], 2)
-        self.assertEqual(gate.call_count, 1)
+        self.assertEqual(gate.call_args.kwargs, {"python": None})
         self.assertEqual(verify.call_count, 1)
         self.assertEqual(len(calls), 1)
 
     def test_crashed_or_malformed_sandbox_never_reports_ready(self):
         results = [
-            (1, b"PRIVATE_ERROR"),
-            (0, b"not JSON"),
-            (0, b'{"historical_policy_reader":true,"historical_history_reader":true,"recent_history_count":1,"token":"LEAK"}'),
-            (0, b'{"historical_policy_reader":true,"historical_history_reader":false,"recent_history_count":0}'),
-            (0, b'{"historical_policy_reader":true,"historical_history_reader":true,"recent_history_count":99}'),
+            b"PRIVATE_ERROR",
+            b"not JSON",
+            b'{"historical_dependency_versions":true,"historical_policy_reader":true,"historical_history_reader":true,"recent_history_count":1,"token":"LEAK"}',
+            b'{"historical_dependency_versions":false,"historical_policy_reader":true,"historical_history_reader":true,"recent_history_count":0}',
+            b'{"historical_dependency_versions":true,"historical_policy_reader":true,"historical_history_reader":false,"recent_history_count":0}',
+            b'{"historical_dependency_versions":true,"historical_policy_reader":true,"historical_history_reader":true,"recent_history_count":99}',
         ]
-        for rc, raw in results:
-            with self.subTest(rc=rc, raw=raw[:30]):
-                def launch(args, **kwargs):
-                    kwargs["stdout"].write(raw)
-                    return subprocess.CompletedProcess(args, rc)
+        static = {"static_contracts_passed": True,
+                  "blockers": ["independent historical Python environment not provided"]}
+        for raw in results:
+            with self.subTest(raw=raw[:30]):
                 with (patch.object(runner.rollback_release_audit, "audit",
-                                   return_value={"offline_checks_passed": True}),
+                                   return_value=static),
+                      patch.object(runner.rollback_release_audit, "_requirements",
+                                   return_value=["httpx>=0.28,<1"]),
+                      patch.object(runner.rollback_release_audit, "_venv_layout"),
                       patch.object(runner.rollback_candidate, "inspect"),
                       patch.object(runner, "_trusted_bwrap", return_value=Path("/usr/bin/bwrap")),
-                      patch.object(runner.subprocess, "run", side_effect=launch)):
+                      patch.object(runner, "_sandbox_output", return_value=raw)):
                     with self.assertRaises(ValueError):
                         runner.run(self.candidate, python=self.python)
+
+    def test_bounded_capture_does_not_restrict_sqlite_file_writes(self):
+        # Only trusted fixture Python is run here, never a staged interpreter.
+        output = runner._sandbox_output([
+            sys.executable, "-c", "import sys; print('hello')"])
+        self.assertEqual(output, b"hello\n")
+        with self.assertRaisesRegex(ValueError, "oversized output"):
+            runner._sandbox_output([
+                sys.executable, "-c", "import sys; sys.stdout.write('x'*10000)"])
+
+    def test_history_worker_checks_dependency_metadata_inside_sandbox(self):
+        # Regression: do not run audit(candidate, python=historical_python),
+        # which would execute the untrusted interpreter on the host.
+        static = {"static_contracts_passed": True,
+                  "blockers": ["independent historical Python environment not provided"]}
+        with (patch.object(runner.rollback_release_audit, "audit",
+                           return_value=static) as check,
+              patch.object(runner.rollback_release_audit, "_requirements",
+                           return_value=["httpx>=0.28,<1"]),
+              patch.object(runner.rollback_release_audit, "_venv_layout"),
+              patch.object(runner.rollback_candidate, "inspect"),
+              patch.object(runner, "_trusted_bwrap", return_value=Path("/usr/bin/bwrap")),
+              patch.object(runner, "_sandbox_output", return_value=json.dumps({
+                  "historical_dependency_versions": True,
+                  "historical_policy_reader": True,
+                  "historical_history_reader": True,
+                  "recent_history_count": 0}).encode())):
+            runner.run(self.candidate, python=self.python)
+        check.assert_called_once_with(self.candidate, python=None)
 
     def test_cli_redacts_failure_and_never_prints_candidate_paths(self):
         with (patch.object(runner, "run", side_effect=ValueError("SECRET private backup")),
