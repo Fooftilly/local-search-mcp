@@ -113,6 +113,16 @@ class RollbackCandidateTests(unittest.TestCase):
             candidate.inspect(self.dir)
         source.write_bytes(original)
         self.assertTrue(candidate.inspect(self.dir)["integrity_verified"])
+        executable = self.dir / "source" / "start.sh"
+        executable.chmod(0o600)
+        with self.assertRaisesRegex(ValueError, "changed"):
+            candidate.inspect(self.dir)
+        executable.chmod(0o700)
+        extra_dir = self.dir / "source" / "unexpected_empty_dir"
+        extra_dir.mkdir(mode=0o700)
+        with self.assertRaisesRegex(ValueError, "changed"):
+            candidate.inspect(self.dir)
+        extra_dir.rmdir()
         source.unlink()
         source.symlink_to(self.root / "bridge.py")
         with self.assertRaisesRegex(ValueError, "unsafe"):
@@ -149,6 +159,17 @@ class RollbackCandidateTests(unittest.TestCase):
         metadata.write_text(json.dumps(doc))
         with self.assertRaisesRegex(ValueError, "unsupported fields"):
             candidate.inspect(self.dir)
+
+    def test_oversize_candidate_inventory_refuses_stage_without_leaks(self):
+        giant = {"source/" + str(i).zfill(6) + "-" + "x" * 500:
+                 "F:0600:" + "f" * 64 for i in range(3500)}
+        with (patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)),
+              patch.object(candidate, "_inventory", return_value=giant)):
+            with self.assertRaisesRegex(ValueError, "manifest limit"):
+                candidate.prepare(self.target, self.archive, self.dir,
+                                  root=self.root)
+        self.assertFalse(self.dir.exists())
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.current)
 
     def test_failure_cleans_new_candidate_without_touching_checkout(self):
         with (patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)),
