@@ -287,6 +287,41 @@ services, or claim a deployable rollback. Passing verification leaves
 separately before restoring any running installation.
 
 
+## Read-only stopped-state gate before host maintenance
+
+After stopping and disabling project-owned services by your existing reviewed
+procedure, check their *effective* systemd user unit identity and status:
+
+```sh
+python3 scripts/maintenance_readiness.py --candidate \
+  "$HOME/.local/state/local-search-mcp-rollback/candidate-1"
+```
+
+This gate checks only the known project-owned bridge/tunnel, update watcher,
+health timer and guard-probe user units. Every installed file must carry the
+managed marker, be user-owned and not symlinked or group/world-writable;
+the systemd manager must point to the same effective file with
+`NeedDaemonReload=no`. Only the exact reviewed tunnel crawler-egress startup
+guard drop-in is accepted; other overrides are blocked. Every loaded unit
+must report strictly inactive and have no enabled trigger. A failed
+oneshot is conservatively blocked even when its process has stopped; inspect
+the failure and run `systemctl --user reset-failed UNIT` if appropriate,
+then recheck the inactive state. Never reset without inspecting the cause. The on-demand wake preference must be disabled. Missing units are accepted only
+when systemd also reports them not found. The candidate is re-verified
+read-only when specified. Errors are redacted; an unknown systemd bus,
+unrecognized override, active tunnel, unverified unit or invalid candidate
+returns nonzero.
+
+**This result is a point-in-time observation, not a service lock or rollback
+authorization.** External agents, timers, and logins can change status
+immediately afterward. Do not treat it as permission to replace a state DB
+or to run historical application code. The root-owned egress firewall,
+Docker backends, tunnel credentials, custom history locations and service
+restart sequencing are outside this command's scope. No **mutating** systemctl action,
+Docker command, file modification or automatic update is performed; only
+read-only `systemctl --user show` queries are issued. A
+reviewed live cutover and failure-recovery drill remain outstanding for #15.
+
 ## Static historical release and independent dependency audit
 
 Use the operator-staged, v2-inventory-verified candidate. Prepare a **separate**
