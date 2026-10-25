@@ -1,8 +1,9 @@
 """Offline backup, staged restore and corruption rejection regressions."""
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, redirect_stderr
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ import tempfile
 import unittest
 import warnings
 import zipfile
+import zlib
 
 from scripts import backup_state as backup
 
@@ -101,6 +103,48 @@ class BackupTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     backup.verified_payload(forged)
                 forged.unlink()
+
+    def test_unsupported_archive_compression_is_rejected_before_extraction(self):
+        backup.backup(self.archive, state_dir=self.state)
+        forged = self.base / "unsupported-compression.zip"
+        with zipfile.ZipFile(self.archive) as original:
+            with zipfile.ZipFile(forged, "w", compression=zipfile.ZIP_BZIP2) as zipped:
+                for name in original.namelist():
+                    zipped.writestr(name, original.read(name))
+        forged.chmod(0o600)
+        target = self.base / "must-not-restore-unsupported"
+        with self.assertRaisesRegex(ValueError, "Unsafe backup entry"):
+            backup.verified_payload(forged)
+        with self.assertRaises(ValueError):
+            backup.restore(forged, target)
+        self.assertFalse(target.exists())
+        with redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(backup.main(["verify", str(forged)]), 1)
+        self.assertNotIn("Traceback", err.getvalue())
+
+    def test_decompression_errors_are_normalized_for_direct_cli_and_restore(self):
+        backup.backup(self.archive, state_dir=self.state)
+        destination = self.base / "must-not-restore-corrupt"
+        for error in (
+            zlib.error("PRIVATE history decompression data"),
+            NotImplementedError("PRIVATE unsupported ZIP decoder"),
+            RuntimeError("PRIVATE unexpected archive stream"),
+        ):
+            with self.subTest(kind=type(error).__name__):
+                with patch.object(zipfile.ZipFile, "read", side_effect=error):
+                    with self.assertRaisesRegex(ValueError, "Corrupt backup archive"):
+                        backup.verified_payload(self.archive)
+                    with redirect_stderr(io.StringIO()) as err:
+                        self.assertEqual(backup.main(["verify", str(self.archive)]), 1)
+                        self.assertEqual(backup.main([
+                            "restore", str(self.archive),
+                            "--target-dir", str(destination)]), 1)
+                self.assertFalse(destination.exists())
+                self.assertNotIn("PRIVATE", err.getvalue())
+                self.assertNotIn("Traceback", err.getvalue())
+        # Valid archives remain accepted after ZIP exception normalization.
+        self.assertEqual(set(backup.verified_payload(self.archive)),
+                         {"domains.sqlite3", "history.jsonl"})
 
     def test_symlink_sources_and_unsafe_permissions_fail(self):
         external = self.base / "private.txt"
