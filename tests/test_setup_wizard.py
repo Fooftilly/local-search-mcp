@@ -372,6 +372,13 @@ class SetupWizardTests(unittest.TestCase):
                 self.assertEqual(archive.stat().st_mode & 0o777, 0o600)
                 self.assertIn("domains.sqlite3",
                               backup_state.verified_payload(archive))
+                verify = subprocess.run([
+                    "bash", str(root / "setup.sh"),
+                    "--backup-verify", archive_name,
+                ], cwd=caller, env=env, text=True, capture_output=True,
+                    timeout=35, check=False)
+                self.assertEqual(verify.returncode, 0, verify.stderr)
+                self.assertEqual(json.loads(verify.stdout)["status"], "passed")
                 self.assertFalse((root / archive_name).exists())
             finally:
                 # Only a regression would have created this unique temporary
@@ -393,6 +400,37 @@ class SetupWizardTests(unittest.TestCase):
                 self.assertEqual(wizard.main([]), 0)
             write.assert_called_once_with(expected)
             self.assertNotIn(temp, output.getvalue())
+
+    def test_relative_backup_verify_and_smoke_use_caller_directory(self):
+        from scripts import backup_state, restore_smoke
+        with tempfile.TemporaryDirectory() as temp:
+            name = "local-archive.zip"
+            target = Path(temp) / name
+            with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_SETUP_CALLER_CWD": temp}):
+                with patch.object(backup_state, "verified_payload",
+                                  return_value={"domains.sqlite3": b"ok"}) as check:
+                    code, output = self.call("--backup-verify", name)
+                self.assertEqual(code, 0)
+                self.assertEqual(json.loads(output)["status"], "passed")
+                check.assert_called_once_with(target)
+
+                with patch.object(restore_smoke, "smoke",
+                                  return_value=(2, 1)) as smoke:
+                    code, output = self.call("--restore-smoke", name)
+                self.assertEqual(code, 0)
+                self.assertEqual(json.loads(output)["status"], "passed")
+                smoke.assert_called_once_with(target)
+
+                with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+                      patch.object(wizard.os, "geteuid", return_value=1000),
+                      patch("builtins.input",
+                            side_effect=["15", name, "VERIFY", "0"]),
+                      patch.object(backup_state, "verified_payload",
+                                   return_value={"domains.sqlite3": b"ok"}) as verify,
+                      contextlib.redirect_stdout(io.StringIO()) as shown):
+                    self.assertEqual(wizard.main([]), 0)
+                verify.assert_called_once_with(target)
+                self.assertNotIn(temp, shown.getvalue())
 
     def test_backup_creation_failure_is_nonzero_redacted_and_no_retry(self):
         from scripts import backup_state
