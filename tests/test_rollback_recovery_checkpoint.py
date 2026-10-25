@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import stat
 import tempfile
 import unittest
@@ -218,6 +219,20 @@ class RecoveryCheckpointTests(unittest.TestCase):
                           side_effect=ValueError("staged source changed")):
             with self.assertRaises(ValueError):
                 self.create()
+        self.assertFalse(self.dest.exists())
+
+    def test_git_subprocess_failure_is_redacted_by_cli(self):
+        with (patch.object(checkpoint, "_checkout_unchanged",
+                           side_effect=subprocess.CalledProcessError(
+                               1, ["git", "status"], stderr=b"TOP_SECRET")),
+              redirect_stdout(io.StringIO()) as output,
+              redirect_stderr(io.StringIO()) as errors):
+            self.assertEqual(checkpoint.main([
+                "--candidate", str(self.candidate),
+                "--destination", str(self.dest)]), 1)
+        self.assertEqual(output.getvalue(), "")
+        self.assertNotIn("TOP_SECRET", errors.getvalue())
+        self.assertNotIn(str(self.home), errors.getvalue())
         self.assertFalse(self.dest.exists())
 
     def test_cli_errors_redact_private_data_and_paths(self):
