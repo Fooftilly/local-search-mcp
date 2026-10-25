@@ -36,7 +36,7 @@ For read-only configuration-source diagnostics with credentials redacted, run `p
 
 For explicitly confirmed private archive creation, run
 `./setup.sh --backup-create NEW.zip --confirm-backup BACKUP` or choose
-setup menu option 16. This uses the existing no-overwrite archiver; for
+the Advanced → 3 menu action. This uses the existing no-overwrite archiver; for
 a consistent multi-file snapshot, stop the writing services manually
 before running it. See [BACKUP.md](BACKUP.md).
 
@@ -63,7 +63,7 @@ The setup wizard also exposes a consolidated **read-only maintenance
 inventory**: `./setup.sh --maintenance-versions` uses only local
 dependency/Git/crawler/tunnel version information. To explicitly request
 bounded public PyPI release and GitHub release/commit metadata, run
-`./setup.sh --maintenance-versions-remote` or select menu option 14 and
+`./setup.sh --maintenance-versions-remote` or select Status → 6 and
 confirm `REMOTE` then `PUBLIC`. Neither mode installs or updates software.
 See [SETUP-WIZARD.md](SETUP-WIZARD.md) for the safety boundary.
 
@@ -146,7 +146,7 @@ python history_cli.py --csv --last 5000 > ~/search-history.csv
 
 ## Operator-controlled updates
 
-Use **`./setup.sh --update`** (or interactive menu option 6) when the
+Use **`./setup.sh --update`** (or Update → 1) when the
 systemd-managed MCP has been installed and you're ready for temporary downtime.
 As your normal Linux user, approve the network fetch (`FETCH`), review the
 proposed fast-forward revision and changed file list, then explicitly approve

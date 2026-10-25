@@ -188,7 +188,7 @@ class SetupWizardTests(unittest.TestCase):
     def test_menu_dependency_inspection_only_reads_project_venv(self):
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
               patch.object(wizard.os, "geteuid", return_value=1000),
-              patch("builtins.input", side_effect=["5", "0"]),
+              patch("builtins.input", side_effect=["3", "2", "0"]),
               patch.object(wizard, "dependency_report",
                            return_value={"state": "missing", "packages": []}) as report,
               patch.object(wizard, "run_existing",
@@ -205,7 +205,52 @@ class SetupWizardTests(unittest.TestCase):
             rc, output = self.call("--dry-run")
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(output)["default_client"].split()[0], "ChatGPT")
-        self.assertEqual(len(json.loads(output)["actions"]), 16)
+        preview = json.loads(output)
+        self.assertEqual(len(preview["actions"]), 16)
+        self.assertEqual(preview["groups"],
+                         ["Setup", "Connections", "Status", "Update", "Advanced"])
+        self.assertEqual(len({item["menu"] for item in preview["actions"]}), 16)
+
+    def test_all_existing_actions_appear_once_in_five_groups(self):
+        groups = wizard.MENU_GROUPS
+        self.assertEqual([name for name, _ in groups.values()],
+                         ["Setup", "Connections", "Status", "Update", "Advanced"])
+        paths = [(group + "." + str(i), identifier)
+                 for group, (_, actions) in groups.items()
+                 for i, (identifier, _) in enumerate(actions, start=1)]
+        self.assertEqual(len(paths), 16)
+        self.assertEqual({identifier for _, identifier in paths},
+                         {str(i) for i in range(1, 17)})
+        preview = wizard.dry_run()
+        self.assertEqual({row["menu"] for row in preview["actions"]},
+                         {path for path, _ in paths})
+
+    def test_group_back_and_unknown_action_never_run_operations(self):
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input", side_effect=[
+                  "9", "1", "0", "4", "3", "5", "abc", "0",
+              ]),
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("no subprocesses")),
+              patch.object(wizard, "check_report",
+                           side_effect=AssertionError("no status probes")),
+              contextlib.redirect_stdout(io.StringIO()) as out):
+            self.assertEqual(wizard.main([]), 0)
+        self.assertIn("Unknown group", out.getvalue())
+        self.assertIn("Unknown action", out.getvalue())
+        self.assertIn("0  Back", out.getvalue())
+
+    def test_read_only_connection_and_update_are_distinct_groups(self):
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input", side_effect=["2", "1", "4", "1", "0"]),
+              patch.object(wizard, "print_chatgpt_steps") as chatgpt,
+              patch.object(wizard, "run_existing", return_value=0) as call,
+              contextlib.redirect_stdout(io.StringIO())):
+            self.assertEqual(wizard.main([]), 0)
+        chatgpt.assert_called_once_with()
+        call.assert_called_once_with("scripts/attended_update.py")
 
     def test_maintenance_versions_cli_offline_by_default_and_remote_explicit(self):
         inventory = {"schema": "local-search-mcp/maintenance-versions/v1",
@@ -239,7 +284,7 @@ class SetupWizardTests(unittest.TestCase):
     def test_maintenance_menu_default_is_offline_no_implicit_public_access(self):
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
               patch.object(wizard.os, "geteuid", return_value=1000),
-              patch("builtins.input", side_effect=["14", "", "0"]),
+              patch("builtins.input", side_effect=["3", "6", "", "0"]),
               patch.object(wizard, "maintenance_versions_report",
                            return_value={"mode": "read-only"}) as inventory,
               patch.object(wizard, "run_existing",
@@ -254,7 +299,7 @@ class SetupWizardTests(unittest.TestCase):
             with (self.subTest(response=response),
                   patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
                   patch.object(wizard.os, "geteuid", return_value=1000),
-                  patch("builtins.input", side_effect=["14", "REMOTE", response, "0"]),
+                  patch("builtins.input", side_effect=["3", "6", "REMOTE", response, "0"]),
                   patch.object(wizard, "maintenance_versions_report",
                                side_effect=AssertionError("no remote query")) as checked,
                   contextlib.redirect_stdout(io.StringIO()) as out):
@@ -264,7 +309,7 @@ class SetupWizardTests(unittest.TestCase):
 
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
               patch.object(wizard.os, "geteuid", return_value=1000),
-              patch("builtins.input", side_effect=["14", "REMOTE", "PUBLIC", "0"]),
+              patch("builtins.input", side_effect=["3", "6", "REMOTE", "PUBLIC", "0"]),
               patch.object(wizard, "maintenance_versions_report",
                            return_value={"remote_requested": True}) as checker,
               patch.object(wizard, "run_existing",
@@ -281,7 +326,7 @@ class SetupWizardTests(unittest.TestCase):
             with (self.subTest(interrupted=interrupted),
                   patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
                   patch.object(wizard.os, "geteuid", return_value=1000),
-                  patch("builtins.input", side_effect=["14", "REMOTE", "PUBLIC", "0"]),
+                  patch("builtins.input", side_effect=["3", "6", "REMOTE", "PUBLIC", "0"]),
                   patch.object(wizard, "maintenance_versions_report",
                                side_effect=interrupted) as checked,
                   patch.object(wizard, "run_existing",
@@ -293,8 +338,8 @@ class SetupWizardTests(unittest.TestCase):
             self.assertNotIn("Cancelled; no public version checks run", out.getvalue())
 
     def test_remote_menu_interrupted_before_confirmation_does_not_call_checker(self):
-        for inputs in (["14", KeyboardInterrupt(), "0"],
-                       ["14", "REMOTE", KeyboardInterrupt(), "0"]):
+        for inputs in (["3", "6", KeyboardInterrupt(), "0"],
+                       ["3", "6", "REMOTE", KeyboardInterrupt(), "0"]):
             with (self.subTest(inputs=inputs[:2]),
                   patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
                   patch.object(wizard.os, "geteuid", return_value=1000),
@@ -431,7 +476,7 @@ class SetupWizardTests(unittest.TestCase):
                   patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
                   patch.object(wizard.os, "geteuid", return_value=1000),
                   patch("builtins.input",
-                        side_effect=["16", "relative.zip", "BACKUP", "0"]),
+                        side_effect=["5", "3", "relative.zip", "BACKUP", "0"]),
                   patch.object(backup_state, "backup", return_value=None) as write,
                   contextlib.redirect_stdout(io.StringIO()) as output):
                 self.assertEqual(wizard.main([]), 0)
@@ -461,7 +506,7 @@ class SetupWizardTests(unittest.TestCase):
                 with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
                       patch.object(wizard.os, "geteuid", return_value=1000),
                       patch("builtins.input",
-                            side_effect=["15", name, "VERIFY", "0"]),
+                            side_effect=["5", "2", name, "VERIFY", "0"]),
                       patch.object(backup_state, "verified_payload",
                                    return_value={"domains.sqlite3": b"ok"}) as verify,
                       contextlib.redirect_stdout(io.StringIO()) as shown):
@@ -491,7 +536,7 @@ class SetupWizardTests(unittest.TestCase):
                   patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
                   patch.object(wizard.os, "geteuid", return_value=1000),
                   patch("builtins.input",
-                        side_effect=["16", str(target), answer, "0"]),
+                        side_effect=["5", "3", str(target), answer, "0"]),
                   patch.object(backup_state, "backup",
                                side_effect=AssertionError("No archive write")) as writer,
                   contextlib.redirect_stdout(io.StringIO()) as output):
@@ -503,7 +548,7 @@ class SetupWizardTests(unittest.TestCase):
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
               patch.object(wizard.os, "geteuid", return_value=1000),
               patch("builtins.input",
-                    side_effect=["16", str(target), "BACKUP", "0"]),
+                    side_effect=["5", "3", str(target), "BACKUP", "0"]),
               patch.object(backup_state, "backup", return_value=None) as writer,
               contextlib.redirect_stdout(io.StringIO()) as output):
             self.assertEqual(wizard.main([]), 0)
@@ -600,7 +645,7 @@ class SetupWizardTests(unittest.TestCase):
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
               patch.object(wizard.os, "geteuid", return_value=1000),
               patch("builtins.input",
-                    side_effect=["15", "/private/SECRET-archive.zip", "VERIFY", "0"]),
+                    side_effect=["5", "2", "/private/SECRET-archive.zip", "VERIFY", "0"]),
               patch.object(backup_state, "verified_payload",
                            side_effect=zlib.error("PRIVATE corrupt compressed ZIP")),
               contextlib.redirect_stdout(io.StringIO()) as output):
@@ -614,7 +659,7 @@ class SetupWizardTests(unittest.TestCase):
         # No input archive should touch any validation or service routine.
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
               patch.object(wizard.os, "geteuid", return_value=1000),
-              patch("builtins.input", side_effect=["15", "", "0"]),
+              patch("builtins.input", side_effect=["5", "2", "", "0"]),
               patch.object(backup_state, "verified_payload",
                            side_effect=AssertionError("No archive access")) as verify,
               patch.object(restore_smoke, "smoke",
@@ -630,7 +675,7 @@ class SetupWizardTests(unittest.TestCase):
                   patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
                   patch.object(wizard.os, "geteuid", return_value=1000),
                   patch("builtins.input",
-                        side_effect=["15", "/private/ARCHIVE.zip", selector, "0"]),
+                        side_effect=["5", "2", "/private/ARCHIVE.zip", selector, "0"]),
                   patch.object(wizard, "backup_check",
                                return_value={"status": "passed"}) as check,
                   patch.object(wizard, "run_existing",
@@ -646,7 +691,7 @@ class SetupWizardTests(unittest.TestCase):
         sample = {"state": "blocked", "checks": {"root_guard_matches_checkout": False}}
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
               patch.object(wizard.os, "geteuid", return_value=1000),
-              patch("builtins.input", side_effect=["13", "0"]),
+              patch("builtins.input", side_effect=["3", "5", "0"]),
               patch.object(on_demand_boot_audit, "audit", return_value=sample) as auditor,
               patch.object(wizard, "run_existing",
                            side_effect=AssertionError("No child process")),
@@ -698,7 +743,7 @@ class SetupWizardTests(unittest.TestCase):
     def test_cancelled_mutating_action_has_no_side_effect(self):
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
               patch.object(wizard.os, "geteuid", return_value=1000),
-              patch("builtins.input", side_effect=["7", "NO", "0"]),
+              patch("builtins.input", side_effect=["1", "3", "NO", "0"]),
               patch.object(wizard, "run_existing",
                            side_effect=AssertionError("run")),
               contextlib.redirect_stdout(io.StringIO()) as out):
@@ -708,7 +753,7 @@ class SetupWizardTests(unittest.TestCase):
     def test_confirmed_setup_uses_existing_script_only(self):
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
               patch.object(wizard.os, "geteuid", return_value=1000),
-              patch("builtins.input", side_effect=["3", "CONFIGURE", "0"]),
+              patch("builtins.input", side_effect=["1", "1", "CONFIGURE", "0"]),
               patch.object(wizard, "run_existing", return_value=0) as command,
               contextlib.redirect_stdout(io.StringIO())):
             self.assertEqual(wizard.main([]), 0)
@@ -758,7 +803,7 @@ class SetupWizardTests(unittest.TestCase):
     def test_update_menu_routes_only_to_one_attended_update(self):
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
               patch.object(wizard.os, "geteuid", return_value=1000),
-              patch("builtins.input", side_effect=["6", "0"]),
+              patch("builtins.input", side_effect=["4", "1", "0"]),
               patch.object(wizard, "local_update_status",
                            side_effect=AssertionError("old preflight is not an update")),
               patch.object(wizard, "run_existing", return_value=0) as run,
@@ -799,7 +844,7 @@ class SetupWizardTests(unittest.TestCase):
                   "can_activate": False, "state": "blocked"}
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
               patch.object(wizard.os, "geteuid", return_value=1000),
-              patch("builtins.input", side_effect=["9", "0"]),
+              patch("builtins.input", side_effect=["3", "4", "0"]),
               patch.object(wizard, "on_demand_status", return_value=sample) as inspect,
               patch.object(wizard, "run_existing",
                            side_effect=AssertionError("mutating process")),
@@ -1045,7 +1090,7 @@ class SetupWizardTests(unittest.TestCase):
 
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
               patch.object(wizard.os, "geteuid", return_value=1000),
-              patch("builtins.input", side_effect=["12", "claude", "0"]),
+              patch("builtins.input", side_effect=["2", "2", "claude", "0"]),
               patch.object(wizard, "run_existing",
                            side_effect=AssertionError("No program invocation")),
               contextlib.redirect_stdout(io.StringIO()) as captured):
@@ -1064,7 +1109,7 @@ class SetupWizardTests(unittest.TestCase):
     def test_optional_client_menu_does_not_write_without_selection(self):
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
               patch.object(wizard.os, "geteuid", return_value=1000),
-              patch("builtins.input", side_effect=["12", "invalid", "0"]),
+              patch("builtins.input", side_effect=["2", "2", "invalid", "0"]),
               patch.object(wizard, "run_existing",
                            side_effect=AssertionError("No program execution")),
               contextlib.redirect_stdout(io.StringIO()) as captured):

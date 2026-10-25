@@ -1,9 +1,13 @@
 # ChatGPT-first setup and maintenance wizard (issue #74, foundation)
 
-Use `./setup.sh` for a conservative interactive menu. This is the first
-implementation slice: it reuses existing scripts, rather than introducing
-another configuration authority or automatically migrating Docker services.
-`./start.sh` and `./stop.sh` retain their original behavior.
+Use `./setup.sh` for the five-group interactive menu: **1 Setup**,
+**2 Connections**, **3 Status**, **4 Update**, **5 Advanced**. Choose a group,
+then an action number within it; `0` returns to the groups, and `0` from
+the top menu exits. All 16 existing operator actions remain available, but
+the top level is no longer crowded. This changes only navigation; existing
+CLI flags and confirmations remain available, and it does not add another
+configuration authority or Docker management path. `./start.sh` and
+`./stop.sh` retain their behavior.
 
 Read-only commands (no prompts, writes, downloads, restarts or root privileges):
 
@@ -84,7 +88,7 @@ The setup wizard can create a new owner-only archive using the existing
 ./setup.sh --backup-create "$HOME/local-search-state-2026.zip" --confirm-backup BACKUP
 ```
 
-Or select interactive menu option **16**, supply the new archive filename,
+Or select Advanced → 3 (create backup), supply the new archive filename,
 and type `BACKUP` exactly. A relative filename is interpreted from
 the directory where `setup.sh` was invoked, **not** the repository root;
 absolute paths also work. Without the confirmation, the wizard writes
@@ -120,7 +124,7 @@ For a fuller offline fresh-install simulation, use:
 The smoke mode calls the existing `restore_smoke.smoke` implementation,
 which writes **only disposable temporary files** and exercises the
 application's real policy, history and nonsecret settings readers under
-isolated XDG directories. Alternatively, choose interactive menu option 15,
+isolated XDG directories. Alternatively, choose Advanced → 2 (verify or smoke-test backup),
 provide the path and select VERIFY (default) or SMOKE. Neither operation
 creates a backup, replaces active files, installs services or activates a
 rollback. The JSON result contains status/safety flags and aggregate counts (file
@@ -134,17 +138,17 @@ private storage and refer to [BACKUP.md](BACKUP.md) for compatibility limits.
 
 ## Optional maintenance version inventory (issue #74 / #15)
 
-Run `./setup.sh --maintenance-versions` or select interactive option 14
+Run `./setup.sh --maintenance-versions` or select Status → 6 (maintenance versions)
 and press Enter for the **offline default**. The wizard reuses
 `scripts.maintenance_versions.report` to report project-venv dependency
-versions, local Git update baseline, tunnel-client fingerprint and the
+versions, local Git revision, tunnel-client fingerprint and the
 fixed loopback Crawl4AI version/health check. It does not query public
 websites, fetch Git objects, install packages, pull images or restart services.
 
 `./setup.sh --maintenance-versions-remote` requests the existing
 bounded public PyPI release metadata and GitHub release **and repository
 commit** metadata checks (including the public bridge `/commits/master`
-endpoint). Interactive option 14 requires choosing `REMOTE` and then
+endpoint). Status → 6 requires choosing `REMOTE` and then
 typing `PUBLIC` to opt in. A different response cancels without public
 requests. Interrupting an in-flight lookup may leave some public requests
 already sent; it does not apply updates. Public release or revision differences
@@ -154,11 +158,11 @@ edits credentials, or changes MCP connections. See
 `docs/DEPENDENCY-UPDATES.md` and `BACKUP.md` before any manual update.
 
 For on-demand reboot diagnostics, run `./setup.sh --boot-audit` or
-select interactive option 13. This read-only audit checks the actual
+select Status → 5 (reboot audit). This read-only audit checks the actual
 container restart policies, reviewed root-owned helper/unit installation,
 effective root/tunnel startup gates and systemd enablement/linger without
 mutating the host or running live firewall probes. The `--boot-audit`
-CLI flag returns nonzero for missing prerequisites; interactive option 13
+CLI flag returns nonzero for missing prerequisites; Status → 5 (reboot audit)
 prints the same report but leaves the menu running. Neither mode declares
 reboot safety proven. Review
 `ON-DEMAND.md` and `docs/EGRESS-SYSTEMD.md` before a manual reboot test.
@@ -181,7 +185,7 @@ false; it cannot be selected for future on-demand lifecycle management.
 Neither field proves firewall containment, remote tunnel registration or
 ChatGPT account-side connection.
 
-Dependency checks in `--check` and interactive option 5 run the existing
+Dependency checks in `--check` and Status → 2 (dependency versions) run the existing
 local-only dependency reporter under the **project `.venv/bin/python`**, never
 system Python. When `.venv` is missing, broken, or packages are absent, the
 report is explicit and readiness is not claimed. These checks never query PyPI;
@@ -214,7 +218,7 @@ setup route when those are healthy. The wizard does not bypass those gates.
 
 ## Docker project ownership diagnostics (second slice)
 
-Run `./setup.sh --docker-status` or choose menu option 8.
+Run `./setup.sh --docker-status` or choose Status → 3 (Docker ownership).
 `./setup.sh --status` and `--check` also include the ownership summary.
 This inspects only the pinned local Docker socket, validates full container
 IDs, the fixed `local-search-crawler` Compose project, managed service labels,
@@ -239,7 +243,7 @@ ownership of the existing Hermes Web stack.
 
 ## Attended software update
 
-Run `./setup.sh --update` (or interactive menu option 6) for the one
+Run `./setup.sh --update` (or Update → 1 (attended update)) for the one
 supported update procedure. The operator must approve `FETCH` before any
 GitHub network request, review the proposed revision and changed file list,
 then approve `UPDATE` before project services, state backup, Git checkout or
@@ -262,7 +266,7 @@ in [docs/SYSTEMD.md](docs/SYSTEMD.md).
 
 ## On-demand eligibility preview (fourth slice)
 
-Run `./setup.sh --on-demand-status` or choose interactive menu option 9.
+Run `./setup.sh --on-demand-status` or choose Status → 4 (on-demand eligibility).
 The existing `--status` and `--check` reports also show the disabled-by-default
 `on_demand_preflight` using the **same** read-only Docker inventory as the
 setup status check. It displays only sanitized readiness reasons and never
@@ -288,7 +292,7 @@ service and protected ChatGPT tunnel without manual `visudo` editing:
 ./setup.sh --secure-tunnel --confirm-secure-tunnel SECURE
 ```
 
-Alternatively choose **11** in the interactive wizard and type `SECURE`.
+Alternatively choose **Connections → 3** in the interactive wizard and type `SECURE`.
 The preview makes no privileged calls or writes. Installation runs as your
 **normal user**, requesting your sudo authentication when necessary.
 
