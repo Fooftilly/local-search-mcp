@@ -85,7 +85,9 @@ The setup wizard can create a new owner-only archive using the existing
 ```
 
 Or select interactive menu option **16**, supply the new archive filename,
-and type `BACKUP` exactly. Without the confirmation, the wizard writes
+and type `BACKUP` exactly. A relative filename is interpreted from
+the directory where `setup.sh` was invoked, **not** the repository root;
+absolute paths also work. Without the confirmation, the wizard writes
 nothing. Existing destinations are never overwritten and no parent
 directories are created automatically. On failure, only a generic status is
 printed; check whether the destination already exists before retrying.
