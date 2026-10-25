@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import redirect_stdout, redirect_stderr
 import io
 import json
+import shutil
 import os
 from pathlib import Path
 import subprocess
@@ -40,7 +41,7 @@ class MaintenanceGateTests(unittest.TestCase):
         result = {
             "LoadState": "loaded", "ActiveState": "inactive",
             "UnitFileState": "disabled",
-            "FragmentPath": str(path), "DropInPaths": "",
+            "FragmentPath": str(path), "DropInPaths": "", "NeedDaemonReload": "no",
         }
         result.update(self.states.get(name, {}))
         return result
@@ -92,11 +93,12 @@ class MaintenanceGateTests(unittest.TestCase):
     def test_active_services_restart_triggers_dropins_and_foreign_fragments_block(self):
         cases = [
             ("local-search-mcp-bridge.service", "ActiveState", "active"),
-            ("local-search-mcp-tunnel.service", "ActiveState", "failed"),
+            ("local-search-mcp-tunnel.service", "ActiveState", "activating"),
             ("local-search-mcp-update.timer", "UnitFileState", "enabled"),
             ("local-search-mcp-update.path", "ActiveState", "active"),
             ("local-search-mcp-tunnel.service", "DropInPaths", "/tmp/secret.conf"),
             ("local-search-mcp-bridge.service", "FragmentPath", "/etc/systemd/user/foreign"),
+            ("local-search-mcp-tunnel.service", "NeedDaemonReload", "yes"),
         ]
         for name, key, value in cases:
             with self.subTest(name=name, key=key):
@@ -105,6 +107,38 @@ class MaintenanceGateTests(unittest.TestCase):
                 self.assertFalse(report["ready_for_offline_maintenance"])
                 self.assertNotIn("secret.conf", json.dumps(report))
                 self.states.clear()
+
+    def test_exact_repository_guard_dropin_is_accepted_but_foreign_is_not(self):
+        guard = self.units / "local-search-mcp-tunnel.service.d" / "10-crawler-egress.conf"
+        guard.parent.mkdir()
+        source = Path(gate.__file__).resolve().parents[1] / "config" / "systemd" / "guards" / guard.name
+        shutil.copyfile(source, guard)
+        guard.chmod(0o644)
+        unit = "local-search-mcp-tunnel.service"
+        self.states[unit] = {"DropInPaths": str(guard)}
+        self.assertTrue(self.inspect()["ready_for_offline_maintenance"])
+        guard.write_text("[Service]\nExecStart=/bin/false\n")
+        self.assertIn("unreviewed systemd drop-in", "\n".join(self.inspect()["blocked"]))
+        shutil.copyfile(source, guard)
+        guard.chmod(0o666)
+        self.assertIn("unreviewed systemd drop-in", "\n".join(self.inspect()["blocked"]))
+        guard.chmod(0o644)
+        self.states[unit]["DropInPaths"] = str(guard) + " /etc/systemd/foreign.conf"
+        self.assertFalse(self.inspect()["ready_for_offline_maintenance"])
+
+    def test_failed_oneshot_is_stopped_but_activation_remains_blocked(self):
+        self.states["local-search-mcp-update.service"] = {
+            "ActiveState": "failed", "UnitFileState": "static"}
+        self.assertTrue(self.inspect()["ready_for_offline_maintenance"])
+        self.states["local-search-mcp-update.timer"] = {"UnitFileState": "enabled"}
+        self.assertFalse(self.inspect()["ready_for_offline_maintenance"])
+
+    def test_fifo_at_unit_path_fails_without_waiting_for_writer(self):
+        name = gate.UNITS[0]
+        path = self.units / name
+        path.unlink()
+        os.mkfifo(path, 0o600)
+        self.assertIn("unverified", "\n".join(self.inspect()["blocked"]))
 
     def test_enabled_on_demand_or_failed_candidate_never_passes(self):
         with patch.object(gate.on_demand_settings, "read",
