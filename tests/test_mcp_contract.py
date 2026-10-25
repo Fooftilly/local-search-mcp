@@ -280,6 +280,30 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(result.is_error)
                     self.assertEqual(result.data["status"], "blocked")
 
+    async def test_search_discards_unusable_links_on_actual_mcp_dispatch(self):
+        """A valid MCP search cannot report an unsafe upstream link as a hit."""
+        original = httpx.Client
+        def handler(request):
+            return httpx.Response(200, json={"results": [
+                {"url": "javascript:alert(1)", "title": "Unsafe"},
+                {"title": "Missing link"},
+                {"url": "https://example.com/good", "title": "Good\ud800title",
+                 "content": "Snippet\ud800"},
+            ]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with patch.object(bridge.httpx, "Client", side_effect=factory):
+            async with Client(bridge.mcp) as client:
+                result = await client.call_tool("web_search", {
+                    "query": "mcp malformed upstream links", "fresh": True,
+                    "max_results": 2,
+                })
+        self.assertFalse(result.is_error)
+        self.assertEqual(len(result.data), 1)
+        self.assertEqual(result.data[0]["url"], "https://example.com/good")
+        self.assertIn("\ufffd", result.data[0]["title"])
+        json.dumps(result.data, ensure_ascii=False).encode("utf-8", "strict")
+
     async def test_approved_search_and_fetch_over_real_mcp_dispatch(self):
         """Both real MCP tools must work against simulated local upstream APIs."""
         requests = []
