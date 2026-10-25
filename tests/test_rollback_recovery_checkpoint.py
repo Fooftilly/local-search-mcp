@@ -70,6 +70,10 @@ class RecoveryCheckpointTests(unittest.TestCase):
         self.smoke = patch.object(checkpoint.restore_smoke, "smoke", return_value=(1, 1))
         self.smoke_mock = self.smoke.start()
         self.addCleanup(self.smoke.stop)
+        self.ancestor = patch.object(checkpoint.rollback_preflight, "preflight",
+                                     return_value="Offline preflight passed")
+        self.ancestor_mock = self.ancestor.start()
+        self.addCleanup(self.ancestor.stop)
         self.uid = patch.object(checkpoint.os, "geteuid", return_value=1000)
         self.uid.start()
         self.addCleanup(self.uid.stop)
@@ -96,6 +100,8 @@ class RecoveryCheckpointTests(unittest.TestCase):
         self.assertNotIn(b"TOP_SECRET", (self.dest / checkpoint.MANIFEST).read_bytes())
         self.assertNotIn(b"TOP_SECRET", (self.dest / checkpoint.ARCHIVE).read_bytes())
         self.assertEqual(self.smoke_mock.call_count, 1)
+        self.ancestor_mock.assert_called_once_with(
+            self.old, self.dest / checkpoint.ARCHIVE, root=self.root)
         self.assertTrue(checkpoint.inspect(self.dest)["checkpoint_verified"])
         with self.assertRaises(ValueError):
             self.create()  # never overwrite an existing checkpoint
@@ -126,6 +132,16 @@ class RecoveryCheckpointTests(unittest.TestCase):
                           side_effect=change_after_validation):
             with self.assertRaisesRegex(ValueError, "changed during validation"):
                 checkpoint.inspect(self.dest)
+
+    def test_local_target_ancestry_failure_blocks_manifest(self):
+        with patch.object(checkpoint.rollback_preflight, "preflight",
+                          side_effect=ValueError("not an ancestor")):
+            with self.assertRaisesRegex(ValueError, "not an ancestor"):
+                self.create()
+        self.assertTrue((self.dest / checkpoint.ARCHIVE).exists())
+        self.assertFalse((self.dest / checkpoint.MANIFEST).exists())
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            checkpoint.inspect(self.dest)
 
     def test_missing_manifest_and_extra_entries_rejected(self):
         self.create()
