@@ -364,7 +364,8 @@ python3 scripts/rollback_runtime_smoke.py \
   --python "$HOME/.local/state/rollback-env/bin/python"
 ```
 
-This Linux-only test requires a trusted root-owned `/usr/bin/bwrap` and
+Run this Linux-only test **as an unprivileged operator** (never root).
+It requires a trusted root-owned `/usr/bin/bwrap` and
 unprivileged user/mount/PID/network namespaces enabled by the host. It
 fails closed where the sandbox cannot be started; it does not fall back to
 executing old source in the host namespace. The candidate inventory and
@@ -373,10 +374,13 @@ independent Python dependency compatibility audit must pass first.
 The command copies only allowlisted owner-only recovery files into a new
 disposable XDG state/config location. It starts the historical policy/history
 readers in a newly isolated bubblewrap namespace with **no network** and
-no access to the operator's home directory, live checkout, launcher config,
-tunnel tokens, Docker socket, or systemd bus. The only mounted read-only
-locations are historical source, the explicitly prepared venv and system
-runtime libraries. It reports aggregate reader success and a capped recent
+no inherited access to the rest of the operator's home directory, live
+checkout, launcher config, tunnel tokens, Docker socket, or systemd bus.
+The explicitly mounted historical source and prepared venv may themselves
+reside under the operator's home; keep credentials and unrelated private
+files **out of those mounted subtrees**. The only other mounted read-only
+locations are OS executables and runtime libraries under /usr/bin, /usr/lib
+and (where present) /usr/lib64. It reports aggregate reader success and a capped recent
 history count; neither approvals nor search terms are printed.
 
 The namespace assumes a Linux system with a merged `/usr` filesystem.
