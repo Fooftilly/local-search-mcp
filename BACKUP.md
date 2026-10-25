@@ -252,3 +252,29 @@ preflight authorizes a live deployment.
 
 Issue #15 remains open until a controlled and operator-tested activation,
 failure rollback and restart procedure has been validated on a real host.
+
+
+## Verifying a private rollback candidate (v2)
+
+After a successful offline `scripts/rollback_candidate.py --confirm STAGE` run,
+validate its exact staged source and recovered data *without running the older code*:
+
+```sh
+python3 scripts/verify_rollback_candidate.py \
+  "$HOME/.local/state/local-search-mcp-rollback/candidate-1"
+```
+
+New candidates record a versioned SHA-256 inventory binding the exact private
+source file modes (including executable bits), expected directory entries and
+state files. Read-only verification refuses changed bytes/modes, added paths,
+symlinks/hardlinks, invalid metadata, invalid database or nonsecret settings,
+and stale legacy v1 candidates. Archives and candidates must remain under
+private, owner-only directories; never upload their history or approvals.
+
+The manifest is an integrity record, **not a signature** and **not proof of
+runtime compatibility** with historical dependencies, the Python venv, tunnel,
+Docker firewall rules or systemd configuration. The verifier does not switch
+code revisions, install/reinstall dependencies, alter live state, stop/start
+services, or claim a deployable rollback. Passing verification leaves
+`ready_for_live_use: false`; test and review the complete live cutover
+separately before restoring any running installation.
