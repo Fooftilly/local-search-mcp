@@ -161,8 +161,8 @@ def _requirements(candidate: Path) -> list[str]:
     return names
 
 
-def _environment(python: Path, requirements: list[str], candidate: Path) -> dict:
-    """Check metadata in a separate operator-selected venv, fully offline."""
+def _venv_layout(python: Path, candidate: Path) -> Path:
+    """Validate separate virtualenv layout without invoking its interpreter."""
     if (not python.is_absolute() or python.parent.name != "bin"
             or python.name not in ("python", "python3")
             or python.parent.parent == candidate
@@ -207,6 +207,12 @@ def _environment(python: Path, requirements: list[str], candidate: Path) -> dict
                 == "include-system-site-packages" and "=" in line]
     if settings != ["false"]:
         raise ValueError("Virtualenv must exclude system site packages")
+    return root
+
+
+def _environment(python: Path, requirements: list[str], candidate: Path) -> dict:
+    """Check metadata in a separate operator-selected venv, fully offline."""
+    _venv_layout(python, candidate)
     env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8",
            "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1"}
     try:
