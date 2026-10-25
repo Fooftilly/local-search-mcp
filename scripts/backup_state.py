@@ -413,8 +413,8 @@ def main(argv: list[str] | None = None) -> int:
         # Archive validation errors may contain user-chosen source paths,
         # history filenames, or private SQLite details. Never echo their
         # message from the CLI. The exception category is safe and useful.
-        print(f"State backup failed ({type(exc).__name__}); "
-              "inspect the private archive, source ownership and permissions locally",
+        print(f"State {args.action} failed ({type(exc).__name__}); "
+              "inspect the relevant private input and destination permissions locally",
               file=sys.stderr)
         return 1
 
