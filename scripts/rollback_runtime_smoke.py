@@ -34,8 +34,9 @@ _LIMIT = 2048
 WORKER = r"""
 import json
 import sys
-sys.path.insert(0, '/app')
 try:
+    # Dependencies must be inspected before historical /app can contribute
+    # fake *.dist-info files or override packaging/importlib modules.
     import importlib.metadata as metadata
     try:
         from packaging.requirements import Requirement
@@ -51,6 +52,24 @@ try:
         if metadata.version(req.name) not in req.specifier:
             raise ValueError('historical dependency mismatch')
 
+    # /input holds copies, not live state. Give legacy readers writable
+    # private files on an aggregate size-bounded scratch tmpfs instead.
+    import os
+    import shutil
+    from pathlib import Path
+    for section in ('state', 'config'):
+        source = Path('/input') / section / 'local-search-mcp'
+        target = Path('/work') / section / 'local-search-mcp'
+        target.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for entry in source.iterdir():
+            if not entry.is_file() or entry.is_symlink():
+                raise ValueError('unrecognized historical state entry')
+            copied = target / entry.name
+            with entry.open('rb') as inp, copied.open('xb') as out:
+                os.fchmod(out.fileno(), 0o600)
+                shutil.copyfileobj(inp, out, 1024 * 1024)
+
+    sys.path.insert(0, '/app')
     import domain_policy
     import history_index
     domain_policy.initialize()
@@ -175,8 +194,10 @@ def _sandbox_command(candidate: Path, python: Path, scratch: Path,
         *_lib64_args(),
         "--dir", "/venv", "--ro-bind", str(python.parent.parent), "/venv",
         "--dir", "/app", "--ro-bind", str(candidate / "source"), "/app",
-        "--dir", "/work", "--bind", str(scratch), "/work",
-        "--tmpfs", "/tmp", "--dev", "/dev", "--proc", "/proc",
+        "--dir", "/input", "--ro-bind", str(scratch), "/input",
+        "--size", str(512 * 1024 * 1024), "--perms", "0700", "--tmpfs", "/work",
+        "--size", str(16 * 1024 * 1024), "--perms", "0700", "--tmpfs", "/tmp",
+        "--dev", "/dev", "--proc", "/proc",
         "--setenv", "HOME", "/work",
         "--setenv", "XDG_STATE_HOME", "/work/state",
         "--setenv", "XDG_CONFIG_HOME", "/work/config",
@@ -190,11 +211,11 @@ def _sandbox_command(candidate: Path, python: Path, scratch: Path,
     ]
 
 def _limit_child() -> None:
-    # Historical SQLite readers must be free to write a temporary index.
-    # We bound only the parent-captured stdout separately, not file writes.
+    # Historical SQLite readers write into size-limited /work and /tmp
+    # tmpfs mounts. Bound captured stdout independently of their files.
     resource.setrlimit(resource.RLIMIT_CPU, (25, 25))
-    # SQLite needs pages and journals much larger than stdout's 2 KiB cap.
-    # Bound individual disposable files independently of captured output.
+    # Individual file cap is defense in depth; tmpfs sizes enforce aggregate
+    # writable limits even if historical source creates multiple files.
     resource.setrlimit(resource.RLIMIT_FSIZE, (512 * 1024 * 1024,
                                                512 * 1024 * 1024))
     resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
