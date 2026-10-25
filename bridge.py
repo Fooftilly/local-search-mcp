@@ -189,7 +189,7 @@ def _run_search_network(params: dict, max_results: int, *,
         url = row.get("url")
         if not isinstance(url, str) or not 1 <= len(url) <= 2048:
             continue
-        if url != url.strip() or any(c in url for c in "\\r\\n\\t"):
+        if url != url.strip() or any(c in url for c in "\r\n\t"):
             continue
         try:
             url.encode("utf-8", errors="strict")
