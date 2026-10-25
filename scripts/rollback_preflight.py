@@ -113,7 +113,11 @@ def main(argv: list[str] | None = None) -> int:
         print(preflight(args.target, args.archive))
         return 0
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
-        print(f"Offline rollback preflight failed: {type(exc).__name__}: {exc}",
+        # A validator or subprocess exception may embed the operator's private
+        # archive path, Git metadata or other untrusted local details. Keep the
+        # error category, never the arbitrary exception message, in CLI logs.
+        print(f"Offline rollback preflight failed ({type(exc).__name__}); "
+              "inspect the selected private archive and local checkout",
               file=sys.stderr)
         return 1
 
