@@ -501,6 +501,9 @@ def backup_check(archive: Path, *, smoke: bool = False) -> dict:
         "remote_checked": False,
     }
     try:
+        # Expand the operator's home only inside the redaction boundary:
+        # a missing home account may raise RuntimeError containing local data.
+        archive = archive.expanduser()
         if smoke:
             from scripts import restore_smoke
             policies, events = restore_smoke.smoke(archive)
