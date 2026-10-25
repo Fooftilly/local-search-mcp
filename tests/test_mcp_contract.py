@@ -284,12 +284,16 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         """A valid MCP search cannot report an unsafe upstream link as a hit."""
         original = httpx.Client
         def handler(request):
-            return httpx.Response(200, json={"results": [
+            # Upstream JSON can legally represent an unpaired surrogate as
+            # a \\u escape; httpx.Response(json=...) rejects it prematurely.
+            response = {"results": [
                 {"url": "javascript:alert(1)", "title": "Unsafe"},
                 {"title": "Missing link"},
                 {"url": "https://example.com/good", "title": "Good\ud800title",
                  "content": "Snippet\ud800"},
-            ]})
+            ]}
+            return httpx.Response(200, content=json.dumps(
+                response, ensure_ascii=True).encode("utf-8"))
         def factory(**kwargs):
             return original(transport=httpx.MockTransport(handler), trust_env=False)
         with patch.object(bridge.httpx, "Client", side_effect=factory):
@@ -301,7 +305,7 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.is_error)
         self.assertEqual(len(result.data), 1)
         self.assertEqual(result.data[0]["url"], "https://example.com/good")
-        self.assertIn("\ufffd", result.data[0]["title"])
+        self.assertIn("?", result.data[0]["title"])
         json.dumps(result.data, ensure_ascii=False).encode("utf-8", "strict")
 
     async def test_approved_search_and_fetch_over_real_mcp_dispatch(self):
