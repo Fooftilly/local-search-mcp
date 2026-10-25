@@ -1,5 +1,6 @@
 """Mocks the upstream HTTP API to prove unsafe crawls never reach POST."""
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import types
@@ -120,7 +121,8 @@ class BridgeTests(unittest.TestCase):
         original = httpx.Client
         def handler(request):
             calls.append(dict(request.url.params))
-            return httpx.Response(200, json={"results": rows})
+            return httpx.Response(200, content=json.dumps(
+                {"results": rows}, ensure_ascii=True).encode("utf-8"))
         def client(**kwargs):
             return original(transport=httpx.MockTransport(handler))
         with patch.object(self.module.httpx, "Client", side_effect=client):
