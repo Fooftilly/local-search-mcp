@@ -55,6 +55,8 @@ class AttendedUpdateTests(unittest.TestCase):
             return ""
         if args[0] == "rev-list":
             return "2"
+        if args[0] == "diff":
+            return "bridge.py\nrequirements.txt"
         if args[0] == "merge":
             return ""
         raise AssertionError(args)
