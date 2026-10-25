@@ -23,6 +23,19 @@ class SearchResultTests(unittest.TestCase):
             self.assertIn("bad?text", str(answer))
             json.dumps(answer, ensure_ascii=False).encode("utf-8", "strict")
 
+    def test_malformed_engine_identifiers_do_not_collapse_source_count(self):
+        rows = [row("https://a.example", "engine\ud800", "A",
+                    engines=["engine\ud800", "engine\ud801"]),
+                row("https://b.example", "ordinary", "B")]
+        results = enrich_search_results(rows, 2, deduplicate=True,
+                                        ranking="source_count")
+        self.assertEqual([item["title"] for item in results], ["A", "B"])
+        self.assertEqual(results[0]["source_count"], 2)
+        self.assertEqual(results[0]["source_engines"],
+                         [r"engine\ud800", r"engine\ud801"])
+        for name in results[0]["source_engines"]:
+            name.encode("utf-8", "strict")
+
     def test_conservative_url_canonicalization(self):
         good = "https://example.com/path?x=1&y=2"
         self.assertEqual(normalized_url("HTTPS://EXAMPLE.COM:443/path?x=1&y=2#fragment"),
