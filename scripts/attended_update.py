@@ -15,9 +15,12 @@ import subprocess
 import sys
 import time
 
-from scripts import backup_state
-
 ROOT = Path(__file__).resolve().parents[1]
+if __package__:
+    from . import backup_state
+else:
+    sys.path.insert(0, str(ROOT))
+    from scripts import backup_state
 BRIDGE = "local-search-mcp-bridge.service"
 TUNNEL = "local-search-mcp-tunnel.service"
 HEALTH = "local-search-mcp-health.timer"
@@ -169,8 +172,8 @@ def update() -> int:
         return 0
     git("fetch", "--no-tags", "--", "origin", "master", timeout=180)
     target = git("rev-parse", "--verify", "FETCH_HEAD^{commit}")
-    if git("merge-base", "--is-ancestor", old, target) != "":
-        raise UpdateError("Cannot verify a fast-forward target")
+    # No stdout on success; git() raises if the target isn't a descendant.
+    git("merge-base", "--is-ancestor", old, target)
     if target == old:
         print("Already at the reviewed remote revision; no changes made")
         return 0
@@ -205,15 +208,17 @@ def update() -> int:
         print("Verified private state backup:", archive)
         if checkout() != old:
             raise UpdateError("Checkout changed during backup")
-        git("merge", "--ff-only", "--", target, timeout=90)
+        # Treat even a *failed* merge as potentially mutating the checkout.
+        # Never restart services automatically until manual inspection.
         changed = True
+        git("merge", "--ff-only", "--", target, timeout=90)
         if git("rev-parse", "HEAD") != target:
             raise UpdateError("Updated revision identity mismatch")
         command([str(ROOT / ".venv" / "bin" / "python"), "-m", "pip",
                  "install", "--disable-pip-version-check", "-r",
                  str(ROOT / "requirements.txt")], timeout=360)
         restart(units)
-    except (OSError, ValueError, UpdateError) as exc:
+    except (OSError, ValueError, UpdateError, KeyboardInterrupt) as exc:
         if not changed:
             # No code/dependency changes were made; restore previously active
             # services, but leave deprecated watcher disabled.
@@ -239,7 +244,8 @@ def update() -> int:
 def main() -> int:
     try:
         return update()
-    except (OSError, ValueError, UpdateError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, UpdateError,
+            subprocess.SubprocessError, KeyboardInterrupt) as exc:
         print("Update not started or completed (" + type(exc).__name__ +
               "); review local setup and Git status.", file=sys.stderr)
         return 1
