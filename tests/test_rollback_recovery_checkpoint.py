@@ -60,6 +60,9 @@ class RecoveryCheckpointTests(unittest.TestCase):
                "_checkout_unchanged": lambda *_: None})
         self.gates.start()
         self.addCleanup(self.gates.stop)
+        self.manager_env = patch.object(checkpoint, "_verify_effective_environment")
+        self.manager_mock = self.manager_env.start()
+        self.addCleanup(self.manager_env.stop)
         self.candidate_verified = patch.object(checkpoint.rollback_candidate, "inspect",
                                                return_value={"integrity_verified": True})
         self.candidate_verified.start()
@@ -142,6 +145,57 @@ class RecoveryCheckpointTests(unittest.TestCase):
         (self.candidate / "candidate.json").write_text(json.dumps(self.identity))
         with self.assertRaisesRegex(ValueError, "another candidate"):
             checkpoint.inspect(self.dest, candidate=self.candidate)
+
+    def test_mismatched_service_state_root_refuses_any_backup(self):
+        with patch.object(checkpoint, "_verify_effective_environment",
+                          side_effect=ValueError("service paths differ")):
+            with self.assertRaisesRegex(ValueError, "paths differ"):
+                self.create()
+        self.assertFalse(self.dest.exists())
+
+    def test_service_environment_checked_before_and_after_snapshot(self):
+        self.create()
+        self.assertEqual(self.manager_mock.call_count, 2)
+        self.assertEqual(self.manager_mock.call_args.kwargs, {
+            "state_dir": self.state, "config_dir": self.config})
+
+    def test_second_service_env_change_prevents_sealing(self):
+        count = 0
+        def check(**kwargs):
+            nonlocal count
+            count += 1
+            if count == 2:
+                raise ValueError("manager changed during checkpoint")
+        with patch.object(checkpoint, "_verify_effective_environment",
+                          side_effect=check):
+            with self.assertRaisesRegex(ValueError, "manager changed"):
+                self.create()
+        self.assertFalse((self.dest / checkpoint.MANIFEST).exists())
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            checkpoint.inspect(self.dest)
+
+    def test_refuses_destination_that_is_missing_live_state_root(self):
+        missing = self.home / "new-live-state"
+        with self.assertRaisesRegex(ValueError, "outside live"):
+            checkpoint.create(self.candidate, missing, root=self.root,
+                              state_dir=missing, config_dir=self.config)
+        self.assertFalse(missing.exists())
+
+    def test_user_manager_environment_differences_fail_closed(self):
+        import subprocess
+        def show(args, **kwargs):
+            if "show-environment" in args:
+                text = ("HOME=" + str(Path.home()) + "\n"
+                        "XDG_STATE_HOME=/tmp/service-data-elsewhere\n")
+            else:
+                text = ("Environment=\nEnvironmentFiles=\n"
+                        "PassEnvironment=\nUnsetEnvironment=\n")
+            return subprocess.CompletedProcess(args, 0, stdout=text.encode(),
+                                               stderr=b"")
+        with (patch.object(checkpoint.subprocess, "run", side_effect=show),
+              patch.dict(os.environ, {"XDG_STATE_HOME": "/tmp/shell-data"})):
+            with self.assertRaisesRegex(ValueError, "state paths differ"):
+                checkpoint._verify_effective_environment()
 
     def test_maintenance_gate_failure_leaves_no_checkpoint_or_backup(self):
         with patch.object(checkpoint, "_maintenance_ready",
