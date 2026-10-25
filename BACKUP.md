@@ -303,9 +303,10 @@ managed marker, be user-owned and not symlinked or group/world-writable;
 the systemd manager must point to the same effective file with
 `NeedDaemonReload=no`. Only the exact reviewed tunnel crawler-egress startup
 guard drop-in is accepted; other overrides are blocked. Every loaded unit
-must be inactive (or a stopped failed unit) and have no enabled trigger.
-A stopped failed oneshot may need `systemctl --user reset-failed` before
-normal service operation resumes. The on-demand wake preference must be disabled. Missing units are accepted only
+must report strictly inactive and have no enabled trigger. A failed
+oneshot is conservatively blocked even when its process has stopped; inspect
+the failure and run `systemctl --user reset-failed UNIT` if appropriate,
+then recheck the inactive state. Never reset without inspecting the cause. The on-demand wake preference must be disabled. Missing units are accepted only
 when systemd also reports them not found. The candidate is re-verified
 read-only when specified. Errors are redacted; an unknown systemd bus,
 unrecognized override, active tunnel, unverified unit or invalid candidate
