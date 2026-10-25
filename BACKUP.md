@@ -31,10 +31,11 @@ isolated smoke routines without duplicating the archive parser:
 ./setup.sh --restore-smoke "$HOME/local-search-state-2026.zip"
 ```
 
-The first command verifies the existing private archive and returns
-only the number of verified files; the second runs a fresh-install smoke
-test in disposable temporary directories and reports aggregate policy/history
-counts. Both leave the private archive and live installation untouched;
+The first command verifies the existing private archive and returns a
+JSON result with status and safety flags plus a `verified_files` count;
+the second runs a fresh-install smoke test in disposable temporary
+directories and reports the total policy count and **up to 25 recent indexed
+history events** (not a total recovered-history count). Both leave the private archive and live installation untouched;
 the second creates only temporary scratch state. Menu option 15 offers these
 two checks interactively. All failures are redacted, with a nonzero CLI
 exit status. Neither command performs a live restore, rolls back code,
