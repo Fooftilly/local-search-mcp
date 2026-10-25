@@ -435,7 +435,10 @@ The tool **never stops/restarts any service** and does not alter the Git
 checkout, on-disk live state, or a prior checkpoint. It requires the candidate
 inventory to match the exact installed Git revision and strict
 inactive/project-owned systemd gate to pass **both before and after** the
-snapshot. The tool also verifies that the interactive shell and both managed
+snapshot. The private backup also passes the hardened local Git rollback
+preflight, proving its target is a distinct, locally available ancestor of
+the unchanged current checkout (not that its dependencies or services work).
+The tool also verifies that the interactive shell and both managed
 systemd services use the **same** effective HOME, XDG state/config and optional
 history-log locations. It rejects per-service Environment/EnvironmentFile
 overrides and any mismatched manager environment, rather than silently
@@ -450,8 +453,10 @@ commitment to the backup, current Git SHA and chosen historical candidate.
 Successful inspection returns `checkpoint_verified: true` but always
 `ready_for_live_use: false`.
 
-A crash or failed gate **before the final manifest** leaves an intentionally
-unsealed directory. Inspection rejects it even if its archive seems valid;
+A crash or failure **after the destination was created** but before
+the final manifest leaves an intentionally unsealed directory. Earlier gate
+failures do not create any destination. Inspection rejects an incomplete
+directory even if its archive seems valid;
 do not reuse or overwrite it. Investigate and choose a new destination.
 Archives can contain sensitive history/approvals and must remain owner-only.
 Secrets (`config.json`, tunnel credentials and launcher profiles) are **not**
