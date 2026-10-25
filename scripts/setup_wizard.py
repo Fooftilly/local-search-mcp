@@ -537,7 +537,14 @@ def create_private_backup(destination: Path) -> dict:
               "live_restore_performed": False, "remote_checked": False}
     try:
         from scripts import backup_state
-        backup_state.backup(destination.expanduser())
+        destination = destination.expanduser()
+        if not destination.is_absolute():
+            base = Path(os.environ.get("LOCAL_SEARCH_MCP_SETUP_CALLER_CWD")
+                        or os.getcwd())
+            if not base.is_absolute() or not base.is_dir() or base.is_symlink():
+                raise ValueError("Invalid invoking directory")
+            destination = base / destination
+        backup_state.backup(destination)
         report["status"] = "created"
     except Exception:
         report["note"] = ("Private backup creation failed; verify the destination "
