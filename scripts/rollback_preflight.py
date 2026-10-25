@@ -23,6 +23,13 @@ else:
 
 ROOT = Path(__file__).resolve().parents[1]
 _SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+# Only these fixed, operator-actionable target checks may appear in CLI logs.
+# Archive validation, Git subprocess errors and arbitrary ValueError text
+# remain redacted even if they start with one of these messages.
+_SAFE_TARGET_ERRORS = frozenset({
+    "Target must be an exact lowercase full Git commit SHA",
+    "Target is already HEAD; no rollback revision to inspect",
+})
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
@@ -113,8 +120,17 @@ def main(argv: list[str] | None = None) -> int:
         print(preflight(args.target, args.archive))
         return 0
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
-        print(f"Offline rollback preflight failed: {type(exc).__name__}: {exc}",
-              file=sys.stderr)
+        # Target-selection checks above use fixed public wording. Never print
+        # other exception text: archive validation and subprocess errors may
+        # include private paths, Git metadata or untrusted source material.
+        detail = str(exc)
+        if type(exc) is ValueError and detail in _SAFE_TARGET_ERRORS:
+            print(f"Offline rollback preflight failed (ValueError): {detail}",
+                  file=sys.stderr)
+        else:
+            print(f"Offline rollback preflight failed ({type(exc).__name__}); "
+                  "inspect the selected private archive and local checkout",
+                  file=sys.stderr)
         return 1
 
 

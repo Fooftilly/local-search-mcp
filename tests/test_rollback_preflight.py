@@ -275,6 +275,47 @@ class RollbackPreflightTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "changed during preflight"):
                 rollback.preflight(self.target, self.archive, root=self.root)
 
+    def test_cli_redacts_private_archive_paths_and_nested_validator_messages(self):
+        secret = "NEVER_ECHO_PRIVATE_ARCHIVE_TOKEN"
+        archive = Path(self.tmp.name) / (secret + ".zip")
+        for error in (
+            ValueError("private search history " + secret),
+            OSError("private checkout path " + str(archive)),
+            subprocess.TimeoutExpired(["git", secret], 15),
+        ):
+            with (self.subTest(error=type(error).__name__),
+                  patch.object(rollback, "preflight", side_effect=error) as call,
+                  redirect_stdout(io.StringIO()) as output,
+                  redirect_stderr(io.StringIO()) as errors):
+                result = rollback.main(["--target", self.target,
+                                        "--archive", str(archive)])
+            self.assertEqual(result, 1)
+            call.assert_called_once_with(self.target, archive)
+            self.assertEqual(output.getvalue(), "")
+            report = errors.getvalue()
+            self.assertIn("Offline rollback preflight failed", report)
+            self.assertIn(type(error).__name__, report)
+            self.assertNotIn(secret, report)
+            self.assertNotIn(str(archive), report)
+            self.assertNotIn(self.tmp.name, report)
+            self.assertNotIn("Traceback", report)
+
+    def test_real_cli_missing_private_archive_reports_only_generic_failure(self):
+        private = "DO_NOT_ECHO_OPERATOR_ARCHIVE"
+        unavailable = self.archive.with_name(private + ".zip")
+        with (patch.object(rollback, "ROOT", self.root),
+              redirect_stdout(io.StringIO()) as output,
+              redirect_stderr(io.StringIO()) as errors):
+            result = rollback.main(["--target", self.target,
+                                    "--archive", str(unavailable)])
+        self.assertEqual(result, 1)
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("ValueError", errors.getvalue())
+        self.assertNotIn(private, errors.getvalue())
+        self.assertNotIn(self.tmp.name, errors.getvalue())
+        self.assertFalse(unavailable.exists())
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.current)
+
     def test_cli_uses_injected_checkout_and_leaves_it_unchanged(self):
         output, errors = io.StringIO(), io.StringIO()
         with patch.object(rollback, "ROOT", self.root), \
@@ -295,8 +336,42 @@ class RollbackPreflightTests(unittest.TestCase):
                 rollback.main(["--target", "invalid",
                                "--archive", str(self.archive)]), 1,
             )
-        self.assertIn("exact lowercase full Git commit SHA", errors.getvalue())
+        self.assertIn("Offline rollback preflight failed (ValueError)", errors.getvalue())
+        self.assertIn("Target must be an exact lowercase full Git commit SHA",
+                      errors.getvalue())
+        self.assertNotIn(self.tmp.name, errors.getvalue())
         self.assertEqual(self.git("rev-parse", "HEAD"), self.current)
+
+    def test_cli_same_head_displays_only_fixed_target_selection_error(self):
+        errors = io.StringIO()
+        with (patch.object(rollback, "ROOT", self.root),
+              redirect_stderr(errors)):
+            status = rollback.main(["--target", self.current,
+                                    "--archive", str(self.archive)])
+        self.assertEqual(status, 1)
+        self.assertIn("Target is already HEAD; no rollback revision to inspect",
+                      errors.getvalue())
+        self.assertNotIn(self.tmp.name, errors.getvalue())
+
+    def test_cli_only_allows_exact_static_target_validation_messages(self):
+        secret = "PRIVATE_GIT_PATH_OR_SECRET"
+        for error in (
+            ValueError("Target must be an exact lowercase full Git commit SHA " + secret),
+            ValueError("Target is already HEAD; no rollback revision to inspect: " + secret),
+            OSError("Target must be an exact lowercase full Git commit SHA"),
+            subprocess.TimeoutExpired(["git", secret], 15),
+        ):
+            with (self.subTest(error=repr(error)),
+                  patch.object(rollback, "preflight", side_effect=error),
+                  redirect_stderr(io.StringIO()) as errors):
+                status = rollback.main(["--target", self.target,
+                                        "--archive", str(self.archive)])
+            self.assertEqual(status, 1)
+            self.assertNotIn(secret, errors.getvalue())
+            self.assertNotIn("Target must be an exact lowercase", errors.getvalue())
+            self.assertNotIn("Target is already HEAD", errors.getvalue())
+            self.assertIn("inspect the selected private archive and local checkout",
+                          errors.getvalue())
 
 
 if __name__ == "__main__":
