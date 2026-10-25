@@ -189,14 +189,17 @@ def _run_search_network(params: dict, max_results: int, *,
         url = row.get("url")
         if not isinstance(url, str) or not 1 <= len(url) <= 2048:
             continue
-        if url != url.strip() or any(c in url for c in "\r\n\t"):
+        if (url != url.strip()
+                or any(ord(c) < 0x20 or ord(c) == 0x7f for c in url)):
             continue
         try:
             url.encode("utf-8", errors="strict")
-        except UnicodeError:
+            if (normalized_url(url) is None
+                    or urlsplit(url).port not in (None, 80, 443)):
+                continue
+        except (UnicodeError, ValueError):
             continue
-        if normalized_url(url) is not None:
-            valid_rows.append(row)
+        valid_rows.append(row)
     if rows and not valid_rows:
         return {"success": False, "status": "invalid_response", "backend": "searxng",
                 "reason": "SearXNG returned results without any usable HTTP(S) links."}
