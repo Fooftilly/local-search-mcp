@@ -609,14 +609,14 @@ def menu() -> int:
         "7": ("STOP", ("scripts/stop_stack.py",)),
     }
     while True:
-        print("\\nlocal-search-mcp setup (ChatGPT first)")
+        print("\nlocal-search-mcp setup (ChatGPT first)")
         for number, (name, _) in MENU_GROUPS.items():
             print(number + "  " + name)
         print("0  Exit")
         try:
             group = input("Choose group: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\\nExited without further changes")
+            print("\nExited without further changes")
             return 0
         if group == "0":
             return 0
@@ -624,14 +624,14 @@ def menu() -> int:
             print("Unknown group; no changes made")
             continue
         title, entries = MENU_GROUPS[group]
-        print("\\n" + title + " actions")
+        print("\n" + title + " actions")
         for number, (_, description) in enumerate(entries, start=1):
             print(str(number) + "  " + description)
         print("0  Back")
         try:
             selection = input("Choose action: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\\nExited without further changes")
+            print("\nExited without further changes")
             return 0
         if selection == "0":
             continue
