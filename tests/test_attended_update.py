@@ -35,7 +35,7 @@ class AttendedUpdateTests(unittest.TestCase):
         self.target = self.root / "backup.zip"
         unit_dir = self.root / "config" / "systemd" / "user"
         unit_dir.mkdir(parents=True)
-        for name in app.WATCHERS:
+        for name in (*app.WATCHERS, app.BRIDGE, app.TUNNEL):
             (unit_dir / name).write_text(app.MARKER + "\n")
         self.config_env = patch.dict(
             os.environ, {"XDG_CONFIG_HOME": str(self.root / "config")})
@@ -78,7 +78,8 @@ class AttendedUpdateTests(unittest.TestCase):
             return ""
         with (patch.object(app, "checkout", return_value=self.old),
               patch.object(app, "approved_units",
-                           side_effect=[self.units, self.units, self.stopped]),
+                           side_effect=[self.units, self.units,
+                                        self.stopped, self.stopped]),
               patch.object(app, "git", side_effect=self.git_result) as git,
               patch.object(app, "confirmation", side_effect=answers),
               patch.object(app, "command", side_effect=local_command),
@@ -155,6 +156,35 @@ class AttendedUpdateTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertNotIn("private policy secret", errors.getvalue())
         self.assertTrue(any("start" in x.args[0] for x in command.call_args_list))
+
+    def test_tunnel_only_active_is_refused_before_fetch(self):
+        values = {name: False for name in app.UNITS}
+        values[app.TUNNEL] = True
+        with (patch.object(app, "checkout", return_value=self.old),
+              patch.object(app, "approved_units", return_value=values),
+              patch.object(app, "git", side_effect=AssertionError("no fetch")),
+              redirect_stderr(io.StringIO()) as output):
+            self.assertEqual(app.main(), 1)
+        self.assertIn("Tunnel active with bridge inactive", output.getvalue())
+
+    def test_post_checkout_failure_stops_any_partially_restarted_services(self):
+        status, calls, _, _, _ = self.run_case(
+            failure=lambda args: args[:4] == [
+                "systemctl", "--user", "start", app.TUNNEL])
+        self.assertEqual(status, 1)
+        self.assertIn(("systemctl", "--user", "stop", app.BRIDGE), calls)
+        self.assertIn(("systemctl", "--user", "stop", app.TUNNEL), calls)
+
+    def test_git_ignores_ambient_hooks_helpers_and_submodules(self):
+        with patch.object(app, "command", return_value="") as invoke:
+            app.git("status", "--porcelain")
+        cmd = invoke.call_args.args[0]
+        self.assertIn("core.fsmonitor=false", cmd)
+        self.assertIn("credential.helper=", cmd)
+        self.assertIn("core.hooksPath=/dev/null", cmd)
+        self.assertIn("fetch.recurseSubmodules=false", cmd)
+        self.assertEqual(invoke.call_args.kwargs["env"]["GIT_CONFIG_GLOBAL"],
+                         "/dev/null")
 
     def test_foreground_bridge_blocks_update_without_fetch(self):
         only_foreground = {name: False for name in app.UNITS}
