@@ -122,6 +122,7 @@ class RollbackCandidateTests(unittest.TestCase):
         source.chmod(0o600)
         unexpected = self.dir / "state" / "config.json"
         unexpected.write_text('{"token":"MUST_NOT_READ"}')
+        unexpected.chmod(0o600)
         with self.assertRaisesRegex(ValueError, "unexpected"):
             candidate.inspect(self.dir)
         unexpected.unlink()
