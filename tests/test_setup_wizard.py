@@ -338,8 +338,8 @@ class SetupWizardTests(unittest.TestCase):
             self.assertNotIn("Cancelled; no public version checks run", out.getvalue())
 
     def test_remote_menu_interrupted_before_confirmation_does_not_call_checker(self):
-        for inputs in (["14", KeyboardInterrupt(), "0"],
-                       ["14", "REMOTE", KeyboardInterrupt(), "0"]):
+        for inputs in (["3", "6", KeyboardInterrupt(), "0"],
+                       ["3", "6", "REMOTE", KeyboardInterrupt(), "0"]):
             with (self.subTest(inputs=inputs[:2]),
                   patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
                   patch.object(wizard.os, "geteuid", return_value=1000),
