@@ -183,11 +183,9 @@ additional rollback staging utilities.
 
 A service update may temporarily stop the bridge and tunnel. The operator
 controls Git and dependency changes, and preserves the previous revision for
-manual recovery. The attended single-entry `./setup.sh` update command is
-tracked in [issue #15](https://github.com/Fooftilly/local-search-mcp/issues/15).
-Until that implementation is reviewed, the existing installation and manual
-update controls are unchanged. Do not assume this cleanup makes updates or
-live rollback automatic. The archive intentionally excludes credentials, so
+manual recovery. The `./setup.sh --update` command is the single supported attended
+software update path (see below and [issue #15](https://github.com/Fooftilly/local-search-mcp/issues/15)).
+It does **not** provide automatic live rollback. The archive intentionally excludes credentials, so
 restore requires keeping existing secure credentials/configuration separately.
 
 
