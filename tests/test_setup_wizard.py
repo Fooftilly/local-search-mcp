@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import tempfile
 import sys
@@ -336,6 +337,62 @@ class SetupWizardTests(unittest.TestCase):
         self.assertFalse(report["live_restore_performed"])
         self.assertFalse(report["remote_checked"])
         self.assertNotIn("DO_NOT_ECHO", out)
+
+    def test_shell_backup_create_resolves_relative_destination_from_caller(self):
+        from scripts import backup_state
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            caller = workspace / "different-directory"
+            caller.mkdir(mode=0o700)
+            state = workspace / "state" / "local-search-mcp"
+            state.mkdir(parents=True, mode=0o700)
+            db = state / "domains.sqlite3"
+            with sqlite3.connect(db) as connection:
+                connection.execute("CREATE TABLE domains (domain TEXT)")
+                connection.execute("INSERT INTO domains VALUES ('example.org')")
+            db.chmod(0o600)
+            archive_name = "caller-" + workspace.name + ".zip"
+            env = dict(os.environ)
+            env.pop("LOCAL_SEARCH_MCP_HISTORY_FILE", None)
+            env.pop("LOCAL_SEARCH_MCP_SETUP_CALLER_CWD", None)
+            env["XDG_STATE_HOME"] = str(workspace / "state")
+            env["XDG_CONFIG_HOME"] = str(workspace / "config")
+            try:
+                result = subprocess.run([
+                    "bash", str(root / "setup.sh"),
+                    "--backup-create", archive_name,
+                    "--confirm-backup", "BACKUP",
+                ], cwd=caller, env=env, text=True, capture_output=True,
+                    timeout=35, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["status"], "created")
+                archive = caller / archive_name
+                self.assertTrue(archive.is_file())
+                self.assertEqual(archive.stat().st_mode & 0o777, 0o600)
+                self.assertIn("domains.sqlite3",
+                              backup_state.verified_payload(archive))
+                self.assertFalse((root / archive_name).exists())
+            finally:
+                # Only a regression would have created this unique temporary
+                # filename in the repository; remove it if that happens.
+                (root / archive_name).unlink(missing_ok=True)
+
+    def test_interactive_backup_relative_path_uses_saved_caller_directory(self):
+        from scripts import backup_state
+        with tempfile.TemporaryDirectory() as temp:
+            expected = Path(temp) / "relative.zip"
+            with (patch.dict(os.environ,
+                             {"LOCAL_SEARCH_MCP_SETUP_CALLER_CWD": temp}),
+                  patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+                  patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch("builtins.input",
+                        side_effect=["16", "relative.zip", "BACKUP", "0"]),
+                  patch.object(backup_state, "backup", return_value=None) as write,
+                  contextlib.redirect_stdout(io.StringIO()) as output):
+                self.assertEqual(wizard.main([]), 0)
+            write.assert_called_once_with(expected)
+            self.assertNotIn(temp, output.getvalue())
 
     def test_backup_creation_failure_is_nonzero_redacted_and_no_retry(self):
         from scripts import backup_state
