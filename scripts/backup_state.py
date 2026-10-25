@@ -410,7 +410,12 @@ def main(argv: list[str] | None = None) -> int:
             print("Restored to new directory only; live state unchanged")
         return 0
     except (OSError, ValueError, sqlite3.DatabaseError) as exc:
-        print(f"State backup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        # Archive validation errors may contain user-chosen source paths,
+        # history filenames, or private SQLite details. Never echo their
+        # message from the CLI. The exception category is safe and useful.
+        print(f"State backup failed ({type(exc).__name__}); "
+              "inspect the private archive, source ownership and permissions locally",
+              file=sys.stderr)
         return 1
 
 
