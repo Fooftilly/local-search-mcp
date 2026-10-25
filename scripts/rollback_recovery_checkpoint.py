@@ -92,6 +92,86 @@ def _maintenance_ready(candidate: Path) -> None:
         raise ValueError("All project-owned services must be quiescent")
 
 
+def _verify_effective_environment(*, state_dir: Path | None = None,
+                                  config_dir: Path | None = None) -> None:
+    """Refuse checkpoints when the shell and systemd service paths may differ.
+
+    Only the root-owned systemctl binary is used. Environment output is
+    inspected in memory and never logged; arbitrary service/unit env overrides
+    are unsupported until explicitly handled by a future activation workflow.
+    """
+    trusted = None
+    for entry in ("/usr/bin/systemctl", "/bin/systemctl"):
+        try:
+            info = Path(entry).stat()
+            if (stat.S_ISREG(info.st_mode) and info.st_uid == 0
+                    and not info.st_mode & 0o022):
+                trusted = entry
+                break
+        except OSError:
+            continue
+    if trusted is None:
+        raise ValueError("Trusted systemd user manager tool unavailable")
+
+    def show(*args: str) -> str:
+        result = subprocess.run([trusted, "--user", *args], capture_output=True,
+                                check=False, timeout=15)
+        if result.returncode or len(result.stdout) > 131_072:
+            raise ValueError("Systemd user environment unavailable")
+        return result.stdout.decode("utf-8", "strict")
+
+    # Check that no per-unit Environment/EnvironmentFile overrides the user
+    # manager state paths. As a safety gate, refuse all unit-level overrides.
+    for name in ("local-search-mcp-bridge.service", "local-search-mcp-tunnel.service"):
+        text = show("show", name, "--property=Environment",
+                    "--property=EnvironmentFiles", "--property=PassEnvironment",
+                    "--property=UnsetEnvironment")
+        values = {}
+        for line in text.splitlines():
+            key, eq, value = line.partition("=")
+            if not eq or key in values or key not in {
+                    "Environment", "EnvironmentFiles",
+                    "PassEnvironment", "UnsetEnvironment"}:
+                raise ValueError("Unrecognized unit environment response")
+            values[key] = value
+        if (set(values) != {"Environment", "EnvironmentFiles",
+                            "PassEnvironment", "UnsetEnvironment"}
+                or any(values.values())):
+            raise ValueError("Unit has unverified environment overrides")
+
+    # The shell may inherit a *different* XDG_STATE_HOME, history file or HOME.
+    # Do not silently archive an unrelated but valid database in that case.
+    values = {}
+    for line in show("show-environment").splitlines():
+        key, eq, value = line.partition("=")
+        if not eq:
+            raise ValueError("Unrecognized user manager environment response")
+        if key in ("HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME",
+                   "LOCAL_SEARCH_MCP_HISTORY_FILE"):
+            if key in values:
+                raise ValueError("Duplicate service state environment")
+            values[key] = value
+    import pwd
+    manager_home = Path(values.get("HOME") or pwd.getpwuid(os.getuid()).pw_dir)
+    shell_home = Path.home()
+    if manager_home != shell_home:
+        raise ValueError("Shell home differs from the user manager home")
+    for key in ("XDG_STATE_HOME", "XDG_CONFIG_HOME",
+                "LOCAL_SEARCH_MCP_HISTORY_FILE"):
+        if (values.get(key) or "") != (os.environ.get(key) or ""):
+            raise ValueError("Shell and user service state paths differ")
+    state = (Path(values["XDG_STATE_HOME"]) if values.get("XDG_STATE_HOME")
+             else manager_home / ".local" / "state") / "local-search-mcp"
+    config = (Path(values["XDG_CONFIG_HOME"]) if values.get("XDG_CONFIG_HOME")
+              else manager_home / ".config") / "local-search-mcp"
+    if ((state_dir is not None and state_dir.resolve() != state.resolve())
+            or (config_dir is not None and config_dir.resolve() != config.resolve())):
+        raise ValueError("Selected backup directories differ from the service")
+    history = values.get("LOCAL_SEARCH_MCP_HISTORY_FILE")
+    if history and not Path(history).is_absolute():
+        raise ValueError("Historical service audit path is not absolute")
+
+
 def _archive_identity(path: Path) -> tuple[str, int, int]:
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | NOFOLLOW)
@@ -191,11 +271,13 @@ def create(candidate: Path, destination: Path, *,
     roots = (root.resolve(strict=True), candidate.resolve(strict=True),
              (state_dir or backup_state.state_directory()).resolve(),
              (config_dir or backup_state.settings_directory()).resolve())
-    if any(parent == base or base in parent.parents for base in roots):
+    target = destination.absolute()
+    if any(target == base or base in target.parents for base in roots):
         raise ValueError("Recovery checkpoint must be outside live and candidate paths")
     source, target, candidate_digest = _candidate_identity(candidate)
     _checkout_unchanged(root, source)
     _maintenance_ready(candidate)
+    _verify_effective_environment(state_dir=state_dir, config_dir=config_dir)
     destination.mkdir(mode=0o700)
     # Intentionally do not remove a partial directory on failure. An interrupted
     # invocation is never mistaken for a valid checkpoint or silently reused.
@@ -204,6 +286,7 @@ def create(candidate: Path, destination: Path, *,
     digest, size, files = _archive_identity(destination / ARCHIVE)
     restore_smoke.smoke(destination / ARCHIVE)
     _maintenance_ready(candidate)
+    _verify_effective_environment(state_dir=state_dir, config_dir=config_dir)
     _checkout_unchanged(root, source)
     _, _, after = _candidate_identity(candidate)
     if after != candidate_digest:
