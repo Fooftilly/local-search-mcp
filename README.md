@@ -34,6 +34,12 @@ The first run provisions a virtual environment and prompts securely for secrets 
 
 For read-only configuration-source diagnostics with credentials redacted, run `python3 bootstrap.py --show-config`. For the source-precedence rules, hardening requirements and migration notes, see [CONFIGURATION.md](docs/CONFIGURATION.md). This report does not query Docker, print private tokens or modify domain approvals.
 
+For explicitly confirmed private archive creation, run
+`./setup.sh --backup-create NEW.zip --confirm-backup BACKUP` or choose
+setup menu option 16. This uses the existing no-overwrite archiver; for
+a consistent multi-file snapshot, stop the writing services manually
+before running it. See [BACKUP.md](BACKUP.md).
+
 To inspect an existing private state backup from the same setup interface,
 use `./setup.sh --backup-verify PRIVATE.zip`, or run a disposable offline
 fresh-install test with `./setup.sh --restore-smoke PRIVATE.zip`.

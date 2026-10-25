@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import tempfile
 import sys
@@ -30,7 +31,7 @@ class SetupWizardTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as exc:
                 wizard.main(["--help"])
         self.assertEqual(exc.exception.code, 0)
-        for option in ("--check", "--status", "--dry-run", "--chatgpt", "--update-status", "--maintenance-versions", "--maintenance-versions-remote", "--backup-verify", "--restore-smoke", "--on-demand-status", "--boot-audit"):
+        for option in ("--check", "--status", "--dry-run", "--chatgpt", "--update-status", "--maintenance-versions", "--maintenance-versions-remote", "--backup-create", "--confirm-backup", "--backup-verify", "--restore-smoke", "--on-demand-status", "--boot-audit"):
             self.assertIn(option, out.getvalue())
         self.assertIn("30 minutes", out.getvalue())
 
@@ -204,7 +205,7 @@ class SetupWizardTests(unittest.TestCase):
             rc, output = self.call("--dry-run")
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(output)["default_client"].split()[0], "ChatGPT")
-        self.assertEqual(len(json.loads(output)["actions"]), 15)
+        self.assertEqual(len(json.loads(output)["actions"]), 16)
 
     def test_maintenance_versions_cli_offline_by_default_and_remote_explicit(self):
         inventory = {"schema": "local-search-mcp/maintenance-versions/v1",
@@ -305,6 +306,211 @@ class SetupWizardTests(unittest.TestCase):
             check.assert_not_called()
             self.assertIn("Cancelled; no public version checks run", out.getvalue())
             self.assertNotIn("lookups may have started", out.getvalue())
+
+    def test_backup_creation_cli_requires_explicit_consent_and_redacts_results(self):
+        from scripts import backup_state
+        target = Path("/private/DO_NOT_ECHO_ARCHIVE.zip")
+        with patch.object(backup_state, "backup",
+                          side_effect=AssertionError("Backup must not run")) as write:
+            with self.assertRaises(SystemExit):
+                self.call("--backup-create", str(target))
+            with self.assertRaises(SystemExit):
+                self.call("--confirm-backup", "BACKUP")
+            with self.assertRaises(SystemExit):
+                self.call("--backup-create", str(target),
+                          "--confirm-backup", "WRONG")
+            with self.assertRaises(SystemExit):
+                self.call("--backup-create", str(target),
+                          "--confirm-backup", "BACKUP",
+                          "--backup-verify", str(target))
+            write.assert_not_called()
+
+        with (patch.object(backup_state, "backup", return_value=None) as writer,
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("No child processes")),
+              patch.object(wizard, "configure_on_demand",
+                           side_effect=AssertionError("No services"))):
+            code, out = self.call("--backup-create", str(target),
+                                  "--confirm-backup", "BACKUP")
+        self.assertEqual(code, 0)
+        writer.assert_called_once_with(target)
+        report = json.loads(out)
+        self.assertEqual(report["status"], "created")
+        self.assertFalse(report["live_restore_performed"])
+        self.assertFalse(report["remote_checked"])
+        self.assertNotIn("DO_NOT_ECHO", out)
+
+    def test_backup_confirmation_guard_precedes_early_dispatch(self):
+        # No other command may consume or silently ignore backup consent.
+        for command in ("--secure-tunnel-preview", "--status", "--dry-run",
+                        "--on-demand-status", "--maintenance-versions"):
+            with (self.subTest(command=command),
+                  patch.object(wizard, "run_existing",
+                               side_effect=AssertionError("No subprocess")),
+                  patch.object(wizard, "status_report",
+                               side_effect=AssertionError("No status probe")),
+                  patch.object(wizard, "dry_run",
+                               side_effect=AssertionError("No preview")),
+                  patch.object(wizard, "on_demand_status",
+                               side_effect=AssertionError("No on-demand probe")),
+                  patch.object(wizard, "maintenance_versions_report",
+                               side_effect=AssertionError("No version lookup"))):
+                with self.assertRaisesRegex(SystemExit,
+                                            "--confirm-backup requires --backup-create"):
+                    wizard.main([command, "--confirm-backup", "BACKUP"])
+
+    def test_backup_creation_interruption_is_redacted_and_nonzero(self):
+        from scripts import backup_state
+        target = Path("/private/NEVER_PRINT_DESTINATION.zip")
+        with patch.object(backup_state, "backup",
+                          side_effect=KeyboardInterrupt()) as writer:
+            code, output = self.call("--backup-create", str(target),
+                                     "--confirm-backup", "BACKUP")
+        writer.assert_called_once_with(target)
+        self.assertEqual(code, 1)
+        report = json.loads(output)
+        self.assertEqual(report["status"], "failed")
+        self.assertIn("verify the destination", report["note"])
+        self.assertNotIn("NEVER_PRINT_DESTINATION", output)
+        self.assertNotIn("Traceback", output)
+
+    def test_shell_backup_create_resolves_relative_destination_from_caller(self):
+        from scripts import backup_state
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            caller = workspace / "different-directory"
+            caller.mkdir(mode=0o700)
+            state = workspace / "state" / "local-search-mcp"
+            state.mkdir(parents=True, mode=0o700)
+            db = state / "domains.sqlite3"
+            with contextlib.closing(sqlite3.connect(db)) as connection:
+                connection.execute("CREATE TABLE domains (domain TEXT)")
+                connection.execute("INSERT INTO domains VALUES ('example.org')")
+                connection.commit()
+            db.chmod(0o600)
+            archive_name = "caller-" + workspace.name + ".zip"
+            env = dict(os.environ)
+            env.pop("LOCAL_SEARCH_MCP_HISTORY_FILE", None)
+            env.pop("LOCAL_SEARCH_MCP_SETUP_CALLER_CWD", None)
+            env["XDG_STATE_HOME"] = str(workspace / "state")
+            env["XDG_CONFIG_HOME"] = str(workspace / "config")
+            try:
+                result = subprocess.run([
+                    "bash", str(root / "setup.sh"),
+                    "--backup-create", archive_name,
+                    "--confirm-backup", "BACKUP",
+                ], cwd=caller, env=env, text=True, capture_output=True,
+                    timeout=35, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["status"], "created")
+                archive = caller / archive_name
+                self.assertTrue(archive.is_file())
+                self.assertEqual(archive.stat().st_mode & 0o777, 0o600)
+                self.assertIn("domains.sqlite3",
+                              backup_state.verified_payload(archive))
+                verify = subprocess.run([
+                    "bash", str(root / "setup.sh"),
+                    "--backup-verify", archive_name,
+                ], cwd=caller, env=env, text=True, capture_output=True,
+                    timeout=35, check=False)
+                self.assertEqual(verify.returncode, 0, verify.stderr)
+                self.assertEqual(json.loads(verify.stdout)["status"], "passed")
+                self.assertFalse((root / archive_name).exists())
+            finally:
+                # Only a regression would have created this unique temporary
+                # filename in the repository; remove it if that happens.
+                (root / archive_name).unlink(missing_ok=True)
+
+    def test_interactive_backup_relative_path_uses_saved_caller_directory(self):
+        from scripts import backup_state
+        with tempfile.TemporaryDirectory() as temp:
+            expected = Path(temp) / "relative.zip"
+            with (patch.dict(os.environ,
+                             {"LOCAL_SEARCH_MCP_SETUP_CALLER_CWD": temp}),
+                  patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+                  patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch("builtins.input",
+                        side_effect=["16", "relative.zip", "BACKUP", "0"]),
+                  patch.object(backup_state, "backup", return_value=None) as write,
+                  contextlib.redirect_stdout(io.StringIO()) as output):
+                self.assertEqual(wizard.main([]), 0)
+            write.assert_called_once_with(expected)
+            self.assertNotIn(temp, output.getvalue())
+
+    def test_relative_backup_verify_and_smoke_use_caller_directory(self):
+        from scripts import backup_state, restore_smoke
+        with tempfile.TemporaryDirectory() as temp:
+            name = "local-archive.zip"
+            target = Path(temp) / name
+            with patch.dict(os.environ, {"LOCAL_SEARCH_MCP_SETUP_CALLER_CWD": temp}):
+                with patch.object(backup_state, "verified_payload",
+                                  return_value={"domains.sqlite3": b"ok"}) as check:
+                    code, output = self.call("--backup-verify", name)
+                self.assertEqual(code, 0)
+                self.assertEqual(json.loads(output)["status"], "passed")
+                check.assert_called_once_with(target)
+
+                with patch.object(restore_smoke, "smoke",
+                                  return_value=(2, 1)) as smoke:
+                    code, output = self.call("--restore-smoke", name)
+                self.assertEqual(code, 0)
+                self.assertEqual(json.loads(output)["status"], "passed")
+                smoke.assert_called_once_with(target)
+
+                with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+                      patch.object(wizard.os, "geteuid", return_value=1000),
+                      patch("builtins.input",
+                            side_effect=["15", name, "VERIFY", "0"]),
+                      patch.object(backup_state, "verified_payload",
+                                   return_value={"domains.sqlite3": b"ok"}) as verify,
+                      contextlib.redirect_stdout(io.StringIO()) as shown):
+                    self.assertEqual(wizard.main([]), 0)
+                verify.assert_called_once_with(target)
+                self.assertNotIn(temp, shown.getvalue())
+
+    def test_backup_creation_failure_is_nonzero_redacted_and_no_retry(self):
+        from scripts import backup_state
+        target = Path("/private/NEVER_ECHO_DESTINATION.zip")
+        with patch.object(backup_state, "backup",
+                          side_effect=ValueError("PRIVATE_TOKEN already exists")) as writer:
+            code, out = self.call("--backup-create", str(target),
+                                  "--confirm-backup", "BACKUP")
+        writer.assert_called_once_with(target)
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(out)["status"], "failed")
+        self.assertNotIn("PRIVATE_TOKEN", out)
+        self.assertNotIn("NEVER_ECHO_DESTINATION", out)
+        self.assertIn("never overwritten", out)
+
+    def test_backup_create_menu_requires_confirmation_and_preserves_state(self):
+        from scripts import backup_state
+        target = Path("/private/SENSITIVE_BACKUP.zip")
+        for answer in ("", "NO", "BACKUp"):
+            with (self.subTest(answer=answer),
+                  patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+                  patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch("builtins.input",
+                        side_effect=["16", str(target), answer, "0"]),
+                  patch.object(backup_state, "backup",
+                               side_effect=AssertionError("No archive write")) as writer,
+                  contextlib.redirect_stdout(io.StringIO()) as output):
+                self.assertEqual(wizard.main([]), 0)
+            writer.assert_not_called()
+            self.assertIn("Cancelled; no backup requested", output.getvalue())
+            self.assertNotIn("SENSITIVE_BACKUP", output.getvalue())
+
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input",
+                    side_effect=["16", str(target), "BACKUP", "0"]),
+              patch.object(backup_state, "backup", return_value=None) as writer,
+              contextlib.redirect_stdout(io.StringIO()) as output):
+            self.assertEqual(wizard.main([]), 0)
+        writer.assert_called_once_with(target)
+        self.assertIn('"status": "created"', output.getvalue())
+        self.assertIn("Stop writing services first", output.getvalue())
+        self.assertNotIn("SENSITIVE_BACKUP", output.getvalue())
 
     def test_backup_verify_uses_existing_verifier_without_secrets_or_service_calls(self):
         from scripts import backup_state

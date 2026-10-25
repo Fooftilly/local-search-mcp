@@ -75,9 +75,35 @@ authenticated HTTPS MCP ingress. The OpenAI tunnel is not a generic ingress
 for other providers. No enrollment, credential changes, client installation
 or remote proxy setup is performed by these preview commands.
 
+## Create a private backup deliberately (issues #74 / #15)
+
+The setup wizard can create a new owner-only archive using the existing
+`scripts.backup_state.backup` implementation. Run:
+
+```sh
+./setup.sh --backup-create "$HOME/local-search-state-2026.zip" --confirm-backup BACKUP
+```
+
+Or select interactive menu option **16**, supply the new archive filename,
+and type `BACKUP` exactly. A relative filename is interpreted from
+the directory where `setup.sh` was invoked, **not** the repository root;
+absolute paths also work. Without the confirmation, the wizard writes
+nothing. Existing destinations are never overwritten and no parent
+directories are created automatically. On failure, only a generic status is
+printed; check whether the destination already exists before retrying.
+The result never includes archive paths, history or credentials.
+
+The archive is private (0600), can contain sensitive history and domain
+decisions, and is **not automatically consistent across files** if the
+bridge is writing concurrently. For a coordinated backup, stop the
+bridge/tunnel manually first and see [BACKUP.md](BACKUP.md). This action
+does not modify live state, start/stop services, run a restore, or upload data.
+
 ## Verify private backups and test isolated recovery (issues #74 / #15)
 
-To verify an existing private archive without changing your installation:
+To verify an existing private archive without changing your installation
+(relative archive paths use the directory where `setup.sh` was invoked,
+just like `--backup-create` and the interactive menu):
 
 ```sh
 ./setup.sh --backup-verify "$HOME/local-search-state-2026.zip"

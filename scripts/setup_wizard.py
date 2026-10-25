@@ -470,6 +470,8 @@ def dry_run() -> dict:
              "action": "reuse existing consolidated local maintenance versions report; optional bounded public PyPI/GitHub lookups"},
             {"menu": "15", "effect": "offline validation; disposable temporary files for smoke tests",
              "action": "verify a selected private state backup or smoke-test isolated fresh-install recovery; never activate live restore"},
+            {"menu": "16", "effect": "private archive creation only after explicit BACKUP confirmation",
+             "action": "create an atomic, private, no-overwrite backup using the existing archive tool; no service changes"},
         ],
         "limitations": "Optional on-demand backend sleep/wake is implemented and off by default; reboot/fault-recovery still requires host validation",
     }
@@ -488,6 +490,22 @@ def maintenance_versions_report(*, check_remote: bool = False) -> dict:
     return maintenance_versions.report(check_remote=check_remote)
 
 
+def _operator_archive_path(filename: Path) -> Path:
+    """Resolve relative archive names against the setup.sh caller's directory.
+
+    setup.sh changes to the repository directory before launching Python.
+    Direct module callers instead naturally use their own working directory.
+    The caller directory is provided by the fixed shell wrapper only.
+    """
+    filename = filename.expanduser()
+    if filename.is_absolute():
+        return filename
+    base = Path(os.environ.get("LOCAL_SEARCH_MCP_SETUP_CALLER_CWD") or os.getcwd())
+    if not base.is_absolute() or not base.is_dir() or base.is_symlink():
+        raise ValueError("Invalid invoking directory")
+    return base / filename
+
+
 def backup_check(archive: Path, *, smoke: bool = False) -> dict:
     """Reuse existing offline archive checks; never restore to live paths.
 
@@ -503,7 +521,7 @@ def backup_check(archive: Path, *, smoke: bool = False) -> dict:
     try:
         # Expand the operator's home only inside the redaction boundary:
         # a missing home account may raise RuntimeError containing local data.
-        archive = archive.expanduser()
+        archive = _operator_archive_path(archive)
         if smoke:
             from scripts import restore_smoke
             policies, events = restore_smoke.smoke(archive)
@@ -522,6 +540,26 @@ def backup_check(archive: Path, *, smoke: bool = False) -> dict:
             "format locally without exposing private archive contents"
         )
     return result
+
+
+def create_private_backup(destination: Path) -> dict:
+    """Reuse the private no-overwrite archiver after explicit operator consent.
+
+    Never display the destination name or untrusted exception details. A
+    failure can happen after the atomic link: do not claim the archive
+    definitely does not exist, and never retry by overwriting it.
+    """
+    report = {"mode": "private-backup-create", "status": "failed",
+              "live_restore_performed": False, "remote_checked": False}
+    try:
+        from scripts import backup_state
+        backup_state.backup(_operator_archive_path(destination))
+        report["status"] = "created"
+    except (Exception, KeyboardInterrupt):
+        report["note"] = ("Private backup creation failed; verify the destination "
+                          "and source permissions locally before retrying. "
+                          "An existing archive is never overwritten.")
+    return report
 
 
 def menu() -> int:
@@ -554,6 +592,7 @@ def menu() -> int:
         print("13 Audit on-demand reboot prerequisites (read-only)")
         print("14 Maintenance version inventory (offline; optional confirmed public lookups)")
         print("15 Verify private backup / isolated fresh-install smoke (offline)")
+        print("16 Create private local backup (type BACKUP to confirm)")
         print("0  Exit")
         try:
             choice = input("Choose: ").strip()
@@ -644,6 +683,24 @@ def menu() -> int:
             except (EOFError, KeyboardInterrupt):
                 print("Archive validation interrupted; any temporary scratch "
                       "files are managed by the existing validators; no live restore requested")
+        elif choice == "16":
+            try:
+                name = input("New private backup filename (blank cancels): ").strip()
+                if not name:
+                    print("Cancelled; no backup requested")
+                else:
+                    print("This creates a private local archive of policy and history")
+                    print("and validated nonsecret settings. It contains sensitive data.")
+                    print("It never overwrites an existing archive or stops services.")
+                    print("Stop writing services first for a consistent multi-file snapshot.")
+                    if confirm("BACKUP"):
+                        print(json.dumps(create_private_backup(Path(name)),
+                                         indent=2, ensure_ascii=True))
+                    else:
+                        print("Cancelled; no backup requested")
+            except (EOFError, KeyboardInterrupt):
+                print("Backup operation interrupted; check the destination locally "
+                      "before retrying. No existing archive is overwritten.")
         elif choice == "12":
             try:
                 client = input("Client (cursor/claude/hermes), or enter to cancel: ").strip().lower()
@@ -708,6 +765,8 @@ def make_parser() -> argparse.ArgumentParser:
   ./setup.sh --maintenance-versions  Read-only local dependency, Git, crawler, tunnel inventory
   ./setup.sh --maintenance-versions-remote
                                   Explicit public PyPI/GitHub metadata lookups; no updates
+  ./setup.sh --backup-create NEW.zip --confirm-backup BACKUP
+                                  Create private no-overwrite archive after explicit consent
   ./setup.sh --backup-verify PRIVATE.zip
                                   Offline integrity and SQLite check; archive is not modified
   ./setup.sh --restore-smoke PRIVATE.zip
@@ -749,6 +808,8 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="read-only local maintenance versions; no public requests or changes")
     choices.add_argument("--maintenance-versions-remote", action="store_true",
                          help="explicit public PyPI/GitHub release checks; never download or apply updates")
+    choices.add_argument("--backup-create", type=Path, metavar="NEW.zip",
+                         help="create a private no-overwrite state archive; requires --confirm-backup BACKUP")
     choices.add_argument("--backup-verify", type=Path, metavar="PRIVATE.zip",
                          help="verify private backup archive and SQLite integrity; no live restore")
     choices.add_argument("--restore-smoke", type=Path, metavar="PRIVATE.zip",
@@ -772,11 +833,16 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                         help="explicit confirmation required for noninteractive changes")
     parser.add_argument("--confirm-secure-tunnel", choices=("SECURE",),
                         help="explicit acknowledgement for privileged tunnel installation")
+    parser.add_argument("--confirm-backup", choices=("BACKUP",),
+                        help="explicit acknowledgement to write a new private archive")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = make_parser().parse_args(argv)
+    # Validate confirmation flags before any early-returning command dispatch.
+    if args.confirm_backup is not None and args.backup_create is None:
+        raise SystemExit("--confirm-backup requires --backup-create")
     if args.secure_tunnel or args.secure_tunnel_preview:
         if args.confirm_on_demand is not None or args.wake_before_disable:
             raise SystemExit("Unrelated on-demand options cannot be combined with tunnel setup")
@@ -810,6 +876,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.wake_before_disable or args.confirm_on_demand is not None:
         raise SystemExit("On-demand options require explicit enable/disable mode")
+    if args.backup_create is not None:
+        if args.confirm_backup != "BACKUP":
+            raise SystemExit("Creating a private archive requires --confirm-backup BACKUP")
+        report = create_private_backup(args.backup_create)
+        print(json.dumps(report, indent=2, ensure_ascii=True))
+        return 0 if report["status"] == "created" else 1
     if args.dry_run:
         print(json.dumps(dry_run(), indent=2))
         return 0
