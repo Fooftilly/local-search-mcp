@@ -21,7 +21,7 @@ For a custom source state directory, pass `--state-dir /absolute/path/to/local-s
 
 The history writer supports up to **100,000,000 bytes per generation** (with up to three rotations). Archive validation accommodates all four full generations and bounded overrun from a final entry, plus the domain-policy SQLite snapshot; individual size caps and a total cap still guard against unexpectedly large files and decompression bombs. A backup archive can thus be several hundred megabytes, so verify sufficient local disk space.
 
-Archives have fixed, bounded file names. Backup and verification reject unsafe symlinks, unexpectedly large contents, corrupt SQLite, archive traversal entries, duplicate names, and hash mismatches. The archive stores no original absolute host paths.
+Archives have fixed, bounded file names. Backup and verification reject unsafe symlinks, unexpectedly large contents, corrupt SQLite, archive traversal entries, duplicate names, and hash mismatches. ZIP members must use standard stored or DEFLATE compression; other compression methods are rejected before extraction. Decompression failures are normalized into ordinary validation errors for the direct CLI as well as the setup wizard, without returning private compressed-member details or beginning a staged restore. The archive stores no original absolute host paths.
 
 The ChatGPT-first setup wizard also wraps the **same** verification and
 isolated smoke routines without duplicating the archive parser:
