@@ -316,6 +316,7 @@ authorization.** External agents, timers, and logins can change status
 immediately afterward. Do not treat it as permission to replace a state DB
 or to run historical application code. The root-owned egress firewall,
 Docker backends, tunnel credentials, custom history locations and service
-restart sequencing are outside this command's scope. No systemctl action,
-Docker command, file modification or automatic update is performed. A
+restart sequencing are outside this command's scope. No **mutating** systemctl action,
+Docker command, file modification or automatic update is performed; only
+read-only `systemctl --user show` queries are issued. A
 reviewed live cutover and failure-recovery drill remain outstanding for #15.
