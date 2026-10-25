@@ -126,6 +126,40 @@ class DashboardHTTPTests(unittest.TestCase):
         }), 200)
         self.assertEqual({r["domain"]: r["status"] for r in policy.entries()}["docs.python.org"], "allowed")
 
+    def test_all_dashboard_mutation_routes_reject_unauthenticated_browser_posts(self):
+        # Keep this explicit inventory in sync with Handler.do_POST's allowlist.
+        # A new management form must inherit the same Host/Origin/Fetch-Site
+        # and CSRF checks as the domain-rule controls.
+        routes = (
+            "/domain", "/pending/clear", "/bulk", "/once",
+            "/rules/preview", "/rules/apply", "/settings",
+            "/upstream-settings", "/cache-settings",
+            "/portable-settings/preview", "/portable-settings/apply",
+        )
+        with (patch.object(admin_ui.safe_settings, "update_settings") as history_write,
+              patch.object(admin_ui.upstream_settings, "update_settings") as upstream_write,
+              patch.object(admin_ui.cache_settings, "update_settings") as cache_write,
+              patch.object(admin_ui.portable_settings, "apply") as transfer_write,
+              patch.object(admin_ui.policy_transfer, "apply_import") as rules_write):
+            for route in routes:
+                for headers in (
+                    {"Host": "remote.invalid"},
+                    {"Origin": "http://remote.invalid"},
+                    {"Sec-Fetch-Site": "cross-site"},
+                ):
+                    with self.subTest(route=route, headers=headers):
+                        status, _, _ = self.exchange(
+                            "POST", route, {"csrf": admin_ui.CSRF},
+                            headers=headers)
+                        self.assertEqual(status, 403)
+                with self.subTest(route=route, barrier="csrf"):
+                    status, _, _ = self.exchange(
+                        "POST", route, {"csrf": "invalid"})
+                    self.assertEqual(status, 403)
+            for writer in (history_write, upstream_write, cache_write,
+                           transfer_write, rules_write):
+                writer.assert_not_called()
+
     def test_health_endpoint_and_defense_headers(self):
         status, body, headers = self.exchange("GET", "/healthz")
         self.assertEqual(status, 200)
