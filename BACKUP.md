@@ -285,3 +285,33 @@ code revisions, install/reinstall dependencies, alter live state, stop/start
 services, or claim a deployable rollback. Passing verification leaves
 `ready_for_live_use: false`; test and review the complete live cutover
 separately before restoring any running installation.
+
+
+## Static historical release and independent dependency audit
+
+Use the operator-staged, v2-inventory-verified candidate. Prepare a **separate**
+private Python virtualenv for its historical `requirements.txt` yourself;
+never install packages into the current running checkout. Once the environment
+is prepared without unattended downloads or updates, run:
+
+```sh
+python3 scripts/rollback_release_audit.py \
+  "$HOME/.local/state/local-search-mcp-rollback/candidate-1" \
+  --python "$HOME/.local/state/rollback-env/bin/python"
+```
+
+This offline audit rechecks the candidate inventory, parses historical runtime
+Python entrypoints without **importing or running** them, and confirms that
+`web_search` and `web_fetch` remain registered MCP tools. It checks the
+expected private-systemd template safety contract and parses a restricted
+requirements format; pip options, remote URLs and dynamic references fail
+closed for manual review. The separate operator-supplied virtualenv is queried
+using its isolated interpreter for package metadata only. Nothing is installed,
+downloaded, restarted, switched or granted access. A missing, incompatible or
+unproven environment prevents the offline checks from passing.
+
+Even a fully successful **static** report sets `ready_for_live_use: false`.
+It cannot establish whether historical SQLite readers support current data,
+whether credentials/tunnel profiles are compatible, whether egress guards will
+work or whether services will start. Those require a separate isolated
+historical runtime rehearsal and the actual host recovery acceptance drill.
