@@ -320,7 +320,9 @@ class SetupWizardTests(unittest.TestCase):
                 self.call("--backup-create", str(target),
                           "--confirm-backup", "WRONG")
             with self.assertRaises(SystemExit):
-                self.call("--backup-create", str(target), "--backup-verify", str(target))
+                self.call("--backup-create", str(target),
+                          "--confirm-backup", "BACKUP",
+                          "--backup-verify", str(target))
             write.assert_not_called()
 
         with (patch.object(backup_state, "backup", return_value=None) as writer,
