@@ -47,6 +47,11 @@ def normalized_url(value: object) -> str | None:
         return None
 
 
+def _text(value: object, limit: int) -> str:
+    """Keep untrusted search text bounded and encodable by MCP transports."""
+    return str(value)[:limit].encode("utf-8", "replace").decode("utf-8")
+
+
 def _engines(row: dict) -> list[str]:
     """Read all valid upstream engine names without an arbitrary count cap."""
     names = []
@@ -74,10 +79,10 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
     """
     if not deduplicate and ranking == "searxng":
         return [
-            {"title": str(r.get("title", ""))[:240],
-             "url": str(r.get("url", "")),
-             "snippet": str(r.get("content", ""))[:1100],
-             "engine": str(r.get("engine", ""))}
+            {"title": _text(r.get("title", ""), 240),
+             "url": _text(r.get("url", ""), 2048),
+             "snippet": _text(r.get("content", ""), 1100),
+             "engine": _text(r.get("engine", ""), 100)}
             for r in rows[:max_results]
         ]
 
@@ -89,10 +94,10 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
             entry = grouped[by_url[normalized]]
         else:
             entry = {
-                "title": str(row.get("title", ""))[:240],
-                "url": str(row.get("url", "")),
-                "snippet": str(row.get("content", ""))[:1100],
-                "engine": str(row.get("engine", "")),
+                "title": _text(row.get("title", ""), 240),
+                "url": _text(row.get("url", ""), 2048),
+                "snippet": _text(row.get("content", ""), 1100),
+                "engine": _text(row.get("engine", ""), 100),
                 "source_engines": [],
                 "source_count": 0,
                 "duplicate_count": 0,
@@ -112,9 +117,9 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
             # The first occurrence is already represented by the primary
             # engine/title/snippet. Only retain actual alternative matches.
             entry["source_matches"].append({
-                "engine": str(row.get("engine", ""))[:100],
-                "title": str(row.get("title", ""))[:240],
-                "snippet": str(row.get("content", ""))[:1100],
+                "engine": _text(row.get("engine", ""), 100)[:100],
+                "title": _text(row.get("title", ""), 240),
+                "snippet": _text(row.get("content", ""), 1100),
             })
     if ranking == "source_count":
         grouped.sort(key=lambda r: -r["source_count"])
