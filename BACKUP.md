@@ -10,7 +10,7 @@ The setup wizard also offers **explicit, no-overwrite archive creation**:
 ./setup.sh --backup-create "$HOME/local-search-state-2026.zip" --confirm-backup BACKUP
 ```
 
-Interactive menu option 16 requires typing `BACKUP` before writing.
+The interactive backup action requires typing `BACKUP` before writing.
 Both call the same `backup_state.backup` implementation and return only
 a generic status, not the archive's contents or pathname. Existing
 archives are not replaced. The wizard does **not** stop the bridge or
@@ -53,8 +53,8 @@ JSON result with status and safety flags plus a `verified_files` count;
 the second runs a fresh-install smoke test in disposable temporary
 directories and reports the total policy count and **up to 25 recent indexed
 history events** (not a total recovered-history count). Both leave the private archive and live installation untouched;
-the second creates only temporary scratch state. Menu option 15 offers these
-two checks interactively. All failures are redacted, with a nonzero CLI
+the second creates only temporary scratch state. The interactive verification action offers these
+two checks. All failures are redacted, with a nonzero CLI
 exit status. Neither command performs a live restore, rolls back code,
 starts Docker or downloads updates.
 
@@ -173,231 +173,19 @@ with the normal setup and `--boot-audit` workflows. Historical archives
 without this optional file remain supported and default to on-demand OFF
 on a clean installation.
 
-## Offline rollback preflight (does not perform a rollback)
+## Maintenance policy
 
-Before attempting to return to an older *local ancestor commit*, take and
-verify an owner-only backup of current state using the instructions above.
-The following command confirms that a specified **full Git commit SHA** is
-available locally, is an ancestor of HEAD, that the Git checkout is clean,
-and that the provided private backup passes integrity/schema checks:
+The supported backup format is the single versioned archive produced by
+`scripts/backup_state.py` and exposed through `./setup.sh --backup-create`.
+Use the same verifier and isolated restore reader for recovery checks; do not
+create historical-release candidate trees, alternative backup manifests or
+additional rollback staging utilities.
 
-```sh
-python3 scripts/rollback_preflight.py --target YOUR_FULL_LOCAL_COMMIT_SHA \
-  --archive "$HOME/local-search-state-2026.zip"
-```
-
-Preflight is opt-in, **offline**, and **non-mutating to live state**:
-Git commands disable optional index writes and partial-clone lazy fetching.
-It refuses staged, unstaged or untracked files, a missing/nonancestor target,
-an invalid or insecure archive, or a checkout that changes while validating.
-The archive verifier temporarily copies SQLite contents for integrity checks;
-no restored files are installed. Never paste a shortened commit ID.
-
-Passing preflight **does not mean rollback is safe**. A previous release may
-not understand current state/database schemas, dependencies, credentials,
-systemd units or tunnel configuration. The tool cannot validate compatibility
-with the selected old commit and never stops services, changes the checkout,
-resets the restart-watcher baseline, or invokes a rollback. Manually stop the
-optional update watcher and affected services; review the Git diff and
-dependencies, check version-specific migration/restore requirements, and use
-a separately reviewed operator-controlled recovery procedure. Do not
-automatically swap a live database based only on this result. Full rollback
-implementation remains tracked under issue #15.
-
-## Prepare a reversible rollback candidate without touching live services
-
-The optional `rollback_candidate.py` command builds on the existing offline
-ancestor/backup preflight. It verifies that the requested full commit is a
-*local ancestor* of a clean current checkout, validates your **private**
-backup, and runs the current application's isolated fresh-install smoke test.
-
-First run its **read-only** checks:
-
-```sh
-python3 scripts/rollback_candidate.py --target YOUR_FULL_LOCAL_COMMIT_SHA --archive "$HOME/local-search-state-2026.zip"
-```
-
-If that succeeds, make a **new** private destination under an existing
-owner-only `0700` parent (the destination itself must not exist).
-Create a private parent **only if it does not exist**; otherwise check its
-ownership and mode and refuse symlinks before proceeding:
-
-```sh
-private_parent="$HOME/.local/state/local-search-mcp-rollback"
-if [ ! -e "$private_parent" ]; then mkdir -m 700 "$private_parent"; fi
-# If the parent exists, confirm it is a real directory owned by you (0700).
-# Always choose a NEW candidate destination for subsequent staging runs.
-python3 scripts/rollback_candidate.py --target YOUR_FULL_LOCAL_COMMIT_SHA --archive "$HOME/local-search-state-2026.zip" --destination "$HOME/.local/state/local-search-mcp-rollback/candidate-1" --confirm STAGE
-```
-
-The command copies only the target's locally available *tracked source files*
-into `source/` using bounded **raw Git tree/blob plumbing**, rejecting
-symlinks, gitlinks, path traversal, duplicates and non-regular entries. It
-does **not** use `git archive` or a working-tree checkout because those may
-invoke configured smudge filters or other operator hooks. It never executes
-content filters, runs older code, or installs dependencies. The independently verified recovery data goes
-to `state/` through the same no-clobber owner-only restore mechanism used
-elsewhere. An owner-only `candidate.json` records exact source/target
-commits, file hashes and modes, directories, file counts and the explicit
-`ready_for_live_use: false` flag.
-No launcher credential, tunnel profile, `.venv`, live checkout file, Git HEAD,
-service, daemon, Docker container or auto-restart baseline is modified.
-Incomplete staging is removed on errors; an existing candidate is never
-overwritten.
-
-**Staging is NOT activating a working rollback.** An older revision can need
-different dependency versions, state schemas, tunnel binaries, configuration
-and service files; current-reader smoke tests cannot certify old-reader
-compatibility. Review the staged source and release differences, prepare a
-*separate* virtual environment, and test its operation and restored policy
-privately. Disable the Git restart watcher and stop the affected services
-*before* any future reviewed activation or live-state swap. Preserve the
-original checkout, archive and rollback candidate so manual recovery can
-return to the previous revision if validation fails. Do not perform a blind
-`git reset --hard`, replace current state in place, or assume a clean
-preflight authorizes a live deployment.
-
-Issue #15 remains open until a controlled and operator-tested activation,
-failure rollback and restart procedure has been validated on a real host.
-
-
-## Verifying a private rollback candidate (v2)
-
-After a successful offline `scripts/rollback_candidate.py --confirm STAGE` run,
-validate its exact staged source and recovered data *without running the older code*:
-
-```sh
-python3 scripts/verify_rollback_candidate.py \
-  "$HOME/.local/state/local-search-mcp-rollback/candidate-1"
-```
-
-New candidates record a versioned SHA-256 inventory binding the exact private
-source file modes (including executable bits), expected directory entries and
-state files. Read-only verification refuses changed bytes/modes, added paths,
-symlinks/hardlinks, invalid metadata, invalid database or nonsecret settings,
-and stale legacy v1 candidates. Archives and candidates must remain under
-private, owner-only directories; never upload their history or approvals.
-
-The manifest is an integrity record, **not a signature** and **not proof of
-runtime compatibility** with historical dependencies, the Python venv, tunnel,
-Docker firewall rules or systemd configuration. The verifier does not switch
-code revisions, install/reinstall dependencies, alter live state, stop/start
-services, or claim a deployable rollback. Passing verification leaves
-`ready_for_live_use: false`; test and review the complete live cutover
-separately before restoring any running installation.
-
-
-## Read-only stopped-state gate before host maintenance
-
-After stopping and disabling project-owned services by your existing reviewed
-procedure, check their *effective* systemd user unit identity and status:
-
-```sh
-python3 scripts/maintenance_readiness.py --candidate \
-  "$HOME/.local/state/local-search-mcp-rollback/candidate-1"
-```
-
-This gate checks only the known project-owned bridge/tunnel, update watcher,
-health timer and guard-probe user units. Every installed file must carry the
-managed marker, be user-owned and not symlinked or group/world-writable;
-the systemd manager must point to the same effective file with
-`NeedDaemonReload=no`. Only the exact reviewed tunnel crawler-egress startup
-guard drop-in is accepted; other overrides are blocked. Every loaded unit
-must report strictly inactive and have no enabled trigger. A failed
-oneshot is conservatively blocked even when its process has stopped; inspect
-the failure and run `systemctl --user reset-failed UNIT` if appropriate,
-then recheck the inactive state. Never reset without inspecting the cause. The on-demand wake preference must be disabled. Missing units are accepted only
-when systemd also reports them not found. The candidate is re-verified
-read-only when specified. Errors are redacted; an unknown systemd bus,
-unrecognized override, active tunnel, unverified unit or invalid candidate
-returns nonzero.
-
-**This result is a point-in-time observation, not a service lock or rollback
-authorization.** External agents, timers, and logins can change status
-immediately afterward. Do not treat it as permission to replace a state DB
-or to run historical application code. The root-owned egress firewall,
-Docker backends, tunnel credentials, custom history locations and service
-restart sequencing are outside this command's scope. No **mutating** systemctl action,
-Docker command, file modification or automatic update is performed; only
-read-only `systemctl --user show` queries are issued. A
-reviewed live cutover and failure-recovery drill remain outstanding for #15.
-
-## Static historical release and independent dependency audit
-
-Use the operator-staged, v2-inventory-verified candidate. Prepare a **separate**
-private Python virtualenv for its historical `requirements.txt` yourself;
-never install packages into the current running checkout. Once the environment
-is prepared without unattended downloads or updates, run:
-
-```sh
-python3 scripts/rollback_release_audit.py \
-  "$HOME/.local/state/local-search-mcp-rollback/candidate-1" \
-  --python "$HOME/.local/state/rollback-env/bin/python"
-```
-
-This offline audit rechecks the candidate inventory, parses historical runtime
-Python entrypoints without **importing or running** them, and confirms that
-`web_search` and `web_fetch` remain registered MCP tools. It checks the
-expected private-systemd template safety contract and parses a restricted
-requirements format; pip options, remote URLs and dynamic references fail
-closed for manual review. The separate operator-supplied virtualenv is queried
-using its isolated interpreter for package metadata only. Nothing is installed,
-downloaded, restarted, switched or granted access. A missing, incompatible or
-unproven environment prevents the offline checks from passing.
-
-Even a fully successful **static** report sets `ready_for_live_use: false`.
-It cannot establish whether historical SQLite readers support current data,
-whether credentials/tunnel profiles are compatible, whether egress guards will
-work or whether services will start. Those require a separate isolated
-historical runtime rehearsal and the actual host recovery acceptance drill.
-
-
-## Opt-in historical state-reader sandbox rehearsal
-
-After creating the private v2 candidate and independently preparing its
-historical Python virtualenv, the operator may additionally test the **old**
-policy and history readers against disposable copies of the restored files:
-
-```sh
-python3 scripts/rollback_runtime_smoke.py \
-  "$HOME/.local/state/local-search-mcp-rollback/candidate-1" \
-  --python "$HOME/.local/state/rollback-env/bin/python"
-```
-
-Run this Linux-only test **as an unprivileged operator** (never root).
-It requires a trusted root-owned `/usr/bin/bwrap` and
-unprivileged user/mount/PID/network namespaces enabled by the host. It
-fails closed where the sandbox cannot be started; it does not fall back to
-executing old source in the host namespace. The candidate inventory and
-independent Python dependency compatibility audit must pass first.
-
-The command copies only allowlisted owner-only recovery files into a
-disposable XDG state/config input directory. That input is mounted **read-only**
-at `/input` inside a newly isolated bubblewrap namespace, where the worker
-copies the files again to a **512 MiB size-limited writable tmpfs** at `/work`
-for SQLite initialization and history-index generation. A separate 16 MiB
-tmpfs contains `/tmp`. No host directory is mounted writable. Recovery
-archives near these limits may be rejected instead of risking uncontrolled
-disk or memory usage. The historical policy/history readers run with
-**no network** and
-no inherited access to the rest of the operator's home directory, live
-checkout, launcher config, tunnel tokens, Docker socket, or systemd bus.
-The explicitly mounted historical source and prepared venv may themselves
-reside under the operator's home; keep credentials and unrelated private
-files **out of those mounted subtrees**. The only other mounted read-only
-locations are OS executables and runtime libraries under `/usr/bin`,
-`/usr/lib`, and (where present) `/usr/lib64`; when the host uses a real
-root-owned `/lib64` directory instead of a symlink, that loader directory
-is also mounted read-only. Dependency metadata is checked before historical
-`/app` is added to Python's import path, preventing staged files from
-spoofing installed distribution versions. The command reports aggregate
-reader success and a capped recent history count; neither approvals nor
-search terms are printed.
-
-The namespace assumes a Linux system with a merged `/usr` filesystem.
-Missing `bwrap`, disabled unprivileged namespaces, incompatible historical
-Python imports or schema migrations cause a nonzero failure. The test does
-**not** prove service startup, firewall protections, credential migration,
-reboot recovery, or a successful live rollback. The report explicitly
-retains `ready_for_live_use: false`; keep issue #15 open until a
-reviewed reversible cutover and a host-level failure drill pass.
+A service update may temporarily stop the bridge and tunnel. The operator
+controls Git and dependency changes, and preserves the previous revision for
+manual recovery. The attended single-entry `./setup.sh` update command is
+tracked in [issue #15](https://github.com/Fooftilly/local-search-mcp/issues/15).
+Until that implementation is reviewed, the existing installation and manual
+update controls are unchanged. Do not assume this cleanup makes updates or
+live rollback automatic. The archive intentionally excludes credentials, so
+restore requires keeping existing secure credentials/configuration separately.
