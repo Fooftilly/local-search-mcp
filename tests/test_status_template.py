@@ -15,6 +15,7 @@ class StatusTemplateTests(unittest.TestCase):
         self.assertIn("${rows}", text)
         self.assertIn("${ports}", text)
         self.assertIn("${limits}", text)
+        self.assertIn("${mcp_port}", text)
         self.assertIn('href="/dashboard.css"', text)
         self.assertNotIn("<style", text)
         self.assertNotIn("<script", text)
@@ -47,6 +48,14 @@ class StatusTemplateTests(unittest.TestCase):
         self.assertIn("Fixed safety limits (read-only)", page)
         self.assertIn("History retention and rotation size", page)
         self.assertIn("Port changes must instead be coordinated", page)
+
+    def test_mcp_port_in_rows_and_explanation_comes_from_same_constant(self):
+        with (patch.object(admin_ui, "MCP_PORT", 9876),
+              patch.object(service_status, "probe_services", return_value=[])):
+            page = admin_ui.status_page()
+        self.assertIn("<td>MCP</td><td>9876</td>", page)
+        self.assertIn("fixed MCP listener port (9876)", page)
+        self.assertNotIn("<td>MCP</td><td>8790</td>", page)
 
     def test_unknown_template_and_unresolved_placeholder_fail_closed(self):
         with self.assertRaises(ValueError):
