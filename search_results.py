@@ -60,11 +60,12 @@ def _engines(row: dict) -> list[str]:
     possible = [row.get("engine")]
     if isinstance(raw, list):
         possible.extend(raw)
-    for name in possible:
-        if (isinstance(name, str) and name and len(name) <= 100
-                and name not in seen):
-            names.append(name)
-            seen.add(name)
+    for raw_name in possible:
+        if isinstance(raw_name, str) and raw_name and len(raw_name) <= 100:
+            name = _text(raw_name, 100)
+            if name not in seen:
+                names.append(name)
+                seen.add(name)
     return names
 
 
