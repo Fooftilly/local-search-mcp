@@ -450,8 +450,8 @@ def dry_run() -> dict:
              "action": "preview existing systemd user unit templates"},
             {"menu": "5", "effect": "read-only",
              "action": "installed dependencies from project .venv, without PyPI requests"},
-            {"menu": "6", "effect": "read-only",
-             "action": "inspect local Git update baseline and show manual rollback guidance; no fetch/pull"},
+            {"menu": "6", "effect": "attended change after FETCH and UPDATE confirmations",
+             "action": "./setup.sh --update (owned service stop, existing backup, reviewed fast-forward and restart)"},
             {"menu": "7", "effect": "potential service changes after explicit confirmation",
              "action": "./stop.sh (project-owned shutdown only; no shared Hermes Web stack)"},
             {"menu": "8", "effect": "read-only",
@@ -761,7 +761,7 @@ def make_parser() -> argparse.ArgumentParser:
   ./setup.sh --client claude       Read-only local Claude Code HTTP MCP instructions
   ./setup.sh --docker-status       Read-only verified Compose/Docker ownership inventory
   ./setup.sh --update              Attended update, backup and controlled restart (requires TTY)
-  ./setup.sh --update-status       Read-only LOCAL revision/baseline check; no network fetch
+  ./setup.sh --update-status       Read-only LOCAL Git revision check; no network fetch
   ./setup.sh --maintenance-versions  Read-only local dependency, Git, crawler, tunnel inventory
   ./setup.sh --maintenance-versions-remote
                                   Explicit public PyPI/GitHub metadata lookups; no updates
@@ -805,7 +805,7 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
     choices.add_argument("--update", action="store_true",
                          help="attended Git fast-forward, state backup and controlled restart")
     choices.add_argument("--update-status", action="store_true",
-                         help="inspect local Git update baseline; never fetch/pull/restart")
+                         help="inspect local Git revision; never fetch/pull/restart")
     choices.add_argument("--maintenance-versions", action="store_true",
                          help="read-only local maintenance versions; no public requests or changes")
     choices.add_argument("--maintenance-versions-remote", action="store_true",
