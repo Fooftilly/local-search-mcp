@@ -224,6 +224,45 @@ class FreshRecoveryTests(unittest.TestCase):
         self.assertEqual(secret.read_text(),
                          '{"token":"UNRELATED_PRIVATE_CREDENTIAL"}')
 
+    def test_on_demand_restore_smoke_reads_only_isolated_opt_in_settings(self):
+        from scripts import on_demand_settings
+        config = self.root / "saved-on-demand-config"
+        config.mkdir(mode=0o700)
+        raw = {"schema": on_demand_settings.SCHEMA,
+               "settings": {"enabled": True, "idle_minutes": 60}}
+        file = config / on_demand_settings.NAME
+        file.write_text(json.dumps(raw))
+        file.chmod(0o600)
+        archive = self.root / "on-demand-backup.zip"
+        backup_state.backup(archive, state_dir=domain_policy.storage_dir(),
+                            config_dir=config)
+        self.assertIn(on_demand_settings.NAME, backup_state.verified_payload(archive))
+
+        live_config = self.root / "live-on-demand-config"
+        live_config.mkdir(mode=0o700)
+        (live_config / "local-search-mcp").mkdir(mode=0o700)
+        (live_config / "local-search-mcp" / on_demand_settings.NAME).write_text("{bad")
+        original_read = on_demand_settings.read
+
+        def read_staged():
+            folder = Path(os.environ["XDG_CONFIG_HOME"])
+            self.assertIn("mcp-fresh-restore-", str(folder))
+            self.assertNotEqual(folder, live_config)
+            target = folder / "local-search-mcp" / on_demand_settings.NAME
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(original_read(), raw["settings"])
+            self.assertFalse((target.parent / "config.json").exists())
+            return raw["settings"]
+
+        with (patch.dict(os.environ, {"XDG_CONFIG_HOME": str(live_config)}),
+              patch.object(on_demand_settings, "read",
+                           side_effect=read_staged) as reader):
+            self.assertEqual(restore_smoke.smoke(archive),
+                             (self.expected_policy_count, 2))
+            reader.assert_called_once_with()
+        self.assertEqual((live_config / "local-search-mcp" /
+                          on_demand_settings.NAME).read_text(), "{bad")
+
     def test_missing_cache_file_never_loads_cache_runtime_reader(self):
         with patch.object(cache_settings, "dashboard_settings",
                           side_effect=AssertionError("No cache settings archived")):
