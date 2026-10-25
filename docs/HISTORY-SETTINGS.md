@@ -31,12 +31,13 @@ the dashboard; the saved value does not override the environment. For
 compatibility, the JSONL size environment override retains its historical
 64 KB–100 MB clamping behavior.
 
-This remains a partial issue #13 settings implementation. Network ports,
-backend health-check and other timeouts beyond the SearXNG search and Crawl4AI
-crawl request timeouts documented below, cache policy and other higher-risk
-settings still require explicit service ownership, safe restart/apply semantics
-and a separate review. There is no automatic service restart or new MCP
-mutation tool.
+History settings are one of the validated live-editable profiles for issue
+#13. Cache lifetimes have their own [settings page](CACHE-SETTINGS.md), and
+nonsecret profiles can be exported/imported with a preview and conflict check
+(see [CONFIGURATION.md](CONFIGURATION.md)). Deployment ports, immutable
+resource safeguards, and health-check safety timeouts are deliberately
+read-only or fixed, with restart/coordination instructions on `/status`.
+There is no automatic service restart or new MCP mutation tool.
 
 ## Live upstream request timeouts (issue #13 follow-up)
 
