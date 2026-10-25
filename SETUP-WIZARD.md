@@ -141,14 +141,14 @@ private storage and refer to [BACKUP.md](BACKUP.md) for compatibility limits.
 Run `./setup.sh --maintenance-versions` or select Status → 6 (maintenance versions)
 and press Enter for the **offline default**. The wizard reuses
 `scripts.maintenance_versions.report` to report project-venv dependency
-versions, local Git update baseline, tunnel-client fingerprint and the
+versions, local Git revision, tunnel-client fingerprint and the
 fixed loopback Crawl4AI version/health check. It does not query public
 websites, fetch Git objects, install packages, pull images or restart services.
 
 `./setup.sh --maintenance-versions-remote` requests the existing
 bounded public PyPI release metadata and GitHub release **and repository
 commit** metadata checks (including the public bridge `/commits/master`
-endpoint). Interactive option 14 requires choosing `REMOTE` and then
+endpoint). Status → 6 requires choosing `REMOTE` and then
 typing `PUBLIC` to opt in. A different response cancels without public
 requests. Interrupting an in-flight lookup may leave some public requests
 already sent; it does not apply updates. Public release or revision differences
@@ -292,7 +292,7 @@ service and protected ChatGPT tunnel without manual `visudo` editing:
 ./setup.sh --secure-tunnel --confirm-secure-tunnel SECURE
 ```
 
-Alternatively choose **11** in the interactive wizard and type `SECURE`.
+Alternatively choose **Connections → 3** in the interactive wizard and type `SECURE`.
 The preview makes no privileged calls or writes. Installation runs as your
 **normal user**, requesting your sudo authentication when necessary.
 
