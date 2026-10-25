@@ -221,6 +221,9 @@ def _inventory(destination: Path) -> dict[str, str]:
                     raise ValueError("Rollback candidate path is too deep")
                 info = path.lstat()
                 if stat.S_ISDIR(info.st_mode) and section == "source":
+                    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                        raise ValueError("Rollback candidate has unsafe directory permissions")
+                    result["/".join(parts) + "/"] = "D:0700"
                     pending.append(path)
                     continue
                 if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
@@ -257,7 +260,8 @@ def _inventory(destination: Path) -> dict[str, str]:
                     if (after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (
                             opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns):
                         raise ValueError("Rollback candidate changed during hashing")
-                result["/".join(parts)] = digest
+                result["/".join(parts)] = (
+                    "F:" + format(stat.S_IMODE(opened.st_mode), "04o") + ":" + digest)
         if section == "source" and count < 1:
             raise ValueError("Rollback candidate contains no source")
         if section == "state" and "state/domains.sqlite3" not in result:
@@ -308,8 +312,10 @@ def inspect(destination: Path) -> dict[str, object]:
     inventory = _inventory(destination)
     if meta["inventory"] != inventory:
         raise ValueError("Rollback candidate files changed since staging")
-    if (sum(k.startswith("source/") for k in inventory) != meta["source_files"]
-            or sum(k.startswith("state/") for k in inventory) != meta["state_files"]):
+    if (sum(k.startswith("source/") and value.startswith("F:")
+            for k, value in inventory.items()) != meta["source_files"]
+            or sum(k.startswith("state/") and value.startswith("F:")
+                   for k, value in inventory.items()) != meta["state_files"]):
         raise ValueError("Rollback candidate file counts differ")
     # Verify staged policy DB and opt-in nonsecret JSON schemas as well as
     # their hashes. No staged Python or subprocesses are ever executed.
@@ -359,6 +365,8 @@ def prepare(target: str, archive: Path, destination: Path,
                 "ready_for_live_use": False,
                 "inventory": _inventory(destination)}
         data = (json.dumps(meta, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        if len(data) > 1_000_000:
+            raise ValueError("Rollback candidate inventory exceeds manifest limit")
         fd = os.open(destination / "candidate.json",
                      os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, 0o600)
         with os.fdopen(fd, "wb") as output:
