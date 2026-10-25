@@ -10,7 +10,7 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-_SHA = re.compile(r"[0-9a-f]{40,64}\\Z")
+_SHA = re.compile(r"[0-9a-f]{40,64}\Z")
 
 
 def local_revision(root: Path | None = None) -> str:
