@@ -370,7 +370,7 @@ class SetupWizardTests(unittest.TestCase):
         self.assertEqual(code, 1)
         report = json.loads(output)
         self.assertEqual(report["status"], "failed")
-        self.assertIn("inspect the destination", report["note"])
+        self.assertIn("verify the destination", report["note"])
         self.assertNotIn("NEVER_PRINT_DESTINATION", output)
         self.assertNotIn("Traceback", output)
 
