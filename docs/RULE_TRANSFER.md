@@ -50,6 +50,8 @@ timestamps, expired rules, duplicates, and unknown JSON fields are rejected.
 Limits: 250 rules and 48 KB. An oversized export fails explicitly rather
 than truncating the rule set.
 
-**Not a full backup:** this does not preserve all application state or
-secrets. Full backup/restore is tracked under issue #15. Nonsecret settings
-editing and read-only service status remain separate issue #13 work.
+**Not a full backup:** this transfer does not preserve all application state
+or secrets. Private state backups are documented in [BACKUP.md](../BACKUP.md)
+(issue #15). Nonsecret history/upstream/cache editing, validated one-profile
+settings transfer, and read-only service/port/limit status are available as
+separate local dashboard pages (see [CONFIGURATION.md](CONFIGURATION.md)).
