@@ -127,9 +127,11 @@ class MaintenanceGateTests(unittest.TestCase):
         self.states[unit]["DropInPaths"] = str(guard) + " /etc/systemd/foreign.conf"
         self.assertFalse(self.inspect()["ready_for_offline_maintenance"])
 
-    def test_failed_oneshot_is_stopped_but_activation_remains_blocked(self):
+    def test_failed_oneshot_requires_explicit_reset_before_maintenance(self):
         self.states["local-search-mcp-update.service"] = {
             "ActiveState": "failed", "UnitFileState": "static"}
+        self.assertFalse(self.inspect()["ready_for_offline_maintenance"])
+        self.states["local-search-mcp-update.service"]["ActiveState"] = "inactive"
         self.assertTrue(self.inspect()["ready_for_offline_maintenance"])
         self.states["local-search-mcp-update.timer"] = {"UnitFileState": "enabled"}
         self.assertFalse(self.inspect()["ready_for_offline_maintenance"])
