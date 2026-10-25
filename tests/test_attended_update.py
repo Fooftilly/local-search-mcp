@@ -166,7 +166,7 @@ class AttendedUpdateTests(unittest.TestCase):
 
     def test_foreign_unit_fails_before_any_mutation(self):
         folder = self.root / "config" / "systemd" / "user"
-        folder.mkdir(parents=True)
+        folder.mkdir(parents=True, exist_ok=True)
         unit = folder / app.WATCHERS[0]
         unit.write_text("# An unrelated user's unit\n")
         with (patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.root / "config")}),
