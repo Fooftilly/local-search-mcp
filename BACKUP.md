@@ -285,3 +285,34 @@ code revisions, install/reinstall dependencies, alter live state, stop/start
 services, or claim a deployable rollback. Passing verification leaves
 `ready_for_live_use: false`; test and review the complete live cutover
 separately before restoring any running installation.
+
+
+## Read-only stopped-state gate before host maintenance
+
+After stopping and disabling project-owned services by your existing reviewed
+procedure, check their *effective* systemd user unit identity and status:
+
+```sh
+python3 scripts/maintenance_readiness.py --candidate \
+  "$HOME/.local/state/local-search-mcp-rollback/candidate-1"
+```
+
+This gate checks only the known project-owned bridge/tunnel, update watcher,
+health timer and guard-probe user units. Every installed file must carry the
+managed marker, be user-owned and not symlinked or group/world-writable;
+the systemd manager must point to the same effective file without a drop-in.
+Every loaded unit must be inactive and have no enabled trigger, and the
+on-demand wake preference must be disabled. Missing units are accepted only
+when systemd also reports them not found. The candidate is re-verified
+read-only when specified. Errors are redacted; an unknown systemd bus,
+unrecognized override, active tunnel, unverified unit or invalid candidate
+returns nonzero.
+
+**This result is a point-in-time observation, not a service lock or rollback
+authorization.** External agents, timers, and logins can change status
+immediately afterward. Do not treat it as permission to replace a state DB
+or to run historical application code. The root-owned egress firewall,
+Docker backends, tunnel credentials, custom history locations and service
+restart sequencing are outside this command's scope. No systemctl action,
+Docker command, file modification or automatic update is performed. A
+reviewed live cutover and failure-recovery drill remain outstanding for #15.
