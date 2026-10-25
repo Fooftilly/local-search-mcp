@@ -40,7 +40,10 @@ def _private_dir(path: Path) -> None:
 
 
 def _read_file(path: Path, *, limit: int) -> bytes:
-    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | NOFOLLOW)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | NOFOLLOW)
+    except OSError as exc:
+        raise ValueError("Private recovery file unavailable") from exc
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
@@ -90,7 +93,10 @@ def _maintenance_ready(candidate: Path) -> None:
 
 
 def _archive_identity(path: Path) -> tuple[str, int, int]:
-    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | NOFOLLOW)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | NOFOLLOW)
+    except OSError as exc:
+        raise ValueError("Private recovery file unavailable") from exc
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
@@ -98,11 +104,22 @@ def _archive_identity(path: Path) -> tuple[str, int, int]:
                 or not 0 < info.st_size <= backup_state.MAX_ARCHIVE):
             raise ValueError("Recovery archive is not private or is oversized")
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        # Keep the original validated file descriptor open across the ZIP
+        # validation by pathname; then re-hash the *same inode* and check
+        # that its pathname, size and modification metadata still match.
+        # Reject concurrent replacement rather than binding the manifest to
+        # different bytes than those passed through the archive validator.
+        payload = backup_state.verified_payload(path)
+        stream.seek(0)
+        after_digest = hashlib.file_digest(stream, "sha256").hexdigest()
         after = os.fstat(stream.fileno())
-        if (info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (
-                after.st_size, after.st_mtime_ns, after.st_ctime_ns):
-            raise ValueError("Recovery archive changed while hashing")
-    payload = backup_state.verified_payload(path)
+        named = path.lstat()
+        if (digest != after_digest
+                or (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino)
+                or (after.st_dev, after.st_ino) != (info.st_dev, info.st_ino)
+                or (info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (
+                    after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+            raise ValueError("Recovery archive changed during validation")
     return digest, info.st_size, len(payload)
 
 
@@ -221,7 +238,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--destination", type=Path)
     parser.add_argument("--inspect", dest="inspect_path", type=Path)
     args = parser.parse_args(argv)
-    if bool(args.inspect_path) == bool(args.candidate and args.destination):
+    if args.inspect_path is not None:
+        if args.destination is not None:
+            parser.error("--destination cannot be combined with --inspect")
+    elif args.candidate is None or args.destination is None:
         parser.error("Select either --inspect or both --candidate and --destination")
     try:
         report = (inspect(args.inspect_path, candidate=args.candidate)
