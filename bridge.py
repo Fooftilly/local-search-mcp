@@ -194,9 +194,16 @@ def _run_search_network(params: dict, max_results: int, *,
             continue
         try:
             url.encode("utf-8", errors="strict")
+            parsed = urlsplit(url)
             if (normalized_url(url) is None
-                    or urlsplit(url).port not in (None, 80, 443)):
+                    or parsed.port not in (None, 80, 443)):
                 continue
+            # Match web_fetch's local domain-policy validation without
+            # queuing an approval request or performing a DNS lookup.
+            hostname = parsed.hostname or ""
+            if hostname != hostname.strip():
+                continue
+            domain_policy.normalize_domain(hostname)
         except (UnicodeError, ValueError):
             continue
         valid_rows.append(row)
