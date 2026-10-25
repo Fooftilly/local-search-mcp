@@ -97,8 +97,11 @@ application's real policy, history and nonsecret settings readers under
 isolated XDG directories. Alternatively, choose interactive menu option 15,
 provide the path and select VERIFY (default) or SMOKE. Neither operation
 creates a backup, replaces active files, installs services or activates a
-rollback. The JSON result contains only aggregate counts or a generic
-failure message, never file paths, approvals, search terms or credentials.
+rollback. The JSON result contains status/safety flags and aggregate counts (file
+count for verification; total policies and at most 25 recent indexed events
+for the smoke test) or a generic failure message, never file paths, approvals,
+search terms or credentials. These bounded event counts do not prove full
+historical recovery.
 Invalid/private-ownership archives fail with a nonzero CLI exit code.
 Archives themselves can contain sensitive history: keep them on trusted
 private storage and refer to [BACKUP.md](BACKUP.md) for compatibility limits.
