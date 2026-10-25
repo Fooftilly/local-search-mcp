@@ -1,8 +1,9 @@
 """Offline rollback candidate preparation; tests never change live worktrees."""
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, redirect_stderr, redirect_stdout
 import json
+import io
 import os
 from pathlib import Path
 import sqlite3
@@ -73,6 +74,180 @@ class RollbackCandidateTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(
             (self.dir / "state" / "domains.sqlite3").stat().st_mode), 0o600)
         self.assertEqual(json.loads((self.dir / "candidate.json").read_text()), report)
+
+    def test_candidate_inventory_is_private_and_read_only(self):
+        from scripts import verify_rollback_candidate
+        with patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)):
+            report = candidate.prepare(self.target, self.archive, self.dir,
+                                       root=self.root)
+        self.assertEqual(report["schema"], "local-search-mcp/rollback-candidate/v2")
+        self.assertEqual(set(report["inventory"]), {
+            "source/bridge.py", "source/requirements.txt", "source/start.sh",
+            "state/domains.sqlite3",
+        })
+        with (patch.object(candidate.update, "restart",
+                           side_effect=AssertionError("must not restart")),
+              patch.object(candidate.update, "write_state",
+                           side_effect=AssertionError("must not write baseline")),
+              patch.object(candidate, "_copy_git_blobs",
+                           side_effect=AssertionError("must not access Git")),
+              patch.object(verify_rollback_candidate.os, "geteuid", return_value=1000),
+              redirect_stdout(io.StringIO()) as output,
+              redirect_stderr(io.StringIO()) as errors):
+            self.assertEqual(verify_rollback_candidate.main([str(self.dir)]), 0,
+                             errors.getvalue())
+        result = json.loads(output.getvalue())
+        self.assertTrue(result["integrity_verified"])
+        self.assertFalse(result["activation_performed"])
+        self.assertFalse(result["ready_for_live_use"])
+        self.assertNotIn(str(self.archive), output.getvalue())
+        self.assertNotIn(str(self.root), output.getvalue())
+
+    def test_inventory_rejects_source_edits_symlink_and_extra_file(self):
+        from scripts import verify_rollback_candidate
+        with patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)):
+            candidate.prepare(self.target, self.archive, self.dir, root=self.root)
+        source = self.dir / "source" / "bridge.py"
+        original = source.read_bytes()
+        source.write_bytes(original + b"unexpected")
+        with self.assertRaisesRegex(ValueError, "changed"):
+            candidate.inspect(self.dir)
+        source.write_bytes(original)
+        self.assertTrue(candidate.inspect(self.dir)["integrity_verified"])
+        executable = self.dir / "source" / "start.sh"
+        executable.chmod(0o600)
+        with self.assertRaisesRegex(ValueError, "changed"):
+            candidate.inspect(self.dir)
+        executable.chmod(0o700)
+        extra_dir = self.dir / "source" / "unexpected_empty_dir"
+        extra_dir.mkdir(mode=0o700)
+        with self.assertRaisesRegex(ValueError, "changed"):
+            candidate.inspect(self.dir)
+        extra_dir.rmdir()
+        source.unlink()
+        source.symlink_to(self.root / "bridge.py")
+        with self.assertRaisesRegex(ValueError, "unsafe"):
+            candidate.inspect(self.dir)
+        source.unlink()
+        source.write_bytes(original)
+        source.chmod(0o600)
+        unexpected = self.dir / "state" / "config.json"
+        unexpected.write_text('{"token":"MUST_NOT_READ"}')
+        unexpected.chmod(0o600)
+        with self.assertRaisesRegex(ValueError, "unexpected"):
+            candidate.inspect(self.dir)
+        unexpected.unlink()
+        outside = self.base / "PRIVATE_INTERNAL_ARCHIVE_PATH.zip"
+        with (patch.object(verify_rollback_candidate.os, "geteuid", return_value=1000),
+              redirect_stderr(io.StringIO()) as errors):
+            self.assertEqual(verify_rollback_candidate.main([str(outside)]), 1)
+        self.assertNotIn(str(outside), errors.getvalue())
+
+    def test_inventory_rejects_tampered_policy_permissions_and_manifest(self):
+        with patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)):
+            candidate.prepare(self.target, self.archive, self.dir, root=self.root)
+        db = self.dir / "state" / "domains.sqlite3"
+        db.chmod(0o644)
+        with self.assertRaisesRegex(ValueError, "unsafe"):
+            candidate.inspect(self.dir)
+        db.chmod(0o600)
+        db.write_bytes(b"not a database")
+        with self.assertRaises(ValueError):
+            candidate.inspect(self.dir)
+        # Even a rewritten manifest must use the current staging schema.
+        metadata = self.dir / "candidate.json"
+        doc = json.loads(metadata.read_text())
+        doc["schema"] = "local-search-mcp/rollback-candidate/v1"
+        metadata.write_text(json.dumps(doc))
+        with self.assertRaisesRegex(ValueError, "unsupported fields"):
+            candidate.inspect(self.dir)
+
+    def test_nested_source_parents_created_private_with_usual_umask(self):
+        self.git("checkout", "-q", "--detach", self.target)
+        deep = self.root / "nested" / "inner" / "module.py"
+        deep.parent.mkdir(parents=True)
+        deep.write_text("print('historical fixture')\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "nested historical source")
+        target = self.git("rev-parse", "HEAD")
+        destination = self.base / "private-raw-copy"
+        destination.mkdir(mode=0o700)
+        old_mask = os.umask(0o022)
+        try:
+            files = candidate._copy_git_blobs(self.root, target, destination)
+        finally:
+            os.umask(old_mask)
+        self.assertGreaterEqual(files, 4)
+        for folder in (destination / "nested", destination / "nested" / "inner"):
+            self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o700)
+
+    def test_inspection_uses_dir_handles_and_opens_staged_state_once(self):
+        with patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)):
+            candidate.prepare(self.target, self.archive, self.dir, root=self.root)
+        original_open = os.open
+        original_scan = os.scandir
+        with (patch.object(candidate.os, "open", wraps=original_open) as opens,
+              patch.object(candidate.os, "scandir", wraps=original_scan) as scans):
+            result = candidate.inspect(self.dir)
+        self.assertTrue(result["integrity_verified"])
+        self.assertTrue(scans.call_args_list)
+        # SQLite's isolated verification may legitimately scandir its own
+        # temporary path; only assert candidate traversal uses dir handles.
+        self.assertGreaterEqual(
+            sum(isinstance(call.args[0], int) for call in scans.call_args_list), 2)
+        db_opens = [call for call in opens.call_args_list
+                    if call.args and call.args[0] == "domains.sqlite3"]
+        self.assertEqual(len(db_opens), 1)
+        self.assertIsInstance(db_opens[0].kwargs.get("dir_fd"), int)
+
+    def test_malicious_deeply_nested_manifest_is_redacted(self):
+        from scripts import verify_rollback_candidate
+        with patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)):
+            candidate.prepare(self.target, self.archive, self.dir, root=self.root)
+        manifest = self.dir / "candidate.json"
+        manifest.write_text("[" * 600 + '"SECRET_INTERNAL_DATA"' + "]" * 600)
+        manifest.chmod(0o600)
+        with (patch.object(verify_rollback_candidate.os, "geteuid", return_value=1000),
+              redirect_stdout(io.StringIO()) as output,
+              redirect_stderr(io.StringIO()) as errors):
+            self.assertEqual(verify_rollback_candidate.main([str(self.dir)]), 1)
+        self.assertEqual(output.getvalue(), "")
+        self.assertNotIn("SECRET_INTERNAL_DATA", errors.getvalue())
+        self.assertNotIn(str(self.dir), errors.getvalue())
+
+    def test_wide_source_tree_verifies_with_low_fd_budget(self):
+        import resource
+        with patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)):
+            def stage_many(_root, _target, directory):
+                for index in range(300):
+                    child = directory / ("sub" + str(index))
+                    child.mkdir(mode=0o700)
+                    file = child / "part.py"
+                    file.write_text("VALUE = 1\n")
+                    file.chmod(0o600)
+                return 300
+            with patch.object(candidate, "_copy_git_blobs",
+                              side_effect=stage_many):
+                candidate.prepare(self.target, self.archive, self.dir, root=self.root)
+        before = resource.getrlimit(resource.RLIMIT_NOFILE)
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (min(before[0], 64), before[1]))
+            report = candidate.inspect(self.dir)
+        finally:
+            resource.setrlimit(resource.RLIMIT_NOFILE, before)
+        self.assertTrue(report["integrity_verified"])
+        self.assertEqual(report["source_files"], 300)
+
+    def test_oversize_candidate_inventory_refuses_stage_without_leaks(self):
+        giant = {"source/" + str(i).zfill(6) + "-" + "x" * 500:
+                 "F:0600:" + "f" * 64 for i in range(3500)}
+        with (patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)),
+              patch.object(candidate, "_inventory", return_value=giant)):
+            with self.assertRaisesRegex(ValueError, "manifest limit"):
+                candidate.prepare(self.target, self.archive, self.dir,
+                                  root=self.root)
+        self.assertFalse(self.dir.exists())
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.current)
 
     def test_failure_cleans_new_candidate_without_touching_checkout(self):
         with (patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)),
@@ -157,6 +332,32 @@ class RollbackCandidateTests(unittest.TestCase):
         self.assertFalse(marker.exists(), "Raw blob staging executed a smudge command")
         self.assertEqual((self.dir / "source" / "bridge.py").read_text(),
                          "old behavior\n")
+
+    def test_cli_staging_summary_never_prints_private_inventory(self):
+        private = "NEVER_PRINT_SOURCE_SECRET_FILE.txt"
+        report = {
+            "schema": "local-search-mcp/rollback-candidate/v2",
+            "source_commit": self.current,
+            "target_commit": self.target,
+            "source_files": 1,
+            "state_files": 1,
+            "activation_performed": False,
+            "ready_for_live_use": False,
+            "inventory": {"source/" + private: "F:0600:" + "a" * 64},
+        }
+        with (patch.object(candidate, "prepare", return_value=report),
+              redirect_stdout(io.StringIO()) as output,
+              redirect_stderr(io.StringIO()) as errors):
+            self.assertEqual(candidate.main([
+                "--target", self.target, "--archive", str(self.archive),
+                "--destination", str(self.dir), "--confirm", "STAGE"]), 0)
+        self.assertEqual(errors.getvalue(), "")
+        printed = json.loads(output.getvalue())
+        self.assertEqual(set(printed), {
+            "schema", "source_files", "state_files",
+            "activation_performed", "ready_for_live_use"})
+        self.assertNotIn(private, output.getvalue())
+        self.assertNotIn(self.target, output.getvalue())
 
     def test_cli_never_applies_unconfirmed_rollback(self):
         with patch.object(candidate, "prepare",

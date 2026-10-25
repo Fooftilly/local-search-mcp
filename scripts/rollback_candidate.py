@@ -177,8 +177,19 @@ def _copy_git_blobs(root: Path, target: str, destination: Path) -> int:
             total += len(data)
             if total > MAX_TOTAL_SOURCE:
                 raise ValueError("Tracked source exceeds total size limit")
+            if len("source/" + "/".join(parts)) > 1024:
+                raise ValueError("Tracked source path is too long")
             output_path = destination.joinpath(*parts)
-            output_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            parent = destination
+            for component in parts[:-1]:
+                parent = parent / component
+                if not parent.exists() and not parent.is_symlink():
+                    parent.mkdir(mode=0o700)
+                info = parent.lstat()
+                if (not stat.S_ISDIR(info.st_mode)
+                        or info.st_uid != os.getuid()
+                        or stat.S_IMODE(info.st_mode) != 0o700):
+                    raise ValueError("Unsafe rollback source parent directory")
             fd = os.open(output_path,
                          os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
                          0o700 if mode == b"100755" else 0o600)
@@ -189,6 +200,186 @@ def _copy_git_blobs(root: Path, target: str, destination: Path) -> int:
 
     walk(tree_oid, (), 0)
     return count
+
+
+
+def _inventory(destination: Path) -> dict[str, str]:
+    """Verify a private staged tree with retained no-follow directory handles.
+
+    Visit each directory depth-first: at most the capped tree depth remains
+    open, so a wide Git tree does not exhaust file descriptors.
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW
+    result: dict[str, str] = {}
+    visits = 0
+    root_fd = os.open(destination, flags)
+    try:
+        root_info = os.fstat(root_fd)
+        if (not stat.S_ISDIR(root_info.st_mode)
+                or root_info.st_uid != os.getuid()
+                or root_info.st_mode & 0o077):
+            raise ValueError("Rollback candidate root is unsafe")
+        for section in ("source", "state"):
+            count = 0
+            total = 0
+
+            def visit(dir_fd: int, folder_parts: tuple[str, ...]) -> None:
+                nonlocal visits, count, total
+                folder_info = os.fstat(dir_fd)
+                if (not stat.S_ISDIR(folder_info.st_mode)
+                        or folder_info.st_uid != os.getuid()
+                        or stat.S_IMODE(folder_info.st_mode) != 0o700):
+                    raise ValueError("Rollback candidate has an unsafe directory")
+                visits += 1
+                if visits > MAX_TREE_ENTRIES:
+                    raise ValueError("Rollback candidate has too many entries")
+                with os.scandir(dir_fd) as entries:
+                    for entry in entries:
+                        parts = (*folder_parts, entry.name)
+                        key = "/".join(parts)
+                        _valid_member(key)
+                        if len(parts) > 26:
+                            raise ValueError("Rollback candidate path is too deep")
+                        info = os.stat(entry.name, dir_fd=dir_fd,
+                                       follow_symlinks=False)
+                        if stat.S_ISDIR(info.st_mode) and section == "source":
+                            child_fd = os.open(entry.name, flags, dir_fd=dir_fd)
+                            try:
+                                opened = os.fstat(child_fd)
+                                if ((opened.st_dev, opened.st_ino) !=
+                                        (info.st_dev, info.st_ino)
+                                        or opened.st_uid != os.getuid()
+                                        or stat.S_IMODE(opened.st_mode) != 0o700):
+                                    raise ValueError("Rollback candidate directory changed")
+                                result[key + "/"] = "D:0700"
+                                visit(child_fd, parts)
+                            finally:
+                                os.close(child_fd)
+                            continue
+                        if (not stat.S_ISREG(info.st_mode)
+                                or info.st_uid != os.getuid()
+                                or info.st_mode & 0o077 or info.st_nlink != 1):
+                            raise ValueError("Rollback candidate contains an unsafe file")
+                        if section == "state" and (
+                                len(parts) != 2
+                                or parts[1] not in backup_state.ALLOWED_FILES):
+                            raise ValueError("Rollback candidate has unexpected state file")
+                        limit = (MAX_INDIVIDUAL if section == "source" else
+                                 backup_state.MAX_DB_FILE
+                                 if parts[1] == backup_state.DB_NAME else
+                                 backup_state.MAX_SETTINGS_FILE
+                                 if parts[1] in backup_state.SETTINGS_NAMES else
+                                 backup_state.MAX_HISTORY_FILE)
+                        if info.st_size > limit:
+                            raise ValueError("Rollback candidate file exceeds size limit")
+                        count += 1
+                        total += info.st_size
+                        if (count > (MAX_FILES if section == "source"
+                                     else len(backup_state.ALLOWED_FILES))
+                                or total > (MAX_TOTAL_SOURCE if section == "source"
+                                           else backup_state.MAX_TOTAL)):
+                            raise ValueError("Rollback candidate exceeds size limits")
+                        fd = os.open(entry.name, os.O_RDONLY | _NOFOLLOW,
+                                     dir_fd=dir_fd)
+                        with os.fdopen(fd, "rb") as stream:
+                            opened = os.fstat(stream.fileno())
+                            if (not stat.S_ISREG(opened.st_mode)
+                                    or opened.st_uid != os.getuid()
+                                    or opened.st_mode & 0o077 or opened.st_nlink != 1
+                                    or (opened.st_dev, opened.st_ino, opened.st_size)
+                                    != (info.st_dev, info.st_ino, info.st_size)):
+                                raise ValueError("Rollback candidate changed during inspection")
+                            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                            if section == "state" and (
+                                    parts[1] == backup_state.DB_NAME
+                                    or parts[1] in backup_state.SETTINGS_NAMES):
+                                stream.seek(0)
+                                content = stream.read(limit + 1)
+                                if len(content) > limit:
+                                    raise ValueError("Rollback state exceeds size limit")
+                                if parts[1] == backup_state.DB_NAME:
+                                    backup_state._verify_sqlite(content)
+                                else:
+                                    backup_state._verify_nonsecret_setting(parts[1], content)
+                            after = os.fstat(stream.fileno())
+                            if (after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (
+                                    opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns):
+                                raise ValueError("Rollback candidate changed during hashing")
+                        result[key] = ("F:" + format(stat.S_IMODE(opened.st_mode),
+                                                     "04o") + ":" + digest)
+
+            section_fd = os.open(section, flags, dir_fd=root_fd)
+            try:
+                visit(section_fd, (section,))
+            finally:
+                os.close(section_fd)
+            if section == "source" and count < 1:
+                raise ValueError("Rollback candidate contains no source")
+            if section == "state" and "state/domains.sqlite3" not in result:
+                raise ValueError("Rollback candidate is missing policy state")
+    finally:
+        os.close(root_fd)
+    return dict(sorted(result.items()))
+
+def inspect(destination: Path) -> dict[str, object]:
+    """Read-only candidate integrity audit, never executing staged code."""
+    info = destination.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o077):
+        raise ValueError("Rollback candidate must be an owned private directory")
+    if {p.name for p in destination.iterdir()} != {
+            "source", "state", "candidate.json"}:
+        raise ValueError("Rollback candidate has unexpected entries")
+    manifest = destination / "candidate.json"
+    candidate_info = manifest.lstat()
+    if (not stat.S_ISREG(candidate_info.st_mode)
+            or candidate_info.st_uid != os.getuid()
+            or candidate_info.st_mode & 0o077 or candidate_info.st_nlink != 1
+            or candidate_info.st_size > 1_000_000):
+        raise ValueError("Rollback candidate manifest must be a private regular file")
+    fd = os.open(manifest, os.O_RDONLY | _NOFOLLOW)
+    with os.fdopen(fd, "rb") as stream:
+        if os.fstat(stream.fileno()).st_ino != candidate_info.st_ino:
+            raise ValueError("Rollback candidate manifest changed")
+        raw = stream.read(1_000_001)
+    if len(raw) > 1_000_000:
+        raise ValueError("Rollback candidate manifest is too large")
+    try:
+        meta = json.loads(raw)
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError("Rollback candidate manifest is malformed") from exc
+    expected = {"schema", "source_commit", "target_commit", "source_files",
+                "state_files", "activation_performed", "ready_for_live_use",
+                "inventory"}
+    if (type(meta) is not dict or set(meta) != expected
+            or meta["schema"] != "local-search-mcp/rollback-candidate/v2"
+            or type(meta["source_files"]) is not int
+            or type(meta["state_files"]) is not int
+            or meta["activation_performed"] is not False
+            or meta["ready_for_live_use"] is not False
+            or any(not isinstance(meta[k], str) or not _OID.fullmatch(meta[k])
+                   for k in ("source_commit", "target_commit"))
+            or type(meta["inventory"]) is not dict):
+        raise ValueError("Rollback candidate manifest has unsupported fields")
+    inventory = _inventory(destination)
+    if meta["inventory"] != inventory:
+        raise ValueError("Rollback candidate files changed since staging")
+    if (sum(k.startswith("source/") and value.startswith("F:")
+            for k, value in inventory.items()) != meta["source_files"]
+            or sum(k.startswith("state/") and value.startswith("F:")
+                   for k, value in inventory.items()) != meta["state_files"]):
+        raise ValueError("Rollback candidate file counts differ")
+    # The exact validated descriptors are checked inside _inventory.
+    # Never reopen a staged pathname after the symlink/owner checks.
+    return {
+        "source_files": meta["source_files"],
+        "state_files": meta["state_files"],
+        "integrity_verified": True,
+        "activation_performed": False,
+        "ready_for_live_use": False,
+        "reason": "Source dependencies, historical settings and service cutover "
+                  "require separate offline and host validation",
+    }
 
 
 def prepare(target: str, archive: Path, destination: Path,
@@ -213,13 +404,16 @@ def prepare(target: str, archive: Path, destination: Path,
                 update.busy(root, read_only=True)
                 or not rollback_preflight._clean_checkout(root)):
             raise ValueError("Source checkout changed while preparing rollback")
-        meta = {"schema": "local-search-mcp/rollback-candidate/v1",
+        meta = {"schema": "local-search-mcp/rollback-candidate/v2",
                 "source_commit": source_head, "target_commit": target,
                 "source_files": files,
                 "state_files": len(backup_state.verified_payload(archive)),
                 "activation_performed": False,
-                "ready_for_live_use": False}
+                "ready_for_live_use": False,
+                "inventory": _inventory(destination)}
         data = (json.dumps(meta, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        if len(data) > 1_000_000:
+            raise ValueError("Rollback candidate inventory exceeds manifest limit")
         fd = os.open(destination / "candidate.json",
                      os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, 0o600)
         with os.fdopen(fd, "wb") as output:
@@ -256,7 +450,13 @@ def main(argv: list[str] | None = None) -> int:
             if args.confirm != "STAGE":
                 raise ValueError("Type --confirm STAGE to create a candidate")
             report = prepare(args.target, args.archive, args.destination)
-            print(json.dumps(report, sort_keys=True))
+            # The full private inventory belongs only in candidate.json.
+            # Do not expose tracked source filenames, file hashes or paths
+            # through terminal logs / automated agent transcripts.
+            summary = {name: report[name] for name in (
+                "schema", "source_files", "state_files",
+                "activation_performed", "ready_for_live_use")}
+            print(json.dumps(summary, sort_keys=True))
         return 0
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print("Rollback candidate not prepared: " + type(exc).__name__,

@@ -218,10 +218,16 @@ python3 scripts/rollback_candidate.py --target YOUR_FULL_LOCAL_COMMIT_SHA --arch
 ```
 
 If that succeeds, make a **new** private destination under an existing
-owner-only `0700` parent (the destination itself must not exist):
+owner-only `0700` parent (the destination itself must not exist).
+Create a private parent **only if it does not exist**; otherwise check its
+ownership and mode and refuse symlinks before proceeding:
 
 ```sh
-python3 scripts/rollback_candidate.py --target YOUR_FULL_LOCAL_COMMIT_SHA --archive "$HOME/local-search-state-2026.zip" --destination "$HOME/.local/state/rollback-candidate-1" --confirm STAGE
+private_parent="$HOME/.local/state/local-search-mcp-rollback"
+if [ ! -e "$private_parent" ]; then mkdir -m 700 "$private_parent"; fi
+# If the parent exists, confirm it is a real directory owned by you (0700).
+# Always choose a NEW candidate destination for subsequent staging runs.
+python3 scripts/rollback_candidate.py --target YOUR_FULL_LOCAL_COMMIT_SHA --archive "$HOME/local-search-state-2026.zip" --destination "$HOME/.local/state/local-search-mcp-rollback/candidate-1" --confirm STAGE
 ```
 
 The command copies only the target's locally available *tracked source files*
@@ -232,7 +238,8 @@ invoke configured smudge filters or other operator hooks. It never executes
 content filters, runs older code, or installs dependencies. The independently verified recovery data goes
 to `state/` through the same no-clobber owner-only restore mechanism used
 elsewhere. An owner-only `candidate.json` records exact source/target
-commits, file counts and the explicit `ready_for_live_use: false` flag.
+commits, file hashes and modes, directories, file counts and the explicit
+`ready_for_live_use: false` flag.
 No launcher credential, tunnel profile, `.venv`, live checkout file, Git HEAD,
 service, daemon, Docker container or auto-restart baseline is modified.
 Incomplete staging is removed on errors; an existing candidate is never
@@ -252,3 +259,29 @@ preflight authorizes a live deployment.
 
 Issue #15 remains open until a controlled and operator-tested activation,
 failure rollback and restart procedure has been validated on a real host.
+
+
+## Verifying a private rollback candidate (v2)
+
+After a successful offline `scripts/rollback_candidate.py --confirm STAGE` run,
+validate its exact staged source and recovered data *without running the older code*:
+
+```sh
+python3 scripts/verify_rollback_candidate.py \
+  "$HOME/.local/state/local-search-mcp-rollback/candidate-1"
+```
+
+New candidates record a versioned SHA-256 inventory binding the exact private
+source file modes (including executable bits), expected directory entries and
+state files. Read-only verification refuses changed bytes/modes, added paths,
+symlinks/hardlinks, invalid metadata, invalid database or nonsecret settings,
+and stale legacy v1 candidates. Archives and candidates must remain under
+private, owner-only directories; never upload their history or approvals.
+
+The manifest is an integrity record, **not a signature** and **not proof of
+runtime compatibility** with historical dependencies, the Python venv, tunnel,
+Docker firewall rules or systemd configuration. The verifier does not switch
+code revisions, install/reinstall dependencies, alter live state, stop/start
+services, or claim a deployable rollback. Passing verification leaves
+`ready_for_live_use: false`; test and review the complete live cutover
+separately before restoring any running installation.
