@@ -135,7 +135,7 @@ class BackupTests(unittest.TestCase):
             self.assertGreater(entry.compress_size, 0)
             data = bytearray(self.archive.read_bytes())
             offset = entry.header_offset
-            self.assertEqual(data[offset:offset + 4], b"PK\\x03\\x04")
+            self.assertEqual(data[offset:offset + 4], b"PK\x03\x04")
             name_size, extra_size = struct.unpack_from("<HH", data, offset + 26)
             compressed_at = offset + 30 + name_size + extra_size
             data[compressed_at] = 0x07  # BFINAL=1, BTYPE=3 (reserved/invalid)
