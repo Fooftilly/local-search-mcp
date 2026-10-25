@@ -1,8 +1,9 @@
 """Offline rollback candidate preparation; tests never change live worktrees."""
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, redirect_stderr, redirect_stdout
 import json
+import io
 import os
 from pathlib import Path
 import sqlite3
@@ -73,6 +74,80 @@ class RollbackCandidateTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(
             (self.dir / "state" / "domains.sqlite3").stat().st_mode), 0o600)
         self.assertEqual(json.loads((self.dir / "candidate.json").read_text()), report)
+
+    def test_candidate_inventory_is_private_and_read_only(self):
+        from scripts import verify_rollback_candidate
+        with patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)):
+            report = candidate.prepare(self.target, self.archive, self.dir,
+                                       root=self.root)
+        self.assertEqual(report["schema"], "local-search-mcp/rollback-candidate/v2")
+        self.assertEqual(set(report["inventory"]), {
+            "source/bridge.py", "source/requirements.txt", "source/start.sh",
+            "state/domains.sqlite3",
+        })
+        with (patch.object(candidate.update, "restart",
+                           side_effect=AssertionError("must not restart")),
+              patch.object(candidate.update, "write_state",
+                           side_effect=AssertionError("must not write baseline")),
+              patch.object(candidate, "_copy_git_blobs",
+                           side_effect=AssertionError("must not access Git")),
+              redirect_stdout(io.StringIO()) as output,
+              redirect_stderr(io.StringIO()) as errors):
+            self.assertEqual(verify_rollback_candidate.main([str(self.dir)]), 0,
+                             errors.getvalue())
+        result = json.loads(output.getvalue())
+        self.assertTrue(result["integrity_verified"])
+        self.assertFalse(result["activation_performed"])
+        self.assertFalse(result["ready_for_live_use"])
+        self.assertNotIn(str(self.archive), output.getvalue())
+        self.assertNotIn(str(self.root), output.getvalue())
+
+    def test_inventory_rejects_source_edits_symlink_and_extra_file(self):
+        from scripts import verify_rollback_candidate
+        with patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)):
+            candidate.prepare(self.target, self.archive, self.dir, root=self.root)
+        source = self.dir / "source" / "bridge.py"
+        original = source.read_bytes()
+        source.write_bytes(original + b"unexpected")
+        with self.assertRaisesRegex(ValueError, "changed"):
+            candidate.inspect(self.dir)
+        source.write_bytes(original)
+        self.assertTrue(candidate.inspect(self.dir)["integrity_verified"])
+        source.unlink()
+        source.symlink_to(self.root / "bridge.py")
+        with self.assertRaisesRegex(ValueError, "unsafe"):
+            candidate.inspect(self.dir)
+        source.unlink()
+        source.write_bytes(original)
+        source.chmod(0o600)
+        unexpected = self.dir / "state" / "config.json"
+        unexpected.write_text('{"token":"MUST_NOT_READ"}')
+        with self.assertRaisesRegex(ValueError, "unexpected"):
+            candidate.inspect(self.dir)
+        unexpected.unlink()
+        outside = self.base / "PRIVATE_INTERNAL_ARCHIVE_PATH.zip"
+        with redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(verify_rollback_candidate.main([str(outside)]), 1)
+        self.assertNotIn(str(outside), errors.getvalue())
+
+    def test_inventory_rejects_tampered_policy_permissions_and_manifest(self):
+        with patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)):
+            candidate.prepare(self.target, self.archive, self.dir, root=self.root)
+        db = self.dir / "state" / "domains.sqlite3"
+        db.chmod(0o644)
+        with self.assertRaisesRegex(ValueError, "unsafe"):
+            candidate.inspect(self.dir)
+        db.chmod(0o600)
+        db.write_bytes(b"not a database")
+        with self.assertRaises(ValueError):
+            candidate.inspect(self.dir)
+        # Even a rewritten manifest must use the current staging schema.
+        metadata = self.dir / "candidate.json"
+        doc = json.loads(metadata.read_text())
+        doc["schema"] = "local-search-mcp/rollback-candidate/v1"
+        metadata.write_text(json.dumps(doc))
+        with self.assertRaisesRegex(ValueError, "unsupported fields"):
+            candidate.inspect(self.dir)
 
     def test_failure_cleans_new_candidate_without_touching_checkout(self):
         with (patch.object(candidate.restore_smoke, "smoke", return_value=(1, 0)),
