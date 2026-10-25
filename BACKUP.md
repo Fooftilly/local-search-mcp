@@ -401,3 +401,55 @@ Python imports or schema migrations cause a nonzero failure. The test does
 reboot recovery, or a successful live rollback. The report explicitly
 retains `ready_for_live_use: false`; keep issue #15 open until a
 reviewed reversible cutover and a host-level failure drill pass.
+
+## Seal a verified pre-cutover recovery checkpoint
+
+**Before any live release cutover**, manually bring only the known project
+bridge/tunnel and update triggers into a verified quiescent state; keep Docker,
+the crawler egress firewall, credentials and unrelated units unchanged.
+Run the existing read-only maintenance readiness check first:
+
+```sh
+python3 scripts/maintenance_readiness.py --candidate \
+  "$HOME/.local/state/local-search-mcp-rollback/candidate-1"
+```
+
+From the currently installed, clean checkout (while all known project-owned
+units remain safely inactive/disabled and optional on-demand wake is disabled),
+choose a **new** checkpoint directory under an existing owner-only 0700 parent:
+
+```sh
+mkdir -p -m 700 "$HOME/.local/state/local-search-mcp-recovery"
+python3 scripts/rollback_recovery_checkpoint.py \
+  --candidate "$HOME/.local/state/local-search-mcp-rollback/candidate-1" \
+  --destination "$HOME/.local/state/local-search-mcp-recovery/current-1"
+
+python3 scripts/rollback_recovery_checkpoint.py \
+  --inspect "$HOME/.local/state/local-search-mcp-recovery/current-1" \
+  --candidate "$HOME/.local/state/local-search-mcp-rollback/candidate-1"
+```
+
+The tool **never stops/restarts any service** and does not alter the Git
+checkout, on-disk live state, or a prior checkpoint. It requires the candidate
+inventory to match the exact installed Git revision and strict
+inactive/project-owned systemd gate to pass **both before and after** the
+snapshot. It creates a private ZIP using the existing SQLite-consistent
+snapshot API and allowlisted nonsecret settings, verifies every archive member
+and runs an isolated fresh-install reader smoke test. It then rechecks the
+candidate and checkout, and writes `checkpoint.json` last with a SHA-256
+commitment to the backup, current Git SHA and chosen historical candidate.
+Successful inspection returns `checkpoint_verified: true` but always
+`ready_for_live_use: false`.
+
+A crash or failed gate **before the final manifest** leaves an intentionally
+unsealed directory. Inspection rejects it even if its archive seems valid;
+do not reuse or overwrite it. Investigate and choose a new destination.
+Archives can contain sensitive history/approvals and must remain owner-only.
+Secrets (`config.json`, tunnel credentials and launcher profiles) are **not**
+exported. The checkpoint does not capture service enablement, dependency
+venvs, Docker state, the root-owned egress guard or systemd units.
+
+This is a prerequisite for a future reviewed operator-initiated rollback
+transaction, **not an activation command**. Returning to a working release,
+failed startup, and host crash/reboot recovery must be implemented and
+exercised separately before issue #15 can be closed.
