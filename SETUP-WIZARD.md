@@ -16,6 +16,7 @@ Read-only commands (no prompts, writes, downloads, restarts or root privileges):
 ./setup.sh --client cursor
 ./setup.sh --client hermes
 ./setup.sh --client claude
+./setup.sh --maintenance-versions
 ```
 
 Local integrations for other clients are explicitly opt-in, and the
@@ -73,6 +74,27 @@ or the local approval dashboard on `0.0.0.0`; cloud agents require a separate
 authenticated HTTPS MCP ingress. The OpenAI tunnel is not a generic ingress
 for other providers. No enrollment, credential changes, client installation
 or remote proxy setup is performed by these preview commands.
+
+## Optional maintenance version inventory (issue #74 / #15)
+
+Run `./setup.sh --maintenance-versions` or select interactive option 14
+and press Enter for the **offline default**. The wizard reuses
+`scripts.maintenance_versions.report` to report project-venv dependency
+versions, local Git update baseline, tunnel-client fingerprint and the
+fixed loopback Crawl4AI version/health check. It does not query public
+websites, fetch Git objects, install packages, pull images or restart services.
+
+`./setup.sh --maintenance-versions-remote` requests the existing
+bounded public PyPI release metadata and GitHub release **and repository
+commit** metadata checks (including the public bridge `/commits/master`
+endpoint). Interactive option 14 requires choosing `REMOTE` and then
+typing `PUBLIC` to opt in. A different response cancels without public
+requests. Interrupting an in-flight lookup may leave some public requests
+already sent; it does not apply updates. Public release or revision differences
+are informational only; they do not establish compatibility, availability of
+container images, or safe installation. Neither mode applies upgrades,
+edits credentials, or changes MCP connections. See
+`docs/DEPENDENCY-UPDATES.md` and `BACKUP.md` before any manual update.
 
 For on-demand reboot diagnostics, run `./setup.sh --boot-audit` or
 select interactive option 13. This read-only audit checks the actual

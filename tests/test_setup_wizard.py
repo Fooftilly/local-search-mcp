@@ -30,7 +30,7 @@ class SetupWizardTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as exc:
                 wizard.main(["--help"])
         self.assertEqual(exc.exception.code, 0)
-        for option in ("--check", "--status", "--dry-run", "--chatgpt", "--update-status", "--on-demand-status", "--boot-audit"):
+        for option in ("--check", "--status", "--dry-run", "--chatgpt", "--update-status", "--maintenance-versions", "--maintenance-versions-remote", "--on-demand-status", "--boot-audit"):
             self.assertIn(option, out.getvalue())
         self.assertIn("30 minutes", out.getvalue())
 
@@ -204,7 +204,107 @@ class SetupWizardTests(unittest.TestCase):
             rc, output = self.call("--dry-run")
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(output)["default_client"].split()[0], "ChatGPT")
-        self.assertEqual(len(json.loads(output)["actions"]), 13)
+        self.assertEqual(len(json.loads(output)["actions"]), 14)
+
+    def test_maintenance_versions_cli_offline_by_default_and_remote_explicit(self):
+        inventory = {"schema": "local-search-mcp/maintenance-versions/v1",
+                     "mode": "read-only", "remote_requested": False,
+                     "updates_applied": False}
+        with (patch.object(wizard, "maintenance_versions_report",
+                           return_value=inventory) as check,
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("no child process")),
+              patch.object(wizard, "configure_on_demand",
+                           side_effect=AssertionError("no settings changes"))):
+            status, output = self.call("--maintenance-versions")
+        self.assertEqual(status, 0)
+        check.assert_called_once_with(check_remote=False)
+        self.assertEqual(json.loads(output), inventory)
+
+        inventory["remote_requested"] = True
+        with (patch.object(wizard, "maintenance_versions_report",
+                           return_value=inventory) as remote,
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("no installs"))):
+            status, output = self.call("--maintenance-versions-remote")
+        self.assertEqual(status, 0)
+        remote.assert_called_once_with(check_remote=True)
+        self.assertTrue(json.loads(output)["remote_requested"])
+
+        with self.assertRaises(SystemExit):
+            wizard.make_parser().parse_args([
+                "--maintenance-versions", "--maintenance-versions-remote"])
+
+    def test_maintenance_menu_default_is_offline_no_implicit_public_access(self):
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input", side_effect=["14", "", "0"]),
+              patch.object(wizard, "maintenance_versions_report",
+                           return_value={"mode": "read-only"}) as inventory,
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("no execution")),
+              contextlib.redirect_stdout(io.StringIO()) as out):
+            self.assertEqual(wizard.main([]), 0)
+        inventory.assert_called_once_with(check_remote=False)
+        self.assertIn('"mode": "read-only"', out.getvalue())
+
+    def test_maintenance_menu_cannot_contact_public_without_confirmation(self):
+        for response in ("NO", "", "LATER"):
+            with (self.subTest(response=response),
+                  patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+                  patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch("builtins.input", side_effect=["14", "REMOTE", response, "0"]),
+                  patch.object(wizard, "maintenance_versions_report",
+                               side_effect=AssertionError("no remote query")) as checked,
+                  contextlib.redirect_stdout(io.StringIO()) as out):
+                self.assertEqual(wizard.main([]), 0)
+            checked.assert_not_called()
+            self.assertIn("Cancelled; no public version checks run", out.getvalue())
+
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input", side_effect=["14", "REMOTE", "PUBLIC", "0"]),
+              patch.object(wizard, "maintenance_versions_report",
+                           return_value={"remote_requested": True}) as checker,
+              patch.object(wizard, "run_existing",
+                           side_effect=AssertionError("no install/restart")),
+              contextlib.redirect_stdout(io.StringIO()) as out):
+            self.assertEqual(wizard.main([]), 0)
+        checker.assert_called_once_with(check_remote=True)
+        self.assertIn('"remote_requested": true', out.getvalue())
+
+    def test_interrupted_remote_lookup_does_not_claim_no_network_requests(self):
+        # A KeyboardInterrupt after PUBLIC confirmation can arrive during a
+        # real HTTP request. It must not report that zero lookups occurred.
+        for interrupted in (KeyboardInterrupt, EOFError):
+            with (self.subTest(interrupted=interrupted),
+                  patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+                  patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch("builtins.input", side_effect=["14", "REMOTE", "PUBLIC", "0"]),
+                  patch.object(wizard, "maintenance_versions_report",
+                               side_effect=interrupted) as checked,
+                  patch.object(wizard, "run_existing",
+                               side_effect=AssertionError("no child commands")),
+                  contextlib.redirect_stdout(io.StringIO()) as out):
+                self.assertEqual(wizard.main([]), 0)
+            checked.assert_called_once_with(check_remote=True)
+            self.assertIn("public version lookups may have started", out.getvalue())
+            self.assertNotIn("Cancelled; no public version checks run", out.getvalue())
+
+    def test_remote_menu_interrupted_before_confirmation_does_not_call_checker(self):
+        for inputs in (["14", KeyboardInterrupt(), "0"],
+                       ["14", "REMOTE", KeyboardInterrupt(), "0"]):
+            with (self.subTest(inputs=inputs[:2]),
+                  patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+                  patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch("builtins.input", side_effect=inputs),
+                  patch.object(wizard, "maintenance_versions_report",
+                               side_effect=AssertionError("no lookups")) as check,
+                  contextlib.redirect_stdout(io.StringIO()) as out):
+                self.assertEqual(wizard.main([]), 0)
+            check.assert_not_called()
+            self.assertIn("Cancelled; no public version checks run", out.getvalue())
+            self.assertNotIn("lookups may have started", out.getvalue())
 
     def test_menu_boot_audit_is_read_only(self):
         from scripts import on_demand_boot_audit
