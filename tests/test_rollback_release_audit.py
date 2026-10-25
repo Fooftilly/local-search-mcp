@@ -126,6 +126,37 @@ class HistoricalCompatibilityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "independent"):
             audit._environment(nested, ["httpx>=0.28,<1"], self.candidate)
 
+    def test_virtualenv_must_not_inherit_global_site_packages(self):
+        config = self.python.parent.parent / "pyvenv.cfg"
+        original = config.read_text()
+        try:
+            for setting in ("include-system-site-packages = true\n",
+                            "include-system-site-packages = true\n"
+                            "include-system-site-packages = false\n",
+                            "home=/usr/bin\n"):
+                with self.subTest(setting=setting):
+                    config.write_text(setting)
+                    with patch.object(audit.subprocess, "run",
+                                      side_effect=AssertionError("subprocess forbidden")):
+                        with self.assertRaises(ValueError):
+                            audit._environment(self.python, ["httpx>=0.28,<1"],
+                                               self.candidate)
+        finally:
+            config.write_text(original)
+
+    def test_current_checkout_virtualenv_is_not_independent(self):
+        checkout = self.home / "running-checkout"
+        root = checkout / ".venv"
+        python = root / "bin" / "python"
+        python.parent.mkdir(parents=True)
+        python.write_text("fake interpreter")
+        python.chmod(0o700)
+        (root / "pyvenv.cfg").write_text(
+            "home=/usr/bin\ninclude-system-site-packages = false\n")
+        with patch.object(audit, "ROOT", checkout):
+            with self.assertRaisesRegex(ValueError, "outside the active checkout"):
+                audit._environment(python, ["httpx>=0.28,<1"], self.candidate)
+
     def test_broken_syntax_missing_launcher_and_weak_systemd_fail(self):
         self.put("domain_policy.py", "def initialize(:\n pass\n")
         (self.source / "bootstrap.py").unlink()
