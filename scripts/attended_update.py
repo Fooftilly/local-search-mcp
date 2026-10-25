@@ -178,7 +178,14 @@ def update() -> int:
         print("Already at the reviewed remote revision; no changes made")
         return 0
     count = git("rev-list", "--count", f"{old}..{target}")
+    changed_files = git("diff", "--name-only", old, target).splitlines()
+    if len(changed_files) > 250 or any(
+            len(name) > 300 or any(ord(c) < 32 or ord(c) == 127 for c in name)
+            for name in changed_files):
+        raise UpdateError("Unexpected update file list; review Git changes manually")
     print(f"Proposed fast-forward: {old[:12]} -> {target[:12]} ({count} commits).")
+    for name in changed_files:
+        print(" ", name)
     print("UPDATE stops owned units, disables legacy update watcher, backs up state,")
     print("updates code/dependencies, and restarts only previously active units.")
     print("Temporary downtime is expected. Recovery after a partial update is manual.")
