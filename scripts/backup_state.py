@@ -18,6 +18,7 @@ import sys
 import tempfile
 from urllib.parse import quote
 import zipfile
+import zlib
 
 VERSION = 1
 DB_NAME = "domains.sqlite3"
@@ -308,6 +309,12 @@ def verified_payload(archive_path: Path) -> dict[str, bytes]:
                          MAX_DB_FILE if entry.filename == DB_NAME else
                          MAX_SETTINGS_FILE if entry.filename in SETTINGS_NAMES else
                          MAX_HISTORY_FILE)
+                # Current writer uses DEFLATED; older/test archives may
+                # be STORED. Reject any other method before reading members,
+                # with the same generic error used for corrupt ZIP streams.
+                if entry.compress_type not in (
+                        zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                    raise ValueError("Corrupt backup archive")
                 if (entry.is_dir() or stat.S_IFMT(mode) == stat.S_IFLNK or
                         entry.file_size > limit or entry.flag_bits & 1):
                     raise ValueError("Unsafe backup entry")
@@ -346,7 +353,11 @@ def verified_payload(archive_path: Path) -> dict[str, bytes]:
                 payload[name] = content
             _verify_sqlite(payload[DB_NAME])
             return payload
-    except (zipfile.BadZipFile, json.JSONDecodeError, KeyError, OverflowError) as exc:
+    except (zipfile.BadZipFile, json.JSONDecodeError, KeyError,
+            OverflowError, NotImplementedError, RuntimeError, zlib.error) as exc:
+        # Normalize ZIP read/decompress errors for every consumer (wizard,
+        # direct CLI, restore smoke, rollback preflight). Never echo data
+        # from an attacker-controlled compressed member.
         raise ValueError("Corrupt backup archive") from exc
 
 
