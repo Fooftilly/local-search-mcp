@@ -873,6 +873,9 @@ class SetupWizardTests(unittest.TestCase):
             ({**active, "backends": {
                 "crawl4ai": {"state": "failed"},
                 "searxng": {"state": "running"}}}, "failed"),
+            ({**active, "backends": {
+                "crawl4ai": {"state": "unverified"},
+                "searxng": {"state": "sleeping"}}}, "unverified"),
             ({"mode": "disabled", "enabled": False, "backends": None},
              "unverified"),
             ({"state": "unavailable"}, "unverified"),
@@ -978,6 +981,12 @@ class SetupWizardTests(unittest.TestCase):
                        for service in ("crawl4ai", "searxng")}}
         cases = (
             (200, healthy, "ok"),
+            (200, {**healthy, "backends": {
+                **healthy["backends"],
+                "crawl4ai": {**healthy["backends"]["crawl4ai"],
+                             "state": "unverified", "armed": False,
+                             "last_activity_ago_seconds": None,
+                             "next_idle_stop_seconds": None}}}, "ok"),
             (200, {**healthy, "backends": {
                 **healthy["backends"],
                 "crawl4ai": {**healthy["backends"]["crawl4ai"],

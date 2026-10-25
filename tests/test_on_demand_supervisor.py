@@ -24,6 +24,80 @@ class OnDemandSupervisorTests(unittest.TestCase):
             manager.tracker.arm_running(name)
         return manager
 
+    def test_initial_docker_unavailability_recovers_without_waking(self):
+        """A pre-Docker user bridge start must not leave an enduring false failure."""
+        available = [False]
+
+        def inspect(name):
+            if name == "crawl4ai" and not available[0]:
+                raise LifecycleError("Docker not ready")
+            return Target(name, "a" * 64, False, "no")
+
+        with (patch.object(sup.docker, "_safe_target", side_effect=inspect),
+              patch.object(sup.threading.Thread, "start")):
+            manager = sup.Supervisor(1)
+        self.assertEqual(manager.snapshot()["crawl4ai"]["state"], "unverified")
+        self.assertEqual(manager.snapshot()["searxng"]["state"], "sleeping")
+
+        with (patch.object(manager, "_enabled", return_value=True),
+              patch.object(sup.docker, "_safe_target", side_effect=inspect),
+              patch.object(sup.docker, "start",
+                           side_effect=AssertionError("Passive startup retry woke Docker")),
+              patch.object(sup.docker, "stop",
+                           side_effect=AssertionError("Passive startup retry stopped Docker"))):
+            manager.idle_once()
+            self.assertEqual(manager.snapshot()["crawl4ai"]["state"], "unverified")
+            available[0] = True
+            manager.idle_once()
+        self.assertEqual(manager.snapshot()["crawl4ai"]["state"], "sleeping")
+        self.assertFalse(manager.snapshot()["crawl4ai"]["armed"])
+
+    def test_boot_reconcile_arms_verified_already_running_backend(self):
+        calls = [0]
+
+        def inspect(name):
+            if name == "crawl4ai" and calls[0] == 0:
+                calls[0] += 1
+                raise LifecycleError("Docker not ready")
+            return Target(name, "a" * 64, name == "crawl4ai", "no")
+
+        with (patch.object(sup.docker, "_safe_target", side_effect=inspect),
+              patch.object(sup.threading.Thread, "start")):
+            manager = sup.Supervisor(1)
+        with (patch.object(manager, "_enabled", return_value=True),
+              patch.object(sup.docker, "_safe_target", side_effect=inspect),
+              patch.object(sup.docker, "start",
+                           side_effect=AssertionError("Passive retry must not start Docker")),
+              patch.object(sup.docker, "stop",
+                           side_effect=AssertionError("Passive retry must not stop Docker"))):
+            manager.idle_once()
+        self.assertEqual(manager.snapshot()["crawl4ai"]["state"], "running")
+        self.assertTrue(manager.snapshot()["crawl4ai"]["armed"])
+        # Passive inventory does not grant the 10-second security verification
+        # lease: first actual MCP request must still invoke guarded docker.start.
+        self.assertEqual(manager._verified_at["crawl4ai"], 0.0)
+        with (patch.object(manager, "_enabled", return_value=True),
+              patch.object(sup.time, "monotonic", return_value=5.0),
+              patch.object(sup.docker, "start", return_value=False) as guarded):
+            with manager.lease("crawl4ai"):
+                pass
+        self.assertEqual(guarded.call_count, 1)
+        self.assertIs(guarded.call_args.kwargs["crawler_probe"], sup._probe_crawler)
+
+    def test_actual_wake_failure_not_passively_cleared(self):
+        manager = self.new_supervisor()
+        manager._state["crawl4ai"] = "failed"
+        manager.tracker.disarm("crawl4ai")
+        with (patch.object(manager, "_enabled", return_value=True),
+              patch.object(sup.docker, "_safe_target",
+                           side_effect=AssertionError("Real failure must not be auto-cleared")),
+              patch.object(sup.docker, "start",
+                           side_effect=AssertionError("No autonomous wake")),
+              patch.object(sup.docker, "stop",
+                           side_effect=AssertionError("No autonomous stop"))):
+            manager.idle_once()
+        self.assertEqual(manager.snapshot()["crawl4ai"]["state"], "failed")
+
     def test_disabled_mode_never_instantiates_supervisor(self):
         with (patch.object(sup.settings, "read",
                            return_value={"enabled": False, "idle_minutes": 30}),

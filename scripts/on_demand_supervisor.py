@@ -94,7 +94,9 @@ class Supervisor:
                     self.tracker.arm_running(name)
                     self._state[name] = "running"
             except docker.LifecycleError:
-                self._state[name] = "failed"
+                # The user bridge may start before the system Docker daemon.
+                # Recheck this unverified startup state without waking Docker.
+                self._state[name] = "unverified"
         self._worker = threading.Thread(
             target=self._idle_loop, name="local-search-on-demand-idle", daemon=True)
         self._worker.start()
@@ -118,6 +120,7 @@ class Supervisor:
                 current = self.tracker.snapshot(service)
                 needs_verification = (
                     self._state[service] != "running" or not current["armed"]
+                    or self._verified_at[service] == 0.0
                     or time.monotonic() - self._verified_at[service] >= VERIFY_SECONDS)
                 if needs_verification:
                     # Only Docker transitions share the cross-process lock.
@@ -161,6 +164,20 @@ class Supervisor:
                             self.tracker.disarm(service)
                         except Exception:
                             pass
+                        continue
+                    if self._state[service] == "unverified":
+                        # Passive retry for bootstrap-only inventory failure.
+                        # Real wake/probe failures stay "failed" until a new
+                        # request retries the guarded path.
+                        try:
+                            target = docker._safe_target(service)
+                        except docker.LifecycleError:
+                            continue
+                        if target.running:
+                            self.tracker.arm_running(service)
+                            self._state[service] = "running"
+                        else:
+                            self._state[service] = "sleeping"
                         continue
                     if not self.tracker.claim_idle_stop(service):
                         continue
