@@ -74,13 +74,16 @@ def checkout() -> str:
     return head
 
 
+def unit_file(name: str) -> Path:
+    return (Path(os.environ.get("XDG_CONFIG_HOME") or
+                 str(Path.home() / ".config")) / "systemd" / "user" / name)
+
+
 def approved_units() -> dict[str, bool]:
     """Fail closed for foreign/missing-but-active units before service mutation."""
-    folder = Path(os.environ.get("XDG_CONFIG_HOME") or
-                  str(Path.home() / ".config")) / "systemd" / "user"
     result = {}
     for name in UNITS:
-        path = folder / name
+        path = unit_file(name)
         details = command(["systemctl", "--user", "show", name,
                            "--property=LoadState", "--property=ActiveState",
                            "--property=FragmentPath"])
@@ -205,13 +208,12 @@ def update() -> int:
         for name in WATCHERS:
             # Intentionally retire the watcher even when it was disabled before
             # updating. Reboot must not reenable the old automatic update path.
-            if (Path(os.environ.get("XDG_CONFIG_HOME") or
-                     str(Path.home() / ".config")) / "systemd" / "user" / name).is_file():
+            if unit_file(name).is_file():
                 command(["systemctl", "--user", "disable", "--now", name])
         for name in (HEALTH, *CHECKERS, TUNNEL, BRIDGE):
             # A oneshot checker may start after the initial state inspection.
             # Stop the verified owned checker even if it was previously idle.
-            if units.get(name) or name in CHECKERS:
+            if units.get(name) or (name in CHECKERS and unit_file(name).is_file()):
                 command(["systemctl", "--user", "stop", name])
         ensure_stopped()
         archive = backup_path(old)
