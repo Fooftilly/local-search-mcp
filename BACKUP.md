@@ -223,7 +223,10 @@ Create a private parent **only if it does not exist**; otherwise check its
 ownership and mode and refuse symlinks before proceeding:
 
 ```sh
-mkdir -m 700 "$HOME/.local/state/local-search-mcp-rollback"
+private_parent="$HOME/.local/state/local-search-mcp-rollback"
+if [ ! -e "$private_parent" ]; then mkdir -m 700 "$private_parent"; fi
+# If the parent exists, confirm it is a real directory owned by you (0700).
+# Always choose a NEW candidate destination for subsequent staging runs.
 python3 scripts/rollback_candidate.py --target YOUR_FULL_LOCAL_COMMIT_SHA --archive "$HOME/local-search-state-2026.zip" --destination "$HOME/.local/state/local-search-mcp-rollback/candidate-1" --confirm STAGE
 ```
 
