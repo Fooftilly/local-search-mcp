@@ -177,8 +177,19 @@ def _copy_git_blobs(root: Path, target: str, destination: Path) -> int:
             total += len(data)
             if total > MAX_TOTAL_SOURCE:
                 raise ValueError("Tracked source exceeds total size limit")
+            if len("/".join(parts)) > 1024:
+                raise ValueError("Tracked source path is too long")
             output_path = destination.joinpath(*parts)
-            output_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            parent = destination
+            for component in parts[:-1]:
+                parent = parent / component
+                if not parent.exists() and not parent.is_symlink():
+                    parent.mkdir(mode=0o700)
+                info = parent.lstat()
+                if (not stat.S_ISDIR(info.st_mode)
+                        or info.st_uid != os.getuid()
+                        or stat.S_IMODE(info.st_mode) != 0o700):
+                    raise ValueError("Unsafe rollback source parent directory")
             fd = os.open(output_path,
                          os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
                          0o700 if mode == b"100755" else 0o600)
@@ -256,6 +267,19 @@ def _inventory(destination: Path) -> dict[str, str]:
                             != (info.st_dev, info.st_ino, info.st_size)):
                         raise ValueError("Rollback candidate changed during inspection")
                     digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                    # Validate sensitive state via this exact verified file
+                    # descriptor; never reopen a pathname after hashing.
+                    if section == "state" and (
+                            parts[1] == backup_state.DB_NAME
+                            or parts[1] in backup_state.SETTINGS_NAMES):
+                        stream.seek(0)
+                        content = stream.read(limit + 1)
+                        if len(content) > limit:
+                            raise ValueError("Rollback state exceeds size limit")
+                        if parts[1] == backup_state.DB_NAME:
+                            backup_state._verify_sqlite(content)
+                        else:
+                            backup_state._verify_nonsecret_setting(parts[1], content)
                     after = os.fstat(stream.fileno())
                     if (after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (
                             opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns):
@@ -317,13 +341,8 @@ def inspect(destination: Path) -> dict[str, object]:
             or sum(k.startswith("state/") and value.startswith("F:")
                    for k, value in inventory.items()) != meta["state_files"]):
         raise ValueError("Rollback candidate file counts differ")
-    # Verify staged policy DB and opt-in nonsecret JSON schemas as well as
-    # their hashes. No staged Python or subprocesses are ever executed.
-    backup_state._verify_sqlite((destination / "state" / backup_state.DB_NAME).read_bytes())
-    for name in backup_state.SETTINGS_NAMES:
-        if "state/" + name in inventory:
-            backup_state._verify_nonsecret_setting(
-                name, (destination / "state" / name).read_bytes())
+    # The exact validated descriptors are checked inside _inventory.
+    # Never reopen a staged pathname after the symlink/owner checks.
     return {
         "source_files": meta["source_files"],
         "state_files": meta["state_files"],
