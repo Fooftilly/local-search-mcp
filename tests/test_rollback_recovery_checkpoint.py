@@ -179,6 +179,25 @@ class RecoveryCheckpointTests(unittest.TestCase):
             checkpoint.create(self.candidate, existing, root=self.root,
                               state_dir=self.state, config_dir=self.config)
 
+    def test_absent_optional_config_directory_does_not_block_checkpoint(self):
+        missing_config = self.home / "config-not-created"
+        self.assertFalse(missing_config.exists())
+        with patch.object(checkpoint.backup_state, "settings_directory",
+                          return_value=missing_config):
+            result = checkpoint.create(
+                self.candidate, self.dest, root=self.root, state_dir=self.state)
+        self.assertTrue(result["checkpoint_verified"])
+        self.assertFalse(missing_config.exists())
+
+    def test_checkpoint_cannot_live_under_current_state(self):
+        # The parent is private, but a nested checkpoint would itself
+        # appear in state being saved or alter a tracked checkout.
+        nested = self.state / "snapshot"
+        with self.assertRaisesRegex(ValueError, "outside live"):
+            checkpoint.create(self.candidate, nested, root=self.root,
+                              state_dir=self.state, config_dir=self.config)
+        self.assertFalse(nested.exists())
+
     def test_bad_archive_symlink_and_permissive_files_are_rejected(self):
         self.create()
         archive = self.dest / checkpoint.ARCHIVE
