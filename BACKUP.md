@@ -416,10 +416,12 @@ python3 scripts/maintenance_readiness.py --candidate \
 
 From the currently installed, clean checkout (while all known project-owned
 units remain safely inactive/disabled and optional on-demand wake is disabled),
-choose a **new** checkpoint directory under an existing owner-only 0700 parent:
+choose a **new** checkpoint directory under an owner-only 0700 parent.
+The `mkdir` example intentionally refuses an existing parent; if it already
+exists, independently verify its owner and exact 0700 mode before use:
 
 ```sh
-mkdir -p -m 700 "$HOME/.local/state/local-search-mcp-recovery"
+mkdir -m 700 "$HOME/.local/state/local-search-mcp-recovery"
 python3 scripts/rollback_recovery_checkpoint.py \
   --candidate "$HOME/.local/state/local-search-mcp-rollback/candidate-1" \
   --destination "$HOME/.local/state/local-search-mcp-recovery/current-1"
