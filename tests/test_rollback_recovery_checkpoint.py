@@ -64,7 +64,8 @@ class RecoveryCheckpointTests(unittest.TestCase):
         self.manager_mock = self.manager_env.start()
         self.addCleanup(self.manager_env.stop)
         self.candidate_verified = patch.object(checkpoint.rollback_candidate, "inspect",
-                                               return_value={"integrity_verified": True})
+                                               return_value={"integrity_verified": True,
+                                                             "ready_for_live_use": False})
         self.candidate_verified.start()
         self.addCleanup(self.candidate_verified.stop)
         self.smoke = patch.object(checkpoint.restore_smoke, "smoke", return_value=(1, 1))
@@ -349,6 +350,72 @@ class RecoveryCheckpointTests(unittest.TestCase):
         self.assertEqual(invalid.exception.code, 2)
         self.assertEqual(output.getvalue(), "")
         self.assertIn("--destination cannot be combined", errors.getvalue())
+
+    def test_real_checkout_and_managed_unit_gates_block_reactivation(self):
+        # Exercise actual Git and maintenance gate logic, faking only systemd
+        # manager I/O; never stop any real user unit or modify a real checkout.
+        import subprocess
+        from scripts import maintenance_readiness
+
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=self.root,
+                                  check=True, text=True, capture_output=True).stdout.strip()
+        git("init", "-q")
+        git("config", "user.email", "rollback@example.invalid")
+        git("config", "user.name", "Rollback Gate")
+        (self.root / "bridge.py").write_text("old\n")
+        (self.root / "requirements.txt").write_text("httpx>=0.28,<1\n")
+        git("add", ".")
+        git("commit", "-qm", "old")
+        self.old = git("rev-parse", "HEAD")
+        (self.root / "bridge.py").write_text("new\n")
+        git("add", ".")
+        git("commit", "-qm", "current")
+        self.current = git("rev-parse", "HEAD")
+        self.identity["source_commit"] = self.current
+        self.identity["target_commit"] = self.old
+        (self.candidate / "candidate.json").write_text(json.dumps(self.identity))
+
+        units = self.home / "systemd" / "user"
+        units.mkdir(parents=True)
+        for name in maintenance_readiness.UNITS:
+            (units / name).write_text(maintenance_readiness.stop_stack.MARKER +
+                                      "\n[Unit]\nDescription=Test managed unit\n")
+            (units / name).chmod(0o644)
+        def unit(name):
+            return {
+                "LoadState": "loaded", "ActiveState": "inactive",
+                "UnitFileState": "disabled", "FragmentPath": str(units / name),
+                "DropInPaths": "", "NeedDaemonReload": "no"}
+        self.gates.stop()
+        self.ancestor.stop()
+        with (patch.object(maintenance_readiness, "_unit_state", side_effect=unit),
+              patch.object(maintenance_readiness.stop_stack, "config_home",
+                           return_value=self.home),
+              patch.object(maintenance_readiness.on_demand_settings, "read",
+                           return_value={"enabled": False, "idle_minutes": 30})):
+            result = self.create()
+        self.assertTrue(result["checkpoint_verified"])
+        self.assertEqual(self.ancestor_mock.call_count, 0)
+        self.assertTrue(checkpoint.inspect(self.dest, candidate=self.candidate)[
+            "candidate_binding_verified"])
+
+        # Run the *real* readiness gate with an active unit: it must reject
+        # before writing any new destination or taking a snapshot.
+        self.dest = self.home / "second-checkpoint"
+        def active_unit(name):
+            values = unit(name)
+            if name == "local-search-mcp-bridge.service":
+                values["ActiveState"] = "active"
+            return values
+        with (patch.object(maintenance_readiness, "_unit_state", side_effect=active_unit),
+              patch.object(maintenance_readiness.stop_stack, "config_home",
+                           return_value=self.home),
+              patch.object(maintenance_readiness.on_demand_settings, "read",
+                           return_value={"enabled": False, "idle_minutes": 30})):
+            with self.assertRaisesRegex(ValueError, "quiescent"):
+                self.create()
+        self.assertFalse(self.dest.exists())
 
     def test_cli_errors_redact_private_data_and_paths(self):
         with (patch.object(checkpoint, "create",
