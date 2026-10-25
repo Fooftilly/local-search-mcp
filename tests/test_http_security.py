@@ -7,6 +7,7 @@ These tests do not certify Chromium container/network isolation.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from contextlib import ExitStack
 from http.client import HTTPConnection
 import json
 import os
@@ -136,11 +137,23 @@ class DashboardHTTPTests(unittest.TestCase):
             "/upstream-settings", "/cache-settings",
             "/portable-settings/preview", "/portable-settings/apply",
         )
-        with (patch.object(admin_ui.safe_settings, "update_settings") as history_write,
-              patch.object(admin_ui.upstream_settings, "update_settings") as upstream_write,
-              patch.object(admin_ui.cache_settings, "update_settings") as cache_write,
-              patch.object(admin_ui.portable_settings, "apply") as transfer_write,
-              patch.object(admin_ui.policy_transfer, "apply_import") as rules_write):
+        writer_targets = (
+            (admin_ui.safe_settings, "update_settings"),
+            (admin_ui.upstream_settings, "update_settings"),
+            (admin_ui.cache_settings, "update_settings"),
+            (admin_ui.portable_settings, "apply"),
+            (admin_ui.policy_transfer, "apply_import"),
+            (admin_ui.policy, "clear_pending_requests"),
+            (admin_ui.policy, "_stage_once_grant"),
+            (admin_ui.policy, "_revoke_once_grant"),
+            (admin_ui.policy, "bulk_decide"),
+            (admin_ui.policy, "decide"),
+        )
+        with ExitStack() as stack:
+            writers = [
+                stack.enter_context(patch.object(module, name))
+                for module, name in writer_targets
+            ]
             for route in routes:
                 for headers in (
                     {"Host": "remote.invalid"},
@@ -156,8 +169,7 @@ class DashboardHTTPTests(unittest.TestCase):
                     status, _, _ = self.exchange(
                         "POST", route, {"csrf": "invalid"})
                     self.assertEqual(status, 403)
-            for writer in (history_write, upstream_write, cache_write,
-                           transfer_write, rules_write):
+            for writer in writers:
                 writer.assert_not_called()
 
     def test_health_endpoint_and_defense_headers(self):
