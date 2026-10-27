@@ -62,12 +62,15 @@ class DashboardHTTPTests(unittest.TestCase):
             connection.close()
 
     def post(self, domain, action, *, csrf=None, headers=None, new_domain=""):
-        return self.exchange("POST", "/domain", {
+        fields = {
             "domain": domain,
             "action": action,
             "csrf": admin_ui.CSRF if csrf is None else csrf,
             "new_domain": new_domain,
-        }, headers=headers)[0]
+        }
+        if action in ("allow", "deny"):
+            fields["expires_minutes"] = "0"
+        return self.exchange("POST", "/domain", fields, headers=headers)[0]
 
     def test_pending_allow_deny_rename_delete_over_http(self):
         """A remote fetch queues requests; only authenticated local POSTs decide."""

@@ -37,6 +37,16 @@ class DashboardTemplateTests(unittest.TestCase):
         self.assertIn('value="&lt;script&gt;alert(1)&lt;/script&gt;"', page)
         self.assertIn('name="csrf"', page)
 
+    def test_new_domain_rule_requires_explicit_duration_selection(self):
+        with (patch.object(admin_ui.policy, "counts",
+                           return_value={"pending": 0, "allowed": 0, "denied": 0}),
+              patch.object(admin_ui.policy, "entries", return_value=[])):
+            page = admin_ui.render()
+        marker = '<h2 style="margin-top:0">Add domain</h2>'
+        new_domain = page.split(marker, 1)[1].split('</form>', 1)[0]
+        self.assertIn('<select name="expires_minutes" required>', new_domain)
+        self.assertIn('<option value="" selected disabled>Choose duration</option>', new_domain)
+
     def test_history_filters_remain_html_escaped(self):
         with (patch.object(admin_ui.history_index, "summarize_history",
                            return_value=[]),

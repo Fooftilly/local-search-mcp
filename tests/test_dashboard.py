@@ -29,7 +29,8 @@ class DashboardTests(unittest.TestCase):
         self.addCleanup(self.server.shutdown)
 
     def post(self, headers=None, csrf=None):
-        data=urlencode({'domain':'python.org','action':'allow','csrf': admin_ui.CSRF if csrf is None else csrf}).encode()
+        data=urlencode({'domain':'python.org','action':'allow','expires_minutes':'0',
+                        'csrf': admin_ui.CSRF if csrf is None else csrf}).encode()
         url=f'http://127.0.0.1:{self.server_port}/domain'
         request=Request(url,data=data,headers=headers or {}, method='POST')
         try:

@@ -924,9 +924,17 @@ class Handler(BaseHTTPRequestHandler):
                     reason=val('reason'))
                 return self._respond(200, render(
                     message=f"Updated {amount} pending requests."))
-            policy.decide(val('domain'),val('action'),val('new_domain'),
+            # The new-domain and existing-rule forms require an explicit
+            # duration. A missing/blank field must not silently turn a
+            # temporary approval into a permanent grant.
+            action = val('action')
+            duration = val('expires_minutes')
+            if action in ('allow', 'deny') and duration not in (
+                    '0', '60', '1440', '10080'):
+                raise ValueError('Choose an explicit permission duration')
+            policy.decide(val('domain'), action, val('new_domain'),
                           scope=val('scope') or 'subdomains',
-                          expires_minutes=int(val('expires_minutes') or '0'),
+                          expires_minutes=int(duration) if action in ('allow', 'deny') else 0,
                           reason=val('reason'))
             msg=f"Decision updated for {val('domain')[:253]}"
             return self._respond(200,render(message=msg))
