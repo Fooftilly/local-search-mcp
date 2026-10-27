@@ -346,7 +346,8 @@ class RuleModeHTTPTests(unittest.TestCase):
         self.assertEqual(policy.request("child.example.org",
                                          "https://child.example.org/")[0], "pending")
         self.assertEqual(self.post({"domain": "example.org", "action": "allow",
-                                    "scope": "invalid"})[0], 400)
+                                    "scope": "invalid",
+                                    "expires_minutes": "60"})[0], 400)
         self.assertEqual(self.post({"domain": "example.org", "action": "allow",
                                     "expires_minutes": "666"})[0], 400)
         self.assertEqual(self.post({"domain": "example.org", "action": "allow",
