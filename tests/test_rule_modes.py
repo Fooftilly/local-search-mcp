@@ -307,6 +307,35 @@ class RuleModeHTTPTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_post_requires_duration_and_preserves_existing_timed_rule(self):
+        # An omitted/blank duration is not an implicit permanent grant.
+        for action in ("allow", "deny"):
+            for duration in (None, ""):
+                with self.subTest(action=action, duration=duration):
+                    fields = {"domain": "example.org", "action": action}
+                    if duration is not None:
+                        fields["expires_minutes"] = duration
+                    self.assertEqual(self.post(fields)[0], 400)
+                    self.assertFalse(any(r["domain"] == "example.org"
+                                         for r in policy.entries()))
+
+        self.assertEqual(self.post({"domain": "example.org", "action": "allow",
+                                    "scope": "exact", "expires_minutes": "60"})[0], 200)
+        original = next(r for r in policy.entries() if r["domain"] == "example.org")
+        self.assertTrue(original["expires_at"])
+        self.assertEqual(self.post({"domain": "example.org", "action": "allow"})[0], 400)
+        after = next(r for r in policy.entries() if r["domain"] == "example.org")
+        self.assertEqual(after["expires_at"], original["expires_at"])
+        self.assertEqual(after["match_scope"], "exact")
+
+        # Explicitly selected permanent permissions remain supported.
+        self.assertEqual(self.post({"domain": "example.org", "action": "allow",
+                                    "expires_minutes": "0"})[0], 200)
+        updated = next(r for r in policy.entries() if r["domain"] == "example.org")
+        self.assertEqual(updated["expires_at"], "")
+        # Duration is irrelevant for rename/delete actions.
+        self.assertEqual(self.post({"domain": "example.org", "action": "delete"})[0], 200)
+
     def test_post_scope_and_expiration_and_validate_inputs(self):
         status, _ = self.post({"domain": "example.org", "action": "allow",
                                "scope": "exact", "expires_minutes": "60"})
