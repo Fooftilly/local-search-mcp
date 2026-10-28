@@ -20,6 +20,10 @@ class EngineChooserTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.folder = Path(self.temp.name) / "local-search-mcp" / "crawler-compose"
         self.folder.mkdir(parents=True, mode=0o700)
+        # mkdir(parents=True) creates intermediate parents under the umask,
+        # often 0755. The real on-demand cross-process lock correctly rejects
+        # that; the isolated test must model the actual private 0700 directory.
+        self.folder.parent.chmod(0o700)
         self.folder.chmod(0o700)
         self.file = self.folder / "searxng-settings.yml"
         self.original = "use_default_settings: true\nserver:\n  secret_key: REDACTED\n"
