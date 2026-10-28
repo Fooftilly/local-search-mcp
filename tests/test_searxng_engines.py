@@ -118,6 +118,15 @@ class EngineChooserTests(unittest.TestCase):
                 self.assertEqual(e.main(), 0)
             self.assertEqual(self.file.read_text(), self.original)
 
+    def test_bind_mount_in_place_update_keeps_inode(self):
+        inode = self.file.stat().st_ino
+        e._save(self.file, "use_default_settings: true\nengines: []\n",
+                expected=self.original)
+        self.assertEqual(self.file.stat().st_ino, inode)
+        self.assertIn("engines: []", self.file.read_text())
+        with self.assertRaises(e.EngineSetupError):
+            e._save(self.file, "no", expected=self.original)
+
     def test_sleeping_backend_saves_without_starting_or_restarting(self):
         fake = Target("searxng", "a"*64, False, "no")
         with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
