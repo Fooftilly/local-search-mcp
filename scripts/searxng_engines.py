@@ -59,8 +59,7 @@ def _check_bind_mount(container_id: str, path: Path) -> None:
         matched = [m for m in mounts if isinstance(m, dict)
                    and m.get("Type") == "bind"
                    and m.get("Destination") == "/etc/searxng/settings.yml"
-                   and m.get("Source") == str(path.resolve(strict=True))
-                   and m.get("RW") is True]
+                   and m.get("Source") == str(path.resolve(strict=True))]
         if len(matched) != 1:
             raise EngineSetupError("Verified SearXNG container does not bind this settings file")
     except (TypeError, ValueError, OSError) as exc:
