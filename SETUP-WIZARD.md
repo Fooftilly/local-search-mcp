@@ -85,11 +85,13 @@ Select **Setup → 4 (Choose SearXNG search engines)** or run
 `./setup.sh --search-engines` from a normal-user terminal. This is an
 **operator-only local action**, not an MCP administration tool or dashboard button.
 
-1. **Recommended: Yahoo only**: selected because the operator's installed
+1. **Recommended: Yahoo default**: selected because the operator's installed
    SearXNG returned seven results twice where the inherited default engines
    produced only CAPTCHA/rate-limit failures. It disables the four observed
-   problematic defaults (Brave, DuckDuckGo, Google CSE, Wikipedia) while
-   preserving unrelated engine categories and all existing credentials.
+   problematic defaults (Brave, DuckDuckGo, Google CSE, Wikipedia). When
+   the backend is running, it disables all other discovered general engines;
+   when sleeping, it updates only these known defaults and explicitly says
+   that other inherited engines are unchanged. It preserves credentials.
 2. **Custom selection**: reads `http://127.0.0.1:8888/config` over loopback
    and lists installed **general-search** engines, with Yahoo and other
    candidates near the top. Choose one or more numbers; the current enabled
