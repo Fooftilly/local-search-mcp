@@ -1151,6 +1151,126 @@ class BridgeTests(unittest.TestCase):
             self.assertNotIn("markdown", result)
             self.assertFalse(cache)
 
+    def test_pdf_uses_capped_native_strategy_and_keeps_html_unchanged(self):
+        import json
+        observed = []
+        original = httpx.Client
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            payload = json.loads(request.content)
+            observed.append(payload)
+            target = payload["urls"][0]
+            return httpx.Response(200, json={"results": [{
+                "url": target, "success": True, "status_code": 200,
+                "markdown": {"raw_markdown": "Extracted technical specification",
+                             "fit_markdown": ""},
+            }]})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            pdf = self.module.web_fetch("https://example.com/public.PDF?version=1", fresh=True)
+            html = self.module.web_fetch("https://example.com/page.html", fresh=True)
+        self.assertTrue(pdf["success"])
+        self.assertEqual(pdf["markdown"], "Extracted technical specification")
+        self.assertTrue(html["success"])
+        self.assertEqual(observed[0]["urls"], ["https://example.com/public.PDF?version=1"])
+        cfg = observed[0]["crawler_config"]["params"]
+        self.assertEqual(cfg["scraping_strategy"], {
+            "type": "PDFContentScrapingStrategy",
+            "params": {"extract_images": False, "batch_size": 2,
+                       "max_pdf_bytes": 12 * 1024 * 1024,
+                       "max_pdf_pages": 100, "max_redirects": 0},
+        })
+        self.assertEqual(observed[0]["browser_config"]["params"], {"headless": True})
+        self.assertEqual(observed[1]["crawler_config"]["params"], {"stream": False})
+        self.assertNotIn("scraping_strategy", observed[1]["crawler_config"]["params"])
+        self.assertEqual(len(observed), 2)
+
+    def test_pdf_empty_placeholder_and_crawl_failure_are_not_cached(self):
+        chosen = ["", "Scraper will handle the real work", "Useful text"]
+        seen = []
+        original = httpx.Client
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            seen.append(request.url.path)
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/report.pdf",
+                "success": True, "status_code": 200,
+                "markdown": {"raw_markdown": chosen.pop(0)},
+            }]})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            empty = self.module.web_fetch("https://example.com/report.pdf")
+            placeholder = self.module.web_fetch("https://example.com/report.pdf")
+            content = self.module.web_fetch("https://example.com/report.pdf")
+            cached = self.module.web_fetch("https://example.com/report.pdf")
+        self.assertEqual(empty["status"], "unavailable_extraction")
+        self.assertEqual(placeholder["status"], "unavailable_extraction")
+        self.assertNotIn("markdown", empty)
+        self.assertNotIn("markdown", placeholder)
+        self.assertTrue(content["success"])
+        self.assertEqual(cached["markdown"], "Useful text")
+        self.assertEqual(seen, ["/crawl"] * 3)
+
+    def test_pdf_rejection_and_fit_mode_send_no_crawl_post(self):
+        original = httpx.Client
+        requests = []
+        def handler(request):
+            requests.append(request.url.path)
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            raise AssertionError("PDF should not POST in unsupported mode")
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            result = self.module.web_fetch("https://example.com/report.pdf", mode="fit")
+        self.assertEqual(result["status"], "unavailable_extraction")
+        self.assertEqual(requests, [])
+        with (patch.object(self.module, "_check_public_target", return_value={
+                  "url": "https://private.example/report.pdf",
+                  "success": False, "status": "blocked",
+                  "reason": "Not approved",
+              }),
+              patch.object(self.module.httpx, "Client",
+                           side_effect=AssertionError("Denied PDF cannot reach crawler"))):
+            denied = self.module.web_fetch("https://private.example/report.pdf")
+        self.assertFalse(denied["success"])
+        self.assertEqual(denied["status"], "blocked")
+
+    def test_pdf_redirects_and_http_errors_fail_without_exposing_document(self):
+        original = httpx.Client
+        response = {"url": "https://example.com/a.pdf", "success": False,
+                    "status_code": 404, "markdown": "BAD DOCUMENT"}
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [response]})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            bad = self.module.web_fetch("https://example.com/a.pdf", fresh=True)
+        self.assertEqual(bad["status"], "http_error")
+        self.assertEqual(bad["http_status"], 404)
+        self.assertNotIn("markdown", bad)
+        response.clear()
+        response.update({"url": "https://example.com/a.pdf",
+                         "redirected_url": "https://other.example/secret.pdf",
+                         "success": True, "markdown": "UNAPPROVED"})
+        def policy(url):
+            return {"status": "approval_required"} if "other.example" in url else None
+        with (patch.object(self.module, "_check_public_target", side_effect=policy),
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            blocked = self.module.web_fetch("https://example.com/a.pdf", fresh=True)
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertNotIn("UNAPPROVED", str(blocked))
+
     def test_no_crawl_when_backend_old(self):
         calls=[]
         def handler(request):
