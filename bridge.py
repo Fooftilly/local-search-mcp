@@ -321,6 +321,9 @@ def _run_fetch_network(url: str, mode: str, *,
         if mode != "raw":
             return {"url": url, "success": False, "status": "unavailable_extraction",
                     "reason": "PDF text extraction supports only raw mode."}
+        # PDF binary downloads must never reuse a stale upstream cached
+        # result that was fetched with different safety limits.
+        crawler_params["cache_mode"] = "bypass"
         crawler_params["scraping_strategy"] = {
             "type": "PDFContentScrapingStrategy",
             "params": {
