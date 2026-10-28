@@ -392,7 +392,10 @@ def main() -> int:
         return 0
     except (EngineSetupError, on_demand_docker.LifecycleError, OSError, EOFError,
             KeyboardInterrupt, ValueError) as exc:
-        print("SearXNG engine setup did not complete: " + type(exc).__name__, file=sys.stderr)
+        # Our own EngineSetupError messages are fixed, nonsecret operator guidance.
+        # Never echo raw Docker, HTTP or filesystem exception messages.
+        detail = str(exc) if isinstance(exc, EngineSetupError) else type(exc).__name__
+        print("SearXNG engine setup did not complete: " + detail, file=sys.stderr)
         return 1
 
 
