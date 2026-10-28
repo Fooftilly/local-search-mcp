@@ -206,10 +206,10 @@ class SetupWizardTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(output)["default_client"].split()[0], "ChatGPT")
         preview = json.loads(output)
-        self.assertEqual(len(preview["actions"]), 16)
+        self.assertEqual(len(preview["actions"]), 17)
         self.assertEqual(preview["groups"],
                          ["Setup", "Connections", "Status", "Update", "Advanced"])
-        self.assertEqual(len({item["menu"] for item in preview["actions"]}), 16)
+        self.assertEqual(len({item["menu"] for item in preview["actions"]}), 17)
 
     def test_all_existing_actions_appear_once_in_five_groups(self):
         groups = wizard.MENU_GROUPS
@@ -218,12 +218,31 @@ class SetupWizardTests(unittest.TestCase):
         paths = [(group + "." + str(i), identifier)
                  for group, (_, actions) in groups.items()
                  for i, (identifier, _) in enumerate(actions, start=1)]
-        self.assertEqual(len(paths), 16)
+        self.assertEqual(len(paths), 17)
         self.assertEqual({identifier for _, identifier in paths},
-                         {str(i) for i in range(1, 17)})
+                         {str(i) for i in range(1, 18)})
         preview = wizard.dry_run()
         self.assertEqual({row["menu"] for row in preview["actions"]},
                          {path for path, _ in paths})
+
+    def test_search_engine_setup_is_explicit_opt_in_and_uses_existing_entry_point(self):
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input", side_effect=["1", "4", "0"]),
+              patch.object(wizard, "run_existing", return_value=0) as run,
+              contextlib.redirect_stdout(io.StringIO())):
+            self.assertEqual(wizard.main([]), 0)
+        run.assert_called_once_with("scripts/searxng_engines.py")
+
+        with (patch.object(wizard, "run_existing", return_value=0) as run):
+            self.assertEqual(wizard.main(["--search-engines"]), 0)
+        run.assert_called_once_with("scripts/searxng_engines.py")
+
+    def test_engine_selection_is_described_but_never_executed_by_preview(self):
+        with patch.object(wizard, "run_existing",
+                          side_effect=AssertionError("no command should run")):
+            report = wizard.dry_run()
+        self.assertIn("1.4", [x["menu"] for x in report["actions"]])
 
     def test_group_back_and_unknown_action_never_run_operations(self):
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),

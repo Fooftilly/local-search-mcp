@@ -450,6 +450,7 @@ MENU_GROUPS = {
         ("3", "Guided setup / reconfigure (requires CONFIGURE)"),
         ("4", "Preview project systemd units (read-only)"),
         ("7", "Stop verified project services / backends (requires STOP)"),
+        ("17", "Choose SearXNG search engines (recommended or custom)"),
     )),
     "2": ("Connections", (
         ("2", "Connect ChatGPT (manual account steps)"),
@@ -493,6 +494,8 @@ def dry_run() -> dict:
              "action": "./setup.sh --update (owned service stop, existing backup, reviewed fast-forward and restart)"},
             {"menu": "1.3", "effect": "potential service changes after explicit confirmation",
              "action": "./stop.sh (project-owned shutdown only; no shared Hermes Web stack)"},
+            {"menu": "1.4", "effect": "local engine settings and project-owned SearXNG restart after APPLY",
+             "action": "choose Yahoo recommended or pick loaded general engines; no dashboard or MCP admin tool"},
             {"menu": "3.3", "effect": "read-only",
              "action": "verify ownership of private Compose project; flag foreign published crawlers"},
             {"menu": "3.4", "effect": "read-only",
@@ -767,6 +770,9 @@ def menu() -> int:
                 print("Secure tunnel setup exited with status " + str(code))
             else:
                 print("Cancelled; no privileged installation attempted")
+        elif choice == "17":
+            code = run_existing("scripts/searxng_engines.py")
+            print("Search-engine setup exited with status " + str(code))
         elif choice == "6":
             print("After FETCH and UPDATE confirmations, this stops owned services,")
             print("backs up policy/history, fast-forwards master and updates dependencies.")
@@ -785,6 +791,8 @@ def menu() -> int:
                 try:
                     code = run_existing(*command)
                     print("Command exited with status " + str(code))
+                    if choice == "3" and code == 0:
+                        print("Next: Setup > Choose SearXNG search engines for reliable defaults.")
                 except OSError:
                     print("Command unavailable; no success claimed")
             else:
@@ -808,6 +816,7 @@ def make_parser() -> argparse.ArgumentParser:
   ./setup.sh --client hermes       Read-only local Hermes Agent MCP instructions
   ./setup.sh --client claude       Read-only local Claude Code HTTP MCP instructions
   ./setup.sh --docker-status       Read-only verified Compose/Docker ownership inventory
+  ./setup.sh --search-engines      Choose installed SearXNG engines; APPLY to save/restart
   ./setup.sh --update              Attended update, backup and controlled restart (requires TTY)
   ./setup.sh --update-status       Read-only LOCAL Git revision check; no network fetch
   ./setup.sh --maintenance-versions  Read-only local dependency, Git, crawler, tunnel inventory
@@ -852,6 +861,8 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="read-only Docker ownership audit (pinned local daemon, no changes)")
     choices.add_argument("--update", action="store_true",
                          help="attended Git fast-forward, state backup and controlled restart")
+    choices.add_argument("--search-engines", action="store_true",
+                         help="interactive operator-only SearXNG engine selection")
     choices.add_argument("--update-status", action="store_true",
                          help="inspect local Git revision; never fetch/pull/restart")
     choices.add_argument("--maintenance-versions", action="store_true",
@@ -926,6 +937,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.wake_before_disable or args.confirm_on_demand is not None:
         raise SystemExit("On-demand options require explicit enable/disable mode")
+    if args.search_engines:
+        if os.geteuid() == 0:
+            raise SystemExit("Run search-engine setup as the normal user")
+        return run_existing("scripts/searxng_engines.py")
     if args.update:
         if os.geteuid() == 0:
             raise SystemExit("Run update as the normal user")
