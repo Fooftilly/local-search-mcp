@@ -59,6 +59,8 @@ class EngineChooserTests(unittest.TestCase):
         for original in (
             "use_default_settings: false\n",
             self.original + "engines:\n  - name: custom\n    disabled: false\n",
+            self.original + '"engines":\n  - name: custom\n',
+            self.original + "'engines':\n  - name: custom\n",
             self.original + "---\n",
         ):
             with self.subTest(original=original), self.assertRaises(e.EngineSetupError):
@@ -163,6 +165,55 @@ class EngineChooserTests(unittest.TestCase):
             out = e.apply(("yahoo",), ("yahoo", "brave"))
         self.assertIn("verified", out)
         self.assertEqual(calls, [fake])
+
+    def test_partial_write_failure_restores_in_place_from_checkpoint(self):
+        fake = Target("searxng", "a"*64, False, "no")
+        original_writer = e._save
+        calls = []
+        def broken_writer(path, body, *, expected):
+            calls.append(expected)
+            if len(calls) == 1:
+                # Simulate a short/incomplete write to the *mounted* inode.
+                with path.open("r+") as f:
+                    f.write("use_default_settings: tr")
+                    f.truncate()
+                raise OSError("simulated write failure")
+            return original_writer(path, body, expected=expected)
+        with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e, "_save", side_effect=broken_writer)):
+            with self.assertRaisesRegex(e.EngineSetupError, "previous settings restored"):
+                e.apply(("yahoo",), ("yahoo", "brave"))
+        self.assertEqual(self.file.read_text(), self.original)
+        self.assertFalse(e._recovery_path(self.file).exists())
+        self.assertEqual(calls, [self.original, None])
+
+    def test_docker_inspection_failure_restores_settings(self):
+        fake = Target("searxng", "a"*64, True, "no")
+        seen = []
+        def bad_restart(target):
+            seen.append(target)
+            if len(seen) == 1:
+                raise e.on_demand_docker.LifecycleError("Docker unavailable")
+        with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e, "_restart_verified", side_effect=bad_restart)):
+            with self.assertRaisesRegex(e.EngineSetupError, "previous settings restored"):
+                e.apply(("yahoo",), ("yahoo", "brave"))
+        self.assertEqual(self.file.read_text(), self.original)
+        self.assertFalse(e._recovery_path(self.file).exists())
+        self.assertEqual(seen, [fake, fake])
+
+    def test_interrupted_recovery_copy_can_be_restored_via_setup(self):
+        fake = Target("searxng", "a"*64, False, "no")
+        e._checkpoint(self.file, self.original)
+        self.file.write_text("broken: [")
+        with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
+              patch.object(e, "_check_bind_mount")):
+            result = e.recover_interrupted()
+        self.assertIn("Previous settings restored", result)
+        self.assertEqual(self.file.read_text(), self.original)
+        self.assertFalse(e._recovery_path(self.file).exists())
 
     def test_failed_restarted_health_restores_original_settings(self):
         fake = Target("searxng", "a"*64, True, "no")
