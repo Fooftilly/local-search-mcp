@@ -363,26 +363,32 @@ def main() -> int:
         _check_bind_mount(target.ident, settings_path())
         checkpoint = _recovery_path(settings_path())
         if checkpoint.exists():
-            info = checkpoint.lstat()
-            identity = (info.st_dev, info.st_ino)
-            _same_checkpoint(checkpoint, identity)
-            print("An earlier SearXNG settings edit may have been interrupted.")
-            print("RESTORE overwrites the current settings with the verified private recovery copy.")
-            print("KEEP retains the current settings and discards that recovery copy.")
-            action = input("Type RESTORE, KEEP, or anything else to cancel: ").strip()
-            if action == "KEEP":
-                # A second operator could recreate this path while this user
-                # reads the prompt. Recheck identity under the existing lock.
-                with on_demand_coordination.exclusive():
-                    _same_checkpoint(checkpoint, identity)
-                    checkpoint.unlink()
-                print("Current settings kept; recovery copy discarded")
-                return 0
-            if action == "RESTORE":
-                print(recover_interrupted(identity=identity))
-                return 0
-            print("No changes made; recovery copy retained")
-            return 1
+            # Keep the original inode alive while prompting. Merely storing
+            # dev+ino after lstat permits rapid unlink/recreate to reuse it.
+            fd = os.open(checkpoint, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                info = os.fstat(fd)
+                identity = (info.st_dev, info.st_ino)
+                _same_checkpoint(checkpoint, identity)
+                print("An earlier SearXNG settings edit may have been interrupted.")
+                print("RESTORE overwrites the current settings with the verified private recovery copy.")
+                print("KEEP retains the current settings and discards that recovery copy.")
+                action = input("Type RESTORE, KEEP, or anything else to cancel: ").strip()
+                if action == "KEEP":
+                    # Synchronize with an active apply and reject replaced
+                    # recovery files even when the pathname is identical.
+                    with on_demand_coordination.exclusive():
+                        _same_checkpoint(checkpoint, identity)
+                        checkpoint.unlink()
+                    print("Current settings kept; recovery copy discarded")
+                    return 0
+                if action == "RESTORE":
+                    print(recover_interrupted(identity=identity))
+                    return 0
+                print("No changes made; recovery copy retained")
+                return 1
+            finally:
+                os.close(fd)
         _read_settings(settings_path())
         try:
             engines = live_engines() if target.running else []
