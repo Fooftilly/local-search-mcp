@@ -8,6 +8,7 @@ For organized operator documentation, see the [documentation index](docs/README.
 
 - MCP `web_search(query, max_results=8)` — SearXNG-backed public web search, with optional language, category, time range, engine and page filters, plus opt-in URL deduplication and deterministic source-count ranking. See [SEARCH.md](docs/SEARCH.md).
 - MCP `web_fetch(url, mode="raw")` — Crawl4AI-backed extraction of an approved public page, with optional fit Markdown and short metadata. Long approved pages expose `web_fetch_page(document_id, page=2)` for bounded in-memory continuation without recrawling. See [EXTRACTION.md](docs/EXTRACTION.md). Unknown domains enter the dashboard approval queue. Agents cannot approve domains.
+  Text-only PDFs with URLs ending in `.pdf` use the same guarded fetch and pagination tools (raw mode only, no OCR/images). The PDF crawler is capped at 12 MiB / 100 source pages per request, processes two pages per batch and **refuses all PDF redirects**. Documents hosted behind redirects need an operator-approved direct PDF URL; unsupported or scanned PDFs yield a safe failure.
 - MCP `web_fetch_batch(urls, mode="raw", fresh=false)` — fetch up to eight public URLs in one call, with three concurrent workers, per-URL permission checks and ordered individual outcomes. See [BATCH.md](docs/BATCH.md).
 - Local approvals, deny rules, domain history and search/fetch audit trail.
 - Per-rule exact-host vs subdomain scope and optional 1-hour/24-hour/7-day expiry in the local dashboard. See [PERMISSIONS.md](docs/PERMISSIONS.md).
