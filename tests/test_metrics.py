@@ -79,6 +79,27 @@ class MetricsTests(unittest.IsolatedAsyncioTestCase):
                        "PRIVATE_DOCUMENT", "password=PRIVATE", "safe.example.org"):
             self.assertNotIn(secret, repr(response))
 
+    async def test_actual_fetch_tool_audits_http_errors_as_http_error(self):
+        # Exercise the real decorated MCP fetch entry point. Inserting an
+        # artificial history event alone does not prove the logger records
+        # this status when a crawler reports an origin HTTP error.
+        failure = {"url": "https://example.org/missing?token=PRIVATE",
+                   "success": False, "status": "http_error",
+                   "http_status": 404,
+                   "reason": "Target page returned HTTP 404."}
+        with (patch.object(bridge, "_check_public_target", return_value=None),
+              patch.object(bridge, "CRAWLER_SECURITY_WARNING", None),
+              patch.object(bridge, "_run_fetch", return_value=failure)):
+            answer = bridge.web_fetch(failure["url"], fresh=True)
+        self.assertEqual(answer["status"], "http_error")
+        stats = bridge.web_metrics(hours=1)
+        self.assertTrue(stats["success"])
+        actual = {(x["tool"], x["status"]): x["count"]
+                  for x in stats["history"]["outcomes"]}
+        self.assertEqual(actual[("fetch", "http_error")], 1)
+        self.assertNotIn("PRIVATE", repr(stats))
+        self.assertNotIn("example.org", repr(stats))
+
     async def test_untrusted_historical_status_is_not_exposed_to_mcp(self):
         append_history({
             "time_utc": datetime.now(timezone.utc).isoformat(),
