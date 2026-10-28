@@ -1,6 +1,5 @@
 """Safety and usability tests for operator-only SearXNG engine selection."""
 import contextlib
-from http.client import HTTPConnection
 import io
 import json
 import os
