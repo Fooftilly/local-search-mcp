@@ -65,6 +65,8 @@ class EngineChooserTests(unittest.TestCase):
             self.original + "engines:\n  - name: custom\n    disabled: false\n",
             self.original + '"engines":\n  - name: custom\n',
             self.original + "'engines':\n  - name: custom\n",
+            self.original + "engines :\n  - name: custom\n",
+            self.original + '"engines" :\n  - name: custom\n',
             self.original + "---\n",
         ):
             with self.subTest(original=original), self.assertRaises(e.EngineSetupError):
@@ -72,6 +74,9 @@ class EngineChooserTests(unittest.TestCase):
         managed = e.render(self.original, ("yahoo",), ("yahoo",))
         with self.assertRaises(e.EngineSetupError):
             e.render(managed.replace("disabled: false", "disabled: false # changed"),
+                     ("yahoo",), ("yahoo",))
+        with self.assertRaises(e.EngineSetupError):
+            e.render(managed.replace("disabled: false", "disabled: true"),
                      ("yahoo",), ("yahoo",))
         with self.assertRaises(e.EngineSetupError):
             e.render(managed + "engines:\n  - name: changed\n",
@@ -117,6 +122,40 @@ class EngineChooserTests(unittest.TestCase):
         with patch.object(e, "HTTPConnection", return_value=conn):
             with self.assertRaises(e.EngineSetupError):
                 e.live_engines()
+
+    def test_stale_preview_does_not_rollback_someone_elses_edit(self):
+        fake = Target("searxng", "a"*64, False, "no")
+        orig_save = e._save
+        def concurrent_change(path, body, *, expected):
+            if expected is not None:
+                path.write_text(self.original + "# another editor added this\n")
+            return orig_save(path, body, expected=expected)
+        with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e, "_save", side_effect=concurrent_change)):
+            with self.assertRaisesRegex(e.EngineSetupError, "no changes made"):
+                e.apply(("yahoo",), ("yahoo", "brave"))
+        self.assertEqual(self.file.read_text(),
+                         self.original + "# another editor added this\n")
+        self.assertFalse(e._recovery_path(self.file).exists())
+
+    def test_recommended_preset_controls_all_live_general_engines(self):
+        fake = Target("searxng", "a"*64, True, "no")
+        captured = []
+        with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e, "live_engines", return_value=[
+                  {"name": "yahoo", "enabled": False},
+                  {"name": "bing", "enabled": True},
+                  {"name": "brave", "enabled": True}]),
+              patch.object(e, "apply", side_effect=lambda selected, controlled:
+                           captured.append((selected, controlled)) or "applied"),
+              patch.object(e.os, "geteuid", return_value=1000),
+              patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
+              patch("builtins.input", side_effect=["1", "APPLY"]),
+              contextlib.redirect_stdout(io.StringIO())):
+            self.assertEqual(e.main(), 0)
+        self.assertEqual(captured, [(("yahoo",), ("yahoo", "bing", "brave"))])
 
     def test_unconfirmed_menu_has_no_writes_restart_or_docker_wake(self):
         fake = Target("searxng", "a"*64, True, "no")
