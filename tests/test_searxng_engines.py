@@ -261,7 +261,7 @@ class EngineChooserTests(unittest.TestCase):
             with self.assertRaisesRegex(e.EngineSetupError, "newer edit kept"):
                 e.apply(("yahoo",), ("yahoo", "brave"))
         self.assertIn("# newer operator change", self.file.read_text())
-        self.assertTrue(e._recovery_path(self.file).is_file())
+        self.assertFalse(e._recovery_path(self.file).exists())
 
     def test_malformed_http_reply_from_engine_inventory_is_controlled(self):
         conn = Mock()
@@ -286,6 +286,20 @@ class EngineChooserTests(unittest.TestCase):
         self.assertEqual(self.file.read_text(), self.original)
         self.assertFalse(e._recovery_path(self.file).exists())
         self.assertEqual(seen, [fake, fake])
+
+    def test_keep_current_settings_clears_only_explicit_recovery_copy(self):
+        fake = Target("searxng", "a"*64, False, "no")
+        e._checkpoint(self.file, self.original)
+        self.file.write_text(self.original + "# manually repaired\n")
+        with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e.os, "geteuid", return_value=1000),
+              patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
+              patch("builtins.input", side_effect=["KEEP"]),
+              contextlib.redirect_stdout(io.StringIO())):
+            self.assertEqual(e.main(), 0)
+        self.assertIn("# manually repaired", self.file.read_text())
+        self.assertFalse(e._recovery_path(self.file).exists())
 
     def test_interrupted_recovery_copy_can_be_restored_via_setup(self):
         fake = Target("searxng", "a"*64, False, "no")
