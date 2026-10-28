@@ -13,7 +13,6 @@ import re
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 
 from scripts import backend_inventory, on_demand_coordination, on_demand_docker
@@ -151,30 +150,33 @@ def render(original: str, selected: tuple[str, ...], controlled: tuple[str, ...]
     return rest.rstrip("\n") + "\n\n" + "\n".join(block) + "\n"
 
 
-def _save(path: Path, body: str) -> None:
-    """Atomically replace an owned file, retaining its existing permissions."""
-    before = path.lstat()
-    fd, temp = tempfile.mkstemp(prefix=".searx-engines-", dir=path.parent)
+def _save(path: Path, body: str, *, expected: str) -> None:
+    """Preserve the inode: Docker bind mounts retain it across container restart.
+
+    An atomic os.replace() here would leave /etc/searxng/settings.yml mounted
+    to the *old* inode. Always edit the existing owner-verified regular file.
+    """
+    payload = body.encode("utf-8")
+    if len(payload) > MAX_BYTES:
+        raise EngineSetupError("Engine configuration would be too large")
+    fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
-        os.fchmod(fd, stat.S_IMODE(before.st_mode))
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(body)
+        st = os.fstat(fd)
+        named = path.lstat()
+        if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid()
+                or st.st_nlink != 1 or st.st_dev != named.st_dev
+                or st.st_ino != named.st_ino):
+            raise EngineSetupError("SearXNG settings changed during edit")
+        with os.fdopen(fd, "r+b", closefd=False) as f:
+            if f.read(MAX_BYTES + 1) != expected.encode("utf-8"):
+                raise EngineSetupError("SearXNG settings changed since preview")
+            f.seek(0)
+            f.write(payload)
+            f.truncate()
             f.flush()
             os.fsync(f.fileno())
-        current = path.lstat()
-        if (current.st_ino != before.st_ino or current.st_dev != before.st_dev
-                or not stat.S_ISREG(current.st_mode)
-                or current.st_uid != os.getuid()):
-            raise EngineSetupError("Settings file changed before commit")
-        os.replace(temp, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
     finally:
-        if os.path.exists(temp):
-            os.unlink(temp)
+        os.close(fd)
 
 
 def _restart_verified(target: on_demand_docker.Target) -> None:
@@ -208,7 +210,7 @@ def apply(selected: tuple[str, ...], controlled: tuple[str, ...]) -> str:
         updated = render(original, selected, controlled)
         if updated == original:
             return "Engine selection already configured; no change"
-        _save(path, updated)
+        _save(path, updated, expected=original)
         if not target.running:
             return "Settings saved; sleeping SearXNG will use them on its next managed wake"
         try:
@@ -225,7 +227,7 @@ def apply(selected: tuple[str, ...], controlled: tuple[str, ...]) -> str:
                 time.sleep(0.5)
             raise EngineSetupError("Engine selection could not be verified after restart")
         except EngineSetupError as exc:
-            _save(path, original)
+            _save(path, original, expected=updated)
             # Recovery is scoped to the same previously verified container.
             try:
                 _restart_verified(target)
