@@ -18,3 +18,14 @@ A document handle is an unpredictable **bearer capability**: anyone who obtains 
 This is process-local, temporary continuation storage, not a durable archive. It is designed for a single bridge worker, not independently replicated workers.
 
 To inspect continuation activity without exposing handles or page content, use `python history_cli.py --kind page --last 50` or `python history_cli.py --kind page --csv --last 500`. CSV includes page number and total page count when available.
+
+## Bounded text-PDF extraction
+
+When an approved URL's **path** ends in `.pdf` (case-insensitive; query strings allowed), `web_fetch` uses Crawl4AI's built-in `PDFContentScrapingStrategy` rather than Chromium's HTML renderer. The same `web_fetch_batch` and temporary `web_fetch_page` pathways continue to work, with ordinary permission checks before every invocation. No new MCP tools or permissions are introduced.
+
+The fixed request is **raw text only**: at most 12 MiB of downloaded bytes, at most 100 source pages processed, batches of two source pages, and **zero PDF HTTP redirects**. The upstream crawler runs under the existing dedicated Docker egress guard; no independent download or metadata probe is initiated by the bridge. The limits are explicitly passed to Crawl4AI 0.9.5+'s PDF strategy, whose untrusted-body deserializer allows *smaller* limits. The source page cap limits how much may be processed; **it is not a promise that the entire PDF is included**. Longer extracted text is still bounded by the existing continuation-page and total-document character caps. The existing HTTPX timeout is not a hard upper bound on server-side work.
+
+Image extraction, OCR, password-protected PDFs, PDF previews, saving images to disk, changing the strategy parameters from MCP, and redirected PDF URLs are not supported. A short PDF URL that actually serves HTML may fail; a URL that does not end in `.pdf` is treated as a normal HTML page. `mode="fit"` on PDF URLs is intentionally unsupported. Blank content or Crawl4AI's placeholder response is returned as `unavailable_extraction`, not as a successful source. The source URL must be public and approved, and an unauthorized or private destination fails closed.
+
+**Deployment gate:** Before merging or enabling this feature on the host, test the actual pinned Docker backend on one approved public text PDF with a 12-MiB/100-page strategy and with a one-byte failure limit. Mocked bridge tests and upstream source review alone cannot prove runtime enforcement on that installation. See issue #141.
+
