@@ -3,6 +3,8 @@ import contextlib
 import io
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -26,6 +28,17 @@ class EngineChooserTests(unittest.TestCase):
         env = patch.dict(os.environ, {"XDG_CONFIG_HOME": self.temp.name})
         env.start()
         self.addCleanup(env.stop)
+
+    def test_direct_script_invocation_loads_modules_without_pythonpath(self):
+        source = Path(__file__).resolve().parents[1] / "scripts" / "searxng_engines.py"
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        result = subprocess.run([sys.executable, str(source)],
+                                env=env, capture_output=True, text=True,
+                                timeout=10)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("Interactive normal-user terminal required", result.stderr)
+        self.assertNotIn("ModuleNotFoundError", result.stderr)
 
     def test_render_default_preset_only_overrides_named_engines(self):
         choice = e.render(self.original, ("yahoo",),
