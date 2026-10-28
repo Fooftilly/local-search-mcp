@@ -42,6 +42,13 @@ MCP_ALLOWED_HOSTS = [f"127.0.0.1:{MCP_PORT}", f"localhost:{MCP_PORT}"]
 MCP_ALLOWED_ORIGINS = [f"http://127.0.0.1:{MCP_PORT}", f"http://localhost:{MCP_PORT}"]
 CRAWLER_SECURITY_WARNING = local_container_warning()
 
+# PDF parsing runs in Crawl4AI's non-browser downloader. Keep its own caps
+# below upstream's 100 MiB / 2000-page ceilings and refuse all PDF redirects:
+# only the initial, locally approved URL may be downloaded. The Docker egress
+# guard and pinned peer-IP validation remain mandatory.
+PDF_MAX_BYTES = 12 * 1024 * 1024
+PDF_MAX_PAGES = 100
+
 
 def _check_public_target(url: str) -> dict | None:
     """Return an actionable approval status without raising a FastMCP traceback."""
@@ -307,6 +314,21 @@ def _run_fetch_network(url: str, mode: str, *,
     """Crawl only after the caller has passed current local policy checks."""
     headers = {"Authorization": f"Bearer {CRAWL4AI_TOKEN}"} if CRAWL4AI_TOKEN else {}
     crawler_params = {"stream": False}
+    # Only explicit .pdf paths use the specialized extractor; all other
+    # URLs retain the existing HTML crawl strategy and permission checks.
+    is_pdf = urlsplit(url).path.lower().endswith(".pdf")
+    if is_pdf:
+        if mode != "raw":
+            return {"url": url, "success": False, "status": "unavailable_extraction",
+                    "reason": "PDF text extraction supports only raw mode."}
+        crawler_params["scraping_strategy"] = {
+            "type": "PDFContentScrapingStrategy",
+            "params": {
+                "extract_images": False, "batch_size": 2,
+                "max_pdf_bytes": PDF_MAX_BYTES, "max_pdf_pages": PDF_MAX_PAGES,
+                "max_redirects": 0,
+            },
+        }
     if mode == "fit":
         # Stock Crawl4AI only generates fit Markdown when a content filter
         # is configured. These are upstream-allowlisted safe config classes.
@@ -437,6 +459,12 @@ def _run_fetch_network(url: str, mode: str, *,
     if not isinstance(markdown, str):
         return {"url": final_url, "success": False, "status": "invalid_extraction",
                 "reason": "Crawl4AI returned an invalid Markdown representation"}
+    if is_pdf and (not markdown.strip()
+                   or "Scraper will handle the real work" in markdown[:300]):
+        # PDFCrawlerStrategy alone reports success with placeholder HTML.
+        # Only actual extracted text is usable as a cited research document.
+        return {"url": final_url, "success": False, "status": "unavailable_extraction",
+                "reason": "No text was extracted from this PDF (possibly scanned or encrypted)."}
     if len(markdown) > document_pages.MAX_DOCUMENT_CHARS:
         return {"url": final_url, "success": False, "status": "document_too_large",
                 "reason": "Document exceeds the bounded extraction limit; content was not silently truncated"}
