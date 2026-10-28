@@ -398,6 +398,29 @@ def _run_fetch_network(url: str, mode: str, *,
         if not destination_ok:
             return {"url": url, "success": False, "status": "blocked",
                     "reason": "Crawl4AI redirected to a destination that is not approved"}
+    # Crawl4AI's 'success' means its pipeline ran, not that the remote
+    # document exists. A page can contain a fully extracted HTTP 404 body.
+    # For redirects, the final response code wins over the initial 3xx.
+    def http_status(value):
+        return value if type(value) is int and 100 <= value <= 599 else None
+
+    first_status = http_status(page.get("status_code"))
+    final_status = http_status(page.get("redirected_status_code"))
+    # Do not mistake a successfully followed 302->200 for an HTTP error.
+    # An initial redirect without a final code is not final status proof.
+    effective_status = final_status if final_status is not None else (
+        None if first_status is not None and 300 <= first_status < 400
+        and redirected_url is not None else first_status)
+    if effective_status is not None and 400 <= effective_status <= 599:
+        return {"url": final_url, "success": False, "status": "http_error",
+                "http_status": effective_status,
+                "reason": f"Target page returned HTTP {effective_status}; content was not returned."}
+    if not reported_success:
+        # Upstream error_message may contain tokens, paths, and private URLs.
+        # Never echo it (nor potentially misleading partially extracted page
+        # text/metadata) to the agent.
+        return {"url": final_url, "success": False, "status": "crawl_failed",
+                "reason": "Crawl4AI could not fetch or extract this page."}
     markdown_response = page.get("markdown", "")
     if isinstance(markdown_response, dict):
         raw = markdown_response.get("raw_markdown")
