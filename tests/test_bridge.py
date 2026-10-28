@@ -1227,6 +1227,29 @@ class BridgeTests(unittest.TestCase):
                     self.assertEqual(answer["http_status"], 404)
                     self.assertNotIn("markdown", answer)
 
+    def test_malformed_http_status_is_not_trusted_as_an_error_code(self):
+        for raw_code in ("404", True, {"status": 404}, [404]):
+            with self.subTest(raw_code=raw_code):
+                self.module.request_cache.reset_for_test()
+                def handler(request):
+                    if request.url.path == "/health":
+                        return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+                    return httpx.Response(200, json={"results": [{
+                        "url": "https://example.com/legacy",
+                        "success": True,
+                        "status_code": raw_code,
+                        "markdown": "Legacy page",
+                    }]})
+                original = httpx.Client
+                def client(**kwargs):
+                    return original(transport=httpx.MockTransport(handler))
+                with patch.object(self.module, "_check_public_target", return_value=None), \
+                     patch.object(self.module.httpx, "Client", side_effect=client):
+                    answer = self.module.web_fetch("https://example.com/legacy")
+                self.assertTrue(answer["success"])
+                self.assertEqual(answer["markdown"], "Legacy page")
+                self.assertNotIn("http_status", answer)
+
     def test_crawler_failure_has_safe_reason_and_no_partial_content(self):
         self.module.request_cache.reset_for_test()
         calls = []
