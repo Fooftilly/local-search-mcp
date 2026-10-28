@@ -261,7 +261,8 @@ class EngineChooserTests(unittest.TestCase):
             with self.assertRaisesRegex(e.EngineSetupError, "newer edit kept"):
                 e.apply(("yahoo",), ("yahoo", "brave"))
         self.assertIn("# newer operator change", self.file.read_text())
-        self.assertFalse(e._recovery_path(self.file).exists())
+        self.assertTrue(e._recovery_path(self.file).is_file())
+        self.assertEqual(e._recovery_path(self.file).read_text(), self.original)
 
     def test_malformed_http_reply_from_engine_inventory_is_controlled(self):
         conn = Mock()
@@ -300,6 +301,45 @@ class EngineChooserTests(unittest.TestCase):
             self.assertEqual(e.main(), 0)
         self.assertIn("# manually repaired", self.file.read_text())
         self.assertFalse(e._recovery_path(self.file).exists())
+
+    def test_delayed_keep_cannot_delete_replaced_checkpoint(self):
+        fake = Target("searxng", "a"*64, False, "no")
+        checkpoint = e._checkpoint(self.file, self.original)
+        def swapped_checkpoint(_prompt):
+            # Simulate another session clearing the first recovery copy and
+            # starting a new edit under the same checkpoint path.
+            checkpoint.unlink()
+            e._checkpoint(self.file, "NEWER SETTINGS")
+            return "KEEP"
+        with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e.os, "geteuid", return_value=1000),
+              patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
+              patch("builtins.input", side_effect=swapped_checkpoint),
+              contextlib.redirect_stderr(io.StringIO()) as errors):
+            self.assertEqual(e.main(), 1)
+        self.assertIn("changed since confirmation", errors.getvalue())
+        self.assertTrue(checkpoint.is_file())
+        self.assertEqual(checkpoint.read_text(), "NEWER SETTINGS")
+        self.assertEqual(self.file.read_text(), self.original)
+
+    def test_delayed_restore_cannot_use_newer_checkpoint(self):
+        fake = Target("searxng", "a"*64, False, "no")
+        checkpoint = e._checkpoint(self.file, self.original)
+        def swapped_checkpoint(_prompt):
+            checkpoint.unlink()
+            e._checkpoint(self.file, "NEWER SETTINGS")
+            return "RESTORE"
+        with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e.os, "geteuid", return_value=1000),
+              patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
+              patch("builtins.input", side_effect=swapped_checkpoint),
+              contextlib.redirect_stderr(io.StringIO()) as errors):
+            self.assertEqual(e.main(), 1)
+        self.assertIn("changed since confirmation", errors.getvalue())
+        self.assertEqual(checkpoint.read_text(), "NEWER SETTINGS")
+        self.assertEqual(self.file.read_text(), self.original)
 
     def test_interrupted_recovery_copy_can_be_restored_via_setup(self):
         fake = Target("searxng", "a"*64, False, "no")
