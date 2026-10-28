@@ -129,13 +129,13 @@ def render(original: str, selected: tuple[str, ...], controlled: tuple[str, ...]
             re.escape(START) + r"\n(?:  - name: .+\n    disabled: (?:true|false)\n)*"
             + re.escape(END), existing):
             raise EngineSetupError("Managed engine block was edited; refusing overwrite")
-        rest = original[:begin] + original[end:]
-        if ANY_ENGINES.search(rest):
-            # Our managed block is always a top-level engines: section.
-            lines = rest.splitlines(keepends=True)
-            rest = "".join(line for line in lines
-                           if line.strip() != "engines:"
-                           or line.startswith((" ", "\t")))
+        prefix = original[:begin]
+        # Only remove our own immediately preceding top-level engines key.
+        # Never erase another owner's engines block from the rest of the file.
+        match = re.search(r"engines:\n\Z", prefix)
+        if match is None:
+            raise EngineSetupError("Managed engines section header is missing")
+        rest = prefix[:match.start()] + original[end:]
     else:
         rest = original
     if ANY_ENGINES.search(rest):
