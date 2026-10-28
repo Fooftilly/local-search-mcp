@@ -1177,6 +1177,7 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(html["success"])
         self.assertEqual(observed[0]["urls"], ["https://example.com/public.PDF?version=1"])
         cfg = observed[0]["crawler_config"]["params"]
+        self.assertEqual(cfg["cache_mode"], "bypass")
         self.assertEqual(cfg["scraping_strategy"], {
             "type": "PDFContentScrapingStrategy",
             "params": {"extract_images": False, "batch_size": 2,
