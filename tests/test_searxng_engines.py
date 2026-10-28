@@ -157,6 +157,25 @@ class EngineChooserTests(unittest.TestCase):
             self.assertEqual(e.main(), 0)
         self.assertEqual(captured, [(("yahoo",), ("yahoo", "bing", "brave"))])
 
+    def test_operator_sees_safe_recovery_diagnostic_not_secret_exceptions(self):
+        with (patch.object(e.on_demand_docker, "_safe_target",
+                           side_effect=e.EngineSetupError(
+                               "Original settings restored; SearXNG restart requires operator attention")),
+              patch.object(e.os, "geteuid", return_value=1000),
+              patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
+              contextlib.redirect_stderr(io.StringIO()) as errors):
+            self.assertEqual(e.main(), 1)
+        self.assertIn("SearXNG restart requires operator attention", errors.getvalue())
+
+        with (patch.object(e.on_demand_docker, "_safe_target",
+                           side_effect=OSError("SECRET_PRIVATE_CONFIG")),
+              patch.object(e.os, "geteuid", return_value=1000),
+              patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
+              contextlib.redirect_stderr(io.StringIO()) as errors):
+            self.assertEqual(e.main(), 1)
+        self.assertNotIn("SECRET_PRIVATE_CONFIG", errors.getvalue())
+        self.assertIn("OSError", errors.getvalue())
+
     def test_unconfirmed_menu_has_no_writes_restart_or_docker_wake(self):
         fake = Target("searxng", "a"*64, True, "no")
         for inputs in (["0"], ["1", "CANCEL"], ["2", "1,2", "CANCEL"]):
