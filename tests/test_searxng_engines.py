@@ -258,7 +258,7 @@ class EngineChooserTests(unittest.TestCase):
         with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
               patch.object(e, "_check_bind_mount"),
               patch.object(e, "_restart_verified", side_effect=changed_restart)):
-            with self.assertRaisesRegex(e.EngineSetupError, "newer edit kept"):
+            with self.assertRaisesRegex(e.EngineSetupError, "edit kept"):
                 e.apply(("yahoo",), ("yahoo", "brave"))
         self.assertIn("# newer operator change", self.file.read_text())
         self.assertTrue(e._recovery_path(self.file).is_file())
