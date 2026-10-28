@@ -162,7 +162,9 @@ def logged_tool(kind: str):
                     event["page_count"] = output.get("page_count")
                 elif kind == "fetch" and isinstance(output, dict):
                     event["crawl_success"] = output.get("success")
-                    event["status"] = {"approval_required":"pending", "denied":"denied", "blocked":"blocked"}.get(output.get("status"), "success" if output.get("success") is not False else "error")
+                    event["status"] = {"approval_required":"pending", "denied":"denied",
+                                       "blocked":"blocked", "http_error":"http_error"}.get(
+                        output.get("status"), "success" if output.get("success") is not False else "error")
                     event["truncated"] = bool(output.get("truncated", False))
                 return output
             except Exception as exc:

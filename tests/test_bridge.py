@@ -1164,6 +1164,121 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(result['status'],'blocked')
         self.assertEqual(calls,['GET'])
 
+    def test_http_error_page_is_not_a_successful_source_or_cached(self):
+        # Crawl4AI can successfully extract an HTTP error page: its 'success'
+        # flag reports crawler completion, not HTTP status.
+        for code in (404, 410, 429, 500):
+            with self.subTest(code=code):
+                self.module.request_cache.reset_for_test()
+                posts = []
+                def handler(request):
+                    if request.url.path == "/health":
+                        return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+                    posts.append(request.url.path)
+                    return httpx.Response(200, json={"results": [{
+                        "url": "https://example.com/notfound",
+                        "success": True, "status_code": code,
+                        "markdown": "MISLEADING_ERROR_PAGE",
+                        "metadata": {"title": "Page not found"}
+                    }]})
+                original = httpx.Client
+                def client(**kwargs):
+                    return original(transport=httpx.MockTransport(handler))
+                with patch.object(self.module, "_check_public_target", return_value=None), \
+                     patch.object(self.module.httpx, "Client", side_effect=client):
+                    first = self.module.web_fetch("https://example.com/notfound")
+                    second = self.module.web_fetch("https://example.com/notfound")
+                for response in (first, second):
+                    self.assertFalse(response["success"])
+                    self.assertEqual(response["status"], "http_error")
+                    self.assertEqual(response["http_status"], code)
+                    self.assertNotIn("markdown", response)
+                    self.assertNotIn("metadata", response)
+                    self.assertNotIn("document_id", response)
+                self.assertEqual(posts, ["/crawl", "/crawl"])
+
+    def test_redirect_http_status_uses_final_destination(self):
+        for final_code, should_pass in ((200, True), (404, False)):
+            with self.subTest(final_code=final_code):
+                self.module.request_cache.reset_for_test()
+                def handler(request):
+                    if request.url.path == "/health":
+                        return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+                    return httpx.Response(200, json={"results": [{
+                        "url": "https://example.com/start",
+                        "redirected_url": "https://example.com/finish",
+                        "success": True, "status_code": 302,
+                        "redirected_status_code": final_code,
+                        "markdown": "FINAL_PAGE_BODY",
+                    }]})
+                original = httpx.Client
+                def client(**kwargs):
+                    return original(transport=httpx.MockTransport(handler))
+                with patch.object(self.module, "_check_public_target", return_value=None), \
+                     patch.object(self.module.httpx, "Client", side_effect=client):
+                    answer = self.module.web_fetch("https://example.com/start")
+                self.assertEqual(answer["success"], should_pass)
+                self.assertEqual(answer["url"], "https://example.com/finish")
+                if should_pass:
+                    self.assertEqual(answer["markdown"], "FINAL_PAGE_BODY")
+                    self.assertNotIn("http_status", answer)
+                else:
+                    self.assertEqual(answer["status"], "http_error")
+                    self.assertEqual(answer["http_status"], 404)
+                    self.assertNotIn("markdown", answer)
+
+    def test_malformed_http_status_is_not_trusted_as_an_error_code(self):
+        for raw_code in ("404", True, {"status": 404}, [404]):
+            with self.subTest(raw_code=raw_code):
+                self.module.request_cache.reset_for_test()
+                def handler(request):
+                    if request.url.path == "/health":
+                        return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+                    return httpx.Response(200, json={"results": [{
+                        "url": "https://example.com/legacy",
+                        "success": True,
+                        "status_code": raw_code,
+                        "markdown": "Legacy page",
+                    }]})
+                original = httpx.Client
+                def client(**kwargs):
+                    return original(transport=httpx.MockTransport(handler))
+                with patch.object(self.module, "_check_public_target", return_value=None), \
+                     patch.object(self.module.httpx, "Client", side_effect=client):
+                    answer = self.module.web_fetch("https://example.com/legacy")
+                self.assertTrue(answer["success"])
+                self.assertEqual(answer["markdown"], "Legacy page")
+                self.assertNotIn("http_status", answer)
+
+    def test_crawler_failure_has_safe_reason_and_no_partial_content(self):
+        self.module.request_cache.reset_for_test()
+        calls = []
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            calls.append("crawl")
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/document.pdf", "success": False,
+                "status_code": None, "error_message": "SECRET_HTTP_TOKEN=private",
+                "markdown": "PARTIAL_DOCUMENT_SECRET",
+                "metadata": {"title": "Misleading failed page"}
+            }]})
+        original = httpx.Client
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module, "_check_public_target", return_value=None), \
+             patch.object(self.module.httpx, "Client", side_effect=client):
+            first = self.module.web_fetch("https://example.com/document.pdf")
+            second = self.module.web_fetch("https://example.com/document.pdf")
+        self.assertEqual(calls, ["crawl", "crawl"])
+        self.assertEqual(first, second)
+        self.assertEqual(first["status"], "crawl_failed")
+        self.assertFalse(first["success"])
+        self.assertIn("Crawl4AI", first["reason"])
+        self.assertNotIn("SECRET", str(first))
+        self.assertNotIn("markdown", first)
+        self.assertNotIn("metadata", first)
+
     def test_safe_backend_crawls_and_parses_markdown(self):
         calls=[]
         def handler(request):

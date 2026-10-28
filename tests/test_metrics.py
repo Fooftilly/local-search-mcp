@@ -38,6 +38,7 @@ class MetricsTests(unittest.IsolatedAsyncioTestCase):
             ("fetch", "pending", "https://needs-approval.example.org/SECRET", ""),
             ("fetch", "blocked", "https://unsafe.example.org/SECRET", ""),
             ("fetch", "error", "https://errors.example.org/SECRET", ""),
+            ("fetch", "http_error", "https://missing.example.org/SECRET", ""),
             ("search", "success", "", "PASSWORD_QUERY_PRIVATE"),
         ):
             append_history({
@@ -66,10 +67,10 @@ class MetricsTests(unittest.IsolatedAsyncioTestCase):
         counts = {(x["tool"], x["status"]): x["count"]
                   for x in response["history"]["outcomes"]}
         self.assertEqual(counts[("fetch", "success")], 1)
-        for outcome in ("denied", "pending", "blocked", "error"):
+        for outcome in ("denied", "pending", "blocked", "error", "http_error"):
             self.assertEqual(counts[("fetch", outcome)], 1)
         self.assertEqual(counts[("search", "success")], 1)
-        self.assertEqual(response["history"]["total_events"], 6)
+        self.assertEqual(response["history"]["total_events"], 7)
         self.assertEqual(response["cache"]["scope"], "process_lifetime")
         self.assertEqual(response["cache"]["kinds"]["search"]["hits"], 1)
         self.assertEqual(response["cache"]["kinds"]["search"]["misses"], 1)
@@ -77,6 +78,27 @@ class MetricsTests(unittest.IsolatedAsyncioTestCase):
         for secret in ("SECRET_PATH", "HIDDEN", "PASSWORD_QUERY_PRIVATE",
                        "PRIVATE_DOCUMENT", "password=PRIVATE", "safe.example.org"):
             self.assertNotIn(secret, repr(response))
+
+    async def test_actual_fetch_tool_audits_http_errors_as_http_error(self):
+        # Exercise the real decorated MCP fetch entry point. Inserting an
+        # artificial history event alone does not prove the logger records
+        # this status when a crawler reports an origin HTTP error.
+        failure = {"url": "https://example.org/missing?token=PRIVATE",
+                   "success": False, "status": "http_error",
+                   "http_status": 404,
+                   "reason": "Target page returned HTTP 404."}
+        with (patch.object(bridge, "_check_public_target", return_value=None),
+              patch.object(bridge, "CRAWLER_SECURITY_WARNING", None),
+              patch.object(bridge, "_run_fetch", return_value=failure)):
+            answer = bridge.web_fetch(failure["url"], fresh=True)
+        self.assertEqual(answer["status"], "http_error")
+        stats = bridge.web_metrics(hours=1)
+        self.assertTrue(stats["success"])
+        actual = {(x["tool"], x["status"]): x["count"]
+                  for x in stats["history"]["outcomes"]}
+        self.assertEqual(actual[("fetch", "http_error")], 1)
+        self.assertNotIn("PRIVATE", repr(stats))
+        self.assertNotIn("example.org", repr(stats))
 
     async def test_untrusted_historical_status_is_not_exposed_to_mcp(self):
         append_history({
