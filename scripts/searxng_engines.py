@@ -15,6 +15,11 @@ import subprocess
 import sys
 import time
 
+# The setup wizard launches this helper as a path, not as a -m module.
+# Make imports work without PYTHONPATH while retaining normal module imports.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from scripts import backend_inventory, on_demand_coordination, on_demand_docker
 
 START = "# BEGIN local-search-mcp managed engine selection"
