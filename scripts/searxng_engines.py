@@ -300,8 +300,12 @@ def apply(selected: tuple[str, ...], controlled: tuple[str, ...]) -> str:
                     # A partial/incomplete write needs the durable checkpoint.
                     _recover(path, checkpoint)
             except StaleSettings as newer:
+                # The current file was changed by another editor; this old
+                # checkpoint cannot be safely restored and must not later be
+                # mistaken for an interrupted write.
+                checkpoint.unlink(missing_ok=True)
                 raise EngineSetupError(
-                    "Settings changed after apply; newer edit kept and recovery copy retained") from newer
+                    "Settings changed after apply; newer edit kept, no rollback attempted") from newer
             except (EngineSetupError, OSError, UnicodeError) as recovery_error:
                 raise EngineSetupError(
                     "Engine update failed; original settings remain in private recovery copy") from recovery_error
@@ -343,12 +347,24 @@ def main() -> int:
         target = on_demand_docker._safe_target("searxng")
         _check_bind_mount(target.ident, settings_path())
         if _recovery_path(settings_path()).exists():
-            print("An earlier SearXNG engine edit was interrupted.")
-            if input("Type RESTORE to recover prior settings, anything else cancels: ").strip() != "RESTORE":
-                print("No changes made; recovery copy retained")
-                return 1
-            print(recover_interrupted())
-            return 0
+            print("An earlier SearXNG settings edit may have been interrupted.")
+            print("RESTORE overwrites the current settings with the verified private recovery copy.")
+            print("KEEP retains the current settings and discards that recovery copy.")
+            action = input("Type RESTORE, KEEP, or anything else to cancel: ").strip()
+            if action == "KEEP":
+                checkpoint = _recovery_path(settings_path())
+                info = checkpoint.lstat()
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                        or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+                    raise EngineSetupError("Unsafe SearXNG recovery copy")
+                checkpoint.unlink()
+                print("Current settings kept; recovery copy discarded")
+                return 0
+            if action == "RESTORE":
+                print(recover_interrupted())
+                return 0
+            print("No changes made; recovery copy retained")
+            return 1
         _read_settings(settings_path())
         try:
             engines = live_engines() if target.running else []
