@@ -346,7 +346,7 @@ def main() -> int:
             engines = []
         names = tuple(row["name"] for row in engines)
         print("\nSearXNG search engines (operator-only)")
-        print("1  Recommended: Yahoo only (verified working on this installation)")
+        print("1  Recommended: Yahoo default; exclude other detected general engines")
         print("2  Choose from installed general-search engines" +
               ("" if names else " (requires running SearXNG)"))
         print("0  Cancel")
