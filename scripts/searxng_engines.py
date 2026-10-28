@@ -269,7 +269,8 @@ def main() -> int:
             selected = PRESET
         elif choice == "2" and names:
             for index, row in enumerate(engines, 1):
-                tag = "recommended" if row["name"] in RECOMMENDED else ""
+                tag = ("tested working here" if row["name"] == "yahoo" else
+                       "candidate (not verified here)" if row["name"] in RECOMMENDED else "")
                 active = "currently default" if row["enabled"] else "not default"
                 print(f"{index:2}  {row['name']}  ({active}) {tag}")
             raw = input("Comma-separated engine numbers (blank cancels): ").strip()
