@@ -6,6 +6,7 @@ after an explicit APPLY. Use the SearXNG /config API for live engine names.
 from __future__ import annotations
 
 from http.client import HTTPConnection
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -35,6 +36,10 @@ MAX_BYTES = 128 * 1024
 
 class EngineSetupError(ValueError):
     """Controlled operator diagnostic, never include private file contents."""
+
+
+class StaleSettings(EngineSetupError):
+    """File changed before this attempt wrote anything."""
 
 
 def settings_path() -> Path:
@@ -128,9 +133,12 @@ def render(original: str, selected: tuple[str, ...], controlled: tuple[str, ...]
         end = original.index(END) + len(END)
         # Never replace unrelated YAML or user changes inside the managed block.
         existing = original[begin:end]
-        if not re.fullmatch(
-            re.escape(START) + r"\n(?:  - name: .+\n    disabled: (?:true|false)\n)*"
-            + re.escape(END), existing):
+        checked = re.fullmatch(
+            re.escape(START) + r"\n# SHA256: ([0-9a-f]{64})\n"
+            + r"((?:  - name: .+\n    disabled: (?:true|false)\n)*)"
+            + re.escape(END), existing)
+        if (checked is None or hashlib.sha256(
+                checked.group(2).encode("utf-8")).hexdigest() != checked.group(1)):
             raise EngineSetupError("Managed engine block was edited; refusing overwrite")
         prefix = original[:begin]
         # Only remove our own immediately preceding top-level engines key.
@@ -146,11 +154,12 @@ def render(original: str, selected: tuple[str, ...], controlled: tuple[str, ...]
     # Refuse surprising YAML document boundaries in the restricted editor.
     if re.search(r"(?m)^(?:---|\.\.\.)[ \t]*$", rest):
         raise EngineSetupError("Multi-document settings are not supported by the guided editor")
-    block = ["engines:", START]
+    rows = []
     for name in controlled:
-        block.extend(("  - name: " + json.dumps(name, ensure_ascii=True),
-                      "    disabled: " + ("false" if name in selected else "true")))
-    block.append(END)
+        rows.extend(("  - name: " + json.dumps(name, ensure_ascii=True),
+                     "    disabled: " + ("false" if name in selected else "true")))
+    digest = hashlib.sha256(("\n".join(rows) + "\n").encode("utf-8")).hexdigest()
+    block = ["engines:", START, "# SHA256: " + digest, *rows, END]
     return rest.rstrip("\n") + "\n\n" + "\n".join(block) + "\n"
 
 
@@ -170,10 +179,10 @@ def _save(path: Path, body: str, *, expected: str | None) -> None:
         if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid()
                 or st.st_nlink != 1 or st.st_dev != named.st_dev
                 or st.st_ino != named.st_ino):
-            raise EngineSetupError("SearXNG settings changed during edit")
+            raise StaleSettings("SearXNG settings changed during edit")
         with os.fdopen(fd, "r+b", closefd=False) as f:
             if expected is not None and f.read(MAX_BYTES + 1) != expected.encode("utf-8"):
-                raise EngineSetupError("SearXNG settings changed since preview")
+                raise StaleSettings("SearXNG settings changed since preview")
             f.seek(0)
             f.write(payload)
             f.truncate()
@@ -276,6 +285,10 @@ def apply(selected: tuple[str, ...], controlled: tuple[str, ...]) -> str:
             result = ("Engine selection applied; verified SearXNG restarted successfully"
                       if target.running else
                       "Settings saved; sleeping SearXNG will use them on its next managed wake")
+        except StaleSettings as exc:
+            # No write occurred; never roll back someone else's newer edit.
+            checkpoint.unlink(missing_ok=True)
+            raise EngineSetupError("Settings changed since preview; no changes made") from exc
         except (EngineSetupError, on_demand_docker.LifecycleError, OSError) as exc:
             try:
                 _recover(path, checkpoint)
@@ -343,8 +356,13 @@ def main() -> int:
         if choice == "1":
             # Overrides the four observed default failures; does not alter
             # unrelated search categories, private credentials or tokens.
-            controlled = tuple(dict.fromkeys((*PRESET, *KNOWN_UNRELIABLE)))
+            if names and "yahoo" not in names:
+                raise EngineSetupError("Yahoo is not in the running SearXNG engine list")
+            controlled = names if names else tuple(dict.fromkeys((*PRESET, *KNOWN_UNRELIABLE)))
             selected = PRESET
+            if not names:
+                print("Backend asleep/unavailable: only the four known failing defaults "
+                      "will be disabled; other inherited engines are unchanged.")
         elif choice == "2" and names:
             for index, row in enumerate(engines, 1):
                 tag = ("tested working here" if row["name"] == "yahoo" else
