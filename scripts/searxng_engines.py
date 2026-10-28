@@ -300,12 +300,12 @@ def apply(selected: tuple[str, ...], controlled: tuple[str, ...]) -> str:
                     # A partial/incomplete write needs the durable checkpoint.
                     _recover(path, checkpoint)
             except StaleSettings as newer:
-                # The current file was changed by another editor; this old
-                # checkpoint cannot be safely restored and must not later be
-                # mistaken for an interrupted write.
-                checkpoint.unlink(missing_ok=True)
+                # A completed edit was superseded before rollback. Never
+                # overwrite the newer file, but preserve the private original
+                # so the operator may explicitly compare/restore or KEEP.
                 raise EngineSetupError(
-                    "Settings changed after apply; newer edit kept, no rollback attempted") from newer
+                    "Newer settings edit kept; original preserved in private recovery copy. "
+                    "Choose RESTORE or KEEP on next setup run") from newer
             except (EngineSetupError, OSError, UnicodeError) as recovery_error:
                 raise EngineSetupError(
                     "Engine update failed; original settings remain in private recovery copy") from recovery_error
@@ -323,13 +323,28 @@ def apply(selected: tuple[str, ...], controlled: tuple[str, ...]) -> str:
         return result
 
 
-def recover_interrupted() -> str:
+def _same_checkpoint(path: Path, identity: tuple[int, int]) -> None:
+    """Compare the checkpoint displayed at the prompt to the current inode."""
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise EngineSetupError("Recovery copy disappeared or changed") from exc
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+            or info.st_size > MAX_BYTES
+            or (info.st_dev, info.st_ino) != identity):
+        raise EngineSetupError("Recovery copy changed since confirmation")
+
+
+def recover_interrupted(*, identity: tuple[int, int] | None = None) -> str:
     """Operator-confirmed recovery of one interrupted settings edit."""
     with on_demand_coordination.exclusive():
         target = on_demand_docker._safe_target("searxng")
         path = settings_path()
         _check_bind_mount(target.ident, path)
         checkpoint = _recovery_path(path)
+        if identity is not None:
+            _same_checkpoint(checkpoint, identity)
         _recover(path, checkpoint)
         if target.running:
             _restart_verified(target)
@@ -346,22 +361,25 @@ def main() -> int:
     try:
         target = on_demand_docker._safe_target("searxng")
         _check_bind_mount(target.ident, settings_path())
-        if _recovery_path(settings_path()).exists():
+        checkpoint = _recovery_path(settings_path())
+        if checkpoint.exists():
+            info = checkpoint.lstat()
+            identity = (info.st_dev, info.st_ino)
+            _same_checkpoint(checkpoint, identity)
             print("An earlier SearXNG settings edit may have been interrupted.")
             print("RESTORE overwrites the current settings with the verified private recovery copy.")
             print("KEEP retains the current settings and discards that recovery copy.")
             action = input("Type RESTORE, KEEP, or anything else to cancel: ").strip()
             if action == "KEEP":
-                checkpoint = _recovery_path(settings_path())
-                info = checkpoint.lstat()
-                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                        or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
-                    raise EngineSetupError("Unsafe SearXNG recovery copy")
-                checkpoint.unlink()
+                # A second operator could recreate this path while this user
+                # reads the prompt. Recheck identity under the existing lock.
+                with on_demand_coordination.exclusive():
+                    _same_checkpoint(checkpoint, identity)
+                    checkpoint.unlink()
                 print("Current settings kept; recovery copy discarded")
                 return 0
             if action == "RESTORE":
-                print(recover_interrupted())
+                print(recover_interrupted(identity=identity))
                 return 0
             print("No changes made; recovery copy retained")
             return 1
