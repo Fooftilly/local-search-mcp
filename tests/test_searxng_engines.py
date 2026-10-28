@@ -103,7 +103,7 @@ class EngineChooserTests(unittest.TestCase):
     def test_unconfirmed_menu_has_no_writes_restart_or_docker_wake(self):
         fake = Target("searxng", "a"*64, True, "no")
         for inputs in (["0"], ["1", "CANCEL"], ["2", "1,2", "CANCEL"]):
-            with self.subTest(inputs=inputs), (
+            with (self.subTest(inputs=inputs),
                 patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
                 patch.object(e, "_check_bind_mount"),
                 patch.object(e, "live_engines", return_value=[
