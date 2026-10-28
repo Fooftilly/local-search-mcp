@@ -29,7 +29,7 @@ KNOWN_UNRELIABLE = ("brave", "duckduckgo", "google cse", "wikipedia")
 PRESET = ("yahoo",)
 NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9 ._-]{0,79}\Z")
 DEFAULT = re.compile(r"(?m)^use_default_settings:[ \t]*true[ \t]*(?:#.*)?$")
-ANY_ENGINES = re.compile(r"(?m)^engines[ \t]*:")
+ANY_ENGINES = re.compile(r"""(?m)^[ \t]*(?:engines|"engines"|'engines')[ \t]*:""")
 MAX_BYTES = 128 * 1024
 
 
@@ -154,7 +154,7 @@ def render(original: str, selected: tuple[str, ...], controlled: tuple[str, ...]
     return rest.rstrip("\n") + "\n\n" + "\n".join(block) + "\n"
 
 
-def _save(path: Path, body: str, *, expected: str) -> None:
+def _save(path: Path, body: str, *, expected: str | None) -> None:
     """Preserve the inode: Docker bind mounts retain it across container restart.
 
     An atomic os.replace() here would leave /etc/searxng/settings.yml mounted
@@ -172,7 +172,7 @@ def _save(path: Path, body: str, *, expected: str) -> None:
                 or st.st_ino != named.st_ino):
             raise EngineSetupError("SearXNG settings changed during edit")
         with os.fdopen(fd, "r+b", closefd=False) as f:
-            if f.read(MAX_BYTES + 1) != expected.encode("utf-8"):
+            if expected is not None and f.read(MAX_BYTES + 1) != expected.encode("utf-8"):
                 raise EngineSetupError("SearXNG settings changed since preview")
             f.seek(0)
             f.write(payload)
@@ -181,6 +181,46 @@ def _save(path: Path, body: str, *, expected: str) -> None:
             os.fsync(f.fileno())
     finally:
         os.close(fd)
+
+
+def _recovery_path(path: Path) -> Path:
+    return path.with_name(path.name + ".engine-setup-recovery")
+
+
+def _checkpoint(path: Path, original: str) -> Path:
+    """One owner-only, durable copy for a non-atomic Docker bind-mount edit."""
+    checkpoint = _recovery_path(path)
+    fd = os.open(checkpoint, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb", closefd=False) as f:
+            payload = original.encode("utf-8")
+            if len(payload) > MAX_BYTES:
+                raise EngineSetupError("SearXNG settings too large for safe recovery")
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return checkpoint
+    except Exception:
+        checkpoint.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(fd)
+
+
+def _recover(path: Path, checkpoint: Path) -> None:
+    info = checkpoint.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+            or info.st_size > MAX_BYTES):
+        raise EngineSetupError("Private SearXNG recovery copy is unsafe")
+    original = checkpoint.read_text(encoding="utf-8")
+    # Restore on the same inode even if a partial write damaged the YAML.
+    _save(path, original, expected=None)
 
 
 def _restart_verified(target: on_demand_docker.Target) -> None:
@@ -203,42 +243,73 @@ def _restart_verified(target: on_demand_docker.Target) -> None:
 
 
 def apply(selected: tuple[str, ...], controlled: tuple[str, ...]) -> str:
-    """One confirmed config change; never wake a sleeping backend."""
+    """One confirmed config change, serialized with project-owned Docker."""
     if os.geteuid() == 0:
         raise EngineSetupError("Run setup as the normal user")
     with on_demand_coordination.exclusive():
         target = on_demand_docker._safe_target("searxng")
         path = settings_path()
         _check_bind_mount(target.ident, path)
+        if _recovery_path(path).exists():
+            raise EngineSetupError("Interrupted edit detected; recover through the setup menu first")
         original = _read_settings(path)
         updated = render(original, selected, controlled)
         if updated == original:
             return "Engine selection already configured; no change"
-        _save(path, updated, expected=original)
-        if not target.running:
-            return "Settings saved; sleeping SearXNG will use them on its next managed wake"
+        checkpoint = _checkpoint(path, original)
         try:
-            _restart_verified(target)
-            # SearXNG may need seconds to recover after its container restarts.
-            for _ in range(30):
-                try:
-                    check = live_engines()
-                    enabled = {row["name"] for row in check if row["enabled"]}
-                    if all((name in enabled) == (name in selected) for name in controlled):
-                        return "Engine selection applied; verified SearXNG restarted successfully"
-                except EngineSetupError:
-                    pass
-                time.sleep(0.5)
-            raise EngineSetupError("Engine selection could not be verified after restart")
-        except EngineSetupError as exc:
-            _save(path, original, expected=updated)
-            # Recovery is scoped to the same previously verified container.
-            try:
+            _save(path, updated, expected=original)
+            if target.running:
                 _restart_verified(target)
-            except EngineSetupError:
+                # Wait for the normal SearXNG startup after scoped restart.
+                for _ in range(30):
+                    try:
+                        check = live_engines()
+                        enabled = {row["name"] for row in check if row["enabled"]}
+                        if all((name in enabled) == (name in selected) for name in controlled):
+                            break
+                    except EngineSetupError:
+                        pass
+                    time.sleep(0.5)
+                else:
+                    raise EngineSetupError("Engine selection not verified after restart")
+            result = ("Engine selection applied; verified SearXNG restarted successfully"
+                      if target.running else
+                      "Settings saved; sleeping SearXNG will use them on its next managed wake")
+        except (EngineSetupError, on_demand_docker.LifecycleError, OSError) as exc:
+            try:
+                _recover(path, checkpoint)
+            except (EngineSetupError, OSError, UnicodeError) as recovery_error:
                 raise EngineSetupError(
-                    "Verification failed; settings restored but SearXNG restart also failed") from exc
+                    "Engine update failed; original settings remain in private recovery copy") from recovery_error
+            # Config content is restored even when Docker is unavailable.
+            try:
+                if target.running:
+                    _restart_verified(target)
+            except (EngineSetupError, on_demand_docker.LifecycleError, OSError) as restart_error:
+                checkpoint.unlink(missing_ok=True)
+                raise EngineSetupError(
+                    "Original settings restored; SearXNG restart requires operator attention") from restart_error
+            checkpoint.unlink(missing_ok=True)
             raise EngineSetupError("Verification failed; previous settings restored") from exc
+        checkpoint.unlink()
+        return result
+
+
+def recover_interrupted() -> str:
+    """Operator-confirmed recovery of one interrupted settings edit."""
+    with on_demand_coordination.exclusive():
+        target = on_demand_docker._safe_target("searxng")
+        path = settings_path()
+        _check_bind_mount(target.ident, path)
+        checkpoint = _recovery_path(path)
+        _recover(path, checkpoint)
+        if target.running:
+            _restart_verified(target)
+        checkpoint.unlink()
+        return "Previous settings restored" + (
+            " and verified SearXNG restarted" if target.running else
+            "; sleeping SearXNG will use them on its next wake")
 
 
 def main() -> int:
@@ -248,6 +319,13 @@ def main() -> int:
     try:
         target = on_demand_docker._safe_target("searxng")
         _check_bind_mount(target.ident, settings_path())
+        if _recovery_path(settings_path()).exists():
+            print("An earlier SearXNG engine edit was interrupted.")
+            if input("Type RESTORE to recover prior settings, anything else cancels: ").strip() != "RESTORE":
+                print("No changes made; recovery copy retained")
+                return 1
+            print(recover_interrupted())
+            return 0
         _read_settings(settings_path())
         try:
             engines = live_engines() if target.running else []
