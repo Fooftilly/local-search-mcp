@@ -38,6 +38,7 @@ class MetricsTests(unittest.IsolatedAsyncioTestCase):
             ("fetch", "pending", "https://needs-approval.example.org/SECRET", ""),
             ("fetch", "blocked", "https://unsafe.example.org/SECRET", ""),
             ("fetch", "error", "https://errors.example.org/SECRET", ""),
+            ("fetch", "http_error", "https://missing.example.org/SECRET", ""),
             ("search", "success", "", "PASSWORD_QUERY_PRIVATE"),
         ):
             append_history({
@@ -66,10 +67,10 @@ class MetricsTests(unittest.IsolatedAsyncioTestCase):
         counts = {(x["tool"], x["status"]): x["count"]
                   for x in response["history"]["outcomes"]}
         self.assertEqual(counts[("fetch", "success")], 1)
-        for outcome in ("denied", "pending", "blocked", "error"):
+        for outcome in ("denied", "pending", "blocked", "error", "http_error"):
             self.assertEqual(counts[("fetch", outcome)], 1)
         self.assertEqual(counts[("search", "success")], 1)
-        self.assertEqual(response["history"]["total_events"], 6)
+        self.assertEqual(response["history"]["total_events"], 7)
         self.assertEqual(response["cache"]["scope"], "process_lifetime")
         self.assertEqual(response["cache"]["kinds"]["search"]["hits"], 1)
         self.assertEqual(response["cache"]["kinds"]["search"]["misses"], 1)
