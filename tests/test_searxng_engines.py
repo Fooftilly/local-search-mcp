@@ -250,6 +250,27 @@ class EngineChooserTests(unittest.TestCase):
         self.assertFalse(e._recovery_path(self.file).exists())
         self.assertEqual(calls, [self.original, None])
 
+    def test_new_manual_edit_after_write_is_not_overwritten_during_rollback(self):
+        fake = Target("searxng", "a"*64, True, "no")
+        def changed_restart(target):
+            self.file.write_text(self.file.read_text() + "# newer operator change\n")
+            raise e.on_demand_docker.LifecycleError("Docker became unavailable")
+        with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e, "_restart_verified", side_effect=changed_restart)):
+            with self.assertRaisesRegex(e.EngineSetupError, "newer edit kept"):
+                e.apply(("yahoo",), ("yahoo", "brave"))
+        self.assertIn("# newer operator change", self.file.read_text())
+        self.assertTrue(e._recovery_path(self.file).is_file())
+
+    def test_malformed_http_reply_from_engine_inventory_is_controlled(self):
+        conn = Mock()
+        conn.getresponse.side_effect = e.HTTPException("untrusted SECRET token")
+        with patch.object(e, "HTTPConnection", return_value=conn):
+            with self.assertRaisesRegex(e.EngineSetupError, "Cannot read SearXNG"):
+                e.live_engines()
+        conn.close.assert_called_once()
+
     def test_docker_inspection_failure_restores_settings(self):
         fake = Target("searxng", "a"*64, True, "no")
         seen = []
