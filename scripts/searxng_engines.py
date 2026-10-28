@@ -5,7 +5,7 @@ after an explicit APPLY. Use the SearXNG /config API for live engine names.
 """
 from __future__ import annotations
 
-from http.client import HTTPConnection
+from http.client import HTTPConnection, HTTPException
 import hashlib
 import json
 import os
@@ -112,7 +112,7 @@ def live_engines() -> list[dict]:
         return sorted(found.values(), key=lambda row: (
             0 if row["name"] == "yahoo" else
             1 if row["name"] in RECOMMENDED else 2, row["name"]))
-    except (OSError, TimeoutError, ValueError) as exc:
+    except (OSError, TimeoutError, ValueError, HTTPException) as exc:
         if isinstance(exc, EngineSetupError):
             raise
         raise EngineSetupError("Cannot read SearXNG /config (backend may be sleeping)") from exc
@@ -266,8 +266,10 @@ def apply(selected: tuple[str, ...], controlled: tuple[str, ...]) -> str:
         if updated == original:
             return "Engine selection already configured; no change"
         checkpoint = _checkpoint(path, original)
+        write_completed = False
         try:
             _save(path, updated, expected=original)
+            write_completed = True
             if target.running:
                 _restart_verified(target)
                 # Wait for the normal SearXNG startup after scoped restart.
@@ -291,7 +293,15 @@ def apply(selected: tuple[str, ...], controlled: tuple[str, ...]) -> str:
             raise EngineSetupError("Settings changed since preview; no changes made") from exc
         except (EngineSetupError, on_demand_docker.LifecycleError, OSError) as exc:
             try:
-                _recover(path, checkpoint)
+                if write_completed:
+                    # Refuse to roll back across a newer manual change.
+                    _save(path, original, expected=updated)
+                else:
+                    # A partial/incomplete write needs the durable checkpoint.
+                    _recover(path, checkpoint)
+            except StaleSettings as newer:
+                raise EngineSetupError(
+                    "Settings changed after apply; newer edit kept and recovery copy retained") from newer
             except (EngineSetupError, OSError, UnicodeError) as recovery_error:
                 raise EngineSetupError(
                     "Engine update failed; original settings remain in private recovery copy") from recovery_error
