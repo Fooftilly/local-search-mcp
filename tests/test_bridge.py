@@ -1627,6 +1627,67 @@ class BridgeTests(unittest.TestCase):
             self.assertIsNone(third["next_page"])
             self.assertEqual(calls, ["/health", "/crawl"])
 
+    def test_compact_fetch_short_document_batch_and_default_cache_isolation(self):
+        from collections import OrderedDict
+        content = "# Intro\n" + "🧭" * 20 + "a" * 7930
+        calls = []
+        original = httpx.Client
+        def handler(request):
+            calls.append(request.url.path)
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/short", "success": True,
+                "markdown": {"raw_markdown": content},
+            }]})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client),
+              patch.object(self.module.document_pages, "_CACHE", OrderedDict())):
+            normal = self.module.web_fetch("https://example.com/short")
+            cached = self.module.web_fetch("https://example.com/short")
+            self.assertEqual(normal, cached)
+            self.assertEqual(normal["markdown"], content)
+            self.assertNotIn("document_id", normal)
+            smaller = self.module.web_fetch("https://example.com/short",
+                                            compact_chars=2048,
+                                            include_outline=True)
+            self.assertEqual(smaller["markdown"], content[:2048])
+            self.assertTrue(smaller["truncated"])
+            self.assertIn("document_id", smaller)
+            self.assertEqual(smaller["page_count"], 2)
+            self.assertEqual(smaller["outline"][0]["heading"], "Intro")
+            next_page = self.module.web_fetch_page(smaller["document_id"], 2)
+            self.assertEqual(smaller["markdown"] + next_page["markdown"], content)
+            self.assertFalse(next_page["truncated"])
+            found = self.module.web_find(smaller["document_id"], "Intro")
+            self.assertEqual(found["matches"][0]["page"], 1)
+            batch = asyncio.run(self.module.web_fetch_batch(
+                ["https://example.com/short"], compact_chars=4096))
+            item = batch["results"][0]["result"]
+            self.assertTrue(item["success"])
+            self.assertEqual(item["markdown"], content[:4096])
+            self.assertEqual(item["page_count"], 2)
+            self.assertEqual(item["markdown"] + self.module.web_fetch_page(
+                item["document_id"], 2)["markdown"], content)
+            self.assertEqual(self.module.web_fetch("https://example.com/short"),
+                             normal)
+            self.assertEqual(calls.count("/crawl"), 3)
+        self.assertLess(len(smaller["markdown"]), len(normal["markdown"]) // 3)
+
+    def test_compact_fetch_invalid_limits_are_rejected_without_crawling(self):
+        for invalid in (None, 1, False, True, 2047, 24001, 3.2, "4096", []):
+            with self.subTest(limit=repr(invalid)):
+                with patch.object(self.module.httpx, "Client") as client:
+                    with self.assertRaisesRegex(ValueError, "compact_chars"):
+                        self.module.web_fetch("https://example.com/a",
+                                              compact_chars=invalid)
+                    with self.assertRaisesRegex(ValueError, "compact_chars"):
+                        asyncio.run(self.module.web_fetch_batch(
+                            ["https://example.com/a"], compact_chars=invalid))
+                    client.assert_not_called()
+
     def test_extraction_modes_empty_fit_and_oversized_content(self):
         from collections import OrderedDict
         selected = ["raw"]
