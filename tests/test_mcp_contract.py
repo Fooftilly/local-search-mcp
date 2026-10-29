@@ -238,6 +238,34 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("NEVER_LEAK_CONFIG_SECRET", str(data))
         self.assertEqual(len(requests), 1)
 
+    async def test_long_valid_engine_names_do_not_hide_selectable_providers(self):
+        long_disabled = "disabled-" + "a" * 45
+        long_enabled = "enabled-" + "b" * 44
+        self.assertGreater(len(long_disabled), 40)
+        config = {"engines": [
+            {"name": long_disabled, "enabled": False, "categories": ["news"]},
+            {"name": long_enabled, "enabled": True, "categories": ["science"]},
+            {"name": "yahoo", "enabled": True, "categories": ["general"]},
+        ]}
+        original = httpx.Client
+        def handler(request):
+            self.assertEqual(request.url.path, "/config")
+            return httpx.Response(200, json=config)
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with patch.object(bridge.httpx, "Client", side_effect=factory):
+            async with Client(bridge.mcp) as client:
+                result = await client.call_tool("web_search_capabilities", {})
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.data["status"], "available")
+        self.assertEqual([e["name"] for e in result.data["enabled_engines"]],
+                         ["yahoo"])
+        self.assertEqual(result.data["categories"], ["general"])
+        self.assertEqual(result.data["enabled_engine_count"], 1)
+        self.assertEqual(result.data["omitted_unselectable_engine_count"], 1)
+        self.assertNotIn(long_disabled, str(result.data))
+        self.assertNotIn(long_enabled, str(result.data))
+
     async def test_search_capabilities_fail_closed_on_bad_or_absent_inventory(self):
         original = httpx.Client
         cases = [
