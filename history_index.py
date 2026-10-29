@@ -283,18 +283,122 @@ def _history_filter(kind: str, status: str, domain: str,
     return (" WHERE " + " AND ".join(where)) if where else "", args
 
 
+def _reveal_history_queries(rows: list[dict]) -> None:
+    """Read only explicitly selected search records from their original JSONL.
+
+    Generation and byte offset are index metadata, never query content. Validate
+    the original inode plus first/last indexed line fingerprints before reading.
+    If the file rotated away or changed, leave the query unavailable rather
+    than guessing from a matching timestamp or a different event.
+    """
+    selected = [row for row in rows if row["kind"] == "search"]
+    if not selected:
+        return
+    for row in selected:
+        row["query"] = None
+    target = history_path()
+    folder = target.parent
+    lock_file = folder / ".history.lock"
+    if folder.is_symlink() or lock_file.is_symlink() or index_path().is_symlink():
+        return
+    try:
+        lock_fd = os.open(lock_file, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return
+    try:
+        info = os.fstat(lock_fd)
+        if not stat.S_ISREG(info.st_mode):
+            return
+        fcntl.flock(lock_fd, fcntl.LOCK_SH)
+        try:
+            with closing(sqlite3.connect(index_path(), timeout=10)) as conn:
+                sources = {r[0]: r[1:] for r in conn.execute(
+                    "SELECT generation_id,dev,ino,fingerprint,checkpoint_offset,"
+                    "checkpoint_hash FROM sources")}
+            for path in _files(target):
+                try:
+                    file_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                except OSError:
+                    continue
+                try:
+                    meta = os.fstat(file_fd)
+                    if (not stat.S_ISREG(meta.st_mode)
+                            or meta.st_uid != os.geteuid()
+                            or meta.st_mode & 0o077):
+                        continue
+                    candidates = [row for row in selected
+                                  if row["generation_id"] in sources
+                                  and sources[row["generation_id"]][:2] ==
+                                  (meta.st_dev, meta.st_ino)]
+                    if not candidates:
+                        continue
+                    with os.fdopen(os.dup(file_fd), "rb") as stream:
+                        first = stream.readline(MAX_EVENT_BYTES + 1)
+                        first_hash = hashlib.sha256(first).hexdigest()
+                        for row in candidates:
+                            dev, ino, fingerprint, checkpoint_pos, checkpoint_hash = (
+                                sources[row["generation_id"]])
+                            if first_hash != fingerprint:
+                                continue
+                            if checkpoint_pos >= 0:
+                                stream.seek(checkpoint_pos)
+                                checkpoint = stream.readline(MAX_EVENT_BYTES + 1)
+                                if hashlib.sha256(checkpoint).hexdigest() != checkpoint_hash:
+                                    continue
+                            pos = row["byte_offset"]
+                            if type(pos) is not int or pos < 0 or pos >= meta.st_size:
+                                continue
+                            stream.seek(pos)
+                            line = stream.readline(MAX_EVENT_BYTES + 1)
+                            if not line.endswith(b"\n") or len(line) > MAX_EVENT_BYTES:
+                                continue
+                            try:
+                                evt = json.loads(line)
+                                clean = _safe_event(evt)
+                            except (UnicodeError, ValueError, TypeError):
+                                continue
+                            if clean != tuple(row[k] for k in
+                                              ("at_ms", "kind", "status", "domain",
+                                               "duration_ms", "backend")):
+                                continue
+                            query = evt.get("query")
+                            if isinstance(query, str) and len(query) <= 300:
+                                row["query"] = query
+                finally:
+                    os.close(file_fd)
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    except (OSError, sqlite3.Error, ValueError):
+        # The source file has been rotated or is unreadable: never use
+        # another event as a substitute for the original search query.
+        return
+    finally:
+        os.close(lock_fd)
+
+
 def search_history(*, limit: int = 25, kind: str = "", status: str = "",
-                   domain: str = "", hours: int = 0) -> list[dict]:
-    """Return bounded newest-first metadata, with optional rolling time filter."""
+                   domain: str = "", hours: int = 0,
+                   reveal_queries: bool = False) -> list[dict]:
+    """Return indexed metadata; recover search queries only by explicit opt-in."""
     if type(limit) is not int or not 1 <= limit <= MAX_QUERY_RESULTS:
         raise ValueError("Invalid history page size")
+    if type(reveal_queries) is not bool:
+        raise ValueError("Invalid query visibility setting")
     suffix, args = _history_filter(kind, status, domain, hours)
     sync_history()
+    columns = ("generation_id,byte_offset," if reveal_queries else "") + (
+        "at_ms,kind,status,domain,duration_ms,backend")
     with closing(sqlite3.connect(index_path(), timeout=10)) as conn:
         conn.row_factory = sqlite3.Row
-        return [dict(r) for r in conn.execute(
-            "SELECT at_ms,kind,status,domain,duration_ms,backend FROM history" +
+        rows = [dict(r) for r in conn.execute(
+            "SELECT " + columns + " FROM history" +
             suffix + " ORDER BY at_ms DESC,rowid DESC LIMIT ?", (*args, limit))]
+    if reveal_queries:
+        _reveal_history_queries(rows)
+        for row in rows:
+            row.pop("generation_id", None)
+            row.pop("byte_offset", None)
+    return rows
 
 
 def summarize_history(*, kind: str = "", status: str = "",

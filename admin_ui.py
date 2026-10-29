@@ -11,6 +11,7 @@ import secrets
 import sqlite3
 import threading
 import time
+import unicodedata
 from urllib.parse import parse_qs, urlsplit
 
 import domain_policy as policy
@@ -56,9 +57,24 @@ def recent_history(n=25):
     except (ImportError,OSError):return []
 
 
-def history_items_html(kind="", status="", domain="", hours=0):
+def _safe_query_display(query):
+    """Make control/bidi characters inert while retaining full printable text."""
+    if not isinstance(query, str):
+        return "— (unavailable)"
+    rendered = []
+    for char in query:
+        if unicodedata.category(char) in ("Cc", "Cf", "Cs", "Zl", "Zp"):
+            rendered.append(f"\\\\x{ord(char):02x}" if ord(char) <= 255
+                            else f"\\\\u{ord(char):04x}")
+        else:
+            rendered.append(char)
+    return "".join(rendered)
+
+def history_items_html(kind="", status="", domain="", hours=0, show_queries=False):
     try:
-        items = history_index.search_history(kind=kind, status=status, domain=domain, hours=hours)
+        items = history_index.search_history(kind=kind, status=status,
+                                              domain=domain, hours=hours,
+                                              reveal_queries=show_queries)
     except (OSError, ValueError, sqlite3.Error):
         return '<tr><td colspan="5">Indexed history is unavailable; check local configuration.</td></tr>'
     out = []
@@ -66,19 +82,27 @@ def history_items_html(kind="", status="", domain="", hours=0):
         stamp = datetime.fromtimestamp(
             event["at_ms"] / 1000, timezone.utc).isoformat().replace("+00:00", "Z")
         elapsed = (str(event["duration_ms"]) if event["duration_ms"] is not None else "—")
+        display = (_safe_query_display(event.get("query"))
+                   if show_queries and event["kind"] == "search"
+                   else (event["domain"] or "—") if show_queries
+                   else event["domain"])
+        css_class = 'domain history-query' if show_queries else 'domain'
         out.append(
             f'<tr><td class="small">{esc(stamp)}</td><td>{esc(event["kind"])}</td>'
-            f'<td>{esc(event["status"])}</td><td class="domain">{esc(event["domain"])}</td>'
+            f'<td>{esc(event["status"])}</td>'
+            f'<td class="{css_class}">{esc(display)}</td>'
             f'<td>{esc(elapsed)}</td></tr>')
     return ''.join(out) or '<tr><td colspan="5">No matching MCP history.</td></tr>'
 
 
-def recent_rows(kind="", status="", domain="", hours=0):
+def recent_rows(kind="", status="", domain="", hours=0, show_queries=False):
+    column = "Search query / domain" if show_queries else "Domain"
     return ('<div class="scroll"><table><thead><tr><th>UTC time</th>'
-            '<th>Operation</th><th>Status</th><th>Domain</th>'
+            '<th>Operation</th><th>Status</th><th>' + column + '</th>'
             '<th>Duration (ms)</th></tr></thead>'
             '<tbody id="live-history">' +
-            history_items_html(kind, status, domain, hours) + '</tbody></table></div>')
+            history_items_html(kind, status, domain, hours, show_queries) +
+            '</tbody></table></div>')
 
 
 def history_summary_html(metrics):
@@ -107,9 +131,14 @@ def _history_filters(query, *, validate_text=True):
     if raw not in ('0', '1', '24', '168'):
         raise ValueError("Invalid history time window")
     values['hours'] = int(raw)
+    visible = query.get('show_queries', ['0'])
+    if len(visible) != 1 or visible[0] not in ('0', '1'):
+        raise ValueError("Invalid history query visibility")
+    values['show_queries'] = visible[0] == '1'
     # Invalid text filters may be displayed, but never passed to a query.
     if validate_text:
-        history_index._history_filter(**values)
+        history_index._history_filter(**{k: values[k] for k in
+                                        ('kind', 'status', 'domain', 'hours')})
     return values
 
 
@@ -123,7 +152,9 @@ def live_snapshot(query='', view='policy', history_filters=None):
     if view == 'history':
         filters = history_filters or {}
         try:
-            metrics = history_index.summarize_history(**filters)
+            metrics = history_index.summarize_history(**{
+                k: filters[k] for k in ('kind', 'status', 'domain', 'hours')
+                if k in filters})
         except (OSError, ValueError, sqlite3.Error):
             metrics = []
         return {'history_html': history_items_html(**filters),
@@ -549,7 +580,8 @@ def status_page():
                            mcp_port=esc(MCP_PORT))
 
 
-def history_page(kind="", status="", domain="", hours=0, filter_error=""):
+def history_page(kind="", status="", domain="", hours=0, show_queries=False,
+                 filter_error=""):
     filters = {"kind": kind, "status": status, "domain": domain, "hours": hours}
     try:
         retention_label = str(history_index._retention_days())
@@ -564,7 +596,7 @@ def history_page(kind="", status="", domain="", hours=0, filter_error=""):
         f'<option value="{esc(kind)}" selected disabled>'
         f'Unsupported operation: {esc(kind)}</option>'
         if filter_error and kind not in ("", "search", "fetch", "page") else '')
-    rows = (recent_rows(**filters) if not filter_error
+    rows = (recent_rows(**filters, show_queries=show_queries) if not filter_error
             else '<p class="subtle">Correct the filters above to view history.</p>')
     options = ''.join(
         f'<option value="{n}"{" selected" if hours == n else ""}>{label}</option>'
@@ -577,6 +609,7 @@ def history_page(kind="", status="", domain="", hours=0, filter_error=""):
         fetch_selected=" selected" if kind == "fetch" else "",
         page_selected=" selected" if kind == "page" else "",
         status=esc(status), domain=esc(domain), options=options,
+        query_checked=' checked' if show_queries else '',
         warning=warning, rows=rows,
         summary_html=history_summary_html(metrics),
         retention_label=esc(retention_label),
