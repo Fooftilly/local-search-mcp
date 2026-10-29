@@ -224,9 +224,10 @@ def _advertised_alternatives(markdown: str, base: str, *, budget: int) -> list[d
         # A single adjacent group only: never match unrelated later nav links.
         group = markdown[marker.end():marker.end() + 900].split("\n\n", 1)[0]
         candidates: dict[str, tuple[str, str]] = {}
+        observed_stems: set[str] = set()
         for link in _ALT_LINK.finditer(group):
             fmt = _ALT_LABELS.get(link.group(1).strip().casefold())
-            if fmt is None or fmt in candidates:
+            if fmt is None:
                 continue
             url = _url(link.group(2), base)
             if url is None:
@@ -238,7 +239,13 @@ def _advertised_alternatives(markdown: str, base: str, *, budget: int) -> list[d
             stem = path[:-len(suffix)]
             if not stem or stem.endswith("/"):
                 continue
-            candidates[fmt] = (stem, url)
+            observed_stems.add(stem)
+            if fmt not in candidates:
+                candidates[fmt] = (stem, url)
+        # Mixed-document groups are ambiguous: never arbitrarily select a
+        # first per-format pair and claim it was an advertised equivalence.
+        if len(observed_stems) != 1:
+            continue
         # Do not infer equivalence from labels alone: the source must expose
         # a PDF and a text/HTML candidate for the same literal URL stem.
         if "pdf" not in candidates:
