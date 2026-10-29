@@ -168,8 +168,8 @@ class SearchResultTests(unittest.TestCase):
         bad = [None, 12, True, [], {}, "", "now", "2024-02-30",
                "2024-13-01T12:00:00", "2024-10-23T25:00:00",
                "2024-10-23T12:00:00+25:00", "2024-10-23T12:00:00+0200",
-               "2024-10-23T12:00:00Z\\n", "\\u202e2024-10-23",
-               "2024-10-23<script>", "\\ud800", "x" * 100000]
+               "2024-10-23T12:00:00Z\n", "\u202e2024-10-23",
+               "2024-10-23<script>", "\ud800", "x" * 100000]
         for value in bad:
             with self.subTest(value=repr(value)):
                 r = row("https://example.org/post", "news")
