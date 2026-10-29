@@ -113,6 +113,24 @@ class StructuredExtractionTests(unittest.TestCase):
         self.assertEqual(result[0]["title"], "Official announcement")
         self.assertEqual(result[1]["text"], "Edition 1 duplicate")
 
+    def test_link_budget_skips_oversized_entries_and_backfills_short_links(self):
+        # Twenty-four high-scoring long URLs used to exhaust the selection
+        # before budget checks, hiding a short useful candidate in 25th place.
+        large = [{"href": "/articles/" + "x" * 1830 + str(i),
+                  "text": "Detailed public research report"}
+                 for i in range(24)]
+        short_url = "https://example.com/articles/short-report"
+        page = {"links": {"internal": large + [
+            {"href": "/articles/short-report",
+             "text": "Detailed public research report"}]}}
+        output = subject.extract(page, "https://example.com/",
+                                 include_links=True, include_tables=False)
+        urls = [entry["url"] for entry in output["links"]]
+        self.assertIn(short_url, urls)
+        self.assertLess(len(output["links"]), subject.MAX_LINKS)
+        self.assertLessEqual(len(json.dumps(output, ensure_ascii=True).encode()),
+                             subject.MAX_OUTPUT_BYTES + 200)
+
     def test_under_link_cap_preserves_safe_crawl_order_and_size_limits(self):
         payload = {"links": {"internal": [
             {"href": "/short", "text": "Short"},
