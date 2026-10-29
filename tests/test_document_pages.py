@@ -61,6 +61,74 @@ class DocumentPageTests(unittest.TestCase):
         self.assertEqual(pages.read(tokens[1], 2)["markdown"], "x")
         self.assertEqual(pages.read(tokens[2], 2)["markdown"], "x")
 
+    def test_outline_multipage_headings_unicode_setext_and_code_fences(self):
+        prefix = "# Intro 🧭\n" + "x" * (pages.PAGE_CHARS - len("# Intro 🧭\n"))
+        markdown = (prefix + "\n## Second section\n" +
+                    "This is a section\n---------------\n" +
+                    "```python\n# fake heading\n```\n" +
+                    "~~~\n# also fake\n~~~\n" +
+                    "## Final\n")
+        outline = pages.build_outline(markdown)
+        titles = [x["heading"] for x in outline["outline"]]
+        self.assertEqual(titles, ["Intro 🧭", "Second section",
+                                  "This is a section", "Final"])
+        self.assertFalse(outline["outline_truncated"])
+        self.assertEqual(outline["outline"][0]["offset"], 0)
+        self.assertEqual(outline["outline"][1]["offset"], pages.PAGE_CHARS + 1)
+        self.assertEqual(outline["outline"][1]["page"], 2)
+        for row in outline["outline"]:
+            self.assertIn(row["heading"], markdown[row["offset"]:row["offset"] + 200])
+
+    def test_long_setext_title_keeps_bounded_prefix_and_original_page(self):
+        title = "A" * 481
+        page_prefix = "before\n" + "x" * (pages.PAGE_CHARS - 250 - len("before\n")) + "\n"
+        markdown = page_prefix + title + "\n---\n"
+        outline = pages.build_outline(markdown)
+        self.assertEqual(len(outline["outline"]), 1)
+        heading = outline["outline"][0]
+        self.assertEqual(heading["heading"], "A" * pages.MAX_OUTLINE_HEADING_CHARS)
+        self.assertEqual(heading["level"], 2)
+        self.assertEqual(heading["offset"], len(page_prefix))
+        self.assertEqual(heading["page"], 1)
+        self.assertGreater(len(page_prefix) + len(title), pages.PAGE_CHARS)
+        self.assertFalse(outline["outline_truncated"])
+
+        next_page = "x" * pages.PAGE_CHARS + "\n" + title + "\n===\n"
+        outline_next = pages.build_outline(next_page)["outline"]
+        self.assertEqual(len(outline_next), 1)
+        self.assertEqual(outline_next[0]["heading"], "A" * 160)
+        self.assertEqual(outline_next[0]["page"], 2)
+        self.assertEqual(outline_next[0]["offset"], pages.PAGE_CHARS + 1)
+        self.assertEqual(outline_next[0]["level"], 1)
+
+    def test_indented_code_never_creates_setext_heading(self):
+        for code_line in (
+            "    print('hello')",
+            "\tprint('hello')",
+            " \tprint('hello')",
+            "   \tprint('hello')",
+        ):
+            with self.subTest(code=repr(code_line)):
+                result = pages.build_outline(code_line + "\n---\n")
+                self.assertEqual(result["outline"], [])
+        real = pages.build_outline("   An actual section\n---\n")
+        self.assertEqual([h["heading"] for h in real["outline"]],
+                         ["An actual section"])
+        self.assertEqual(real["outline"][0]["level"], 2)
+
+    def test_outline_bounded_and_safe_on_untrusted_headings(self):
+        lines = "\n".join(f"### Section {i}" for i in range(60))
+        result = pages.build_outline(lines)
+        self.assertEqual(len(result["outline"]), pages.MAX_OUTLINE_HEADINGS)
+        self.assertTrue(result["outline_truncated"])
+        self.assertEqual(result["outline"][-1]["heading"], "Section 39")
+        unsafe = "# A" + chr(0x202e) + "B <script>evil</script> " + "x" * 600
+        safe = pages.build_outline(unsafe)["outline"][0]["heading"]
+        self.assertNotIn(chr(0x202e), safe)
+        self.assertLessEqual(len(safe), pages.MAX_OUTLINE_HEADING_CHARS)
+        self.assertEqual(pages.build_outline("No headings")["outline"], [])
+        self.assertFalse(pages.build_outline("")["outline_truncated"])
+
     def test_literal_find_crosses_page_boundary_with_correct_source_offset(self):
         content = "x" * (pages.PAGE_CHARS - 3) + "Grant Deadline" + "z" * pages.PAGE_CHARS
         handle, _ = pages.save("https://example.com/long", content, {"title": "Long"})

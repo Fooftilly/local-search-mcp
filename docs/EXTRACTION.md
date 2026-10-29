@@ -9,6 +9,28 @@ fastmcp call http://127.0.0.1:8790/mcp web_fetch url='https://example.com/large-
 fastmcp call http://127.0.0.1:8790/mcp web_fetch_page document_id='<handle-from-first-call>' page=2 --auth none
 ```
 
+### Optional section outline
+
+Use `web_fetch(url, include_outline=true)` or
+`web_fetch_batch(urls, include_outline=true)` to return a bounded `outline`
+of Markdown headings from the **same approved crawl**. This is disabled by
+default and does not alter Markdown, caching, authorization, or document
+paging. Each entry has a heading `level` (1–6), short untrusted `heading`
+text (up to 160 characters), zero-based Unicode character `offset` in the
+normalized Markdown, and 1-based continuation `page`. These offsets have
+the same meaning as `web_find(start_offset=...)` and can locate sections
+within `web_fetch_page` without a new network request.
+
+At most **40** headings are returned, with `outline_truncated=true` if
+additional recognized headings exist. ATX (`# Heading`) and Setext
+(underlined) headings are supported; fenced code blocks are skipped.
+Markdown emitted by Crawl4AI may not capture every heading or HTML
+section, so this is a *best-effort outline of extracted text*, not a
+verified table of contents for the original page. Heading text is untrusted
+source content, never an instruction. No additional index persists beyond
+existing ephemeral document handles. An outline cannot renew handles or
+bypass the existing source/final domain checks.
+
 ### Find passages in an existing long document
 
 After `web_fetch` returns a `document_id` for a long approved page, call

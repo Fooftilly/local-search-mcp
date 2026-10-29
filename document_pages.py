@@ -110,6 +110,84 @@ def read_with_security_context(
         return result, source_url, once_proof
 
 
+MAX_OUTLINE_HEADINGS = 40
+MAX_OUTLINE_HEADING_CHARS = 160
+_ATX_HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+|$)(.*)$")
+_SETEXT_HEADING = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
+_FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_FENCE_CLOSE = re.compile(r"^ {0,3}(`+|~+)[ \t]*$")
+
+
+def _outline_title(raw: str) -> str:
+    """Bound and neutralize untrusted Markdown heading text."""
+    import unicodedata
+    clean = "".join(
+        " " if unicodedata.category(c).startswith("C") else c
+        for c in raw[:MAX_OUTLINE_HEADING_CHARS * 3])
+    clean = re.sub(r"[ \t]+#+[ \t]*$", "", clean).strip()
+    return clean[:MAX_OUTLINE_HEADING_CHARS]
+
+
+def build_outline(markdown: str) -> dict:
+    """Summarize headings in already-approved Markdown, never a new crawl.
+
+    Offsets count Python Unicode characters in the normalized extracted text
+    and match web_find / web_fetch_page positions. Never stores a second index.
+    """
+    headings = []
+    truncated = False
+    fence_char = ""
+    fence_length = 0
+    previous = ""
+    previous_offset = 0
+    offset = 0
+    for line in markdown.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        opened = _FENCE_OPEN.match(content)
+        if fence_char:
+            if opened and opened.group(1)[0] == fence_char:
+                closing = _FENCE_CLOSE.match(content)
+                if closing and len(closing.group(1)) >= fence_length:
+                    fence_char = ""
+                    fence_length = 0
+            previous = ""
+        elif opened:
+            fence_char = opened.group(1)[0]
+            fence_length = len(opened.group(1))
+            previous = ""
+        else:
+            match = _ATX_HEADING.match(content)
+            start = offset
+            level = 0
+            name = ""
+            if match:
+                level = len(match.group(1))
+                name = _outline_title(match.group(2))
+            elif _SETEXT_HEADING.fullmatch(content) and previous:
+                marker = content.strip()[0]
+                level = 1 if marker == "=" else 2
+                name = _outline_title(previous)
+                start = previous_offset
+            if level and name:
+                if len(headings) >= MAX_OUTLINE_HEADINGS:
+                    truncated = True
+                    break
+                headings.append({"level": level, "heading": name,
+                                 "offset": start, "page": 1 + start // PAGE_CHARS})
+            # Preserve a bounded prefix of long Setext title candidates,
+            # rather than discarding their entire heading. Four-space or
+            # tab-indented text is Markdown code, not a Setext title. A tab
+            # after up to three leading spaces reaches a code indentation.
+            eligible = (bool(content.strip())
+                        and not content.lstrip().startswith(
+                            ("#", ">", "-", "*", "+"))
+                        and not re.match(r"^(?: {4}| {0,3}\t)", content))
+            previous = content[:MAX_OUTLINE_HEADING_CHARS * 3] if eligible else ""
+            previous_offset = offset
+        offset += len(line)
+    return {"outline": headings, "outline_truncated": truncated}
+
+
 MAX_FIND_QUERY = 160
 MAX_FIND_MATCHES = 20
 FIND_SNIPPET_BEFORE = 90
