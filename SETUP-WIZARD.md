@@ -79,44 +79,50 @@ authenticated HTTPS MCP ingress. The OpenAI tunnel is not a generic ingress
 for other providers. No enrollment, credential changes, client installation
 or remote proxy setup is performed by these preview commands.
 
-## Choose SearXNG search engines without editing YAML (issue #137)
+## Choose SearXNG search engines without editing YAML (issues #137, #144)
 
 Select **Setup → 4 (Choose SearXNG search engines)** or run
 `./setup.sh --search-engines` from a normal-user terminal. This is an
 **operator-only local action**, not an MCP administration tool or dashboard button.
 
-1. **Recommended: Yahoo default**: selected because the operator's installed
-   SearXNG returned seven results twice where the inherited default engines
-   produced only CAPTCHA/rate-limit failures. It disables the four observed
-   problematic defaults (Brave, DuckDuckGo, Google CSE, Wikipedia). When
-   the backend is running, it disables all other discovered general engines;
-   when sleeping, it updates only these known defaults and explicitly says
-   that other inherited engines are unchanged. It preserves credentials.
-2. **Custom selection**: reads `http://127.0.0.1:8888/config` over loopback
-   and lists installed **general-search** engines, with Yahoo and other
-   candidates near the top. Choose one or more numbers; the current enabled
-   state is shown. Custom selection changes general-engine default flags,
-   which may also affect those engines in other categories. If SearXNG is
-   intentionally sleeping, the recommended option works offline and takes
-   effect on its next managed wake; custom discovery needs a running backend.
-3. Review the proposed selection and type `APPLY` exactly. Anything else
-   cancels without changing Docker or configuration.
+1. **Recommended: Yahoo general default**: selected because Yahoo worked
+   on the operator's deployment while the initial four general engines
+   were rate-limited or CAPTCHA-blocked. If SearXNG is running, the preset
+   excludes all other detected *general* engines. If the backend is sleeping,
+   it only changes the known four failing general defaults and explicitly
+   warns that other inherited defaults may remain active.
+2. **Choose general engines**: list installed general engines from the
+   loopback SearXNG `/config` response, with Yahoo first. Enter numbered
+   choices, or blank to cancel. No Google engines are enabled implicitly.
+3. **Exclude Google-named engines across every category**: inspect the
+   running SearXNG's full installed engine list, then set `disabled: true`
+   for every name starting with `google` (including `google cse images`).
+   Previously enabled non-Google engines remain as configured. **Does not
+   require Google to be rate-limited**; this is an explicit provider choice.
+4. **Choose engines in a category**: select `images`, `news`, `science`,
+   `general`, or any category actually advertised by the running instance.
+   Pick installed engine numbers; in a *non-general* category, type `NONE`
+   to disable every displayed engine explicitly. The list shows which
+   engines are default-enabled and every category they belong to.
 
-The editor verifies the dedicated Docker Compose ownership and the exact
-`/etc/searxng/settings.yml` bind mount; it refuses foreign/shared crawlers,
-symlinks, missing `use_default_settings: true`, or existing unmanaged
-`engines:` YAML blocks instead of overwriting them. It changes only its
-own marked section of the existing private `searxng-settings.yml`, retaining
-the **same inode** so Docker's file bind mount observes the change. If SearXNG
-is already running, setup restarts **only** that verified container and checks
-the local `/config` engine flags; on failure it restores the previous file
-and attempts to restart that same verified container. Sleeping backends are
-not woken solely for engine setup. The bridge, tunnel, crawler, root firewall
-and unrelated Docker workloads are never intentionally restarted.
+**Important:** SearXNG's `disabled` flag applies to the **engine globally**,
+not separately to each category. Changing an engine shared by `general` and
+`news` changes both. The menu labels shared engines, and existing managed
+overrides for unrelated engines remain intact across subsequent choices.
 
-The regular guided credentials/profile setup remains unchanged. After it
-finishes, the wizard points to this Setup action; no engine settings are
-silently changed on an existing installation.
+After previewing the selection, type **`APPLY`** exactly; anything else
+cancels. The operator-only editor verifies the dedicated Compose ownership,
+the exact host bind mount to `/etc/searxng/settings.yml`, owner-only
+settings permissions, `use_default_settings: true` and the checksum of its
+previous managed `engines:` block. It refuses unmanaged overrides, preserves
+the same file inode for Docker's bind mount, and restarts **only** the verified
+project-owned running SearXNG container. It checks the resulting enabled
+flags and restores previous settings if verification fails. A sleeping backend
+remains asleep and uses the saved settings on its next managed wake.
+
+The guided setup flow does not silently change engine settings and never
+edits the dashboard, root firewall, Crawl4AI container or unrelated Docker
+workloads. Any recovery prompt stays operator-confirmed.
 
 ## Create a private backup deliberately (issues #74 / #15)
 
