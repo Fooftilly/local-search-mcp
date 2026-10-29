@@ -77,7 +77,11 @@ def _check_bind_mount(container_id: str, path: Path) -> None:
 
 
 def live_engines() -> list[dict]:
-    """Read-only localhost-only engine inventory; do not start Docker."""
+    """Read the installed per-engine defaults across *all* search categories.
+
+    SearXNG exposes one 'enabled' flag per engine, not per category. Do not
+    mistake a category-specific view for independently configurable flags.
+    """
     try:
         conn = HTTPConnection("127.0.0.1", 8888, timeout=4)
         try:
@@ -100,15 +104,19 @@ def live_engines() -> list[dict]:
                 continue
             name = row.get("name")
             categories = row.get("categories", [])
-            if (not isinstance(name, str) or not NAME.fullmatch(name)
-                    or not isinstance(categories, list)
-                    or "general" not in categories):
+            if not isinstance(name, str) or not NAME.fullmatch(name):
+                continue
+            if (not isinstance(categories, list) or not categories
+                    or len(categories) > 16
+                    or any(not isinstance(cat, str) or not NAME.fullmatch(cat)
+                           for cat in categories)):
                 continue
             if name in found or len(found) >= 120:
                 raise EngineSetupError("SearXNG returned duplicate or excessive engines")
-            found[name] = {"name": name, "enabled": row.get("enabled") is True}
+            found[name] = {"name": name, "enabled": row.get("enabled") is True,
+                           "categories": tuple(dict.fromkeys(categories))}
         if not found:
-            raise EngineSetupError("No general-search engines found in /config")
+            raise EngineSetupError("No categorized search engines found in /config")
         return sorted(found.values(), key=lambda row: (
             0 if row["name"] == "yahoo" else
             1 if row["name"] in RECOMMENDED else 2, row["name"]))
@@ -122,12 +130,17 @@ def render(original: str, selected: tuple[str, ...], controlled: tuple[str, ...]
     """Replace only our marked block; reject user-owned YAML engine entries."""
     if not DEFAULT.search(original):
         raise EngineSetupError("Expected use_default_settings: true; settings left unchanged")
-    if not selected or any(not NAME.fullmatch(x) for x in controlled):
+    if not controlled or any(not NAME.fullmatch(x) for x in controlled):
         raise EngineSetupError("Invalid engine selection")
-    if len(set(controlled)) != len(controlled) or not set(selected).issubset(controlled):
+    if (len(set(controlled)) != len(controlled)
+            or len(set(selected)) != len(selected)
+            or not set(selected).issubset(controlled)):
         raise EngineSetupError("Selected engines must appear in the verified list")
     if original.count(START) != original.count(END) or original.count(START) > 1:
         raise EngineSetupError("Existing managed engine block is malformed")
+    # Keep previous operator-managed overrides when editing only one
+    # category. The hash on the earlier block must verify before reuse.
+    managed_flags: dict[str, bool] = {}
     if START in original:
         begin = original.index(START)
         end = original.index(END) + len(END)
@@ -140,6 +153,22 @@ def render(original: str, selected: tuple[str, ...], controlled: tuple[str, ...]
         if (checked is None or hashlib.sha256(
                 checked.group(2).encode("utf-8")).hexdigest() != checked.group(1)):
             raise EngineSetupError("Managed engine block was edited; refusing overwrite")
+        old_rows = checked.group(2).splitlines()
+        if len(old_rows) % 2:
+            raise EngineSetupError("Previous managed engine rows are invalid")
+        for index in range(0, len(old_rows), 2):
+            first, second = old_rows[index:index + 2]
+            if (not first.startswith("  - name: ")
+                    or second not in ("    disabled: true", "    disabled: false")):
+                raise EngineSetupError("Previous managed engine rows are invalid")
+            try:
+                name = json.loads(first[len("  - name: "):])
+            except (ValueError, TypeError) as exc:
+                raise EngineSetupError("Invalid previous managed engine name") from exc
+            if (not isinstance(name, str) or not NAME.fullmatch(name)
+                    or name in managed_flags):
+                raise EngineSetupError("Invalid previous managed engine inventory")
+            managed_flags[name] = second == "    disabled: false"
         prefix = original[:begin]
         # Only remove our own immediately preceding top-level engines key.
         # Never erase another owner's engines block from the rest of the file.
@@ -154,10 +183,12 @@ def render(original: str, selected: tuple[str, ...], controlled: tuple[str, ...]
     # Refuse surprising YAML document boundaries in the restricted editor.
     if re.search(r"(?m)^(?:---|\.\.\.)[ \t]*$", rest):
         raise EngineSetupError("Multi-document settings are not supported by the guided editor")
-    rows = []
     for name in controlled:
+        managed_flags[name] = name in selected
+    rows = []
+    for name, enabled in managed_flags.items():
         rows.extend(("  - name: " + json.dumps(name, ensure_ascii=True),
-                     "    disabled: " + ("false" if name in selected else "true")))
+                     "    disabled: " + ("false" if enabled else "true")))
     digest = hashlib.sha256(("\n".join(rows) + "\n").encode("utf-8")).hexdigest()
     block = ["engines:", START, "# SHA256: " + digest, *rows, END]
     return rest.rstrip("\n") + "\n\n" + "\n".join(block) + "\n"
@@ -354,6 +385,32 @@ def recover_interrupted(*, identity: tuple[int, int] | None = None) -> str:
             "; sleeping SearXNG will use them on its next wake")
 
 
+def _category_engines(engines: list[dict], category: str) -> list[dict]:
+    """SearXNG categories group engines; disable flags remain engine-wide."""
+    return [row for row in engines if category in row["categories"]]
+
+
+def _choose_numbers(rows: list[dict], *, allow_none: bool = False) -> tuple[str, ...] | None:
+    for index, row in enumerate(rows, 1):
+        tag = ("tested working here" if row["name"] == "yahoo" else
+               "candidate (not verified here)" if row["name"] in RECOMMENDED else "")
+        active = "default on" if row["enabled"] else "default off"
+        shared = ", ".join(row["categories"])
+        print(f"{index:2}  {row['name']}  ({active}; categories: {shared}) {tag}")
+    prompt = ("Comma-separated engine numbers, NONE to disable all, blank cancels: "
+              if allow_none else "Comma-separated engine numbers (blank cancels): ")
+    raw = input(prompt).strip()
+    if not raw:
+        return None
+    if allow_none and raw == "NONE":
+        return ()
+    pieces = [x.strip() for x in raw.split(",")]
+    if (len(pieces) > len(rows) or not all(x.isascii() and x.isdigit()
+            and 1 <= int(x) <= len(rows) for x in pieces)):
+        raise EngineSetupError("Invalid engine numbers")
+    return tuple(dict.fromkeys(rows[int(x) - 1]["name"] for x in pieces))
+
+
 def main() -> int:
     if not sys.stdin.isatty() or os.geteuid() == 0:
         print("Interactive normal-user terminal required", file=sys.stderr)
@@ -375,8 +432,6 @@ def main() -> int:
                 print("KEEP retains the current settings and discards that recovery copy.")
                 action = input("Type RESTORE, KEEP, or anything else to cancel: ").strip()
                 if action == "KEEP":
-                    # Synchronize with an active apply and reject replaced
-                    # recovery files even when the pathname is identical.
                     with on_demand_coordination.exclusive():
                         _same_checkpoint(checkpoint, identity)
                         checkpoint.unlink()
@@ -394,46 +449,71 @@ def main() -> int:
             engines = live_engines() if target.running else []
         except EngineSetupError:
             engines = []
-        names = tuple(row["name"] for row in engines)
+        general = _category_engines(engines, "general")
+        names = tuple(row["name"] for row in general)
         print("\nSearXNG search engines (operator-only)")
         print("1  Recommended: Yahoo default; exclude other detected general engines")
         print("2  Choose from installed general-search engines" +
-              ("" if names else " (requires running SearXNG)"))
+              ("" if general else " (requires running SearXNG)"))
+        print("3  Exclude Google-named engines across every category" +
+              ("" if engines else " (requires running SearXNG)"))
+        print("4  Choose installed engines within a category" +
+              ("" if engines else " (requires running SearXNG)"))
         print("0  Cancel")
         choice = input("Choose: ").strip()
         if choice == "0":
             return 0
         if choice == "1":
-            # Overrides the four observed default failures; does not alter
-            # unrelated search categories, private credentials or tokens.
             if names and "yahoo" not in names:
-                raise EngineSetupError("Yahoo is not in the running SearXNG engine list")
+                raise EngineSetupError("Yahoo is not in the running SearXNG general engine list")
             controlled = names if names else tuple(dict.fromkeys((*PRESET, *KNOWN_UNRELIABLE)))
             selected = PRESET
             if not names:
                 print("Backend asleep/unavailable: only the four known failing defaults "
                       "will be disabled; other inherited engines are unchanged.")
-        elif choice == "2" and names:
-            for index, row in enumerate(engines, 1):
-                tag = ("tested working here" if row["name"] == "yahoo" else
-                       "candidate (not verified here)" if row["name"] in RECOMMENDED else "")
-                active = "currently default" if row["enabled"] else "not default"
-                print(f"{index:2}  {row['name']}  ({active}) {tag}")
-            raw = input("Comma-separated engine numbers (blank cancels): ").strip()
+        elif choice == "2" and general:
+            print("Engine defaults are global: shared engines affect all their categories.")
+            chosen = _choose_numbers(general)
+            if chosen is None:
+                return 0
+            controlled, selected = names, chosen
+        elif choice == "3" and engines:
+            controlled = tuple(row["name"] for row in engines
+                               if row["name"].casefold().startswith("google"))
+            if not controlled:
+                print("No Google-named engines detected; no changes made")
+                return 0
+            selected = ()
+            print("Google-named installed engines: " + ", ".join(controlled))
+            print("All other existing engine defaults will be preserved.")
+        elif choice == "4" and engines:
+            categories = sorted({cat for row in engines for cat in row["categories"]},
+                                key=lambda cat: (cat != "general", cat))
+            print("Select a SearXNG engine category:")
+            for index, cat in enumerate(categories, 1):
+                print(f"{index:2}  {cat} ({len(_category_engines(engines, cat))} engines)")
+            raw = input("Category number (blank cancels): ").strip()
             if not raw:
                 return 0
-            pieces = [x.strip() for x in raw.split(",")]
-            if (len(pieces) > len(names) or not all(x.isascii() and x.isdigit()
-                    and 1 <= int(x) <= len(names) for x in pieces)):
-                raise EngineSetupError("Invalid engine numbers")
-            selected = tuple(dict.fromkeys(names[int(x)-1] for x in pieces))
-            controlled = names
-            print("Custom selection changes defaults for listed general engines.")
+            if not raw.isascii() or not raw.isdigit() or not 1 <= int(raw) <= len(categories):
+                raise EngineSetupError("Invalid category number")
+            cat = categories[int(raw) - 1]
+            rows = _category_engines(engines, cat)
+            print(f"Choose defaults for {cat}. Shared engines affect ALL listed categories.")
+            chosen = _choose_numbers(rows, allow_none=(cat != "general"))
+            if chosen is None:
+                return 0
+            controlled = tuple(row["name"] for row in rows)
+            selected = chosen
+            print("Other categories' previously managed choices are retained, "
+                  "except shared engine flags which apply globally.")
         else:
             print("Cancelled; installed engine list unavailable or invalid choice")
             return 0
-        print("Enable by default: " + ", ".join(selected))
+        print("Enable by default in this selection: " +
+              (", ".join(selected) if selected else "(none)"))
         print("Other affected engines will be excluded from default searches.")
+        print("All selected engine flags apply globally across their categories.")
         print("A running verified SearXNG container will be restarted; it may interrupt searches.")
         if input("Type APPLY to change settings, anything else cancels: ").strip() != "APPLY":
             print("Cancelled; no changes made")
@@ -442,8 +522,6 @@ def main() -> int:
         return 0
     except (EngineSetupError, on_demand_docker.LifecycleError, OSError, EOFError,
             KeyboardInterrupt, ValueError) as exc:
-        # Our own EngineSetupError messages are fixed, nonsecret operator guidance.
-        # Never echo raw Docker, HTTP or filesystem exception messages.
         detail = str(exc) if isinstance(exc, EngineSetupError) else type(exc).__name__
         print("SearXNG engine setup did not complete: " + detail, file=sys.stderr)
         return 1
