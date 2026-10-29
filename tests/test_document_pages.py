@@ -85,9 +85,9 @@ class DocumentPageTests(unittest.TestCase):
         self.assertEqual(len(result["outline"]), pages.MAX_OUTLINE_HEADINGS)
         self.assertTrue(result["outline_truncated"])
         self.assertEqual(result["outline"][-1]["heading"], "Section 39")
-        unsafe = "# A\\u202eB <script>evil</script> " + "x" * 600
+        unsafe = "# A" + chr(0x202e) + "B <script>evil</script> " + "x" * 600
         safe = pages.build_outline(unsafe)["outline"][0]["heading"]
-        self.assertNotIn("\\u202e", safe)
+        self.assertNotIn(chr(0x202e), safe)
         self.assertLessEqual(len(safe), pages.MAX_OUTLINE_HEADING_CHARS)
         self.assertEqual(pages.build_outline("No headings")["outline"], [])
         self.assertFalse(pages.build_outline("")["outline_truncated"])
