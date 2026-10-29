@@ -89,10 +89,10 @@ def live_engines() -> list[dict]:
             response = conn.getresponse()
             if response.status != 200:
                 raise EngineSetupError("SearXNG /config is unavailable")
-            raw = response.read(128 * 1024 + 1)
+            raw = response.read(512 * 1024 + 1)
         finally:
             conn.close()
-        if len(raw) > 128 * 1024:
+        if len(raw) > 512 * 1024:
             raise EngineSetupError("SearXNG engine list is too large")
         data = json.loads(raw)
         engines = data.get("engines") if isinstance(data, dict) else None
@@ -111,7 +111,7 @@ def live_engines() -> list[dict]:
                     or any(not isinstance(cat, str) or not NAME.fullmatch(cat)
                            for cat in categories)):
                 continue
-            if name in found or len(found) >= 120:
+            if name in found or len(found) >= 512:
                 raise EngineSetupError("SearXNG returned duplicate or excessive engines")
             found[name] = {"name": name, "enabled": row.get("enabled") is True,
                            "categories": tuple(dict.fromkeys(categories))}
