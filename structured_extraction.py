@@ -167,6 +167,83 @@ def _select_links(raw: dict, base: str, *, budget: int = MAX_OUTPUT_BYTES) -> tu
     return [row for _, row in chosen], len(candidates)
 
 
+
+# Only already-extracted table cells are eligible for bounded continuation.
+MAX_RETAINED_TABLES = 16
+MAX_RETAINED_ROWS = 250
+MAX_RETAINED_BYTES = 800_000
+MAX_ROW_BYTES = 1_500
+
+
+def _bounded_cells(values: list) -> list[str]:
+    cells = [_text(value, 200) for value in values[:MAX_COLUMNS]]
+    # ensure_ascii serialization can expand non-ASCII strings significantly.
+    # A ten-row response must remain under the 20 KB response budget.
+    while _size({"cells": cells}) > MAX_ROW_BYTES:
+        index = max(range(len(cells)), key=lambda i: len(cells[i]))
+        cells[index] = cells[index][:len(cells[index]) // 2]
+    return cells
+
+
+def prepare_table_continuation(page: dict) -> dict | None:
+    """Keep a bounded normalized subset of this crawl, never raw HTML."""
+    raw = page.get("tables")
+    if not isinstance(raw, list) or not raw:
+        return None
+    entries: list[dict] = []
+    total_bytes = 512
+    truncated = len(raw) > MAX_RETAINED_TABLES
+    for index, original in enumerate(raw[:MAX_RETAINED_TABLES]):
+        if not isinstance(original, dict):
+            continue
+        original_headers = original.get("headers")
+        original_rows = original.get("rows")
+        headers = _bounded_cells(original_headers) if isinstance(original_headers, list) else []
+        source_rows = original_rows if isinstance(original_rows, list) else []
+        if not headers and not source_rows:
+            continue
+        fixed = {
+            "table_index": index,
+            "headers": headers,
+            "caption": _text(original.get("caption"), 200),
+            "summary": _text(original.get("summary"), 240),
+            "source_rows_observed": len(source_rows),
+        }
+        fixed_size = _size(fixed) + 150
+        if total_bytes + fixed_size > MAX_RETAINED_BYTES:
+            truncated = True
+            break
+        total_bytes += fixed_size
+        rows: list[list[str]] = []
+        for record in source_rows[:MAX_RETAINED_ROWS]:
+            cells = _bounded_cells(record if isinstance(record, list) else [])
+            cost = _size({"cells": cells})
+            if total_bytes + cost > MAX_RETAINED_BYTES:
+                truncated = True
+                break
+            rows.append(cells)
+            total_bytes += cost
+        entries.append({
+            **fixed,
+            "rows": rows,
+            "retained_truncated": len(rows) < len(source_rows),
+            "columns_truncated": (
+                isinstance(original_headers, list) and len(original_headers) > MAX_COLUMNS
+            ) or any(isinstance(record, list) and len(record) > MAX_COLUMNS
+                     for record in source_rows[:len(rows)]),
+        })
+        if len(rows) < min(len(source_rows), MAX_RETAINED_ROWS):
+            break  # Do not skip a partially retained table to resume later.
+    if not entries:
+        return None
+    return {
+        "entries": entries,
+        "size_bytes": total_bytes,
+        "source_tables_observed": len(raw),
+        "retention_truncated": truncated or len(entries) < len(raw),
+    }
+
+
 def extract(page: dict, base: str, *, include_links: bool, include_tables: bool) -> dict:
     """Return only requested bounded fields from a successfully crawled page.
 
@@ -205,9 +282,10 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool)
     if include_tables:
         tables = []
         limits = []
+        returned_indices = []
         raw = page.get("tables")
         if isinstance(raw, list):
-            for row in raw[:10]:
+            for source_index, row in enumerate(raw[:10]):
                 if len(tables) >= MAX_TABLES or remaining <= 0:
                     break
                 if not isinstance(row, dict):
@@ -230,6 +308,7 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool)
                 if size <= remaining:
                     tables.append(item)
                     remaining -= size
+                    returned_indices.append(source_index)
                     limits.append({
                         "rows_observed": len(source_rows) if isinstance(source_rows, list) else 0,
                         "rows_truncated": (isinstance(source_rows, list) and (
@@ -248,6 +327,7 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool)
             "input_scan_capped": isinstance(raw, list) and len(raw) > 10,
             "truncated": isinstance(raw, list) and len(raw) > len(tables),
             "table_limits": limits,
+            "returned_source_indices": returned_indices,
         }
     if include_links or include_tables:
         # This is only present on opt-in structured fetches. Do not imply
