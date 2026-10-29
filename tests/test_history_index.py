@@ -30,6 +30,75 @@ class HistoryIndexTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
+    def test_reveal_uses_exact_source_coordinates_without_persisting_queries(self):
+        timestamp = datetime.now(timezone.utc).isoformat()
+        for original in ("same-time-first", "same-time-second", "unicode-café-猫"):
+            append_history(event("search", "success", time_utc=timestamp,
+                                 backend="SearXNG", query=original))
+        append_history(event("fetch", "success", time_utc=timestamp,
+                             url="https://docs.example.org/private?q=secret"))
+        normal = history_index.search_history(limit=10)
+        self.assertTrue(all("query" not in row for row in normal))
+        revealed = history_index.search_history(limit=10, reveal_queries=True)
+        self.assertEqual([row["query"] for row in revealed if row["kind"] == "search"],
+                         ["unicode-café-猫", "same-time-second", "same-time-first"])
+        self.assertTrue(all("query" not in row for row in revealed
+                            if row["kind"] != "search"))
+        self.assertEqual(history_index.search_history(limit=10), normal)
+        contents = history_index.index_path().read_bytes()
+        for phrase in (b"same-time-first", b"same-time-second",
+                       "unicode-café-猫".encode("utf-8")):
+            self.assertNotIn(phrase, contents)
+        with self.assertRaises(ValueError):
+            history_index.search_history(reveal_queries=1)
+
+    def test_reveal_rotated_legacy_source_and_missing_file_fails_closed(self):
+        append_history(event("search", query="original-secret", backend="SearXNG"))
+        self.assertEqual(
+            history_index.search_history(reveal_queries=True)[0]["query"],
+            "original-secret")
+        original = history_path()
+        rotated = original.with_name(original.name + ".1")
+        original.rename(rotated)
+        append_history(event("search", query="new-secret", backend="SearXNG"))
+        current = history_index.search_history(reveal_queries=True)
+        self.assertEqual([r["query"] for r in current], ["new-secret", "original-secret"])
+        # Replacing a live source with a different event can never expose its
+        # text merely because a timestamp/status happens to match.
+        rotated.unlink()
+        result = history_index.search_history(reveal_queries=True)
+        self.assertEqual(result[0]["query"], "new-secret")
+        self.assertIsNone(result[1]["query"])
+
+    def test_tampered_original_line_never_reveals_different_query(self):
+        append_history(event("search", backend="SearXNG", query="original"))
+        self.assertEqual(
+            history_index.search_history(reveal_queries=True)[0]["query"],
+            "original")
+        file = history_path()
+        data = file.read_bytes().replace(b"original", b"impostor")
+        file.write_bytes(data)  # same length, reused inode and byte offset
+        result = history_index.search_history(reveal_queries=True)
+        self.assertIsNone(result[0]["query"])
+
+    def test_reveal_concurrent_appends_are_bounded_and_consistent(self):
+        def writer():
+            for n in range(35):
+                append_history(event("search", backend="SearXNG",
+                                     query=f"concurrent-{n:02}"))
+        def reader():
+            for _ in range(8):
+                result = history_index.search_history(reveal_queries=True)
+                for row in result:
+                    self.assertTrue(row["query"] is None or
+                                    row["query"].startswith("concurrent-"))
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = [pool.submit(writer), pool.submit(reader), pool.submit(reader)]
+            for future in futures:
+                future.result(timeout=25)
+        self.assertEqual(history_index.search_history(reveal_queries=True)[0]["query"],
+                         "concurrent-34")
+
     def test_legacy_jsonl_migrates_idempotently_and_redacts_sensitive_fields(self):
         append_history(event(url="https://user:password@docs.example.org/INVITE_SECRET"
                                  "?token=QUERY_SECRET", query="SENSITIVE_QUERY",
