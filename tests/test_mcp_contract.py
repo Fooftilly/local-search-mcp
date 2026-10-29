@@ -593,6 +593,54 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(content[100:200], audit)
         self.assertEqual(calls.count("/crawl"), 1)
 
+    async def test_retrieval_info_schema_and_cache_hit_over_actual_mcp(self):
+        original = httpx.Client
+        seen = []
+        def handler(request: httpx.Request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            self.assertEqual(request.url.path, "/crawl")
+            seen.append(1)
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/time", "success": True,
+                "markdown": {"raw_markdown": "Public timestamp document"},
+            }]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        global_answer = [(socket.AF_INET, socket.SOCK_STREAM, 6, "",
+                          ("93.184.215.14", 443))]
+        with (patch.object(bridge, "CRAWLER_SECURITY_WARNING", None),
+              patch.object(bridge.httpx, "Client", side_effect=factory),
+              patch.object(domain_policy.socket, "getaddrinfo", return_value=global_answer)):
+            async with Client(bridge.mcp) as client:
+                tools = {x.name: x for x in await client.list_tools()}
+                for name in ("web_fetch", "web_fetch_batch"):
+                    schema = tools[name].inputSchema["properties"]
+                    self.assertIn("include_retrieval_info", schema)
+                    self.assertFalse(schema["include_retrieval_info"]["default"])
+                one = await client.call_tool("web_fetch", {
+                    "url": "https://example.com/time", "include_retrieval_info": True})
+                two = await client.call_tool("web_fetch", {
+                    "url": "https://example.com/time", "include_retrieval_info": True})
+                legacy = await client.call_tool("web_fetch", {
+                    "url": "https://example.com/time"})
+                batch = await client.call_tool("web_fetch_batch", {
+                    "urls": ["https://example.com/time"],
+                    "include_retrieval_info": True})
+        self.assertTrue(one.data["success"])
+        self.assertFalse(one.data["retrieval_info"]["served_from_cache"])
+        self.assertEqual(two.data["retrieval_info"]["source"], "cache_hit")
+        self.assertTrue(two.data["retrieval_info"]["served_from_cache"])
+        self.assertEqual(one.data["retrieval_info"]["retrieved_at"],
+                         two.data["retrieval_info"]["retrieved_at"])
+        self.assertNotIn("retrieval_info", legacy.data)
+        self.assertEqual(batch.data["results"][0]["result"]["retrieval_info"][
+            "source"], "cache_hit")
+        self.assertEqual(seen, [1])
+        audit = (Path(self.tmp.name) / "history.jsonl").read_text()
+        self.assertNotIn("retrieval_info", audit)
+        self.assertNotIn("Public timestamp document", audit)
+
     async def test_long_document_continuation_over_actual_mcp_dispatch(self):
         from collections import OrderedDict
         content = "A" * 24000 + "B" * 17000
