@@ -87,12 +87,13 @@ class EngineChooserTests(unittest.TestCase):
             (("yahoo",), ("brave",)),
             (("evil:\n  secret: foo",), ("evil:\n  secret: foo",)),
             (("yahoo",), ("yahoo", "yahoo")),
-            ((), ("yahoo",)),
+            (("yahoo", "yahoo"), ("yahoo",)),
+            ((), ()),
         ):
             with self.subTest(selected=selected), self.assertRaises(e.EngineSetupError):
                 e.render(self.original, selected, controlled)
 
-    def test_live_inventory_filters_non_general_and_sorts_recommendations(self):
+    def test_live_inventory_includes_news_images_and_sorts_recommendations(self):
         response = {"engines": [
             {"name": "brave", "categories": ["general"], "enabled": True},
             {"name": "wikipedia", "categories": ["general"], "enabled": True},
@@ -108,9 +109,77 @@ class EngineChooserTests(unittest.TestCase):
         with patch.object(e, "HTTPConnection", return_value=conn):
             data = e.live_engines()
         self.assertEqual([x["name"] for x in data],
-                         ["yahoo", "mojeek", "brave", "wikipedia"])
+                         ["yahoo", "mojeek", "brave", "google images", "wikipedia"])
+        self.assertEqual(data[3]["categories"], ("images",))
         conn.request.assert_called_once_with("GET", "/config")
         conn.close.assert_called_once()
+
+    def test_managed_general_selection_survives_image_google_exclusion(self):
+        initial = e.render(self.original, ("yahoo",), ("yahoo", "brave"))
+        next_text = e.render(initial, (), ("google cse images", "google images"))
+        self.assertIn('  - name: "yahoo"\n    disabled: false', next_text)
+        self.assertIn('  - name: "brave"\n    disabled: true', next_text)
+        self.assertIn('  - name: "google images"\n    disabled: true', next_text)
+        self.assertIn('  - name: "google cse images"\n    disabled: true', next_text)
+        self.assertEqual(next_text.count("engines:"), 1)
+        self.assertEqual(e.render(next_text, (),
+                                 ("google cse images", "google images")), next_text)
+        third = e.render(next_text, ("duckduckgo news",), ("duckduckgo news",))
+        self.assertIn('  - name: "yahoo"\n    disabled: false', third)
+        self.assertIn('  - name: "google images"\n    disabled: true', third)
+        self.assertIn('  - name: "duckduckgo news"\n    disabled: false', third)
+        # Manual changes inside a previously managed section still fail closed.
+        with self.assertRaises(e.EngineSetupError):
+            e.render(next_text.replace("google images", "google pictures"),
+                     ("yahoo",), ("yahoo",))
+
+    def test_global_google_option_is_explicit_and_preserves_general_settings(self):
+        fake = Target("searxng", "a" * 64, True, "no")
+        captured = []
+        inventory = [
+            {"name": "yahoo", "enabled": True, "categories": ("general",)},
+            {"name": "google cse images", "enabled": True, "categories": ("images",)},
+            {"name": "google scholar", "enabled": True, "categories": ("science",)},
+            {"name": "bing images", "enabled": True, "categories": ("images",)},
+        ]
+        with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e, "live_engines", return_value=inventory),
+              patch.object(e, "apply", side_effect=lambda selected, controlled:
+                           captured.append((selected, controlled)) or "applied"),
+              patch.object(e.os, "geteuid", return_value=1000),
+              patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
+              patch("builtins.input", side_effect=["3", "APPLY"]),
+              contextlib.redirect_stdout(io.StringIO())):
+            self.assertEqual(e.main(), 0)
+        self.assertEqual(captured, [((), ("google cse images", "google scholar"))])
+
+    def test_category_choice_shows_shared_engines_and_changes_global_flag(self):
+        fake = Target("searxng", "a" * 64, True, "no")
+        captured = []
+        inventory = [
+            {"name": "yahoo", "enabled": True, "categories": ("general",)},
+            {"name": "example multi", "enabled": True,
+             "categories": ("general", "news")},
+            {"name": "duckduckgo news", "enabled": False,
+             "categories": ("news",)},
+            {"name": "google images", "enabled": True, "categories": ("images",)},
+        ]
+        output = io.StringIO()
+        with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e, "live_engines", return_value=inventory),
+              patch.object(e, "apply", side_effect=lambda selected, controlled:
+                           captured.append((selected, controlled)) or "applied"),
+              patch.object(e.os, "geteuid", return_value=1000),
+              patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
+              patch("builtins.input", side_effect=["4", "3", "2", "APPLY"]),
+              contextlib.redirect_stdout(output)):
+            self.assertEqual(e.main(), 0)
+        self.assertEqual(captured, [(("duckduckgo news",),
+                                    ("example multi", "duckduckgo news"))])
+        self.assertIn("general, news", output.getvalue())
+        self.assertIn("globally", output.getvalue())
 
     def test_invalid_inventory_cannot_become_yaml(self):
         data = {"engines": [
@@ -145,9 +214,9 @@ class EngineChooserTests(unittest.TestCase):
         with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
               patch.object(e, "_check_bind_mount"),
               patch.object(e, "live_engines", return_value=[
-                  {"name": "yahoo", "enabled": False},
-                  {"name": "bing", "enabled": True},
-                  {"name": "brave", "enabled": True}]),
+                  {"name": "yahoo", "enabled": False, "categories": ("general",)},
+                  {"name": "bing", "enabled": True, "categories": ("general",)},
+                  {"name": "brave", "enabled": True, "categories": ("general",)}]),
               patch.object(e, "apply", side_effect=lambda selected, controlled:
                            captured.append((selected, controlled)) or "applied"),
               patch.object(e.os, "geteuid", return_value=1000),
@@ -178,13 +247,16 @@ class EngineChooserTests(unittest.TestCase):
 
     def test_unconfirmed_menu_has_no_writes_restart_or_docker_wake(self):
         fake = Target("searxng", "a"*64, True, "no")
-        for inputs in (["0"], ["1", "CANCEL"], ["2", "1,2", "CANCEL"]):
+        for inputs in (["0"], ["1", "CANCEL"], ["2", "1,2", "CANCEL"],
+                       ["3", "CANCEL"], ["4", "2", "1", "CANCEL"]):
             with (self.subTest(inputs=inputs),
                 patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
                 patch.object(e, "_check_bind_mount"),
                 patch.object(e, "live_engines", return_value=[
-                    {"name": "yahoo", "enabled": False},
-                    {"name": "brave", "enabled": True}]),
+                    {"name": "yahoo", "enabled": False, "categories": ("general",)},
+                    {"name": "brave", "enabled": True, "categories": ("general",)},
+                    {"name": "google images", "enabled": True,
+                     "categories": ("images",)}]),
                 patch("builtins.input", side_effect=inputs),
                 patch.object(e, "apply", side_effect=AssertionError("cannot mutate")),
                 patch.object(e.os, "geteuid", return_value=1000),
