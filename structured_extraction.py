@@ -230,10 +230,13 @@ def prepare_table_continuation(page: dict) -> dict | None:
         total_bytes += fixed_size
         rows: list[list[str]] = []
         cells_truncated = header_clipped
+        columns_truncated = (isinstance(original_headers, list)
+                             and len(original_headers) > MAX_RETAINED_COLUMNS)
         for record in source_rows[:MAX_RETAINED_ROWS]:
             if not isinstance(record, list):
                 # Match preview semantics: malformed entries are not rows.
                 continue
+            columns_truncated = columns_truncated or len(record) > MAX_RETAINED_COLUMNS
             cells, clipped = _bounded_cells(record)
             cost = max(_size({"cells": cells}), _resident_cells_bytes(cells))
             if total_bytes + cost > MAX_RETAINED_BYTES:
@@ -247,10 +250,7 @@ def prepare_table_continuation(page: dict) -> dict | None:
             "rows": rows,
             "cells_truncated": cells_truncated,
             "retained_truncated": len(rows) < len(source_rows),
-            "columns_truncated": (
-                isinstance(original_headers, list) and len(original_headers) > MAX_RETAINED_COLUMNS
-            ) or any(isinstance(record, list) and len(record) > MAX_RETAINED_COLUMNS
-                     for record in source_rows[:len(rows)]),
+            "columns_truncated": columns_truncated,
         })
         if len(rows) < min(len(source_rows), MAX_RETAINED_ROWS):
             break  # Do not skip a partially retained table to resume later.
