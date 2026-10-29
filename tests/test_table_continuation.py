@@ -138,6 +138,37 @@ class TableContinuationTests(unittest.TestCase):
         self.assertTrue(clipped["entries"][0]["columns_truncated"])
         self.assertTrue(clipped["retention_truncated"])
 
+    def test_malformed_rows_do_not_hide_later_source_tables(self):
+        raw = source(tables=6, rows=14)
+        raw["tables"][0]["rows"] = [["first"], None]
+        raw["tables"][1]["rows"] = [{"malformed": True}, ["second"]]
+        payload = extraction.prepare_table_continuation(raw)
+        self.assertEqual([table["table_index"] for table in payload["entries"]],
+                         list(range(6)))
+        self.assertTrue(payload["retention_truncated"])
+        self.assertTrue(payload["entries"][0]["retained_truncated"])
+        self.assertEqual(payload["entries"][0]["rows"], [["first"]])
+        self.assertEqual(payload["entries"][1]["rows"], [["second"]])
+        self.assertFalse(payload["entries"][5]["retained_truncated"])
+        token = pages.save_tables("https://example.com/large", payload,
+                                  source_url="https://example.com/original")
+        last, source_url, proof = pages.read_table_with_security_context(
+            token, table_index=5)
+        self.assertTrue(last["success"])
+        self.assertEqual(last["rows"][0], ["table 5 row 0", "0"])
+        self.assertEqual(source_url, "https://example.com/original")
+        self.assertIsNone(proof)
+
+    def test_real_byte_budget_exhaustion_stops_following_tables(self):
+        raw = source(tables=6, rows=100)
+        with patch.object(extraction, "MAX_RETAINED_BYTES", 3000):
+            payload = extraction.prepare_table_continuation(raw)
+            self.assertIsNotNone(payload)
+            self.assertTrue(payload["retention_truncated"])
+            self.assertLessEqual(payload["size_bytes"], 3000)
+            self.assertLess(len(payload["entries"]), 6)
+            self.assertTrue(payload["entries"][-1]["retained_truncated"])
+
     def test_aggregate_retention_byte_limit_enforced_with_large_source(self):
         raw = {"tables": [{
             "headers": [f"H{col}" for col in range(8)],
