@@ -346,6 +346,9 @@ class BridgeTests(unittest.TestCase):
                 "gov public", allowed_result_domains="*.example.org")
             both = self.module.web_search(
                 "gov public", allowed_result_domains="example.org,*.example.org")
+            self.assertEqual(self.module.web_search(
+                "gov public", allowed_result_domains="*.example.org,example.org"),
+                both)
             empty = self.module.web_search(
                 "gov public", allowed_result_domains="unrelated.org")
             dedup = self.module.web_search(
@@ -402,6 +405,8 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(self.module._result_host_allowed(
             "example.org", self.module._result_host_filter("*.example.org")))
         self.assertEqual(self.module._result_host_filter(""), ())
+        self.assertEqual(self.module._result_host_filter(
+            "*.example.org,example.org"), filt)
 
     def test_search_dedupe_invalid_options_do_not_contact_backend(self):
         cases = [
