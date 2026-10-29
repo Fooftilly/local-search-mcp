@@ -181,7 +181,7 @@ def build_outline(markdown: str) -> dict:
             eligible = (bool(content.strip())
                         and not content.lstrip().startswith(
                             ("#", ">", "-", "*", "+"))
-                        and not re.match(r"^(?: {4}| {0,3}\\t)", content))
+                        and not re.match(r"^(?: {4}| {0,3}\t)", content))
             previous = content[:MAX_OUTLINE_HEADING_CHARS * 3] if eligible else ""
             previous_offset = offset
         offset += len(line)
