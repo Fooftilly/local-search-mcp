@@ -181,6 +181,41 @@ class EngineChooserTests(unittest.TestCase):
         self.assertIn("general, news", output.getvalue())
         self.assertIn("globally", output.getvalue())
 
+    def test_non_general_category_explicit_none_disables_its_engines(self):
+        fake = Target("searxng", "a" * 64, True, "no")
+        seen = []
+        inventory = [
+            {"name": "yahoo", "enabled": True, "categories": ("general",)},
+            {"name": "bing images", "enabled": True, "categories": ("images",)},
+            {"name": "google cse images", "enabled": True, "categories": ("images",)},
+        ]
+        with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e, "live_engines", return_value=inventory),
+              patch.object(e, "apply", side_effect=lambda selected, controlled:
+                           seen.append((selected, controlled)) or "applied"),
+              patch.object(e.os, "geteuid", return_value=1000),
+              patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
+              patch("builtins.input", side_effect=["4", "2", "NONE", "APPLY"]),
+              contextlib.redirect_stdout(io.StringIO())):
+            self.assertEqual(e.main(), 0)
+        self.assertEqual(seen, [((), ("bing images", "google cse images"))])
+
+    def test_duplicate_or_invalid_live_engine_cannot_be_used(self):
+        conn = Mock()
+        reply = Mock(status=200)
+        conn.getresponse.return_value = reply
+        for data in (
+            {"engines": [{"name": "yahoo", "categories": ["general"]},
+                         {"name": "yahoo", "categories": ["images"]}]},
+            {"engines": [{"name": "google images", "categories": ["images", 5]}]},
+            {"engines": [{"name": "google images", "categories": []}]},
+        ):
+            reply.read.return_value = json.dumps(data).encode()
+            with patch.object(e, "HTTPConnection", return_value=conn):
+                with self.assertRaises(e.EngineSetupError):
+                    e.live_engines()
+
     def test_invalid_inventory_cannot_become_yaml(self):
         data = {"engines": [
             {"name": "yahoo\nmalicious: true", "categories": ["general"], "enabled": True}
