@@ -193,6 +193,7 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(usual.data[0]), {"title", "url", "snippet", "engine"})
         self.assertEqual(enhanced.data["results"], usual.data)
         self.assertTrue(enhanced.data["success"])
+        self.assertEqual(enhanced.data["status"], "degraded")
         diagnostic = enhanced.data["search_status"]
         self.assertEqual(diagnostic["coverage"], "partial")
         self.assertEqual(diagnostic["reported_count"], 4)
