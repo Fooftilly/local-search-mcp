@@ -357,6 +357,29 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(result[0]["engine"], "bing images")
         self.assertEqual(paths, ["/config", "/config", "/config", "/search"])
 
+    def test_engine_filter_accepts_large_bounded_default_inventory(self):
+        original = httpx.Client
+        paths = []
+        inventory = [
+            {"name": f"engine-{n}", "enabled": False}
+            for n in range(280)
+        ] + [{"name": "bing images", "enabled": True}]
+        def handler(request):
+            paths.append(request.url.path)
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": inventory})
+            return httpx.Response(200, json={"results": [
+                {"title": "Bing", "url": "https://example.com/image",
+                 "engine": "bing images"}
+            ]})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            result = self.module.web_search(
+                "large inventory", engines="bing images")
+        self.assertEqual(result[0]["engine"], "bing images")
+        self.assertEqual(paths, ["/config", "/search"])
+
     def test_engine_filter_bad_inventory_fails_closed_without_search(self):
         original = httpx.Client
         samples = [
@@ -364,7 +387,7 @@ class BridgeTests(unittest.TestCase):
             httpx.Response(200, json={"engines": {"wrong": True}}),
             httpx.Response(200, json={"engines": [
                 {"name": "bing images", "enabled": "true"}]}),
-            httpx.Response(200, content=b"x" * (128 * 1024 + 1)),
+            httpx.Response(200, content=b"x" * (self.module.MAX_SEARCH_CONFIG_BYTES + 1)),
         ]
         for response in samples:
             with self.subTest(status=response.status_code):
