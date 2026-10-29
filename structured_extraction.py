@@ -42,7 +42,9 @@ def _url(value: object, base: str) -> str | None:
         # urljoin("?") wrongly inherits the base query, and urlunsplit drops
         # the trailing '?' even for absolute hrefs. Retain it intentionally.
         raw_no_fragment = value.split("#", 1)[0]
-        empty_query = raw_no_fragment.endswith("?")
+        # A single trailing '?' marks an empty query. If a query already
+        # contains '?', the trailing character is part of its value.
+        empty_query = raw_no_fragment.endswith("?") and raw_no_fragment.count("?") == 1
         if raw_no_fragment == "?":
             origin = urlsplit(base)
             absolute = urlunsplit((
