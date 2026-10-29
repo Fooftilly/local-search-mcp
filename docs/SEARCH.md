@@ -13,6 +13,7 @@ The MCP tool remains compatible with existing `web_search(query, max_results=8)`
 | `page` | `1` | Integer 1–10 | `pageno` (omitted on page 1) |
 | `deduplicate` | `false` | Boolean | Local opt-in result processing |
 | `ranking` | `searxng` | `searxng` or `source_count` (requires `deduplicate=true`) | Local stable ordering |
+| `include_published_date` | `false` | Boolean | Local opt-in upstream date-only metadata |
 
 A category or engine name can contain letters, digits, dots, underscores, hyphens and spaces (at most 40 characters). Dotted engine names such as `brave.news` and `crates.io` are valid. Empty names, duplicate names and arbitrary URL syntax are rejected before contacting the upstream. Language tags follow SearXNG's current validator: `en-US` is accepted, while numeric-region `es-419`, underscores (`en_US`) and script tags (`zh-Hant-TW`) are rejected by the upstream parser. Invalid locales, ranges, or page numbers are also rejected. The backend may reject unsupported filters with a descriptive error. Passing an unsupported engine name or requesting paging/time filters against engines without those capabilities can return few or no results; the MCP bridge cannot guarantee which engines an operator has enabled.
 
@@ -21,6 +22,41 @@ A category or engine name can contain letters, digits, dots, underscores, hyphen
 ```bash
 fastmcp call http://127.0.0.1:8790/mcp web_search query='recent science' max_results=5 language=en categories=science time_range=month --auth none
 fastmcp call http://127.0.0.1:8790/mcp web_search query='linux' max_results=8 engines=qwant page=2 --auth none
+```
+
+## Optional upstream publication-date metadata
+
+Set `include_published_date=true` to preserve a **calendar date reported by
+SearXNG's own `publishedDate` field**. Valid, ISO-formatted upstream values
+produce two additional keys, `published_date: "YYYY-MM-DD"` and
+`date_source: "searxng.publishedDate"`. Unknown, absent, `null`, malformed,
+non-ISO and invalid-calendar values produce **no date keys**. The deprecated
+`pubdate`, result snippets, fetch time and any inferred dates are ignored.
+
+The source may report a timestamp **without a timezone** (seen in a real
+SearXNG JSON capture); returning only the original calendar day prevents
+falsely converting it to UTC. This is a *search-engine-reported* date, not
+verification by the original publisher, nor a guarantee that engines implement
+`time_range`. When deduplicating, the optional date belongs only to the
+**first retained result**; later engines' possibly conflicting dates are not
+silently attributed to it. `source_engines` lists reporting search engines,
+not original publication sources.
+
+The existing default four fields are unaffected. Date opt-in is independent
+of deduplication/ranking, is **never forwarded** as a SearXNG API parameter,
+has its own in-memory cache variant and is not persisted in audit-history
+result summaries.
+
+A real SearXNG `2026.10.19` JSON capture documented both
+`publishedDate=null` and `2024-10-23T12:00:38` with no offset:
+[recorded example](https://gannet.dbhq.uk/searxng-search-api/).
+These are third-party instance examples, **not yet operator acceptance**
+for the configured Yahoo instance. Crawl4AI's generic page `metadata`
+does not provide a verified publication-date contract, so the guarded
+`web_fetch` response is intentionally unchanged by this slice.
+
+```bash
+fastmcp call http://127.0.0.1:8790/mcp web_search query='public technology news' categories=news include_published_date=true --auth none
 ```
 
 ## Optional deduplication and source attribution
