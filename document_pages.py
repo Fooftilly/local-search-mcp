@@ -174,9 +174,15 @@ def build_outline(markdown: str) -> dict:
                     break
                 headings.append({"level": level, "heading": name,
                                  "offset": start, "page": 1 + start // PAGE_CHARS})
-            previous = (content if content.strip() and
-                        not content.lstrip().startswith(("#", ">", "-", "*", "+"))
-                        and len(content) <= MAX_OUTLINE_HEADING_CHARS * 3 else "")
+            # Preserve a bounded prefix of long Setext title candidates,
+            # rather than discarding their entire heading. Four-space or
+            # tab-indented text is Markdown code, not a Setext title. A tab
+            # after up to three leading spaces reaches a code indentation.
+            eligible = (bool(content.strip())
+                        and not content.lstrip().startswith(
+                            ("#", ">", "-", "*", "+"))
+                        and not re.match(r"^(?: {4}| {0,3}\\t)", content))
+            previous = content[:MAX_OUTLINE_HEADING_CHARS * 3] if eligible else ""
             previous_offset = offset
         offset += len(line)
     return {"outline": headings, "outline_truncated": truncated}
