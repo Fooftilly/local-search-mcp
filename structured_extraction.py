@@ -232,6 +232,7 @@ def prepare_table_continuation(page: dict) -> dict | None:
         cells_truncated = header_clipped
         columns_truncated = (isinstance(original_headers, list)
                              and len(original_headers) > MAX_RETAINED_COLUMNS)
+        budget_exhausted = False
         for record in source_rows[:MAX_RETAINED_ROWS]:
             if not isinstance(record, list):
                 # Match preview semantics: malformed entries are not rows.
@@ -241,6 +242,7 @@ def prepare_table_continuation(page: dict) -> dict | None:
             cost = max(_size({"cells": cells}), _resident_cells_bytes(cells))
             if total_bytes + cost > MAX_RETAINED_BYTES:
                 truncated = True
+                budget_exhausted = True
                 break
             rows.append(cells)
             cells_truncated = cells_truncated or clipped
@@ -252,8 +254,11 @@ def prepare_table_continuation(page: dict) -> dict | None:
             "retained_truncated": len(rows) < len(source_rows),
             "columns_truncated": columns_truncated,
         })
-        if len(rows) < min(len(source_rows), MAX_RETAINED_ROWS):
-            break  # Do not skip a partially retained table to resume later.
+        # Malformed records are intentionally skipped, not evidence that
+        # retention ran out of memory. Continue to later source tables unless
+        # the actual aggregate byte budget stopped the current table.
+        if budget_exhausted:
+            break
     if not entries:
         return None
     return {
