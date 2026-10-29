@@ -1780,6 +1780,33 @@ class BridgeTests(unittest.TestCase):
             self.assertNotIn("PRIVATE_ROW_", str(blocked))
             self.assertEqual(crawl_calls, ["/crawl"])
 
+    def test_table_continuation_revalidates_one_use_proof_and_epoch(self):
+        from collections import OrderedDict
+        payload = self.module.structured_extraction.prepare_table_continuation({
+            "tables": [{"headers": ["H"], "rows": [["PRIVATE_PROOF_ROW"]] * 11}]})
+        proof = ("example.com", "a" * 32)
+        with patch.object(self.module.document_pages, "_CACHE", OrderedDict()):
+            token = self.module.document_pages.save_tables(
+                "https://example.com/a", payload, source_url="https://example.com/a",
+                once_proof=proof)
+            with patch.object(self.module.domain_policy, "_once_proof_current",
+                              return_value=True):
+                permitted = self.module.web_table_page(token, 0)
+            self.assertTrue(permitted["success"])
+            with patch.object(self.module.domain_policy, "_once_proof_current",
+                              return_value=False):
+                denied = self.module.web_table_page(token, 0)
+            self.assertEqual(denied["status"], "blocked")
+            self.assertNotIn("PRIVATE_PROOF_ROW", str(denied))
+            def revoke_while_checking(*_args):
+                self.module.request_cache.invalidate_fetch()
+                return True
+            with patch.object(self.module.domain_policy, "_once_proof_current",
+                              side_effect=revoke_while_checking):
+                raced = self.module.web_table_page(token, 0)
+            self.assertEqual(raced["status"], "blocked")
+            self.assertNotIn("PRIVATE_PROOF_ROW", str(raced))
+
     def test_long_document_with_handle_reports_uncached_even_if_fresh(self):
         from collections import OrderedDict
         original = httpx.Client
