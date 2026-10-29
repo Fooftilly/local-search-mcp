@@ -79,7 +79,8 @@ class HistoryIndexTests(unittest.TestCase):
         data = file.read_bytes().replace(b"original", b"impostor")
         file.write_bytes(data)  # same length, reused inode and byte offset
         result = history_index.search_history(reveal_queries=True)
-        self.assertIsNone(result[0]["query"])
+        self.assertEqual([row["query"] for row in result],
+                         ["impostor", None])
 
     def test_reveal_concurrent_appends_are_bounded_and_consistent(self):
         def writer():
