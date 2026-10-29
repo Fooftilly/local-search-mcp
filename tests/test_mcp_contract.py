@@ -641,6 +641,54 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("retrieval_info", audit)
         self.assertNotIn("Public timestamp document", audit)
 
+    async def test_table_continuation_over_real_mcp_and_private_audit(self):
+        from collections import OrderedDict
+        original = httpx.Client
+        crawls = []
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            crawls.append(request.url.path)
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/tables", "success": True,
+                "markdown": {"raw_markdown": "Short table page"},
+                "tables": [{"headers": ["Code"], "rows": [[f"PRIVATE_CELL_{i}"]
+                           for i in range(21)]} for _ in range(5)],
+            }]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        global_answer = [(socket.AF_INET, socket.SOCK_STREAM, 6, "",
+                          ("93.184.215.14", 443))]
+        with (patch.object(bridge, "CRAWLER_SECURITY_WARNING", None),
+              patch.object(bridge.httpx, "Client", side_effect=factory),
+              patch.object(domain_policy.socket, "getaddrinfo", return_value=global_answer),
+              patch.object(bridge.document_pages, "_CACHE", OrderedDict())):
+            async with Client(bridge.mcp) as client:
+                tools = {tool.name: tool for tool in await client.list_tools()}
+                self.assertIn("web_table_page", tools)
+                self.assertIn("table_index", tools["web_table_page"].inputSchema["properties"])
+                first = await client.call_tool("web_fetch", {
+                    "url": "https://example.com/tables", "include_tables": True})
+                self.assertFalse(first.is_error)
+                self.assertIn("table_continuation", first.data)
+                handle = first.data["table_continuation"]["table_id"]
+                rows = []
+                offset = 0
+                while True:
+                    page = await client.call_tool("web_table_page", {
+                        "table_id": handle, "table_index": 4,
+                        "row_offset": offset, "max_rows": 8})
+                    self.assertFalse(page.is_error)
+                    rows.extend(x[0] for x in page.data["rows"])
+                    if not page.data["has_more"]:
+                        break
+                    offset = page.data["next_offset"]
+                self.assertEqual(rows, [f"PRIVATE_CELL_{i}" for i in range(21)])
+                self.assertEqual(crawls, ["/crawl"])
+            audit = (Path(self.tmp.name) / "history.jsonl").read_text()
+            self.assertNotIn(handle, audit)
+            self.assertNotIn("PRIVATE_CELL_", audit)
+
     async def test_long_document_continuation_over_actual_mcp_dispatch(self):
         from collections import OrderedDict
         content = "A" * 24000 + "B" * 17000
