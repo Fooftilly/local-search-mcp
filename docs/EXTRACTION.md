@@ -18,3 +18,33 @@ A document handle is an unpredictable **bearer capability**: anyone who obtains 
 This is process-local, temporary continuation storage, not a durable archive. It is designed for a single bridge worker, not independently replicated workers.
 
 To inspect continuation activity without exposing handles or page content, use `python history_cli.py --kind page --last 50` or `python history_cli.py --kind page --csv --last 500`. CSV includes page number and total page count when available.
+
+
+## Optional structured links and tables
+
+Use `web_fetch(url, include_links=true, include_tables=true)` to return
+**bounded structured data already produced by the same Crawl4AI crawl**.
+The default flags are false: existing Markdown, metadata, pagination and
+cache formats are unchanged.
+
+- `links`: up to **24** discovered HTTP(S) URLs from Crawl4AI's `internal`
+  and `external` groups, preserving their kind and bounded text/title.
+  Relative links are resolved against the approved final page URL. Invalid,
+  local-only, IP-literal, credential-bearing, forbidden-port, non-HTTP(S),
+  and ambiguous-IDN links are omitted. Fragments are removed. Unapproved
+  **external public links may be listed**, but are never fetched or approved
+  automatically. To follow any listed URL, use the ordinary `web_fetch`
+  tool, which checks operator approval and public-DNS/egress protections.
+- `tables`: up to **4** structures, each capped at 8 columns, 10 rows,
+  200 characters per cell and bounded caption/summary. Malformed entries
+  are ignored.
+- Combined structured fields have a **20,000-byte JSON item budget**.
+  Truncation is a deliberate resource bound, not a claim that the entire
+  page's links or tables were captured.
+
+Both flags work with `web_fetch_batch` (the same 1–8 URLs / three-worker
+limit), without additional network requests or crawler strategy changes.
+Opt-in structured results bypass the existing Markdown-only response cache,
+preventing response-shape confusion. Long-document continuation handles
+still contain only Markdown and metadata, not another stored link/table index.
+The same redirect, permissions and epoch checks gate any returned content.
