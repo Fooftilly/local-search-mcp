@@ -61,6 +61,75 @@ class DocumentPageTests(unittest.TestCase):
         self.assertEqual(pages.read(tokens[1], 2)["markdown"], "x")
         self.assertEqual(pages.read(tokens[2], 2)["markdown"], "x")
 
+    def test_literal_find_crosses_page_boundary_with_correct_source_offset(self):
+        content = "x" * (pages.PAGE_CHARS - 3) + "Grant Deadline" + "z" * pages.PAGE_CHARS
+        handle, _ = pages.save("https://example.com/long", content, {"title": "Long"})
+        result, source, proof = pages.find_with_security_context(handle, "GRANT deadline")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["match_count"], 1)
+        self.assertEqual(result["matches"][0]["page"], 1)
+        self.assertEqual(result["matches"][0]["offset"], pages.PAGE_CHARS - 3)
+        self.assertIn("Grant Deadline", result["matches"][0]["excerpt"])
+        self.assertEqual(result["page_count"], 3)
+        self.assertFalse(result["has_more"])
+        self.assertEqual(source, "https://example.com/long")
+        self.assertIsNone(proof)
+        # A match beginning on the second page is assigned to that page.
+        second, _, _ = pages.find_with_security_context(handle, "zzzz")
+        self.assertEqual(second["matches"][0]["page"], 2)
+
+    def test_finds_literal_regex_chars_unicode_and_overlapping_matches(self):
+        text = ("START " + "aAaA" + " literal .*[] " + "ŽIVOT " +
+                "q" * (pages.PAGE_CHARS + 1))
+        handle, _ = pages.save("https://example.com/doc", text, {})
+        repeated, _, _ = pages.find_with_security_context(handle, "AA", 4)
+        self.assertEqual([m["offset"] for m in repeated["matches"]], [6, 7, 8])
+        self.assertFalse(repeated["has_more"])
+        literal, _, _ = pages.find_with_security_context(handle, ".*[]")
+        self.assertEqual(literal["match_count"], 1)
+        non_ascii, _, _ = pages.find_with_security_context(handle, "život")
+        self.assertEqual(non_ascii["match_count"], 1)
+
+    def test_finds_are_bounded_with_many_matches_and_no_result(self):
+        content = "a" * (pages.PAGE_CHARS + 600)
+        handle, _ = pages.save("https://example.com/large", content, {})
+        result, _, _ = pages.find_with_security_context(handle, "a", 20)
+        self.assertEqual(result["match_count"], 20)
+        self.assertTrue(result["has_more"])
+        self.assertEqual(len(result["matches"]), 20)
+        self.assertTrue(all(len(row["excerpt"]) <= 221 for row in result["matches"]))
+        nohit, _, _ = pages.find_with_security_context(handle, "absent")
+        self.assertEqual(nohit["matches"], [])
+        self.assertFalse(nohit["has_more"])
+
+    def test_find_expiry_eviction_and_invalid_parameters_are_safe(self):
+        content = "SECRET PASSAGE " + "x" * pages.PAGE_CHARS
+        with patch.object(pages.time, "monotonic", return_value=200):
+            handle, _ = pages.save("https://example.com/long", content, {})
+        for bad in ("", " " * 5, "a" * 161, "\n", "\x00", "\ud800", 12, None):
+            with self.subTest(bad=repr(bad)), self.assertRaises(ValueError):
+                pages.find_with_security_context(handle, bad)
+        for bad in (0, -1, 21, 1.0, True, "10"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                pages.find_with_security_context(handle, "secret", bad)
+        for bad in ("../../etc/passwd", "!" * 32, None):
+            with self.subTest(bad=repr(bad)), self.assertRaises(ValueError):
+                pages.find_with_security_context(bad, "secret")
+        with patch.object(pages.time, "monotonic",
+                          return_value=200 + pages.TTL_SECONDS):
+            expired, source, proof = pages.find_with_security_context(handle, "secret")
+        self.assertEqual(expired["status"], "expired_or_unknown")
+        self.assertNotIn("SECRET PASSAGE", str(expired))
+        self.assertIsNone(source)
+        self.assertIsNone(proof)
+        # Eviction also invalidates the search capability.
+        other, _ = pages.save("https://example.com/other",
+                              "b" * (pages.PAGE_CHARS + 1), {})
+        with patch.object(pages, "MAX_DOCUMENTS", 1):
+            pages.save("https://example.com/new", "c" * (pages.PAGE_CHARS + 1), {})
+        missing, _, _ = pages.find_with_security_context(other, "b")
+        self.assertEqual(missing["status"], "expired_or_unknown")
+
     def test_case_insensitive_http_scheme_preserves_page_content(self):
         document = "A" * (pages.PAGE_CHARS + 5)
         handle, count = pages.save("HTTPS://example.com/article", document, {})
