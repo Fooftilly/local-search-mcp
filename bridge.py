@@ -760,7 +760,7 @@ def _run_fetch_network(url: str, mode: str, *,
     if include_tables and success is True:
         table_info = output.get("structured_info", {}).get("tables", {})
         needs_pages = (table_info.get("truncated") or
-                       any(item.get("rows_truncated")
+                       any(item.get("rows_truncated") or item.get("columns_truncated")
                            for item in table_info.get("table_limits", [])))
         if needs_pages:
             payload = structured_extraction.prepare_table_continuation(page)
@@ -888,6 +888,13 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
     if before != request_cache.policy_epoch():
         return {"url": url, "success": False, "status": "blocked",
                 "reason": "Domain approval changed during the request. Retry after reviewing permissions."}
+    if isinstance(response, dict) and response.get("success") is True:
+        table_info = response.get("table_continuation")
+        if table_info is not None:
+            table_id = table_info.get("table_id") if isinstance(table_info, dict) else None
+            if not document_pages.table_handle_exists(table_id):
+                return {"url": url, "success": False, "status": "continuation_evicted",
+                        "reason": "The temporary table continuation was evicted during this fetch. Retry the URL."}
     if once_proof is not None:
         # A consumed private grant authorizes this *one* fetch, not a policy
         # rule. Verify it again after the crawl and before releasing ANY page
