@@ -1780,6 +1780,36 @@ class BridgeTests(unittest.TestCase):
             self.assertNotIn("PRIVATE_ROW_", str(blocked))
             self.assertEqual(crawl_calls, ["/crawl"])
 
+    def test_column_only_preview_overflow_exposes_continuation(self):
+        from collections import OrderedDict
+        original = httpx.Client
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/wide", "success": True,
+                "markdown": {"raw_markdown": "Short"},
+                "tables": [{"headers": [f"H{i}" for i in range(9)],
+                            "rows": [[f"C{i}" for i in range(9)]]}],
+            }]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=factory),
+              patch.object(self.module.document_pages, "_CACHE", OrderedDict()),
+              patch.object(self.module, "_current_permissions_for_fetched_urls",
+                           return_value=True)):
+            first = self.module.web_fetch("https://example.com/wide",
+                                          include_tables=True)
+            self.assertTrue(first["success"])
+            self.assertTrue(first["structured_info"]["tables"][
+                "table_limits"][0]["columns_truncated"])
+            token = first["table_continuation"]["table_id"]
+            beyond_preview = self.module.web_table_page(token, 0, column_offset=8)
+        self.assertEqual(beyond_preview["headers"], ["H8"])
+        self.assertEqual(beyond_preview["rows"], [["C8"]])
+        self.assertFalse(beyond_preview["has_more_columns"])
+
     def test_table_continuation_revalidates_one_use_proof_and_epoch(self):
         from collections import OrderedDict
         payload = self.module.structured_extraction.prepare_table_continuation({
