@@ -102,6 +102,29 @@ class CacheTests(unittest.TestCase):
             "fetch", key, load, ttl=60, with_provenance=True)[1]["source"],
             "cache_hit")
 
+    def test_uncacheable_result_is_not_mislabeled_fresh(self):
+        key = ("fetch", "raw", "https://example.org/large")
+        data = {"success": True, "markdown": "a" * 24000,
+                "document_id": "PRIVATE_TOKEN", "truncated": True}
+        allow = lambda x: x.get("document_id") is None
+        for fresh in (False, True):
+            with self.subTest(fresh=fresh):
+                result, info = cache.run(
+                    "fetch", key, lambda: data, ttl=120, fresh=fresh,
+                    should_store=allow, with_provenance=True)
+                self.assertEqual(result, data)
+                self.assertEqual(info["source"], "uncached")
+                self.assertFalse(info["served_from_cache"])
+                self.assertEqual(info["cache_age_seconds"], 0)
+                self.assertNotIn(key, cache._CACHE)
+        with patch.object(cache, "MAX_ENTRY_BYTES", 30):
+            response, info = cache.run(
+                "fetch", key, lambda: {"success": True, "x": "a" * 100},
+                ttl=120, with_provenance=True)
+            self.assertTrue(response["success"])
+            self.assertEqual(info["source"], "uncached")
+        self.assertNotIn(key, cache._CACHE)
+
     def test_opt_in_retrieval_info_does_not_persist_after_policy_edit(self):
         key = ("fetch", "raw", "https://example.org/allowed")
         cache.run("fetch", key, lambda: {"success": True},
