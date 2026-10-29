@@ -32,10 +32,11 @@ the default response, enabling extra network requests, or adding storage:
 - `cache_age_seconds`: nonnegative **monotonic** age of the cached result,
   with millisecond precision; zero when the result came from this request's
   new crawl or an in-flight coalesced crawl.
-- `source`: `fresh` (this call ran a new crawl, possibly with
-  `fresh=true`), `cache_hit` (served previously stored content),
-  `coalesced` (shared another concurrent caller's in-flight crawl), or
-  `uncached` (never eligible for the reusable short-page cache).
+- `source`: `fresh` (this call ran a new, **cache-eligible**
+  crawl, possibly with `fresh=true`), `cache_hit` (served previously
+  stored content), `coalesced` (shared another concurrent cache-eligible
+  in-flight crawl), or `uncached` (the result could not enter the reusable
+  short-page cache, even if `fresh=true` was passed).
 
 Opting in **does not bypass or disable** caching for eligible ordinary
 short public pages; it simply reads the cache entry's own origin stamp.
