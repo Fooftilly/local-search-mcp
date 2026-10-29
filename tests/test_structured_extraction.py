@@ -44,6 +44,10 @@ class StructuredExtractionTests(unittest.TestCase):
             "/absolute?": "https://example.com/absolute?",
             "https://outside.example/target?": "https://outside.example/target?",
             "?edition=latest": "https://example.com/article?edition=latest",
+            "?q=what?": "https://example.com/article?q=what?",
+            "/other?q=what?": "https://example.com/other?q=what?",
+            "https://outside.example/target?q=what?": "https://outside.example/target?q=what?",
+            "??": "https://example.com/article??",
             "#section": "https://example.com/article?edition=old",
         }
         for href, expected in cases.items():
