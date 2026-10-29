@@ -180,6 +180,32 @@ _ALT_LABELS = {
     "plain text": "txt", "text": "txt",
     "compact html": "html", "html": "html", "pdf": "pdf",
 }
+_ALT_FENCE_OPEN = re.compile(r"^ {0,3}(\x60{3,}|~{3,})")
+_ALT_FENCE_CLOSE = re.compile(r"^ {0,3}(\x60+|~+)[ \t]*$")
+
+
+def _without_fenced_examples(markdown: str) -> str:
+    """Exclude Markdown code fences, including examples of format links."""
+    out = []
+    fence_char = ""
+    fence_length = 0
+    for line in markdown.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        opened = _ALT_FENCE_OPEN.match(content)
+        if fence_char:
+            if opened and opened.group(1)[0] == fence_char:
+                closed = _ALT_FENCE_CLOSE.match(content)
+                if closed and len(closed.group(1)) >= fence_length:
+                    fence_char = ""
+                    fence_length = 0
+            out.append("\n")
+        elif opened:
+            fence_char = opened.group(1)[0]
+            fence_length = len(opened.group(1))
+            out.append("\n")
+        else:
+            out.append(line)
+    return "".join(out)
 
 
 def _advertised_alternatives(markdown: str, base: str, *, budget: int) -> list[dict]:
@@ -191,6 +217,7 @@ def _advertised_alternatives(markdown: str, base: str, *, budget: int) -> list[d
     """
     if not isinstance(markdown, str):
         return []
+    markdown = _without_fenced_examples(markdown)
     for match_index, marker in enumerate(_ALT_MARKER.finditer(markdown)):
         if match_index >= 8:
             break
