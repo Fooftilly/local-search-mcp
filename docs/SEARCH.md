@@ -70,9 +70,11 @@ Use `web_search(query, include_search_status=true)` when knowing whether
 some attempted providers failed matters more than the smallest response.
 This is **opt-in**: ordinary `web_search` retains its established list of
 `title/url/snippet/engine` results. The diagnostic variant wraps successful
-results as `{success: true, status: "ok" | "degraded", results: [...],
-search_status: {...}}`. A degraded status means SearXNG explicitly returned
-nonempty `unresponsive_engines` even if other providers produced results.
+results as `{success: true, status: "ok" | "degraded" | "unknown",
+results: [...], search_status: {...}}`. A degraded status means SearXNG
+explicitly returned nonempty `unresponsive_engines` even if other providers
+produced results; `unknown` means the upstream failure-report field has
+an unrecognized shape.
 The existing error response is preserved when search fails completely.
 
 The `search_status` object contains `coverage`
@@ -81,7 +83,10 @@ The `search_status` object contains `coverage`
 records examined), `unparsed_count` and `truncated`. Only safe provider
 names are retained from SearXNG's name or `[name, error]` fields;
 potentially sensitive exception details, URL strings, query text and raw
-upstream diagnostics are **never copied**. `no_failures_reported`
+upstream diagnostics are **never copied**. Successful diagnostic wrappers
+still produce the usual private, bounded history result count and safe
+title/URL/engine summary; `ok`, `degraded` and `unknown` are not
+recorded as errors, and diagnostic failure details are not persisted. `no_failures_reported`
 does **not** prove complete coverage or that disabled engines were tried.
 It also does not distinguish an engine failure from engine coverage
 omitted upstream.
