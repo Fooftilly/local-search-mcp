@@ -540,6 +540,59 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(token, audit)
         self.assertNotIn(content[:500], audit)
 
+    async def test_compact_fetch_reconstructs_complete_document_over_mcp(self):
+        from collections import OrderedDict
+        content = "# Intro\n" + "🧭" * 40 + "x" * (bridge.document_pages.PAGE_CHARS + 190)
+        calls = []
+        def handler(request: httpx.Request):
+            calls.append(request.url.path)
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/compact", "success": True,
+                "markdown": {"raw_markdown": content}
+            }]})
+        original = httpx.Client
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        global_answer = [(socket.AF_INET, socket.SOCK_STREAM, 6, "",
+                          ("93.184.215.14", 443))]
+        with (patch.object(bridge, "CRAWLER_SECURITY_WARNING", None),
+              patch.object(bridge.httpx, "Client", side_effect=factory),
+              patch.object(domain_policy.socket, "getaddrinfo", return_value=global_answer),
+              patch.object(bridge.document_pages, "_CACHE", OrderedDict())):
+            async with Client(bridge.mcp) as client:
+                tools = {tool.name: tool for tool in await client.list_tools()}
+                for name in ("web_fetch", "web_fetch_batch"):
+                    self.assertIn("compact_chars", tools[name].inputSchema["properties"])
+                    self.assertEqual(tools[name].inputSchema["properties"][
+                        "compact_chars"]["default"], bridge.document_pages.PAGE_CHARS)
+                first = await client.call_tool("web_fetch", {
+                    "url": "https://example.com/compact", "compact_chars": 2048,
+                    "include_outline": True,
+                })
+                self.assertFalse(first.is_error)
+                self.assertTrue(first.data["success"])
+                self.assertEqual(len(first.data["markdown"]), 2048)
+                self.assertEqual(first.data["outline"][0]["page"], 1)
+                self.assertEqual(first.data["page_count"], 2)
+                page = await client.call_tool("web_fetch_page", {
+                    "document_id": first.data["document_id"], "page": 2,
+                })
+                self.assertFalse(page.is_error)
+                self.assertEqual(first.data["markdown"] + page.data["markdown"], content)
+                self.assertIsNone(page.data["next_page"])
+                find = await client.call_tool("web_find", {
+                    "document_id": first.data["document_id"], "query": "x",
+                    "start_offset": 2048,
+                })
+                self.assertFalse(find.is_error)
+                self.assertEqual(find.data["matches"][0]["page"], 2)
+            audit = (Path(self.tmp.name) / "history.jsonl").read_text()
+            self.assertNotIn(first.data["document_id"], audit)
+            self.assertNotIn(content[100:200], audit)
+        self.assertEqual(calls.count("/crawl"), 1)
+
     async def test_long_document_continuation_over_actual_mcp_dispatch(self):
         from collections import OrderedDict
         content = "A" * 24000 + "B" * 17000

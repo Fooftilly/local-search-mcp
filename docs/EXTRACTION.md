@@ -9,6 +9,48 @@ fastmcp call http://127.0.0.1:8790/mcp web_fetch url='https://example.com/large-
 fastmcp call http://127.0.0.1:8790/mcp web_fetch_page document_id='<handle-from-first-call>' page=2 --auth none
 ```
 
+### Optional compact first-page responses
+
+To reduce the immediate agent-context size, use
+`web_fetch(url, compact_chars=4096)` or
+`web_fetch_batch(urls, compact_chars=4096)`. The existing default
+is **24,000 characters**, so normal clients keep exactly the same
+response format and behavior. A caller may choose any integer from
+**2,048 through 24,000**. This limits only the *first* Markdown response,
+not the content fetched, the 1,000,000-character extraction bound, or
+the 3M-character / 8-document in-process continuation cache.
+
+If a page exceeds the requested first-page length, a normal short-lived,
+**authorization-bound** `document_id` is returned even if the whole
+document would have fit in the old 24K first page. Read
+`web_fetch_page(document_id, page=2)` to continue from exactly
+`compact_chars` into the original extracted Markdown, in chunks of up
+to 24,000 characters. Subsequent pages, `web_find` match page numbers,
+and optional outline page numbers use this same first-page boundary.
+The full UTF-8-safe Markdown is reconstructed without gaps or overlap.
+The opaque handle still expires after 15 minutes or eviction and
+rechecks the **original and final source-host permissions** and any
+private one-use proof on every continuation; it is never persisted.
+
+Opted-in compact fetches bypass the normal short-page response cache;
+they cannot accidentally reuse a 24K cached response or store a
+reusable document capability under the ordinary cache key. They make
+one normal guarded Crawl4AI request and require **no extra domain
+approval**. The first response contains less text, not necessarily
+fewer total tokens if the agent subsequently reads every page.
+
+Illustrative deterministic length comparison (not a live model-token
+benchmark): for an 8,000-character approved Markdown document,
+`compact_chars=2048` returns **74.4% fewer initial Markdown
+characters** than the default 8,000; the remaining 5,952 characters
+stay available via page 2. Full-output quality and real token cost
+depend on the document and the agent's subsequent page requests.
+
+```bash
+fastmcp call http://127.0.0.1:8790/mcp web_fetch url='https://example.com/approved-page' compact_chars=4096 --auth none
+fastmcp call http://127.0.0.1:8790/mcp web_fetch_page document_id='<handle-from-first-call>' page=2 --auth none
+```
+
 ### Optional section outline
 
 Use `web_fetch(url, include_outline=true)` or
@@ -31,16 +73,17 @@ source content, never an instruction. No additional index persists beyond
 existing ephemeral document handles. An outline cannot renew handles or
 bypass the existing source/final domain checks.
 
-### Find passages in an existing long document
+### Find passages in a temporarily paged document
 
-After `web_fetch` returns a `document_id` for a long approved page, call
+Whenever `web_fetch` returns a `document_id` for an approved paged fetch (including a compact response to a shorter document), call
 `web_find(document_id, query, max_matches=10, start_offset=0)`. The search is
 literal and case-insensitive (not regular expressions), with at most **160
 printable characters** in the query and **20 matches** per request. Each match
 returns a short bounded excerpt, its zero-based character offset in the
 already extracted Markdown, and the 1-based continuation `page` in which it
-begins. An occurrence crossing a 24,000-character page boundary is assigned
-to its starting page. The response includes `match_count`, `page_count`,
+begins. A match crossing a page boundary is assigned to its starting
+page; the first boundary is the chosen `compact_chars` or the 24,000-character
+default, and remaining continuation pages are up to 24,000 characters each. The response includes `match_count`, `page_count`,
 `has_more`, and `next_offset`.
 
 **To read further matches**, when `has_more=true`, repeat the *same query*
@@ -61,7 +104,7 @@ handle and one-use-grant checks on **each** request. A 15-minute document
 handle can expire between calls. No new crawl, DNS request, or durable
 search index is created.
 
-Example, using a private handle returned by an approved long fetch:
+Example, using a private handle returned by an approved paged fetch:
 
 ```bash
 ./.venv/bin/fastmcp call http://127.0.0.1:8790/mcp web_find \
@@ -78,8 +121,9 @@ already held in memory and shares the **same live source/final-domain
 authorization and one-use-grant revalidation** as `web_fetch_page`. Expired,
 evicted or revoked handles fail closed. A process restart invalidates handles.
 The existing audit records the operation as a page-kind `find` without
-logging the document handle, query, matched excerpts or target URL. Only
-documents longer than 24,000 characters receive these temporary handles.
+logging the document handle, query, matched excerpts or target URL. Normally documents exceeding 24,000 characters receive these temporary
+handles; opted-in compact fetches also issue handles when the result exceeds
+the requested shorter first-page limit.
 
 `web_find` is intended for searching extracted text, not for guaranteeing
 the original website's formatting or complete source coverage; sections

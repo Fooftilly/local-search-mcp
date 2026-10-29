@@ -28,6 +28,73 @@ class DocumentPageTests(unittest.TestCase):
         self.assertEqual("a" * pages.PAGE_CHARS + second["markdown"] + third["markdown"],
                          content)
 
+    def test_compact_first_page_reconstructs_short_and_long_unicode_documents(self):
+        for size in (2048, 4096, pages.PAGE_CHARS):
+            for extra in (1, 2500, pages.PAGE_CHARS, pages.PAGE_CHARS + 11):
+                with self.subTest(first=size, extra=extra):
+                    content = "🧭" * 12 + "a" * (size + extra - 12)
+                    token, count = pages.save(
+                        "https://example.com/p", content, {"title": "P"},
+                        first_page_chars=size)
+                    self.assertEqual(count, pages._page_count(len(content), size))
+                    pieces = [content[:size]]
+                    for page in range(2, count + 1):
+                        value = pages.read(token, page)
+                        self.assertEqual(value["page"], page)
+                        self.assertEqual(value["page_count"], count)
+                        self.assertEqual(value["next_page"],
+                                         page + 1 if page < count else None)
+                        pieces.append(value["markdown"])
+                    self.assertEqual("".join(pieces), content)
+                    self.assertLessEqual(max(map(len, pieces[1:])), pages.PAGE_CHARS)
+                    self.assertEqual(pages.page_for_offset(size - 1, size), 1)
+                    self.assertEqual(pages.page_for_offset(size, size), 2)
+                    self.assertEqual(pages.page_for_offset(size + pages.PAGE_CHARS, size), 3)
+
+    def test_compact_find_and_outline_pages_match_saved_boundaries(self):
+        size = 4096
+        content = ("# Intro\n" + "x" * (size - len("# Intro\n")) +
+                   "\n## Second\nNeedle\n" + "z" * pages.PAGE_CHARS)
+        token, count = pages.save("https://example.com/a", content, {},
+                                  first_page_chars=size)
+        self.assertEqual(count, 3)
+        matches, _, _ = pages.find_with_security_context(token, "Needle")
+        position = content.index("Needle")
+        self.assertEqual(matches["matches"][0]["offset"], position)
+        self.assertEqual(matches["matches"][0]["page"], 2)
+        self.assertEqual(matches["page_count"], 3)
+        outline = pages.build_outline(content, first_page_chars=size)
+        self.assertEqual(outline["outline"][0]["page"], 1)
+        self.assertEqual(outline["outline"][1]["page"], 2)
+        self.assertEqual(outline["outline"][1]["offset"], content.index("## Second"))
+        self.assertEqual(content[:size] + pages.read(token, 2)["markdown"] +
+                         pages.read(token, 3)["markdown"], content)
+
+    def test_compact_handles_respect_ttl_eviction_and_reject_invalid_sizes(self):
+        content = "P" * 5000
+        for invalid in (None, True, False, 2047, 24001, "4096", 1.5):
+            with self.subTest(size=repr(invalid)), self.assertRaises(ValueError):
+                pages.save("https://example.com/a", content, {},
+                           first_page_chars=invalid)
+        with self.assertRaises(ValueError):
+            pages.save("https://example.com/a", "A" * 2048, {},
+                       first_page_chars=2048)
+        with patch.object(pages.time, "monotonic", return_value=30):
+            token, count = pages.save("https://example.com/a", content, {},
+                                      first_page_chars=2048)
+        self.assertEqual(count, 2)
+        with patch.object(pages.time, "monotonic", return_value=30 + pages.TTL_SECONDS):
+            expired = pages.read(token, 2)
+        self.assertEqual(expired["status"], "expired_or_unknown")
+        self.assertNotIn("P" * 32, str(expired))
+        with patch.object(pages, "MAX_DOCUMENTS", 1):
+            first, _ = pages.save("https://example.com/first", content, {},
+                                  first_page_chars=2048)
+            second, _ = pages.save("https://example.com/second", content, {},
+                                   first_page_chars=2048)
+            self.assertEqual(pages.read(first, 2)["status"], "expired_or_unknown")
+            self.assertEqual(pages.read(second, 2)["markdown"], content[2048:])
+
     def test_unknown_expired_and_invalid_handles_do_not_disclose_content(self):
         content = "SENSITIVE" * 4000
         with patch.object(pages.time, "monotonic", return_value=100):
