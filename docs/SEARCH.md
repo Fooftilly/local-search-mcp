@@ -14,6 +14,7 @@ The MCP tool remains compatible with existing `web_search(query, max_results=8)`
 | `deduplicate` | `false` | Boolean | Local opt-in result processing |
 | `ranking` | `searxng` | `searxng` or `source_count` (requires `deduplicate=true`) | Local stable ordering |
 | `include_published_date` | `false` | Boolean | Local opt-in upstream date-only metadata |
+| `include_search_status` | `false` | Boolean | Local opt-in provider-failure status (not forwarded) |
 
 A category or engine name can contain letters, digits, dots, underscores, hyphens and spaces (at most 40 characters). Dotted engine names such as `brave.news` and `crates.io` are valid. Empty names, duplicate names and arbitrary URL syntax are rejected before contacting the upstream.
 
@@ -61,6 +62,45 @@ does not provide a verified publication-date contract, so the guarded
 
 ```bash
 fastmcp call http://127.0.0.1:8790/mcp web_search query='public technology news' categories=news include_published_date=true --auth none
+```
+
+## Optional partial-provider diagnostics
+
+Use `web_search(query, include_search_status=true)` when knowing whether
+some attempted providers failed matters more than the smallest response.
+This is **opt-in**: ordinary `web_search` retains its established list of
+`title/url/snippet/engine` results. The diagnostic variant wraps successful
+results as `{success: true, status: "ok" | "degraded" | "unknown",
+results: [...], search_status: {...}}`. A degraded status means SearXNG
+explicitly returned nonempty `unresponsive_engines` even if other providers
+produced results; `unknown` means the upstream failure-report field has
+an unrecognized shape.
+The existing error response is preserved when search fails completely.
+
+The `search_status` object contains `coverage`
+(`partial`, `no_failures_reported`, or `unverifiable`), bounded
+`unresponsive_engines` names (up to 16), `reported_count` (first 128
+records examined), `unparsed_count` and `truncated`. Only safe provider
+names are retained from SearXNG's name or `[name, error]` fields;
+potentially sensitive exception details, URL strings, query text and raw
+upstream diagnostics are **never copied**. Successful diagnostic wrappers
+still produce the usual private, bounded history result count and safe
+title/URL/engine summary; `ok`, `degraded` and `unknown` are not
+recorded as errors, and diagnostic failure details are not persisted. `no_failures_reported`
+does **not** prove complete coverage or that disabled engines were tried.
+It also does not distinguish an engine failure from engine coverage
+omitted upstream.
+
+Opt-in calls do not use the bridge's response cache: an earlier successful
+snapshot must not be presented as current provider health. This does not
+run more providers, issue hidden retries, wake extra backends, enable
+Google, or change default result order and engine-selection validation.
+A search that returned no results because engines failed still returns
+the existing `upstream_unavailable` error. Provider-failure metadata is
+never a verified statement about original publishers.
+
+```bash
+fastmcp call http://127.0.0.1:8790/mcp web_search query='public research' include_search_status=true --auth none
 ```
 
 ## Optional deduplication and source attribution

@@ -151,15 +151,61 @@ def _upstream_error(response, backend: str) -> dict:
     return result
 
 
+def _search_failure_status(payload: dict) -> dict:
+    """Describe only bounded upstream failure *names*, never error details.
+
+    SearXNG versions may report unresponsive_engines as engine names or
+    [engine, exception details] pairs. Exceptions can contain URLs, queries,
+    credentials or remote diagnostics, so never copy them into agent output.
+    """
+    raw = payload.get("unresponsive_engines")
+    if raw is None:
+        return {
+            "coverage": "no_failures_reported", "reported_count": 0,
+            "unresponsive_engines": [], "unparsed_count": 0,
+            "truncated": False,
+        }
+    if not isinstance(raw, list):
+        return {
+            "coverage": "unverifiable", "reported_count": None,
+            "unresponsive_engines": [], "unparsed_count": None,
+            "truncated": True,
+        }
+    names = []
+    seen = set()
+    unparsed = 0
+    # Parse a bounded prefix even if a malicious/malformed source returns a
+    # massive list. A separate truncation flag avoids false completeness.
+    for item in raw[:128]:
+        name = item[0] if isinstance(item, (list, tuple)) and item else item
+        if (not isinstance(name, str)
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}", name) is None):
+            unparsed += 1
+            continue
+        if name.casefold() not in seen:
+            seen.add(name.casefold())
+            if len(names) < 16:
+                names.append(name)
+    return {
+        "coverage": ("partial" if raw else "no_failures_reported"),
+        "reported_count": min(len(raw), 128),
+        "unresponsive_engines": names,
+        "unparsed_count": unparsed,
+        "truncated": len(raw) > 128 or len(seen) > len(names),
+    }
+
+
 def _run_search(params: dict, max_results: int, *,
                 deduplicate: bool = False,
                 ranking: str = "searxng",
-                include_published_date: bool = False) -> list[dict] | dict:
+                include_published_date: bool = False,
+                include_search_status: bool = False) -> list[dict] | dict:
     try:
         with on_demand.lease("searxng"):
             return _run_search_network(params, max_results, deduplicate=deduplicate,
                                        ranking=ranking,
-                                       include_published_date=include_published_date)
+                                       include_published_date=include_published_date,
+                                       include_search_status=include_search_status)
     except on_demand.BackendUnavailable:
         return {"success": False, "status": "upstream_unavailable",
                 "backend": "searxng",
@@ -286,7 +332,8 @@ def web_search_capabilities() -> dict:
 def _run_search_network(params: dict, max_results: int, *,
                         deduplicate: bool = False,
                         ranking: str = "searxng",
-                        include_published_date: bool = False) -> list[dict] | dict:
+                        include_published_date: bool = False,
+                        include_search_status: bool = False) -> list[dict] | dict:
     with httpx.Client(timeout=upstream_settings.effective_timeout("searxng_seconds"),
                       trust_env=False) as client:
         selection_failure = _verify_explicit_search_engines(client, params)
@@ -358,10 +405,20 @@ def _run_search_network(params: dict, max_results: int, *,
     if rows and not valid_rows:
         return {"success": False, "status": "invalid_response", "backend": "searxng",
                 "reason": "SearXNG returned results without any usable HTTP(S) links."}
-    return enrich_search_results(
+    result = enrich_search_results(
         valid_rows, max_results, deduplicate=deduplicate, ranking=ranking,
         include_published_date=include_published_date,
     )
+    if include_search_status:
+        diagnostic = _search_failure_status(payload)
+        top_level = {
+            "partial": "degraded",
+            "unverifiable": "unknown",
+            "no_failures_reported": "ok",
+        }[diagnostic["coverage"]]
+        return {"success": True, "status": top_level,
+                "results": result, "search_status": diagnostic}
+    return result
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
@@ -371,7 +428,8 @@ def web_search(query: str, max_results: int = 8, language: str = "",
                engines: str = "", page: int = 1, fresh: bool = False,
                deduplicate: bool = False,
                ranking: Literal["searxng", "source_count"] = "searxng",
-               include_published_date: bool = False) -> list[dict] | dict:
+               include_published_date: bool = False,
+               include_search_status: bool = False) -> list[dict] | dict:
     """Search SearXNG, with optional URL deduplication and source attribution.
 
     Defaults preserve SearXNG order and the historic four-field result shape.
@@ -381,6 +439,9 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     Set fresh=true to bypass the in-memory search cache and fetch fresh data.
     Set include_published_date=true for validated upstream date-only metadata;
     it is not a verified publisher timestamp or a guarantee of freshness.
+    Set include_search_status=true for an uncached diagnostic wrapper with
+    bounded SearXNG-reported unresponsive provider names; absent failure
+    reports do not prove exhaustive coverage. No extra provider requests.
     Choose categories OR engines: SearXNG combines both into a union.
     Engine-only calls require a verified enabled provider in local /config;
     unsupported names fail closed without searching default providers.
@@ -391,6 +452,8 @@ def web_search(query: str, max_results: int = 8, language: str = "",
         raise ValueError("deduplicate must be a boolean")
     if not isinstance(include_published_date, bool):
         raise ValueError("include_published_date must be a boolean")
+    if not isinstance(include_search_status, bool):
+        raise ValueError("include_search_status must be a boolean")
     if not isinstance(ranking, str) or ranking not in ("searxng", "source_count"):
         raise ValueError("ranking must be searxng or source_count")
     if ranking == "source_count" and not deduplicate:
@@ -403,14 +466,17 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     private = bool(re.search(
         r"@|https?://|\b[a-z0-9-]+(?:\.[a-z0-9-]+)+/\S+|(?:password|token|secret|api[_-]?key|bearer|cookie)\s*[:=]",
         params["q"], flags=re.IGNORECASE))
-    key = None if private else (
+    # Do not replay a cached "all providers healthy" snapshot as current
+    # provider health. Diagnostic calls are always fresh and not cached.
+    key = None if private or include_search_status else (
         "search", SEARXNG_URL, tuple(sorted(params.items())),
         max_results, deduplicate, ranking, include_published_date,
     )
     return request_cache.run(
         "search", key, lambda: _run_search(
             params, max_results, deduplicate=deduplicate, ranking=ranking,
-            include_published_date=include_published_date),
+            include_published_date=include_published_date,
+            include_search_status=include_search_status),
         ttl=lambda: cache_settings.effective_ttl('search_seconds'), fresh=fresh, should_store=lambda r: isinstance(r, list),
     )
 

@@ -324,6 +324,39 @@ class BridgeTests(unittest.TestCase):
                         self.module.web_search("test", **options)
                     client.assert_not_called()
 
+    def test_search_failure_status_bounds_and_never_forwards_error_details(self):
+        large = [[f"engine-{i}", "PRIVATE_EXCEPTION_ABC"] for i in range(180)]
+        details = self.module._search_failure_status({"unresponsive_engines": large})
+        self.assertEqual(details["coverage"], "partial")
+        self.assertEqual(details["reported_count"], 128)
+        self.assertEqual(len(details["unresponsive_engines"]), 16)
+        self.assertTrue(details["truncated"])
+        self.assertEqual(details["unparsed_count"], 0)
+        self.assertNotIn("PRIVATE_EXCEPTION_ABC", str(details))
+        unknown = self.module._search_failure_status({
+            "unresponsive_engines": "SECRET_MALFORMED"})
+        self.assertEqual(unknown["coverage"], "unverifiable")
+        self.assertNotIn("SECRET_MALFORMED", str(unknown))
+        empty = self.module._search_failure_status({"unresponsive_engines": []})
+        self.assertEqual(empty["coverage"], "no_failures_reported")
+        missing = self.module._search_failure_status({})
+        self.assertEqual(missing["coverage"], "no_failures_reported")
+        bad = self.module._search_failure_status({
+            "unresponsive_engines": [["yahoo", "PRIVATE"], [], 7,
+                                     "eng\\nine", ["bing news", "TIMEOUT"]]})
+        self.assertEqual(bad["reported_count"], 5)
+        self.assertEqual(bad["unparsed_count"], 3)
+        self.assertEqual(bad["unresponsive_engines"], ["yahoo", "bing news"])
+
+    def test_search_status_option_rejects_invalid_before_network(self):
+        for invalid in (1, "true", None, {}, []):
+            with self.subTest(value=repr(invalid)):
+                with patch.object(self.module.httpx, "Client") as client:
+                    with self.assertRaisesRegex(ValueError, "include_search_status"):
+                        self.module.web_search("public status check",
+                                               include_search_status=invalid)
+                    client.assert_not_called()
+
     def test_opt_in_publication_date_preserves_search_transport_and_cache(self):
         original = httpx.Client
         calls = []
