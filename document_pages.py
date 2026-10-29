@@ -263,7 +263,7 @@ def read_table_with_security_context(
             return ({"success": False, "status": "table_page_too_large",
                      "reason": "One row exceeds the response limit."},
                     source_url, once_proof)
-        return response, source_url, once_proof)
+        return response, source_url, once_proof
 
 
 MAX_OUTLINE_HEADINGS = 40
