@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from domain_policy import normalize_domain
@@ -176,14 +177,22 @@ MAX_RETAINED_BYTES = 800_000
 MAX_ROW_BYTES = 1_500
 
 
-def _bounded_cells(values: list) -> list[str]:
+def _bounded_cells(values: list) -> tuple[list[str], bool]:
     cells = [_text(value, 200) for value in values[:MAX_RETAINED_COLUMNS]]
-    # ensure_ascii serialization can expand non-ASCII strings significantly.
-    # A ten-row response must remain under the 20 KB response budget.
+    clipped = len(values) > MAX_RETAINED_COLUMNS or any(
+        isinstance(value, str) and len(value.strip()) > 200
+        for value in values[:MAX_RETAINED_COLUMNS])
+    # ensure_ascii JSON can expand non-ASCII and escaped characters.
     while _size({"cells": cells}) > MAX_ROW_BYTES:
         index = max(range(len(cells)), key=lambda i: len(cells[i]))
         cells[index] = cells[index][:len(cells[index]) // 2]
-    return cells
+        clipped = True
+    return cells, clipped
+
+
+def _resident_cells_bytes(cells: list[str]) -> int:
+    """Conservative Python object allocation, not just serialized text size."""
+    return sys.getsizeof(cells) + sum(sys.getsizeof(value) for value in cells) + 64
 
 
 def prepare_table_continuation(page: dict) -> dict | None:
@@ -199,7 +208,8 @@ def prepare_table_continuation(page: dict) -> dict | None:
             continue
         original_headers = original.get("headers")
         original_rows = original.get("rows")
-        headers = _bounded_cells(original_headers) if isinstance(original_headers, list) else []
+        headers, header_clipped = (_bounded_cells(original_headers)
+                                  if isinstance(original_headers, list) else ([], False))
         source_rows = original_rows if isinstance(original_rows, list) else []
         if not headers and not source_rows:
             continue
@@ -210,26 +220,32 @@ def prepare_table_continuation(page: dict) -> dict | None:
             "summary": _text(original.get("summary"), 240),
             "source_rows_observed": len(source_rows),
         }
-        fixed_size = _size(fixed) + 150
+        fixed_size = max(_size(fixed) + 150,
+                         sys.getsizeof(fixed) + _resident_cells_bytes(headers)
+                         + sys.getsizeof(fixed["caption"])
+                         + sys.getsizeof(fixed["summary"]) + 256)
         if total_bytes + fixed_size > MAX_RETAINED_BYTES:
             truncated = True
             break
         total_bytes += fixed_size
         rows: list[list[str]] = []
+        cells_truncated = header_clipped
         for record in source_rows[:MAX_RETAINED_ROWS]:
             if not isinstance(record, list):
                 # Match preview semantics: malformed entries are not rows.
                 continue
-            cells = _bounded_cells(record)
-            cost = _size({"cells": cells})
+            cells, clipped = _bounded_cells(record)
+            cost = max(_size({"cells": cells}), _resident_cells_bytes(cells))
             if total_bytes + cost > MAX_RETAINED_BYTES:
                 truncated = True
                 break
             rows.append(cells)
+            cells_truncated = cells_truncated or clipped
             total_bytes += cost
         entries.append({
             **fixed,
             "rows": rows,
+            "cells_truncated": cells_truncated,
             "retained_truncated": len(rows) < len(source_rows),
             "columns_truncated": (
                 isinstance(original_headers, list) and len(original_headers) > MAX_RETAINED_COLUMNS
@@ -246,6 +262,7 @@ def prepare_table_continuation(page: dict) -> dict | None:
         "source_tables_observed": len(raw),
         "retention_truncated": truncated or len(entries) < len(raw) or any(
             entry["retained_truncated"] or entry["columns_truncated"]
+            or entry["cells_truncated"]
             for entry in entries),
     }
 
