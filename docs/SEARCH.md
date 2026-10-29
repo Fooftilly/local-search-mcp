@@ -83,6 +83,26 @@ fastmcp call http://127.0.0.1:8790/mcp web_search query='linux containers' max_r
 fastmcp call http://127.0.0.1:8790/mcp web_search query='linux containers' max_results=8 deduplicate=true ranking=source_count --auth none
 ```
 
+**Engine wizard with on-demand sleep:** `./setup.sh --search-engines`
+inspects the local SearXNG `/config` only when the verified backend is
+running. The recommended Yahoo preset (choice 1) retains its documented
+offline fallback without waking Docker. Choices 2–4 require the installed
+engine list. If the **owned** SearXNG container is sleeping and on-demand
+mode is enabled, choosing one of these offers an explicit `WAKE` prompt.
+Declining makes **no Docker or settings changes**. Confirming `WAKE` uses
+the existing project-ownership/restart-policy verification and shared
+cross-process lock; it starts only the verified SearXNG container, waits
+for health, and reads the bounded loopback engine list. A stopped backend
+with on-demand disabled or a running backend with unavailable `/config`
+returns an actionable error instead of silently cancelling.
+
+A confirmed wake is **not** a settings change. You must still separately
+type `APPLY` to edit the managed engine block and perform its scoped
+restart. A wake may leave SearXNG running until ordinary managed idle or
+an attended stop; the wizard does not force an immediate shutdown, since
+another MCP client may now be using it. No engine selection alters domain
+approvals or intentionally enables Google providers.
+
 **Operator configuration:** SearXNG needs `search.formats: [html, json]` (or equivalent) enabled. Search categories and engines are defined by the local instance's `settings.yml`, may differ by installation, and some individual engines do not support language, pagination or time filters. Prefer selecting only engines visibly enabled on the local SearXNG preferences page. Results are not re-fetched by the optional deduplication and ranking features; the original default remains unmodified. Check the [official SearXNG Search API](https://docs.searxng.org/dev/search_api.html) for parameters and capabilities.
 
 Search queries, effective page numbers, supplied filters and limited result metadata are logged in private local JSONL history; avoid including secrets in queries or filters.
