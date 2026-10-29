@@ -122,6 +122,41 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("safe text", audit)
         self.assertEqual(sum(x["url"] == "https://example.com/article" for x in events), 2)
 
+    async def test_search_published_date_opt_in_over_actual_mcp(self):
+        seen = []
+        original = httpx.Client
+        def handler(request):
+            seen.append(dict(request.url.params))
+            return httpx.Response(200, json={"results": [
+                {"title": "A", "url": "https://example.org/article",
+                 "engine": "yahoo", "publishedDate": "2024-10-23T12:00:38"},
+                {"title": "B", "url": "https://example.org/no-date",
+                 "engine": "yahoo", "publishedDate": None},
+            ]})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with patch.object(bridge.httpx, "Client", side_effect=client):
+            async with Client(bridge.mcp) as client:
+                tool = next(tool for tool in await client.list_tools()
+                            if tool.name == "web_search")
+                self.assertEqual(
+                    tool.inputSchema["properties"]["include_published_date"]["default"],
+                    False)
+                normal = await client.call_tool("web_search", {
+                    "query": "published mcp validation"})
+                dated = await client.call_tool("web_search", {
+                    "query": "published mcp validation",
+                    "include_published_date": True})
+        self.assertFalse(normal.is_error)
+        self.assertFalse(dated.is_error)
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(seen[0], seen[1])
+        self.assertNotIn("include_published_date", seen[0])
+        self.assertNotIn("published_date", normal.data[0])
+        self.assertEqual(dated.data[0]["published_date"], "2024-10-23")
+        self.assertEqual(dated.data[0]["date_source"], "searxng.publishedDate")
+        self.assertNotIn("published_date", dated.data[1])
+
     async def test_search_dedupe_and_source_count_rank_over_real_mcp(self):
         urls = []
         original = httpx.Client

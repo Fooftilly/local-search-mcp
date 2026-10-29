@@ -5,6 +5,8 @@ conservative URL equivalence only; no scores or cross-engine relevance claims.
 """
 from __future__ import annotations
 
+from datetime import date, datetime
+import re
 from urllib.parse import urlsplit, urlunsplit
 
 
@@ -79,21 +81,59 @@ def _engines(row: dict) -> list[str]:
     return names
 
 
+def _published_date(row: dict) -> str | None:
+    """Extract the source-reported calendar date, never infer a timezone.
+
+    The real SearXNG JSON output uses publishedDate=None or ISO-like text,
+    including timestamps without an offset. Do not promote deprecated
+    pubdate, scraped snippet text, or the crawl time as publication evidence.
+    """
+    value = row.get("publishedDate")
+    if (not isinstance(value, str) or len(value) > 40 or
+            re.fullmatch(
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+                r"(?:\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])?)?", value
+            ) is None):
+        return None
+    try:
+        parsed = (datetime.fromisoformat(value) if "T" in value
+                  else date.fromisoformat(value))
+        # Preserve the source's calendar day. Turning a naive timestamp
+        # into UTC would invent a timezone; date-only output avoids that.
+        return (parsed.date() if isinstance(parsed, datetime) else parsed).isoformat()
+    except ValueError:
+        return None
+
+
+def _with_publication(entry: dict, row: dict, enabled: bool) -> dict:
+    if enabled:
+        published = _published_date(row)
+        if published is not None:
+            entry["published_date"] = published
+            entry["date_source"] = "searxng.publishedDate"
+    return entry
+
+
 def enrich_search_results(rows: list[dict], max_results: int, *,
                           deduplicate: bool = False,
-                          ranking: str = "searxng") -> list[dict]:
+                          ranking: str = "searxng",
+                          include_published_date: bool = False) -> list[dict]:
     """Deduplicate before limiting results, retaining first-seen provenance.
 
     Optional per-item keys are source_engines, duplicate_count, source_matches
-    and source_count. The 'source_count' ranking counts distinct source engines,
-    breaking ties by original SearXNG order (stable Python sort).
+    and source_count; independently, include_published_date exposes only valid
+    upstream publishedDate as a date with explicit field provenance.
+    The 'source_count' ranking counts distinct source engines, breaking ties
+    by original SearXNG order (stable Python sort).
     """
     if not deduplicate and ranking == "searxng":
         return [
-            {"title": _text(r.get("title", ""), 240),
-             "url": str(r.get("url", "")),
-             "snippet": _text(r.get("content", ""), 1100),
-             "engine": _engine_text(r.get("engine", ""))}
+            _with_publication({
+                "title": _text(r.get("title", ""), 240),
+                "url": str(r.get("url", "")),
+                "snippet": _text(r.get("content", ""), 1100),
+                "engine": _engine_text(r.get("engine", "")),
+            }, r, include_published_date)
             for r in rows[:max_results]
         ]
 
@@ -104,7 +144,7 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
         if normalized is not None and normalized in by_url:
             entry = grouped[by_url[normalized]]
         else:
-            entry = {
+            entry = _with_publication({
                 "title": _text(row.get("title", ""), 240),
                 "url": str(row.get("url", "")),
                 "snippet": _text(row.get("content", ""), 1100),
@@ -113,7 +153,7 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
                 "source_count": 0,
                 "duplicate_count": 0,
                 "source_matches": [],
-            }
+            }, row, include_published_date)
             if normalized is not None:
                 by_url[normalized] = len(grouped)
             grouped.append(entry)

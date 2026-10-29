@@ -277,6 +277,41 @@ class BridgeTests(unittest.TestCase):
                         self.module.web_search("test", **options)
                     client.assert_not_called()
 
+    def test_opt_in_publication_date_preserves_search_transport_and_cache(self):
+        original = httpx.Client
+        calls = []
+        def handler(request):
+            calls.append(dict(request.url.params))
+            return httpx.Response(200, json={"results": [
+                {"title": "Published result", "url": "https://example.com/post",
+                 "content": "Public information", "engine": "yahoo",
+                 "publishedDate": "2024-10-23T12:00:38"},
+                {"title": "Undated", "url": "https://example.com/other",
+                 "content": "No upstream date", "engine": "yahoo",
+                 "publishedDate": None},
+            ]})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            standard = self.module.web_search("publication sample")
+            dated = self.module.web_search(
+                "publication sample", include_published_date=True)
+            cached = self.module.web_search(
+                "publication sample", include_published_date=True)
+            standard_cached = self.module.web_search("publication sample")
+            with self.assertRaisesRegex(ValueError, "include_published_date"):
+                self.module.web_search(
+                    "publication sample", include_published_date=1)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls, [{"q": "publication sample", "format": "json"}] * 2)
+        self.assertEqual(set(standard[0]), {"title", "url", "snippet", "engine"})
+        self.assertEqual(standard_cached, standard)
+        self.assertEqual(dated, cached)
+        self.assertEqual(dated[0]["published_date"], "2024-10-23")
+        self.assertEqual(dated[0]["date_source"], "searxng.publishedDate")
+        self.assertNotIn("published_date", dated[1])
+
+
     def test_search_results_are_cached_per_filter_with_fresh_bypass(self):
         seen = []
         def handler(request):

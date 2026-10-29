@@ -145,11 +145,13 @@ def _upstream_error(response, backend: str) -> dict:
 
 def _run_search(params: dict, max_results: int, *,
                 deduplicate: bool = False,
-                ranking: str = "searxng") -> list[dict] | dict:
+                ranking: str = "searxng",
+                include_published_date: bool = False) -> list[dict] | dict:
     try:
         with on_demand.lease("searxng"):
             return _run_search_network(params, max_results, deduplicate=deduplicate,
-                                       ranking=ranking)
+                                       ranking=ranking,
+                                       include_published_date=include_published_date)
     except on_demand.BackendUnavailable:
         return {"success": False, "status": "upstream_unavailable",
                 "backend": "searxng",
@@ -158,7 +160,8 @@ def _run_search(params: dict, max_results: int, *,
 
 def _run_search_network(params: dict, max_results: int, *,
                         deduplicate: bool = False,
-                        ranking: str = "searxng") -> list[dict] | dict:
+                        ranking: str = "searxng",
+                        include_published_date: bool = False) -> list[dict] | dict:
     with httpx.Client(timeout=upstream_settings.effective_timeout("searxng_seconds"),
                       trust_env=False) as client:
         response = _retry_request(lambda: client.get(
@@ -212,7 +215,8 @@ def _run_search_network(params: dict, max_results: int, *,
         return {"success": False, "status": "invalid_response", "backend": "searxng",
                 "reason": "SearXNG returned results without any usable HTTP(S) links."}
     return enrich_search_results(
-        valid_rows, max_results, deduplicate=deduplicate, ranking=ranking
+        valid_rows, max_results, deduplicate=deduplicate, ranking=ranking,
+        include_published_date=include_published_date,
     )
 
 
@@ -222,7 +226,8 @@ def web_search(query: str, max_results: int = 8, language: str = "",
                categories: str = "", time_range: str = "",
                engines: str = "", page: int = 1, fresh: bool = False,
                deduplicate: bool = False,
-               ranking: Literal["searxng", "source_count"] = "searxng") -> list[dict] | dict:
+               ranking: Literal["searxng", "source_count"] = "searxng",
+               include_published_date: bool = False) -> list[dict] | dict:
     """Search SearXNG, with optional URL deduplication and source attribution.
 
     Defaults preserve SearXNG order and the historic four-field result shape.
@@ -230,11 +235,15 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     requires deduplicate=true and sorts by distinct reporting engine count,
     breaking ties by SearXNG order. ranking="searxng" preserves upstream order.
     Set fresh=true to bypass the in-memory search cache and fetch fresh data.
+    Set include_published_date=true for validated upstream date-only metadata;
+    it is not a verified publisher timestamp or a guarantee of freshness.
     """
     if not isinstance(fresh, bool):
         raise ValueError("fresh must be a boolean")
     if not isinstance(deduplicate, bool):
         raise ValueError("deduplicate must be a boolean")
+    if not isinstance(include_published_date, bool):
+        raise ValueError("include_published_date must be a boolean")
     if not isinstance(ranking, str) or ranking not in ("searxng", "source_count"):
         raise ValueError("ranking must be searxng or source_count")
     if ranking == "source_count" and not deduplicate:
@@ -249,11 +258,12 @@ def web_search(query: str, max_results: int = 8, language: str = "",
         params["q"], flags=re.IGNORECASE))
     key = None if private else (
         "search", SEARXNG_URL, tuple(sorted(params.items())),
-        max_results, deduplicate, ranking,
+        max_results, deduplicate, ranking, include_published_date,
     )
     return request_cache.run(
         "search", key, lambda: _run_search(
-            params, max_results, deduplicate=deduplicate, ranking=ranking),
+            params, max_results, deduplicate=deduplicate, ranking=ranking,
+            include_published_date=include_published_date),
         ttl=lambda: cache_settings.effective_ttl('search_seconds'), fresh=fresh, should_store=lambda r: isinstance(r, list),
     )
 
