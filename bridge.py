@@ -411,11 +411,13 @@ def _run_search_network(params: dict, max_results: int, *,
     )
     if include_search_status:
         diagnostic = _search_failure_status(payload)
-        return {"success": True,
-                "status": ("degraded" if diagnostic["coverage"] == "partial"
-                           else "ok"),
-                "results": result,
-                "search_status": diagnostic}
+        top_level = {
+            "partial": "degraded",
+            "unverifiable": "unknown",
+            "no_failures_reported": "ok",
+        }[diagnostic["coverage"]]
+        return {"success": True, "status": top_level,
+                "results": result, "search_status": diagnostic}
     return result
 
 
