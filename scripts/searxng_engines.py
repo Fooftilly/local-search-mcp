@@ -153,21 +153,22 @@ def render(original: str, selected: tuple[str, ...], controlled: tuple[str, ...]
         if (checked is None or hashlib.sha256(
                 checked.group(2).encode("utf-8")).hexdigest() != checked.group(1)):
             raise EngineSetupError("Managed engine block was edited; refusing overwrite")
-        for match in re.finditer(
-                r'  - name: ("(?:\.|[^"\])*")
-    disabled: (true|false)
-',
-                checked.group(2)):
+        old_rows = checked.group(2).splitlines()
+        if len(old_rows) % 2:
+            raise EngineSetupError("Previous managed engine rows are invalid")
+        for index in range(0, len(old_rows), 2):
+            first, second = old_rows[index:index + 2]
+            if (not first.startswith("  - name: ")
+                    or second not in ("    disabled: true", "    disabled: false")):
+                raise EngineSetupError("Previous managed engine rows are invalid")
             try:
-                name = json.loads(match.group(1))
+                name = json.loads(first[len("  - name: "):])
             except (ValueError, TypeError) as exc:
                 raise EngineSetupError("Invalid previous managed engine name") from exc
             if (not isinstance(name, str) or not NAME.fullmatch(name)
                     or name in managed_flags):
                 raise EngineSetupError("Invalid previous managed engine inventory")
-            managed_flags[name] = match.group(2) == "false"
-        if len(managed_flags) != len(re.findall(r"(?m)^  - name: ", checked.group(2))):
-            raise EngineSetupError("Previous managed engine rows are invalid")
+            managed_flags[name] = second == "    disabled: false"
         prefix = original[:begin]
         # Only remove our own immediately preceding top-level engines key.
         # Never erase another owner's engines block from the rest of the file.
