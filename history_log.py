@@ -148,18 +148,29 @@ def logged_tool(kind: str):
             try:
                 output = fn(*args, **kwargs)
                 event["status"] = "success"
+                # An opted-in successful search has a results wrapper
+                # instead of a bare list. Keep its audit outcome identical:
+                # only a bounded title/URL/engine summary, never snippets,
+                # unresponsive-engine details or the diagnostic metadata.
+                search_rows = None
                 if kind == "search" and isinstance(output, list):
-                    event["result_count"] = len(output)
-                    # Only retain a short summary; never save snippets or response bodies.
+                    search_rows = output
+                elif (kind == "search" and isinstance(output, dict)
+                      and output.get("success") is True
+                      and isinstance(output.get("results"), list)):
+                    search_rows = output["results"]
+                if search_rows is not None:
+                    event["result_count"] = len(search_rows)
                     event["results"] = [
                         {"title": str(r.get("title", ""))[:180],
                          "url": safe_url(r.get("url")),
                          "engine": str(r.get("engine", ""))[:100]}
-                        for r in output[:5] if isinstance(r, dict)
+                        for r in search_rows[:5] if isinstance(r, dict)
                     ]
                 elif kind == "search" and isinstance(output, dict):
                     event["status"] = "error" if output.get("success") is False else "success"
-                    event["error_type"] = output.get("status", "unknown")
+                    if event["status"] == "error":
+                        event["error_type"] = output.get("status", "unknown")
                     if isinstance(output.get("http_status"), int):
                         event["http_status"] = output["http_status"]
                 elif kind == "page" and isinstance(output, dict):
