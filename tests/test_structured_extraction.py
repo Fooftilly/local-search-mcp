@@ -58,6 +58,93 @@ class StructuredExtractionTests(unittest.TestCase):
                     include_links=True, include_tables=False)["links"]
                 self.assertEqual([row["url"] for row in links], [expected])
 
+    def test_navigation_overflow_prioritizes_descriptive_links_and_external(self):
+        header = [{"href": f"/menu/nav-{i}", "text": "Menu"}
+                  for i in range(80)]
+        reports = [{"href": f"/articles/report-{i}",
+                    "text": f"Detailed public report number {i}"}
+                   for i in range(9)]
+        mirrors = [{"href": f"/articles/report-{i}#section", "text": "More"}
+                   for i in range(9)]
+        external = [{"href": f"https://other.example/research/paper-{i}",
+                     "text": f"External research paper number {i}"}
+                    for i in range(5)]
+        payload = {"links": {"internal": header + reports + mirrors,
+                             "external": external},
+                   "tables": [{"headers": ["H"], "rows": [["R"]]}]}
+        with patch("domain_policy.socket.getaddrinfo",
+                   side_effect=AssertionError("No DNS or link traversal")):
+            output = subject.extract(payload, "https://site.example/",
+                                     include_links=True, include_tables=True)
+            repeat = subject.extract(payload, "https://site.example/",
+                                     include_links=True, include_tables=True)
+        self.assertEqual(output, repeat)
+        links = output["links"]
+        self.assertEqual(len(links), subject.MAX_LINKS)
+        self.assertEqual(len({link["url"] for link in links}), len(links))
+        for i in range(9):
+            self.assertIn(f"https://site.example/articles/report-{i}",
+                          [link["url"] for link in links])
+        self.assertGreaterEqual(
+            sum(link["kind"] == "external" for link in links), 2)
+        self.assertEqual(output["tables"][0]["rows"], [["R"]])
+        self.assertLessEqual(len(json.dumps(output, ensure_ascii=True).encode()),
+                             subject.MAX_OUTPUT_BYTES + 200)
+        # Descriptive content is represented before low-value navigation.
+        self.assertIn("/articles/", links[0]["url"])
+
+    def test_link_dedup_prefers_descriptive_label_without_changing_first_kind(self):
+        payload = {"links": {"internal": [
+            {"href": "/article#header", "text": "Menu"},
+            {"href": "/article#content", "text": "Detailed public article report"},
+            {"href": "/article", "title": "Official announcement"},
+            {"href": "https://site.example/article?version=1", "text": "Edition 1"},
+            {"href": "https://site.example/article?version=1#fragment",
+             "text": "Edition 1 duplicate"}],
+            "external": [{"href": "https://site.example/article",
+                          "text": "External duplicate"}]}}
+        result = subject.extract(payload, "https://site.example/",
+                                 include_links=True, include_tables=False)["links"]
+        self.assertEqual([x["url"] for x in result],
+                         ["https://site.example/article",
+                          "https://site.example/article?version=1"])
+        self.assertEqual(result[0]["kind"], "internal")
+        self.assertEqual(result[0]["text"], "Detailed public article report")
+        self.assertEqual(result[0]["title"], "Official announcement")
+        self.assertEqual(result[1]["text"], "Edition 1 duplicate")
+
+    def test_link_budget_skips_oversized_entries_and_backfills_short_links(self):
+        # Twenty-four high-scoring long URLs used to exhaust the selection
+        # before budget checks, hiding a short useful candidate in 25th place.
+        large = [{"href": "/articles/" + "x" * 1830 + str(i),
+                  "text": "Detailed public research report"}
+                 for i in range(24)]
+        short_url = "https://example.com/articles/short-report"
+        page = {"links": {"internal": large + [
+            {"href": "/articles/short-report",
+             "text": "Detailed public research report"}]}}
+        output = subject.extract(page, "https://example.com/",
+                                 include_links=True, include_tables=False)
+        urls = [entry["url"] for entry in output["links"]]
+        self.assertIn(short_url, urls)
+        self.assertLess(len(output["links"]), subject.MAX_LINKS)
+        self.assertLessEqual(len(json.dumps(output, ensure_ascii=True).encode()),
+                             subject.MAX_OUTPUT_BYTES + 200)
+
+    def test_under_link_cap_preserves_safe_crawl_order_and_size_limits(self):
+        payload = {"links": {"internal": [
+            {"href": "/short", "text": "Short"},
+            {"href": "/articles/report", "text": "Detailed report"}],
+            "external": [{"href": "https://other.example/x", "text": "Reference"}]}}
+        result = subject.extract(payload, "https://site.example/",
+                                 include_links=True, include_tables=False)["links"]
+        self.assertEqual([x["url"] for x in result],
+                         ["https://site.example/short",
+                          "https://site.example/articles/report",
+                          "https://other.example/x"])
+        self.assertNotIn("score", result[0])
+        self.assertLessEqual(len(result), subject.MAX_LINKS)
+
     def test_tables_bounded_and_text_safe(self):
         page = {"tables": [{
             "headers": ["h"] * 30,
