@@ -72,6 +72,87 @@ def _size(value: dict) -> int:
     return len(json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode("utf-8"))
 
 
+_NAV_LABELS = frozenset({
+    "home", "about", "about us", "contact", "contact us", "menu", "login",
+    "log in", "sign in", "register", "privacy", "privacy policy", "terms",
+    "terms of use", "cookie policy", "search", "sitemap", "skip to content",
+})
+_NAV_SEGMENTS = frozenset({
+    "login", "signin", "register", "contact", "about", "privacy",
+    "terms", "cookies", "sitemap", "account",
+})
+_CONTENT_SEGMENTS = frozenset({
+    "article", "articles", "news", "research", "report", "reports",
+    "publication", "publications", "documents", "documentation",
+    "docs", "notice", "notices", "guides", "manual", "manuals",
+})
+
+
+def _link_score(item: dict) -> int:
+    """A conservative deterministic link-selection heuristic, not relevance."""
+    segments = [segment.casefold() for segment in
+                urlsplit(item["url"]).path.split("/") if segment]
+    label = (item["text"] or item["title"]).casefold().strip()
+    if label in _NAV_LABELS or any(s in _NAV_SEGMENTS for s in segments):
+        return 0
+    score = 1
+    if any(s in _CONTENT_SEGMENTS for s in segments):
+        score += 2
+    if len(label) >= 14:
+        score += 1
+    if len(segments) >= 2 and len(label) >= 5:
+        score += 1
+    return score
+
+
+def _select_links(raw: dict, base: str) -> list[dict]:
+    """Deduplicate bounded crawl links before selecting a useful 24-item mix.
+
+    Preserve original order for <=24 unique URLs. On overflow, sort by an
+    explainable content-link heuristic, preserve source-order ties and reserve
+    at most two external candidates. A listing is never an approval or fetch.
+    """
+    candidates: list[dict] = []
+    seen: dict[str, int] = {}
+    for kind in ("internal", "external"):
+        entries = raw.get(kind)
+        if not isinstance(entries, list):
+            continue
+        for row in entries[:100]:
+            if not isinstance(row, dict):
+                continue
+            target = _url(row.get("href"), base)
+            if target is None:
+                continue
+            item = {"url": target, "kind": kind,
+                    "text": _text(row.get("text"), 160),
+                    "title": _text(row.get("title"), 160)}
+            previous = seen.get(target)
+            if previous is not None:
+                # The same URL may appear in a generic header and later as a
+                # descriptive article link. Prefer bounded informative labels,
+                # but never change the first-seen kind or URL provenance.
+                original = candidates[previous]
+                for key in ("text", "title"):
+                    if len(item[key]) > len(original[key]):
+                        original[key] = item[key]
+                continue
+            seen[target] = len(candidates)
+            candidates.append(item)
+
+    if len(candidates) <= MAX_LINKS:
+        return candidates
+    indexed = list(enumerate(candidates))
+    ranked = sorted(indexed, key=lambda pair: (-_link_score(pair[1]), pair[0]))
+    external = [pair for pair in ranked if pair[1]["kind"] == "external"][:2]
+    reserved = {index for index, _ in external}
+    chosen = external + [
+        pair for pair in ranked if pair[0] not in reserved
+    ][:MAX_LINKS - len(external)]
+    chosen.sort(key=lambda pair: (-_link_score(pair[1]), pair[0]))
+    return [row for _, row in chosen]
+
+
 def extract(page: dict, base: str, *, include_links: bool, include_tables: bool) -> dict:
     """Return only requested bounded fields from a successfully crawled page.
 
@@ -84,25 +165,11 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool)
         links = []
         raw = page.get("links")
         if isinstance(raw, dict):
-            for kind in ("internal", "external"):
-                entries = raw.get(kind)
-                if not isinstance(entries, list):
-                    continue
-                for row in entries[:100]:
-                    if len(links) >= MAX_LINKS or remaining <= 0:
-                        break
-                    if not isinstance(row, dict):
-                        continue
-                    target = _url(row.get("href"), base)
-                    if target is None:
-                        continue
-                    item = {"url": target, "kind": kind,
-                            "text": _text(row.get("text"), 160),
-                            "title": _text(row.get("title"), 160)}
-                    size = _size(item)
-                    if size <= remaining:
-                        links.append(item)
-                        remaining -= size
+            for item in _select_links(raw, base):
+                size = _size(item)
+                if size <= remaining:
+                    links.append(item)
+                    remaining -= size
         output["links"] = links
     if include_tables:
         tables = []
