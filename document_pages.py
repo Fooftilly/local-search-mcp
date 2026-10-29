@@ -175,6 +175,16 @@ def save_tables(url: str, payload: dict, *, source_url: str,
     return token
 
 
+def table_handle_exists(token: str) -> bool:
+    """Check handle liveness without exposing table content or authorization."""
+    if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
+        return False
+    with _LOCK:
+        _purge_expired(time.monotonic())
+        item = _CACHE.get(token)
+        return item is not None and item[7] is not None
+
+
 def read_table_with_security_context(
         token: str, table_index: int, row_offset: int = 0,
         max_rows: int = MAX_TABLE_PAGE_ROWS, column_offset: int = 0,
