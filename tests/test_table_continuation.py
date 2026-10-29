@@ -150,6 +150,32 @@ class TableContinuationTests(unittest.TestCase):
         self.assertNotIn("preview", str(finalized))
         self.assertNotIn(handle, str(finalized))
 
+    def test_whole_response_byte_budget_and_pagination_progress(self):
+        raw = source(1, 30)
+        raw["tables"][0]["headers"] = ["🌐" * 200] * 24
+        raw["tables"][0]["caption"] = "🧭" * 200
+        raw["tables"][0]["summary"] = "🧭" * 240
+        raw["tables"][0]["rows"] = [["🧭" * 200] * 24 for _ in range(30)]
+        payload = extraction.prepare_table_continuation(raw)
+        token = pages.save_tables("https://example.com/table", payload,
+                                  source_url="https://example.com/table")
+        offset = 0
+        seen = 0
+        while offset < len(payload["entries"][0]["rows"]):
+            result, _, _ = pages.read_table_with_security_context(
+                token, 0, row_offset=offset, max_rows=10)
+            self.assertTrue(result["success"])
+            self.assertLessEqual(len(json.dumps(result, ensure_ascii=True).encode()),
+                                 pages.MAX_TABLE_PAGE_BYTES)
+            self.assertGreater(len(result["rows"]), 0)
+            seen += len(result["rows"])
+            offset += len(result["rows"])
+            self.assertEqual(result["next_offset"],
+                             offset if result["has_more"] else None)
+        self.assertEqual(seen, len(payload["entries"][0]["rows"]))
+        self.assertTrue(payload["entries"][0]["cells_truncated"])
+        self.assertTrue(payload["retention_truncated"])
+
     def test_expiry_invalid_parameters_and_private_context(self):
         payload = extraction.prepare_table_continuation(source(1, 11))
         proof = ("example.com", "a" * 32)
@@ -164,6 +190,7 @@ class TableContinuationTests(unittest.TestCase):
             value, original, retained_proof = pages.read_table_with_security_context(token, 0)
         self.assertEqual(retained_proof, proof)
         self.assertNotIn("once_proof", str(value))
+        self.assertNotIn(proof[1], str(value))
         self.assertEqual(original, "https://example.com/a")
         with patch.object(pages.time, "monotonic",
                           return_value=100 + pages.TTL_SECONDS):
