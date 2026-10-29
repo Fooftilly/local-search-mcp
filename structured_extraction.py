@@ -171,12 +171,13 @@ def _select_links(raw: dict, base: str, *, budget: int = MAX_OUTPUT_BYTES) -> tu
 # Only already-extracted table cells are eligible for bounded continuation.
 MAX_RETAINED_TABLES = 16
 MAX_RETAINED_ROWS = 250
+MAX_RETAINED_COLUMNS = 24
 MAX_RETAINED_BYTES = 800_000
 MAX_ROW_BYTES = 1_500
 
 
 def _bounded_cells(values: list) -> list[str]:
-    cells = [_text(value, 200) for value in values[:MAX_COLUMNS]]
+    cells = [_text(value, 200) for value in values[:MAX_RETAINED_COLUMNS]]
     # ensure_ascii serialization can expand non-ASCII strings significantly.
     # A ten-row response must remain under the 20 KB response budget.
     while _size({"cells": cells}) > MAX_ROW_BYTES:
@@ -228,8 +229,8 @@ def prepare_table_continuation(page: dict) -> dict | None:
             "rows": rows,
             "retained_truncated": len(rows) < len(source_rows),
             "columns_truncated": (
-                isinstance(original_headers, list) and len(original_headers) > MAX_COLUMNS
-            ) or any(isinstance(record, list) and len(record) > MAX_COLUMNS
+                isinstance(original_headers, list) and len(original_headers) > MAX_RETAINED_COLUMNS
+            ) or any(isinstance(record, list) and len(record) > MAX_RETAINED_COLUMNS
                      for record in source_rows[:len(rows)]),
         })
         if len(rows) < min(len(source_rows), MAX_RETAINED_ROWS):
