@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextvars import ContextVar
 from typing import Literal
 import os
@@ -87,6 +88,13 @@ def _search_params(query: str, max_results: int, language: str,
         raise ValueError("time_range must be day, week, month, or year")
     selected_categories = _search_tokens(categories, "categories")
     selected_engines = _search_tokens(engines, "engines")
+    # SearXNG combines explicit engines and categories as a UNION, not an
+    # intersection. Never silently query additional, unrequested providers.
+    if selected_engines and selected_categories:
+        raise ValueError("Choose categories or engines, not both; SearXNG combines them")
+    # Internal/external !bangs take precedence over explicit engine selection.
+    if selected_engines and re.search(r"(?<!\\S)![^\\s]+", query):
+        raise ValueError("Engine filters cannot be combined with !bang search syntax")
     params = {"q": query.strip(), "format": "json"}
     if language:
         params["language"] = language
@@ -158,12 +166,62 @@ def _run_search(params: dict, max_results: int, *,
                 "reason": "On-demand search backend unavailable; check Docker ownership and setup, then retry."}
 
 
+MAX_SEARCH_CONFIG_BYTES = 128 * 1024
+
+
+def _verify_explicit_search_engines(client: httpx.Client, params: dict) -> dict | None:
+    """Fail closed before /search if SearXNG might fall back to defaults.
+
+    Unknown engine names silently trigger the default engines upstream.
+    Inspect only the existing loopback /config endpoint while the on-demand
+    backend lease is held. Never turn disabled engines back on.
+    """
+    names = params.get("engines")
+    if not names:
+        return None
+    failure = {"success": False, "status": "invalid_response", "backend": "searxng",
+               "reason": "Could not validate active search engines; no search was sent."}
+    try:
+        with client.stream("GET", f"{SEARXNG_URL}/config") as response:
+            if response.status_code != 200:
+                return failure
+            raw = bytearray()
+            for chunk in response.iter_bytes():
+                if len(raw) + len(chunk) > MAX_SEARCH_CONFIG_BYTES:
+                    return failure
+                raw.extend(chunk)
+        payload = json.loads(raw)
+    except (httpx.RequestError, UnicodeError, ValueError, TypeError):
+        return failure
+    engines = payload.get("engines") if isinstance(payload, dict) else None
+    if not isinstance(engines, list) or len(engines) > 200:
+        return failure
+    active = set()
+    for row in engines:
+        if not isinstance(row, dict):
+            return failure
+        name = row.get("name")
+        if (not isinstance(name, str) or len(name) > 80 or
+                row.get("enabled") not in (True, False)):
+            return failure
+        if row["enabled"]:
+            active.add(name)
+    if not active:
+        return failure
+    if not set(names.split(",")).issubset(active):
+        raise ValueError("Requested search engine is unknown or disabled in SearXNG")
+    return None
+
+
 def _run_search_network(params: dict, max_results: int, *,
                         deduplicate: bool = False,
                         ranking: str = "searxng",
                         include_published_date: bool = False) -> list[dict] | dict:
     with httpx.Client(timeout=upstream_settings.effective_timeout("searxng_seconds"),
                       trust_env=False) as client:
+        selection_failure = _verify_explicit_search_engines(client, params)
+        if selection_failure is not None:
+            return selection_failure
         response = _retry_request(lambda: client.get(
             f"{SEARXNG_URL}/search", params=params))
     if response is not None and response.status_code in (400, 422) and len(params) > 2:
@@ -179,6 +237,22 @@ def _run_search_network(params: dict, max_results: int, *,
         return {"success": False, "status": "invalid_response", "backend": "searxng",
                 "reason": "Local SearXNG returned an invalid results structure."}
     rows = payload["results"]
+    if params.get("engines"):
+        allowed = set(params["engines"].split(","))
+        # A changed backend or upstream fallback must not return unrequested
+        # provider results. The preflight above prevents *initiating* such
+        # searches in the known SearXNG fallback cases.
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            reported = row.get("engine")
+            attributed = row.get("engines", [])
+            if (reported not in allowed or
+                    (isinstance(attributed, list) and
+                     any(name not in allowed for name in attributed))):
+                return {"success": False, "status": "upstream_selection_mismatch",
+                        "backend": "searxng",
+                        "reason": "SearXNG returned a result from an unselected search engine."}
     if not rows and payload.get("unresponsive_engines"):
         return {"success": False, "status": "upstream_unavailable", "backend": "searxng",
                 "reason": "SearXNG returned no results because one or more engines were unresponsive. Retry later or choose another engine."}
@@ -237,6 +311,9 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     Set fresh=true to bypass the in-memory search cache and fetch fresh data.
     Set include_published_date=true for validated upstream date-only metadata;
     it is not a verified publisher timestamp or a guarantee of freshness.
+    Choose categories OR engines: SearXNG combines both into a union.
+    Engine-only calls require a verified enabled provider in local /config;
+    unsupported names fail closed without searching default providers.
     """
     if not isinstance(fresh, bool):
         raise ValueError("fresh must be a boolean")
