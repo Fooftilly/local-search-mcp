@@ -279,7 +279,7 @@ class DashboardHTTPTests(unittest.TestCase):
     def test_history_queries_require_opt_in_and_survive_live_filter_refresh(self):
         from history_log import append_history
         long_query = ("Full Unicode café 猫 " + "x" * 240 +
-                      ' <script>alert("x")</script>&\\u202e')
+                      ' <script>alert("x")</script>&' + chr(0x202e))
         self.assertLessEqual(len(long_query), 300)
         append_history({"time_utc": datetime.now(timezone.utc).isoformat(),
                         "kind": "search", "status": "success",
@@ -306,7 +306,8 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn("&quot;x&quot;", visible)
         self.assertIn("&amp;", visible)
         self.assertNotIn("<script>alert", visible)
-        self.assertNotIn("\\u202e", visible)  # actual bidi is escaped to inert text
+        self.assertNotIn(chr(0x202e), visible)
+        self.assertIn("\\\\u202e", visible)  # actual bidi is escaped to inert text
         self.assertIn("Show search queries", visible)
         self.assertIn('value="1" checked', visible)
         self.assertIn('Search query / domain', visible)
