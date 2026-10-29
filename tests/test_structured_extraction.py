@@ -207,6 +207,27 @@ class StructuredExtractionTests(unittest.TestCase):
         self.assertLessEqual(len(json.dumps(output, ensure_ascii=True).encode()),
                              subject.MAX_OUTPUT_BYTES)
 
+    def test_metadata_budget_allows_backfill_and_malformed_table_rows_reported(self):
+        # 24 expensive links outrank a small 25th link. The metadata reserve
+        # must be in effect during selection, not after selection.
+        expensive = [{"href": "/articles/" + "x" * 700 + str(i),
+                      "text": "A descriptive research article"}
+                     for i in range(24)]
+        page = {"links": {"internal": expensive + [
+            {"href": "/articles/short", "text": "Short report"}]},
+            "tables": [{"headers": ["H"], "rows": [
+                ["one"], {"malformed": "not a row"}, ["three"]]}]}
+        result = subject.extract(page, "https://example.com/",
+                                 include_links=True, include_tables=True)
+        self.assertIn("https://example.com/articles/short",
+                      [x["url"] for x in result["links"]])
+        self.assertEqual(result["tables"][0]["rows"], [["one"], ["three"]])
+        limits = result["structured_info"]["tables"]["table_limits"][0]
+        self.assertEqual(limits["rows_observed"], 3)
+        self.assertTrue(limits["rows_truncated"])
+        self.assertLessEqual(len(json.dumps(result, ensure_ascii=True).encode()),
+                             subject.MAX_OUTPUT_BYTES)
+
     def test_metadata_reports_byte_budget_omissions_and_dedupe(self):
         page = {"links": {"internal": [
             {"href": "/same#one"}, {"href": "/same#two"},
