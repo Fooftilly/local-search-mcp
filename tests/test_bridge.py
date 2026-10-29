@@ -312,13 +312,108 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn("published_date", dated[1])
 
 
+    def test_mixed_category_and_engine_selectors_fail_before_upstream(self):
+        cases = [
+            {"categories": "images", "engines": "bing images"},
+            {"categories": "news", "engines": "bing news"},
+            {"engines": "yahoo", "query": "!google private query"},
+            {"engines": "yahoo", "query": "normal !images content"},
+        ]
+        for options in cases:
+            with self.subTest(options=options), patch.object(
+                    self.module.httpx, "Client") as client:
+                with self.assertRaises(ValueError):
+                    self.module.web_search(**({"query": "public info"} | options))
+                client.assert_not_called()
+
+    def test_engine_filter_requires_enabled_config_before_search(self):
+        paths = []
+        original = httpx.Client
+        def handler(request):
+            paths.append(request.url.path)
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": [
+                    {"name": "bing images", "enabled": True,
+                     "categories": ["images"]},
+                    {"name": "google cse images", "enabled": False,
+                     "categories": ["images"]},
+                ]})
+            return httpx.Response(200, json={"results": [
+                {"url": "https://example.org/image", "title": "Allowed",
+                 "content": "", "engine": "bing images"}
+            ]})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            with self.assertRaisesRegex(ValueError, "unknown or disabled"):
+                self.module.web_search("image check", engines="never-exists")
+            with self.assertRaisesRegex(ValueError, "unknown or disabled"):
+                self.module.web_search("image check", engines="google cse images")
+            result = self.module.web_search(
+                "image check", engines="bing images")
+            cached = self.module.web_search(
+                "image check", engines="bing images")
+        self.assertEqual(result, cached)
+        self.assertEqual(result[0]["engine"], "bing images")
+        self.assertEqual(paths, ["/config", "/config", "/config", "/search"])
+
+    def test_engine_filter_bad_inventory_fails_closed_without_search(self):
+        original = httpx.Client
+        samples = [
+            httpx.Response(503, json={"detail": "backend unavailable"}),
+            httpx.Response(200, json={"engines": {"wrong": True}}),
+            httpx.Response(200, json={"engines": [
+                {"name": "bing images", "enabled": "true"}]}),
+            httpx.Response(200, content=b"x" * (128 * 1024 + 1)),
+        ]
+        for response in samples:
+            with self.subTest(status=response.status_code):
+                paths = []
+                def handler(request):
+                    paths.append(request.url.path)
+                    return response
+                def client(**kwargs):
+                    return original(transport=httpx.MockTransport(handler))
+                with patch.object(self.module.httpx, "Client", side_effect=client):
+                    result = self.module.web_search(
+                        "config validation", engines="bing images", fresh=True)
+                self.assertEqual(result["status"], "invalid_response")
+                self.assertEqual(paths, ["/config"])
+
+    def test_engine_filter_does_not_return_wrong_provider_or_cache(self):
+        paths = []
+        original = httpx.Client
+        def handler(request):
+            paths.append(request.url.path)
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": [
+                    {"name": "bing images", "enabled": True}
+                ]})
+            return httpx.Response(200, json={"results": [
+                {"title": "Wrong provider", "engine": "google cse images",
+                 "url": "https://example.org/page"}]})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            first = self.module.web_search("unexpected provider", engines="bing images")
+            second = self.module.web_search("unexpected provider", engines="bing images")
+        self.assertEqual(first["status"], "upstream_selection_mismatch")
+        self.assertEqual(second["status"], "upstream_selection_mismatch")
+        self.assertEqual(paths, ["/config", "/search"] * 2)
+        self.assertFalse(self.module.request_cache._CACHE)
+
     def test_search_results_are_cached_per_filter_with_fresh_bypass(self):
         seen = []
         def handler(request):
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": [
+                    {"name": "qwant", "enabled": True, "categories": ["general"]}
+                ]})
             seen.append(dict(request.url.params))
             return httpx.Response(200, json={"results": [
                 {"title": "Result", "url": "https://example.com/a",
-                 "content": "OK", "engine": "mock"}
+                 "content": "OK",
+                 "engine": "qwant" if request.url.params.get("engines") else "mock"}
             ]})
         original = httpx.Client
         def client(**kwargs):
@@ -1049,6 +1144,11 @@ class BridgeTests(unittest.TestCase):
         calls = []
         def handler(request):
             calls.append(request)
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": [
+                    {"name": "qwant", "enabled": True, "categories": ["general"]},
+                    {"name": "yahoo", "enabled": True, "categories": ["general"]},
+                ]})
             return httpx.Response(200, json={"results": [
                 {"title": f"Result {i}", "url": f"https://example.org/{i}",
                  "content": "S" * 1500, "engine": "qwant"} for i in range(20)
@@ -1057,21 +1157,26 @@ class BridgeTests(unittest.TestCase):
         def client(**kwargs): return original(transport=httpx.MockTransport(handler))
         with patch.object(self.module.httpx, "Client", side_effect=client):
             results = self.module.web_search(
-                "sample", 20, language="en-US", categories="news, science",
-                time_range="month", engines="qwant, yahoo", page=3,
+                "sample", 20, language="en-US", time_range="month",
+                engines="qwant, yahoo", page=3,
             )
         self.assertEqual(len(results), 12)
         self.assertEqual(len(results[0]["snippet"]), 1100)
-        self.assertEqual(dict(calls[0].url.params), {
+        self.assertEqual([call.url.path for call in calls], ["/config", "/search"])
+        self.assertEqual(dict(calls[-1].url.params), {
             "q": "sample", "format": "json", "language": "en-US",
-            "categories": "news,science", "time_range": "month",
-            "engines": "qwant,yahoo", "pageno": "3",
+            "time_range": "month", "engines": "qwant,yahoo", "pageno": "3",
         })
-        self.assertEqual(calls[0].url.host, httpx.URL(self.module.SEARXNG_URL).host)
+        self.assertEqual(calls[-1].url.host, httpx.URL(self.module.SEARXNG_URL).host)
 
     def test_searxng_engine_dots_and_language_aliases(self):
         seen = []
         def handler(request):
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": [
+                    {"name": x, "enabled": True, "categories": ["general"]}
+                    for x in ("brave.news", "crates.io", "pkg.go.dev")
+                ]})
             seen.append(dict(request.url.params))
             return httpx.Response(200, json={"results": []})
         original = httpx.Client
