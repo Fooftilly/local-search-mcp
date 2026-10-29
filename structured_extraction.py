@@ -140,16 +140,30 @@ def _select_links(raw: dict, base: str) -> list[dict]:
             seen[target] = len(candidates)
             candidates.append(item)
 
-    if len(candidates) <= MAX_LINKS:
-        return candidates
     indexed = list(enumerate(candidates))
-    ranked = sorted(indexed, key=lambda pair: (-_link_score(pair[1]), pair[0]))
-    external = [pair for pair in ranked if pair[1]["kind"] == "external"][:2]
-    reserved = {index for index, _ in external}
-    chosen = external + [
-        pair for pair in ranked if pair[0] not in reserved
-    ][:MAX_LINKS - len(external)]
-    chosen.sort(key=lambda pair: (-_link_score(pair[1]), pair[0]))
+    overflowing = len(candidates) > MAX_LINKS
+    if overflowing:
+        ranked = sorted(indexed, key=lambda pair: (-_link_score(pair[1]), pair[0]))
+        external = [pair for pair in ranked if pair[1]["kind"] == "external"][:2]
+        reserved = {index for index, _ in external}
+        # Reserve a chance for diverse external links, then consider *all*
+        # remaining bounded candidates. A too-large selected link must not
+        # hide later short URLs that would fit in the shared response budget.
+        ordered = external + [pair for pair in ranked if pair[0] not in reserved]
+    else:
+        ordered = indexed
+    chosen = []
+    budget = MAX_OUTPUT_BYTES
+    for index, item in ordered:
+        if len(chosen) >= MAX_LINKS:
+            break
+        size = _size(item)
+        if size <= budget:
+            chosen.append((index, item))
+            budget -= size
+    if overflowing:
+        # Restore ranked/source order after the external reservation phase.
+        chosen.sort(key=lambda pair: (-_link_score(pair[1]), pair[0]))
     return [row for _, row in chosen]
 
 
