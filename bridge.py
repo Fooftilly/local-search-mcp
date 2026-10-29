@@ -213,6 +213,67 @@ def _verify_explicit_search_engines(client: httpx.Client, params: dict) -> dict 
     return None
 
 
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+def web_search_capabilities() -> dict:
+    """Discover currently enabled local SearXNG engines and categories.
+
+    Performs one bounded loopback /config read and never starts Docker,
+    issues a provider search, changes search-engine settings, or approves
+    a crawler domain. This is an observed snapshot, not a promise that
+    each engine supports every optional search filter.
+    """
+    failure = {
+        "success": False, "status": "unavailable",
+        "reason": "SearXNG engine inventory unavailable or invalid; "
+                  "the backend may be sleeping. No search was sent.",
+    }
+    try:
+        with httpx.Client(timeout=3.0, trust_env=False) as client:
+            with client.stream("GET", f"{SEARXNG_URL}/config") as response:
+                if response.status_code != 200:
+                    return failure
+                raw = bytearray()
+                for chunk in response.iter_bytes():
+                    if len(raw) + len(chunk) > MAX_SEARCH_CONFIG_BYTES:
+                        return failure
+                    raw.extend(chunk)
+        payload = json.loads(raw)
+    except (httpx.RequestError, UnicodeError, ValueError, TypeError):
+        return failure
+    rows = payload.get("engines") if isinstance(payload, dict) else None
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 512:
+        return failure
+    seen = set()
+    enabled = []
+    categories = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            return failure
+        name = row.get("name")
+        group = row.get("categories")
+        if (not isinstance(name, str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}", name)
+                or name.casefold() in seen
+                or type(row.get("enabled")) is not bool
+                or not isinstance(group, list) or not 1 <= len(group) <= 16
+                or any(not isinstance(cat, str) or not re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}", cat)
+                    for cat in group)):
+            return failure
+        seen.add(name.casefold())
+        if row["enabled"]:
+            groups = sorted(set(group))
+            enabled.append({"name": name, "categories": groups})
+            categories.update(groups)
+    enabled.sort(key=lambda item: item["name"].casefold())
+    return {
+        "success": True, "status": "available",
+        "enabled_engines": enabled, "categories": sorted(categories),
+        "enabled_engine_count": len(enabled),
+        "scope": "enabled engines in a bounded read of local SearXNG /config",
+    }
+
+
 def _run_search_network(params: dict, max_results: int, *,
                         deduplicate: bool = False,
                         ranking: str = "searxng",
