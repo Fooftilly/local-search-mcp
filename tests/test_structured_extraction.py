@@ -211,7 +211,7 @@ class StructuredExtractionTests(unittest.TestCase):
         page = {"links": {"internal": [
             {"href": "/same#one"}, {"href": "/same#two"},
             *[{"href": "/articles/" + str(i) + "x" * 1800}
-              for i in range(35)]}}
+              for i in range(35)]]}}
         answer = subject.extract(page, "https://example.com/",
                                  include_links=True, include_tables=False)
         stats = answer["structured_info"]["links"]
