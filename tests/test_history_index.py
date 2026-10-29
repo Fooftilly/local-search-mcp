@@ -30,6 +30,64 @@ class HistoryIndexTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
+    def test_reveal_fetch_page_urls_only_from_matching_original_jsonl(self):
+        stamp = datetime.now(timezone.utc).isoformat()
+        target = "https://docs.example.org/articles/guide/part-2"
+        append_history(event("fetch", "success", time_utc=stamp,
+                             duration_ms=3, url=target,
+                             backend="Crawl4AI"))
+        append_history(event("fetch", "success", time_utc=stamp,
+                             duration_ms=4,
+                             url="https://docs.example.org/second-page?token=private#frag",
+                             backend="Crawl4AI"))
+        append_history(event("search", "success", time_utc=stamp,
+                             query="hello search", backend="SearXNG"))
+        append_history(event("page", "success", time_utc=stamp))
+        ordinary = history_index.search_history(limit=10)
+        self.assertTrue(all("url" not in row for row in ordinary))
+        revealed = history_index.search_history(limit=10, reveal_queries=True)
+        fetches = [row for row in revealed if row["kind"] == "fetch"]
+        self.assertEqual([x["url"] for x in fetches],
+                         ["https://docs.example.org/second-page",
+                          "https://docs.example.org/articles/guide/part-2"])
+        self.assertEqual([r["query"] for r in revealed if r["kind"] == "search"],
+                         ["hello search"])
+        self.assertNotIn("url", revealed[0])
+        self.assertEqual(history_index.search_history(limit=10), ordinary)
+        index_bytes = history_index.index_path().read_bytes()
+        for raw in (b"/articles/guide/part-2", b"/second-page", b"token=private"):
+            self.assertNotIn(raw, index_bytes)
+
+    def test_reveal_fetch_unsafe_legacy_url_is_sanitized_or_unavailable(self):
+        append_history(event("fetch", url="https://user:password@docs.example.org/private"
+                             "?key=TOPSECRET#frag"))
+        append_history(event("fetch", url="javascript:alert(1)"))
+        append_history(event("fetch", url="https://docs.example.org/<img src=x>"))
+        selected = history_index.search_history(reveal_queries=True)
+        self.assertEqual(selected[0]["url"], "https://docs.example.org/<img src=x>")
+        self.assertIsNone(selected[1]["url"])
+        self.assertEqual(selected[2]["url"], "https://docs.example.org/private")
+        self.assertNotIn("password", repr(selected))
+        self.assertNotIn("TOPSECRET", repr(selected))
+
+    def test_reveal_fetch_source_rotation_never_matches_another_event(self):
+        append_history(event("fetch", backend="Crawl4AI",
+                             url="https://old.example.org/a"))
+        original = history_path()
+        rotated = original.with_name(original.name + ".1")
+        self.assertEqual(history_index.search_history(reveal_queries=True)[0]["url"],
+                         "https://old.example.org/a")
+        original.rename(rotated)
+        append_history(event("fetch", backend="Crawl4AI",
+                             url="https://new.example.org/b"))
+        self.assertEqual(
+            [r["url"] for r in history_index.search_history(reveal_queries=True)],
+            ["https://new.example.org/b", "https://old.example.org/a"])
+        rotated.unlink()
+        remaining = history_index.search_history(reveal_queries=True)
+        self.assertEqual(remaining[0]["url"], "https://new.example.org/b")
+        self.assertIsNone(remaining[1]["url"])
+
     def test_reveal_uses_exact_source_coordinates_without_persisting_queries(self):
         timestamp = datetime.now(timezone.utc).isoformat()
         for original in ("same-time-first", "same-time-second", "unicode-café-猫"):
