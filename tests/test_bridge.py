@@ -107,6 +107,124 @@ class BridgeTests(unittest.TestCase):
                 self.module._run_fetch("https://example.com/a", "raw")
             self.assertEqual(observed, [12, 90])
 
+    def test_opt_in_structured_fetch_uses_existing_crawl_and_separate_cache(self):
+        posted = []
+        original_client = httpx.Client
+        page = {
+            "url": "https://example.com/articles/index",
+            "success": True,
+            "markdown": "An ordinary article",
+            "links": {"internal": [
+                {"href": "/procurement", "text": "Tender documents", "title": "Notice"},
+                {"href": "javascript:alert(1)", "text": "unsafe"},
+                {"href": "http://127.0.0.1/admin", "text": "private"},
+            ], "external": [{"href": "https://outside.example/item", "text": "External"}]},
+            "tables": [{"headers": ["Lot", "Price"],
+                        "rows": [["Laptop", "1000"], ["Monitor", "180"]]}],
+        }
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            self.assertEqual(request.url.path, "/crawl")
+            posted.append(json.loads(request.content))
+            return httpx.Response(200, json={"results": [page]})
+        def client(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler))
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            simple = self.module.web_fetch("https://example.com/articles/index")
+            again = self.module.web_fetch("https://example.com/articles/index")
+            links = self.module.web_fetch(
+                "https://example.com/articles/index", include_links=True)
+            both = self.module.web_fetch(
+                "https://example.com/articles/index",
+                include_links=True, include_tables=True)
+            tables = self.module.web_fetch(
+                "https://example.com/articles/index", include_tables=True)
+        self.assertEqual(simple, again)
+        self.assertNotIn("links", simple)
+        self.assertNotIn("tables", simple)
+        self.assertIn("links", links)
+        self.assertNotIn("tables", links)
+        self.assertEqual([x["url"] for x in links["links"]],
+                         ["https://example.com/procurement",
+                          "https://outside.example/item"])
+        self.assertEqual(both["tables"][0]["rows"][0], ["Laptop", "1000"])
+        self.assertIn("tables", tables)
+        self.assertNotIn("links", tables)
+        self.assertEqual(len(posted), 4)
+        # Opt-in structured extraction does not add browser or crawler config,
+        # probe extra links, or silently change default cached result shape.
+        self.assertTrue(all(x["urls"] == ["https://example.com/articles/index"]
+                            for x in posted))
+
+    def test_structured_data_not_returned_on_blocked_or_failed_fetch(self):
+        calls = []
+        original_client = httpx.Client
+        def handler(request):
+            calls.append(request.url.path)
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"version": "0.9.5", "status": "ok"})
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/missing", "success": True,
+                "status_code": 404, "markdown": "Oops",
+                "links": {"external": [{"href": "https://other.example/private"}]},
+                "tables": [{"headers": ["Private"], "rows": [["Do not disclose"]]}],
+            }]})
+        def client(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler))
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            result = self.module.web_fetch("https://example.com/missing",
+                                           include_links=True, include_tables=True)
+        self.assertEqual(result["status"], "http_error")
+        self.assertNotIn("links", result)
+        self.assertNotIn("tables", result)
+        self.assertEqual(calls, ["/health", "/crawl"])
+        with (patch.object(self.module, "_check_public_target", return_value={
+                  "url": "https://private.invalid", "success": False, "status": "blocked",
+                  "reason": "Not approved",
+              }),
+              patch.object(self.module.httpx, "Client",
+                           side_effect=AssertionError("blocked must not touch crawler"))):
+            denied = self.module.web_fetch("https://private.invalid",
+                                            include_links=True, include_tables=True)
+        self.assertEqual(denied["status"], "blocked")
+        self.assertNotIn("links", denied)
+
+    def test_structured_batch_and_invalid_options(self):
+        original_client = httpx.Client
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            target = json.loads(request.content)["urls"][0]
+            return httpx.Response(200, json={"results": [{
+                "url": target, "success": True, "markdown": "A page",
+                "links": {"internal": [{"href": "/related", "text": "Related"}]},
+                "tables": [{"headers": ["H"], "rows": [["R"]]}],
+            }]})
+        def client(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler))
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            data = asyncio.run(self.module.web_fetch_batch(
+                ["https://example.com/a", "https://example.com/b"],
+                include_links=True, include_tables=True))
+        self.assertEqual(data["count"], 2)
+        for row in data["results"]:
+            self.assertTrue(row["result"]["success"])
+            self.assertEqual(row["result"]["links"][0]["url"],
+                             "https://example.com/related")
+            self.assertEqual(row["result"]["tables"][0]["rows"], [["R"]])
+        with patch.object(self.module.httpx, "Client") as c:
+            for options in ({"include_links": "true"}, {"include_tables": 1}):
+                with self.assertRaises(ValueError):
+                    self.module.web_fetch("https://example.com/a", **options)
+                with self.assertRaises(ValueError):
+                    asyncio.run(self.module.web_fetch_batch(["https://example.com/a"],
+                                                             **options))
+            c.assert_not_called()
+
     def test_opt_in_search_dedupe_rank_and_cache_isolation(self):
         calls = []
         rows = [

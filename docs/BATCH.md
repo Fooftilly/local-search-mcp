@@ -44,3 +44,5 @@ fastmcp call http://127.0.0.1:8790/mcp web_fetch_batch urls='["https://example.c
 ```
 
 Unknown hosts return `approval_required` when queued or `approval_queue_full` when pending-queue rate/capacity limits are reached; denied hosts return `denied`. None reaches Crawl4AI. For a full queue, ask a local operator to approve deliberately or retry after capacity frees (retrying does not grant approval). Review requests and approve only intentional public domains in the **local** dashboard.
+
+Both `include_links=true` and `include_tables=true` are optional parameters to `web_fetch_batch`; each result contains only the requested, bounded structured fields from its already-approved Crawl4AI page. Defaults remain false, and an opt-in extraction bypasses the Markdown-only result cache. See [EXTRACTION.md](EXTRACTION.md).
