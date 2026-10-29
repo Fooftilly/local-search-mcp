@@ -93,7 +93,7 @@ def _search_params(query: str, max_results: int, language: str,
     if selected_engines and selected_categories:
         raise ValueError("Choose categories or engines, not both; SearXNG combines them")
     # Internal/external !bangs take precedence over explicit engine selection.
-    if selected_engines and re.search(r"(?<!\\S)![^\\s]+", query):
+    if selected_engines and re.search(r"(?<!\S)![^\s]+", query):
         raise ValueError("Engine filters cannot be combined with !bang search syntax")
     params = {"q": query.strip(), "format": "json"}
     if language:
@@ -202,7 +202,7 @@ def _verify_explicit_search_engines(client: httpx.Client, params: dict) -> dict 
             return failure
         name = row.get("name")
         if (not isinstance(name, str) or len(name) > 80 or
-                row.get("enabled") not in (True, False)):
+                type(row.get("enabled")) is not bool):
             return failure
         if row["enabled"]:
             active.add(name)
@@ -248,8 +248,8 @@ def _run_search_network(params: dict, max_results: int, *,
             reported = row.get("engine")
             attributed = row.get("engines", [])
             if (reported not in allowed or
-                    (isinstance(attributed, list) and
-                     any(name not in allowed for name in attributed))):
+                    not isinstance(attributed, list) or
+                    any(name not in allowed for name in attributed)):
                 return {"success": False, "status": "upstream_selection_mismatch",
                         "backend": "searxng",
                         "reason": "SearXNG returned a result from an unselected search engine."}
