@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 from domain_policy import normalize_domain
 
 MAX_LINKS = 24
+MAX_ALTERNATIVES = 3
 MAX_TABLES = 4
 MAX_ROWS = 10
 MAX_COLUMNS = 8
@@ -169,6 +170,71 @@ def _select_links(raw: dict, base: str, *, budget: int = MAX_OUTPUT_BYTES) -> tu
 
 
 
+# The RFC Editor info page exposes plain text, HTML and PDF under one
+# explicit "View as:" group in Crawl4AI Markdown. Selected Crawl4AI links
+# can omit the group entirely under their 24-link cap, so inspect only
+# this narrowly evidenced source-advertised pattern; never guess URLs.
+_ALT_MARKER = re.compile(r"(?im)^[ \\t]{0,3}View as:[ \\t]*$")
+_ALT_LINK = re.compile(r"\\[([^\\]\\n]{1,40})\\]\\(([^)\\s]{1,2048})\\)")
+_ALT_LABELS = {
+    "plain text": "txt", "text": "txt",
+    "compact html": "html", "html": "html", "pdf": "pdf",
+}
+
+
+def _advertised_alternatives(markdown: str, base: str, *, budget: int) -> list[dict]:
+    """Extract explicitly grouped format links, without fetching a link.
+
+    Each candidate must be an advertised, safely normalized URL with a
+    matching filename stem. This is a site *claim* of alternative formats,
+    not content-type verification or permission to fetch.
+    """
+    if not isinstance(markdown, str):
+        return []
+    for match_index, marker in enumerate(_ALT_MARKER.finditer(markdown)):
+        if match_index >= 8:
+            break
+        # A single adjacent group only: never match unrelated later nav links.
+        group = markdown[marker.end():marker.end() + 900].split("\\n\\n", 1)[0]
+        candidates: dict[str, tuple[str, str]] = {}
+        for link in _ALT_LINK.finditer(group):
+            fmt = _ALT_LABELS.get(link.group(1).strip().casefold())
+            if fmt is None or fmt in candidates:
+                continue
+            url = _url(link.group(2), base)
+            if url is None:
+                continue
+            path = urlsplit(url).path
+            suffix = "." + fmt
+            if not path.lower().endswith(suffix):
+                continue
+            stem = path[:-len(suffix)]
+            if not stem or stem.endswith("/"):
+                continue
+            candidates[fmt] = (stem, url)
+        # Do not infer equivalence from labels alone: the source must expose
+        # a PDF and a text/HTML candidate for the same literal URL stem.
+        if "pdf" not in candidates:
+            continue
+        stem = candidates["pdf"][0]
+        if not any(fmt in candidates and candidates[fmt][0] == stem
+                   for fmt in ("txt", "html")):
+            continue
+        results: list[dict] = []
+        for fmt in ("txt", "html", "pdf"):
+            candidate = candidates.get(fmt)
+            if candidate is None or candidate[0] != stem:
+                continue
+            item = {"format": fmt, "url": candidate[1],
+                    "evidence": "source_labeled_view_as"}
+            if _size(item) <= budget and len(results) < MAX_ALTERNATIVES:
+                results.append(item)
+                budget -= _size(item)
+        return results
+    return []
+
+
+
 # Only already-extracted table cells are eligible for bounded continuation.
 MAX_RETAINED_TABLES = 16
 MAX_RETAINED_ROWS = 250
@@ -272,7 +338,8 @@ def prepare_table_continuation(page: dict) -> dict | None:
     }
 
 
-def extract(page: dict, base: str, *, include_links: bool, include_tables: bool) -> dict:
+def extract(page: dict, base: str, *, include_links: bool, include_tables: bool,
+            include_alternatives: bool = False, markdown: str = "") -> dict:
     """Return only requested bounded fields from a successfully crawled page.
 
     Crawl4AI v0.9.5: links={internal:[{href,text,title}],external:[...]},
@@ -283,6 +350,15 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool)
     # observations of the Crawl4AI response, not exhaustive website totals.
     remaining = MAX_OUTPUT_BYTES - 1200
     info = {}
+    if include_alternatives:
+        alternatives = _advertised_alternatives(markdown, base, budget=remaining)
+        output["alternatives"] = alternatives
+        remaining -= sum(_size(item) for item in alternatives)
+        info["alternatives"] = {
+            "returned": len(alternatives),
+            "evidence": "source_labeled_view_as" if alternatives else "none_observed",
+            "format_verified": False,
+        }
     if include_links:
         links = []
         raw = page.get("links")
@@ -357,7 +433,7 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool)
             "table_limits": limits,
             "returned_source_indices": returned_indices,
         }
-    if include_links or include_tables:
+    if include_links or include_tables or include_alternatives:
         # This is only present on opt-in structured fetches. Do not imply
         # completeness of the original web page: upstream may omit content.
         output["structured_info"] = {
