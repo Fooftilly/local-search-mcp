@@ -96,7 +96,8 @@ def _published_date(row: dict) -> str | None:
             ) is None):
         return None
     try:
-        parsed = datetime.fromisoformat(value) if "T" in value else date.fromisoformat(value)
+        parsed = (datetime.fromisoformat(value) if "T" in value
+                  else date.fromisoformat(value))
         # Preserve the source's calendar day. Turning a naive timestamp
         # into UTC would invent a timezone; date-only output avoids that.
         return (parsed.date() if isinstance(parsed, datetime) else parsed).isoformat()
@@ -121,8 +122,9 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
 
     Optional per-item keys are source_engines, duplicate_count, source_matches
     and source_count; independently, include_published_date exposes only valid
-    upstream publishedDate as a date plus an explicit field-provenance marker. The 'source_count' ranking counts distinct source engines,
-    breaking ties by original SearXNG order (stable Python sort).
+    upstream publishedDate as a date with explicit field provenance.
+    The 'source_count' ranking counts distinct source engines, breaking ties
+    by original SearXNG order (stable Python sort).
     """
     if not deduplicate and ranking == "searxng":
         return [
