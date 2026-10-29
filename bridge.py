@@ -1079,7 +1079,8 @@ def web_fetch_page(document_id: str, page: int = 2) -> dict:
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 @logged_tool("page")
 def web_table_page(table_id: str, table_index: int, row_offset: int = 0,
-                   max_rows: int = 10) -> dict:
+                   max_rows: int = 10, column_offset: int = 0,
+                   max_columns: int = 8) -> dict:
     """Continue already-extracted tables; never recrawl, reapprove or follow links.
 
     Indices refer to extracted source table order; offsets count retained rows,
@@ -1087,7 +1088,7 @@ def web_table_page(table_id: str, table_index: int, row_offset: int = 0,
     """
     epoch = request_cache.policy_epoch()
     result, source_url, once_proof = document_pages.read_table_with_security_context(
-        table_id, table_index, row_offset, max_rows)
+        table_id, table_index, row_offset, max_rows, column_offset, max_columns)
     return _authorized_saved_document(result, source_url, once_proof, epoch)
 
 
