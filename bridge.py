@@ -579,15 +579,16 @@ def _run_fetch(url: str, mode: str, *,
                once_proof: tuple[str, str] | None = None,
                include_links: bool = False, include_tables: bool = False,
                include_outline: bool = False,
+               include_alternatives: bool = False,
                compact_chars: int = document_pages.PAGE_CHARS) -> dict:
     try:
         with on_demand.lease("crawl4ai"):
-            if (include_links or include_tables or include_outline
+            if (include_links or include_tables or include_outline or include_alternatives
                     or compact_chars != document_pages.PAGE_CHARS):
                 return _run_fetch_network(
                     url, mode, once_proof=once_proof,
                     include_links=include_links, include_tables=include_tables,
-                    include_outline=include_outline,
+                    include_outline=include_outline, include_alternatives=include_alternatives,
                     compact_chars=compact_chars)
             return _run_fetch_network(url, mode, once_proof=once_proof)
     except on_demand.BackendUnavailable:
@@ -599,6 +600,7 @@ def _run_fetch_network(url: str, mode: str, *,
                        once_proof: tuple[str, str] | None = None,
                        include_links: bool = False, include_tables: bool = False,
                        include_outline: bool = False,
+                       include_alternatives: bool = False,
                        compact_chars: int = document_pages.PAGE_CHARS) -> dict:
     """Crawl only after the caller has passed current local policy checks."""
     headers = {"Authorization": f"Bearer {CRAWL4AI_TOKEN}"} if CRAWL4AI_TOKEN else {}
@@ -752,11 +754,12 @@ def _run_fetch_network(url: str, mode: str, *,
     if include_outline:
         output.update(document_pages.build_outline(
             markdown, first_page_chars=compact_chars))
-    if include_links or include_tables:
+    if include_links or include_tables or include_alternatives:
         # Parse only the already fetched, approved page: no link traversal,
         # DNS lookups, new domain approvals or additional crawler requests.
         output.update(structured_extraction.extract(
-            page, final_url, include_links=include_links, include_tables=include_tables))
+            page, final_url, include_links=include_links, include_tables=include_tables,
+            include_alternatives=include_alternatives, markdown=markdown)
     if include_tables and success is True:
         table_info = output.get("structured_info", {}).get("tables", {})
         needs_pages = (table_info.get("truncated") or
@@ -793,7 +796,8 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
               include_links: bool = False, include_tables: bool = False,
               include_outline: bool = False,
               compact_chars: int = document_pages.PAGE_CHARS,
-              include_retrieval_info: bool = False) -> dict:
+              include_retrieval_info: bool = False,
+              include_alternatives: bool = False) -> dict:
     """Fetch an approved page; bounded memory cache for public short pages.
 
     Authorization runs before every cache hit. Fresh skips both cache and
@@ -804,8 +808,8 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
     if not isinstance(fresh, bool):
         raise ValueError("fresh must be a boolean")
     if not all(isinstance(flag, bool) for flag in
-               (include_links, include_tables, include_outline)):
-        raise ValueError("include_links, include_tables and include_outline must be booleans")
+               (include_links, include_tables, include_outline, include_alternatives)):
+        raise ValueError("include_links, include_tables, include_outline and include_alternatives must be booleans")
     if (type(compact_chars) is not int or
             not document_pages.MIN_FIRST_PAGE_CHARS <= compact_chars <= document_pages.PAGE_CHARS):
         raise ValueError("compact_chars must be an integer between 2048 and 24000")
@@ -846,11 +850,12 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
     if once_proof is not None:
         # One-use access never reads, stores, refreshes or coalesces a reusable
         # fetch cache entry. Proof stays local to this invocation.
-        if include_links or include_tables or include_outline or compact_chars != document_pages.PAGE_CHARS:
+        if include_links or include_tables or include_outline or include_alternatives or compact_chars != document_pages.PAGE_CHARS:
             response = _run_fetch(
                 url, mode, once_proof=once_proof,
                 include_links=include_links, include_tables=include_tables,
-                include_outline=include_outline, compact_chars=compact_chars)
+                include_outline=include_outline, include_alternatives=include_alternatives,
+                compact_chars=compact_chars)
         else:
             response = _run_fetch(url, mode, once_proof=once_proof)
         if include_retrieval_info:
@@ -859,12 +864,13 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
     else:
         # Opt-in structured data must not reuse the legacy Markdown-only
         # cache entry or populate it with mismatched response shape.
-        opt_in = (include_links or include_tables or include_outline or
+        opt_in = (include_links or include_tables or include_outline or include_alternatives or
                   compact_chars != document_pages.PAGE_CHARS)
         key = None if opt_in else request_cache.fetch_key(url, mode)
         load = (lambda: _run_fetch(
             url, mode, include_links=include_links, include_tables=include_tables,
-            include_outline=include_outline, compact_chars=compact_chars)
+            include_outline=include_outline, include_alternatives=include_alternatives,
+                compact_chars=compact_chars)
         ) if opt_in else (lambda: _run_fetch(url, mode))
         cached = request_cache.run(
             "fetch", key, load,
@@ -974,16 +980,18 @@ def _batch_fetch_without_once(url: str, mode: str, fresh: bool,
                               include_links: bool = False, include_tables: bool = False,
                               include_outline: bool = False,
                               compact_chars: int = document_pages.PAGE_CHARS,
-                              include_retrieval_info: bool = False) -> dict:
+                              include_retrieval_info: bool = False,
+                              include_alternatives: bool = False) -> dict:
     """Preserve web_fetch logging, but prohibit one-use grants in batch workers."""
     token = _BATCH_PERMANENT_ONLY.set(True)
     try:
-        if (include_links or include_tables or include_outline or
+        if (include_links or include_tables or include_outline or include_alternatives or
                 compact_chars != document_pages.PAGE_CHARS or include_retrieval_info):
             return web_fetch(url, mode, fresh,
                              include_links=include_links, include_tables=include_tables,
                              include_outline=include_outline, compact_chars=compact_chars,
-                             include_retrieval_info=include_retrieval_info)
+                             include_retrieval_info=include_retrieval_info,
+                             include_alternatives=include_alternatives)
         return web_fetch(url, mode, fresh)
     finally:
         _BATCH_PERMANENT_ONLY.reset(token)
@@ -995,7 +1003,8 @@ async def web_fetch_batch(urls: list[str], mode: str = "raw",
                           include_tables: bool = False,
                           include_outline: bool = False,
                           compact_chars: int = document_pages.PAGE_CHARS,
-                          include_retrieval_info: bool = False) -> dict:
+                          include_retrieval_info: bool = False,
+                          include_alternatives: bool = False) -> dict:
     """Fetch 1–8 approved URLs, at most 3 concurrently, with ordered results.
 
     Each unique URL uses the existing guarded web_fetch path. If the MCP call
@@ -1003,15 +1012,15 @@ async def web_fetch_batch(urls: list[str], mode: str = "raw",
     cannot be forcibly stopped.
     """
     if not all(isinstance(flag, bool) for flag in
-               (include_links, include_tables, include_outline)):
-        raise ValueError("include_links, include_tables and include_outline must be booleans")
+               (include_links, include_tables, include_outline, include_alternatives)):
+        raise ValueError("include_links, include_tables, include_outline and include_alternatives must be booleans")
     if (type(compact_chars) is not int or
             not document_pages.MIN_FIRST_PAGE_CHARS <= compact_chars <= document_pages.PAGE_CHARS):
         raise ValueError("compact_chars must be an integer between 2048 and 24000")
     if not isinstance(include_retrieval_info, bool):
         raise ValueError("include_retrieval_info must be a boolean")
     cancelled = threading.Event()
-    opt_in = (include_links or include_tables or include_outline or
+    opt_in = (include_links or include_tables or include_outline or include_alternatives or
               compact_chars != document_pages.PAGE_CHARS)
     fetcher = (_batch_fetch_without_once
                if not opt_in and not include_retrieval_info
@@ -1019,7 +1028,8 @@ async def web_fetch_batch(urls: list[str], mode: str = "raw",
                    url, mode, fresh,
                    include_links=include_links, include_tables=include_tables,
                    include_outline=include_outline, compact_chars=compact_chars,
-                   include_retrieval_info=include_retrieval_info))
+                   include_retrieval_info=include_retrieval_info,
+                   include_alternatives=include_alternatives))
     try:
         return await asyncio.to_thread(
             fetch_many, urls, mode, fresh, fetcher,
