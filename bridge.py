@@ -666,30 +666,22 @@ async def web_fetch_batch(urls: list[str], mode: str = "raw",
         raise
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
-@logged_tool("page")
-def web_fetch_page(document_id: str, page: int = 2) -> dict:
-    """Read a previously fetched continuation page; no crawler or file access.
+def _authorized_saved_document(
+        result: dict, source_url: str | None,
+        once_proof: tuple[str, str] | None, epoch: int) -> dict:
+    """Single release gate for continuation pages AND in-document search.
 
-    The document_id is an unguessable temporary bearer capability. It is
-    never stored in local request history and expires after 15 minutes.
+    A temporary bearer handle alone is not reusable approval. Revalidate the
+    source and final domains and any consumed one-use proof before disclosing
+    page text or matching excerpts; never queue a new approval or re-crawl.
     """
-    epoch = request_cache.policy_epoch()
-    result, source_url, once_proof = document_pages.read_with_security_context(
-        document_id, page)
     if not result.get("success"):
         return result
     blocked = {"success": False, "status": "blocked",
                "reason": "Document permission changed; fetch the approved URL again."}
-    # Check live source/redirect permissions, not the global policy epoch
-    # from initial fetch: an unrelated approval must not kill this handle.
-    # Still fail closed if permissions change during the validation below.
     if not source_url:
         return blocked
     if once_proof is not None:
-        # This is the same fetched document's private bearer handle, not a
-        # second grant consumption. Proof remains valid only until expiry,
-        # revocation, replacement or a new explicit denial.
         try:
             source_host = domain_policy.normalize_domain(
                 urlsplit(source_url).hostname or "")
@@ -707,11 +699,40 @@ def web_fetch_page(document_id: str, page: int = 2) -> dict:
     elif not _current_permissions_for_fetched_urls(source_url, result["url"]):
         return {"success": False, "status": "blocked",
                 "reason": "The original or final domain is no longer approved. "
-                          "Request local approval and retry this page."}
+                          "Request local approval and retry this document."}
     if request_cache.policy_epoch() != epoch:
         return blocked
     return result
 
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+@logged_tool("page")
+def web_fetch_page(document_id: str, page: int = 2) -> dict:
+    """Read a previously fetched continuation page; no crawler or file access.
+
+    The document_id is an unguessable temporary bearer capability. It is
+    never stored in local request history and expires after 15 minutes.
+    """
+    epoch = request_cache.policy_epoch()
+    result, source_url, once_proof = document_pages.read_with_security_context(
+        document_id, page)
+    return _authorized_saved_document(result, source_url, once_proof, epoch)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+@logged_tool("page")
+def web_find(document_id: str, query: str, max_matches: int = 10) -> dict:
+    """Find bounded, literal case-insensitive excerpts in a fetched document.
+
+    Only unexpired web_fetch continuation handles are accepted; no network,
+    filesystem or permanent index. Original and final domain grants, including
+    one-use proof, are rechecked just as for web_fetch_page. Neither bearer
+    handles nor search queries are written to the audit log.
+    """
+    epoch = request_cache.policy_epoch()
+    result, source_url, once_proof = document_pages.find_with_security_context(
+        document_id, query, max_matches)
+    return _authorized_saved_document(result, source_url, once_proof, epoch)
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 def web_metrics(hours: Literal[1, 24, 168] = 24) -> dict:

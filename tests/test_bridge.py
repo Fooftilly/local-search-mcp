@@ -1103,6 +1103,111 @@ class BridgeTests(unittest.TestCase):
             results = self.module.web_search("test", max_results=2)
         self.assertEqual([r["title"] for r in results], ["Valid", "Also valid"])
 
+    def test_web_find_in_existing_document_requires_no_crawler(self):
+        from collections import OrderedDict
+        import domain_policy as policy
+        text = ("a" * (self.module.document_pages.PAGE_CHARS - 6) +
+                "PUBLIC CALL" + "z" * self.module.document_pages.PAGE_CHARS)
+        with (patch.object(self.module.document_pages, "_CACHE", OrderedDict()),
+              patch.object(self.module.httpx, "Client",
+                           side_effect=AssertionError("find must not crawl")),
+              patch.object(policy.socket, "getaddrinfo",
+                           side_effect=AssertionError("find must not use DNS"))):
+            policy.decide("example.org", "allow", scope="exact")
+            token, _ = self.module.document_pages.save(
+                "https://example.org/long", text, {"title": "Public call"})
+            result = self.module.web_find(token, "public call")
+            self.assertTrue(result["success"])
+            self.assertEqual(result["match_count"], 1)
+            self.assertEqual(result["matches"][0]["page"], 1)
+            self.assertIn("PUBLIC CALL", result["matches"][0]["excerpt"])
+            self.assertEqual(result["page_count"], 3)
+            self.assertTrue(self.module.web_fetch_page(token, 2)["success"])
+            self.assertFalse(self.module.web_find(token, "nothing")["has_more"])
+
+    def test_web_find_revalidates_revocation_and_redirect_domains(self):
+        from collections import OrderedDict
+        import domain_policy as policy
+        text = "SECRET_FIND_MATCH_" * 2000
+        with (patch.object(self.module.document_pages, "_CACHE", OrderedDict()),
+              patch.object(self.module.httpx, "Client",
+                           side_effect=AssertionError("no network"))):
+            policy.decide("source.example.org", "allow", scope="exact")
+            policy.decide("target.example.net", "allow", scope="exact")
+            token, _ = self.module.document_pages.save(
+                "https://target.example.net/doc", text, {},
+                source_url="https://source.example.org/start")
+            self.assertTrue(self.module.web_find(token, "SECRET_FIND_MATCH")["success"])
+            policy.decide("unrelated.example.org", "allow", scope="exact")
+            self.assertTrue(self.module.web_find(token, "SECRET_FIND_MATCH")["success"])
+            policy.decide("target.example.net", "deny", scope="exact")
+            refused = self.module.web_find(token, "SECRET_FIND_MATCH")
+            self.assertEqual(refused["status"], "blocked")
+            self.assertNotIn("SECRET_FIND_MATCH", str(refused))
+            policy.decide("target.example.net", "allow", scope="exact")
+            policy.decide("source.example.org", "deny", scope="exact")
+            refused = self.module.web_find(token, "SECRET_FIND_MATCH")
+            self.assertEqual(refused["status"], "blocked")
+            self.assertNotIn("SECRET_FIND_MATCH", str(refused))
+
+    def test_web_find_consumed_once_proof_is_rechecked_not_reused(self):
+        from collections import OrderedDict
+        import domain_policy as policy
+        secret = "ONCE_ONLY_EXCERPT_" * 1600
+        with (patch.object(self.module.document_pages, "_CACHE", OrderedDict()),
+              patch.object(self.module.httpx, "Client",
+                           side_effect=AssertionError("no network")),
+              patch.object(policy, "_once_proof_current", return_value=True) as proof):
+            token, _ = self.module.document_pages.save(
+                "https://example.org/doc", secret, {},
+                once_proof=("example.org", "a" * 32))
+            valid = self.module.web_find(token, "ONCE_ONLY_EXCERPT")
+            self.assertTrue(valid["success"])
+            self.assertEqual(proof.call_count, 1)
+            proof.return_value = False
+            expired = self.module.web_find(token, "ONCE_ONLY_EXCERPT")
+            self.assertEqual(expired["status"], "blocked")
+            self.assertNotIn("ONCE_ONLY_EXCERPT", str(expired))
+            # There is no new one-use grant consumption or approval request.
+            self.assertEqual(proof.call_count, 2)
+
+    def test_web_find_blocks_mid_search_policy_epoch_change(self):
+        from collections import OrderedDict
+        import domain_policy as policy
+        text = "SENSITIVE_MATCH_" * 2000
+        with patch.object(self.module.document_pages, "_CACHE", OrderedDict()):
+            policy.decide("example.org", "allow", scope="exact")
+            token, _ = self.module.document_pages.save(
+                "https://example.org/doc", text, {})
+            actual = self.module.document_pages.find_with_security_context
+            def policy_changes(*args):
+                result = actual(*args)
+                policy.decide("unrelated.example.org", "allow", scope="exact")
+                return result
+            with patch.object(self.module.document_pages, "find_with_security_context",
+                              side_effect=policy_changes):
+                blocked = self.module.web_find(token, "SENSITIVE_MATCH")
+            self.assertEqual(blocked["status"], "blocked")
+            self.assertNotIn("SENSITIVE_MATCH", str(blocked))
+
+    def test_web_find_audit_never_persists_bearer_handle_or_query(self):
+        from collections import OrderedDict
+        import history_log
+        import domain_policy as policy
+        with (patch.object(self.module.document_pages, "_CACHE", OrderedDict()),
+              patch.object(history_log, "append_history") as audit):
+            policy.decide("example.org", "allow", scope="exact")
+            token, _ = self.module.document_pages.save(
+                "https://example.org/doc", "PRIVATE_TERM_" * 3000, {})
+            answer = self.module.web_find(token, "PRIVATE_TERM")
+            self.assertTrue(answer["success"])
+            event = audit.call_args.args[0]
+            self.assertEqual(event["kind"], "page")
+            self.assertEqual(event["action"], "find")
+            self.assertNotIn("page", event)
+            self.assertNotIn(token, str(event))
+            self.assertNotIn("PRIVATE_TERM", str(event))
+
     def test_long_approved_page_can_be_read_without_second_crawl(self):
         from collections import OrderedDict
         content = "a" * 24000 + "b" * 24000 + "tail"

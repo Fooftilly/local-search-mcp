@@ -91,6 +91,34 @@ class HistoryCliOutputSafetyTests(unittest.TestCase):
         self.assertIn("{'outcome': 'success'}", output)
         self.assertIn("?      ?       1", output)
 
+    def test_find_history_is_distinct_but_private_in_all_output_modes(self):
+        token = "s3cretcapabilitytoken" * 2
+        query = "PRIVATE_SEARCH_QUERY"
+        self.record(kind="page", action="find", page_count=3, page=999,
+                    document_id=token, query=query, url="https://secret.invalid",
+                    markdown="PRIVATE_EXCERPT")
+        self.record(kind="page", page=2, page_count=3,
+                    document_id=token, query=query)
+        self.record(kind="page", action="UNTRUSTED", page=5)
+        json_rows = [json.loads(s) for s in self.run_cli("--json", "--kind", "page").splitlines()]
+        self.assertEqual(json_rows[0]["action"], "find")
+        self.assertNotIn("action", json_rows[1])
+        self.assertNotIn("action", json_rows[2])
+        for row in json_rows:
+            self.assertNotIn("document_id", row)
+            self.assertNotIn("query", row)
+            self.assertNotIn("markdown", row)
+            self.assertNotIn("url", row)
+        text = self.run_cli("--kind", "page")
+        self.assertIn("find in temporary document (3 pages)", text)
+        self.assertIn("page 2/3", text)
+        csv_rows = list(csv.DictReader(io.StringIO(self.run_cli("--kind", "page", "--csv"))))
+        self.assertEqual(csv_rows[0]["action"], "find")
+        self.assertEqual(csv_rows[1]["action"], "")
+        self.assertNotIn(token, str(csv_rows))
+        self.assertNotIn(query, str(csv_rows))
+        self.assertNotIn("PRIVATE_EXCERPT", text)
+
     def test_stats_mode_escapes_untrusted_event_fields(self):
         self.record(kind="search\x1b[2J", status="success\u202e")
         output = self.run_cli("--stats")

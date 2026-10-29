@@ -110,6 +110,60 @@ def read_with_security_context(
         return result, source_url, once_proof
 
 
+MAX_FIND_QUERY = 160
+MAX_FIND_MATCHES = 20
+FIND_SNIPPET_BEFORE = 90
+FIND_SNIPPET_AFTER = 130
+
+
+def find_with_security_context(
+        token: str, query: str, max_matches: int = 10
+) -> tuple[dict, str | None, tuple[str, str] | None]:
+    """Literal case-insensitive matches in *existing* temporary document text.
+
+    Return private source/one-use context to bridge for the exact same live
+    approval and revocation checks as continuation pages. Never crawl, read
+    local files, or retain an independent index.
+    """
+    if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
+        raise ValueError("Invalid document handle")
+    if (not isinstance(query, str) or not 1 <= len(query) <= MAX_FIND_QUERY
+            or not query.strip() or not query.isprintable()):
+        raise ValueError("Query must be 1–160 printable characters")
+    if type(max_matches) is not int or not 1 <= max_matches <= MAX_FIND_MATCHES:
+        raise ValueError("max_matches must be between 1 and 20")
+    with _LOCK:
+        _purge_expired(time.monotonic())
+        item = _CACHE.get(token)
+        if item is None:
+            return ({"success": False, "status": "expired_or_unknown",
+                     "reason": "Temporary document not found or expired; fetch the approved URL again."},
+                    None, None)
+        expires_at, url, markdown, metadata, source_url, once_proof = item
+        matcher = re.compile(re.escape(query), re.IGNORECASE)
+        matches = []
+        next_from = 0
+        # Search from match.start()+1 to include overlapping literal hits.
+        # At most 1 million cached characters, 20 returned matches.
+        while len(matches) < max_matches:
+            found = matcher.search(markdown, next_from)
+            if found is None:
+                break
+            start, end = found.span()
+            excerpt = markdown[max(0, start - FIND_SNIPPET_BEFORE):
+                               min(len(markdown), end + FIND_SNIPPET_AFTER)]
+            matches.append({"page": 1 + start // PAGE_CHARS,
+                            "offset": start, "excerpt": excerpt})
+            next_from = start + 1
+        has_more = bool(matches and len(matches) >= max_matches
+                        and matcher.search(markdown, next_from) is not None)
+        count = (len(markdown) + PAGE_CHARS - 1) // PAGE_CHARS
+        result = {"success": True, "url": url, "document_id": token,
+                  "page_count": count, "matches": matches,
+                  "match_count": len(matches), "has_more": has_more}
+        return result, source_url, once_proof
+
+
 def read_with_context(token: str, page: int) -> tuple[dict, str | None]:
     """Compatibility interface: private one-use proof is never returned."""
     result, source_url, _ = read_with_security_context(token, page)
