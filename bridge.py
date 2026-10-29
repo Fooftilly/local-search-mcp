@@ -774,7 +774,8 @@ def _run_fetch_network(url: str, mode: str, *,
 def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
               include_links: bool = False, include_tables: bool = False,
               include_outline: bool = False,
-              compact_chars: int = document_pages.PAGE_CHARS) -> dict:
+              compact_chars: int = document_pages.PAGE_CHARS,
+              include_retrieval_info: bool = False) -> dict:
     """Fetch an approved page; bounded memory cache for public short pages.
 
     Authorization runs before every cache hit. Fresh skips both cache and
@@ -790,6 +791,8 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
     if (type(compact_chars) is not int or
             not document_pages.MIN_FIRST_PAGE_CHARS <= compact_chars <= document_pages.PAGE_CHARS):
         raise ValueError("compact_chars must be an integer between 2048 and 24000")
+    if not isinstance(include_retrieval_info, bool):
+        raise ValueError("include_retrieval_info must be a boolean")
     before = request_cache.policy_epoch()
     once_proof = None
     # Ordinary permanent grants take precedence: a one-use grant must not be
@@ -821,6 +824,7 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
     if CRAWLER_SECURITY_WARNING:
         return {"url": url, "success": False, "status": "blocked",
                 "reason": CRAWLER_SECURITY_WARNING}
+    retrieval = None
     if once_proof is not None:
         # One-use access never reads, stores, refreshes or coalesces a reusable
         # fetch cache entry. Proof stays local to this invocation.
@@ -831,6 +835,9 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
                 include_outline=include_outline, compact_chars=compact_chars)
         else:
             response = _run_fetch(url, mode, once_proof=once_proof)
+        if include_retrieval_info:
+            retrieval = request_cache._provenance(
+                request_cache._retrieval_stamp(), "uncached")
     else:
         # Opt-in structured data must not reuse the legacy Markdown-only
         # cache entry or populate it with mismatched response shape.
@@ -841,9 +848,10 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
             url, mode, include_links=include_links, include_tables=include_tables,
             include_outline=include_outline, compact_chars=compact_chars)
         ) if opt_in else (lambda: _run_fetch(url, mode))
-        response = request_cache.run(
+        cached = request_cache.run(
             "fetch", key, load,
             ttl=lambda: cache_settings.effective_ttl('fetch_seconds'), fresh=fresh,
+            with_provenance=include_retrieval_info,
             should_store=lambda r: (
                 isinstance(r, dict) and r.get("success") is True
                 and r.get("truncated") is False
@@ -855,6 +863,10 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
                 and urlsplit(r["url"]).hostname == urlsplit(url).hostname
             ),
         )
+        if include_retrieval_info:
+            response, retrieval = cached
+        else:
+            response = cached
     if before != request_cache.policy_epoch():
         return {"url": url, "success": False, "status": "blocked",
                 "reason": "Domain approval changed during the request. Retry after reviewing permissions."}
@@ -877,6 +889,8 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
             return blocked
         if before != request_cache.policy_epoch():
             return blocked
+        if include_retrieval_info and isinstance(response, dict) and response.get("success") is True:
+            return {**response, "retrieval_info": retrieval}
         return response
     if (isinstance(response, dict) and
             any(k in response for k in ("markdown", "metadata", "document_id"))):
@@ -900,6 +914,8 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
         except (ValueError, TypeError):
             return {"url": url, "success": False, "status": "blocked",
                     "reason": "Invalid final domain in crawler response."}
+    if include_retrieval_info and isinstance(response, dict) and response.get("success") is True:
+        return {**response, "retrieval_info": retrieval}
     return response
 
 
@@ -932,14 +948,17 @@ def _batch_currently_authorized(requested_url: str, result: dict) -> bool:
 def _batch_fetch_without_once(url: str, mode: str, fresh: bool,
                               include_links: bool = False, include_tables: bool = False,
                               include_outline: bool = False,
-                              compact_chars: int = document_pages.PAGE_CHARS) -> dict:
+                              compact_chars: int = document_pages.PAGE_CHARS,
+                              include_retrieval_info: bool = False) -> dict:
     """Preserve web_fetch logging, but prohibit one-use grants in batch workers."""
     token = _BATCH_PERMANENT_ONLY.set(True)
     try:
-        if include_links or include_tables or include_outline or compact_chars != document_pages.PAGE_CHARS:
+        if (include_links or include_tables or include_outline or
+                compact_chars != document_pages.PAGE_CHARS or include_retrieval_info):
             return web_fetch(url, mode, fresh,
                              include_links=include_links, include_tables=include_tables,
-                             include_outline=include_outline, compact_chars=compact_chars)
+                             include_outline=include_outline, compact_chars=compact_chars,
+                             include_retrieval_info=include_retrieval_info)
         return web_fetch(url, mode, fresh)
     finally:
         _BATCH_PERMANENT_ONLY.reset(token)
@@ -950,7 +969,8 @@ async def web_fetch_batch(urls: list[str], mode: str = "raw",
                           fresh: bool = False, include_links: bool = False,
                           include_tables: bool = False,
                           include_outline: bool = False,
-                          compact_chars: int = document_pages.PAGE_CHARS) -> dict:
+                          compact_chars: int = document_pages.PAGE_CHARS,
+                          include_retrieval_info: bool = False) -> dict:
     """Fetch 1–8 approved URLs, at most 3 concurrently, with ordered results.
 
     Each unique URL uses the existing guarded web_fetch path. If the MCP call
@@ -963,15 +983,18 @@ async def web_fetch_batch(urls: list[str], mode: str = "raw",
     if (type(compact_chars) is not int or
             not document_pages.MIN_FIRST_PAGE_CHARS <= compact_chars <= document_pages.PAGE_CHARS):
         raise ValueError("compact_chars must be an integer between 2048 and 24000")
+    if not isinstance(include_retrieval_info, bool):
+        raise ValueError("include_retrieval_info must be a boolean")
     cancelled = threading.Event()
     opt_in = (include_links or include_tables or include_outline or
               compact_chars != document_pages.PAGE_CHARS)
     fetcher = (_batch_fetch_without_once
-               if not opt_in
+               if not opt_in and not include_retrieval_info
                else lambda url, mode, fresh: _batch_fetch_without_once(
                    url, mode, fresh,
                    include_links=include_links, include_tables=include_tables,
-                   include_outline=include_outline, compact_chars=compact_chars))
+                   include_outline=include_outline, compact_chars=compact_chars,
+                   include_retrieval_info=include_retrieval_info))
     try:
         return await asyncio.to_thread(
             fetch_many, urls, mode, fresh, fetcher,

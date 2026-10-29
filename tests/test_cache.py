@@ -31,6 +31,114 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(cache.run("search", ("search", "q"), load, ttl=15), [{"title": "3"}])
         self.assertEqual(len(calls), 3)
 
+    def test_opt_in_retrieval_provenance_tracks_hits_fresh_and_expiry(self):
+        key = ("fetch", "raw", "https://example.org/public")
+        clock = [1000.0]
+        utc = [1_790_000_000.0]
+        calls = []
+        def load():
+            calls.append("crawl")
+            return {"success": True, "markdown": f"crawl {len(calls)}"}
+        with (patch.object(cache.time, "monotonic", side_effect=lambda: clock[0]),
+              patch.object(cache.time, "time", side_effect=lambda: utc[0])):
+            first, info = cache.run("fetch", key, load, ttl=15, with_provenance=True)
+            self.assertEqual(info["source"], "fresh")
+            self.assertFalse(info["served_from_cache"])
+            self.assertEqual(info["cache_age_seconds"], 0)
+            self.assertTrue(info["retrieved_at"].endswith("Z"))
+            original_time = info["retrieved_at"]
+            clock[0] += 5
+            utc[0] += 5000  # Wall-clock shifts cannot distort cache age.
+            hit, info = cache.run("fetch", key, load, ttl=15, with_provenance=True)
+            self.assertEqual(hit, first)
+            self.assertEqual(info["source"], "cache_hit")
+            self.assertTrue(info["served_from_cache"])
+            self.assertEqual(info["cache_age_seconds"], 5)
+            self.assertEqual(info["retrieved_at"], original_time)
+            refreshed, info = cache.run(
+                "fetch", key, load, ttl=15, fresh=True, with_provenance=True)
+            self.assertEqual(refreshed["markdown"], "crawl 2")
+            self.assertEqual(info["source"], "fresh")
+            self.assertEqual(info["cache_age_seconds"], 0)
+            clock[0] += 15
+            utc[0] += 15
+            expired, info = cache.run("fetch", key, load, ttl=15,
+                                       with_provenance=True)
+            self.assertEqual(expired["markdown"], "crawl 3")
+            self.assertEqual(info["source"], "fresh")
+        self.assertEqual(calls, ["crawl", "crawl", "crawl"])
+        self.assertEqual(cache.run(
+            "fetch", None, lambda: {"success": True},
+            ttl=15, with_provenance=True)[1]["source"], "uncached")
+
+    def test_opt_in_provenance_coalescing_without_fake_cache_hit(self):
+        start, done = Event(), Event()
+        def load():
+            start.set()
+            self.assertTrue(done.wait(5))
+            return {"success": True, "markdown": "coalesced"}
+        key = ("fetch", "raw", "https://example.org/shared")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            leader = pool.submit(cache.run, "fetch", key, load, ttl=60,
+                                 with_provenance=True)
+            self.assertTrue(start.wait(5))
+            follower = pool.submit(cache.run, "fetch", key, load, ttl=60,
+                                   with_provenance=True)
+            # The second request must be observed as an in-flight follower.
+            for _ in range(200):
+                if cache.metrics_snapshot()["kinds"]["fetch"]["coalesced"]:
+                    break
+                time.sleep(0.001)
+            done.set()
+            a, ai = leader.result(timeout=5)
+            b, bi = follower.result(timeout=5)
+        self.assertEqual(a, b)
+        self.assertEqual(ai["source"], "fresh")
+        self.assertEqual(bi["source"], "coalesced")
+        self.assertEqual(ai["retrieved_at"], bi["retrieved_at"])
+        self.assertFalse(bi["served_from_cache"])
+        self.assertEqual(bi["cache_age_seconds"], 0)
+        self.assertEqual(cache.run(
+            "fetch", key, load, ttl=60, with_provenance=True)[1]["source"],
+            "cache_hit")
+
+    def test_uncacheable_result_is_not_mislabeled_fresh(self):
+        key = ("fetch", "raw", "https://example.org/large")
+        data = {"success": True, "markdown": "a" * 24000,
+                "document_id": "PRIVATE_TOKEN", "truncated": True}
+        allow = lambda x: x.get("document_id") is None
+        for fresh in (False, True):
+            with self.subTest(fresh=fresh):
+                result, info = cache.run(
+                    "fetch", key, lambda: data, ttl=120, fresh=fresh,
+                    should_store=allow, with_provenance=True)
+                self.assertEqual(result, data)
+                self.assertEqual(info["source"], "uncached")
+                self.assertFalse(info["served_from_cache"])
+                self.assertEqual(info["cache_age_seconds"], 0)
+                self.assertNotIn(key, cache._CACHE)
+        with patch.object(cache, "MAX_ENTRY_BYTES", 30):
+            response, info = cache.run(
+                "fetch", key, lambda: {"success": True, "x": "a" * 100},
+                ttl=120, with_provenance=True)
+            self.assertTrue(response["success"])
+            self.assertEqual(info["source"], "uncached")
+        self.assertNotIn(key, cache._CACHE)
+
+    def test_opt_in_retrieval_info_does_not_persist_after_policy_edit(self):
+        key = ("fetch", "raw", "https://example.org/allowed")
+        cache.run("fetch", key, lambda: {"success": True},
+                  ttl=20, with_provenance=True)
+        self.assertIn(key, cache._CACHE)
+        cache.invalidate_fetch()
+        self.assertNotIn(key, cache._CACHE)
+        result, info = cache.run(
+            "fetch", key, lambda: {"success": True}, ttl=20,
+            with_provenance=True)
+        self.assertTrue(result["success"])
+        self.assertFalse(info["served_from_cache"])
+        self.assertEqual(info["source"], "fresh")
+
     def test_concurrent_requests_share_one_loader(self):
         started, finish = Event(), Event()
         count = []

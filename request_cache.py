@@ -9,6 +9,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from concurrent.futures import Future
 from copy import deepcopy
+from datetime import datetime, timezone
 import json
 from threading import Lock
 import time
@@ -22,7 +23,7 @@ SEARCH_TTL = 45
 FETCH_TTL = 120
 
 _LOCK = Lock()
-_CACHE: OrderedDict[tuple, tuple[float, int, object]] = OrderedDict()
+_CACHE: OrderedDict[tuple, tuple[float, int, object, tuple[float, str]]] = OrderedDict()
 _INFLIGHT: dict[tuple, tuple[Future, int, dict]] = {}
 _REFRESHING: dict[tuple, object] = {}
 _POLICY_EPOCH = 0
@@ -118,7 +119,7 @@ def reset_for_test() -> None:
 
 
 def _purge(now: float) -> None:
-    for key, (expiry, _size, _value) in list(_CACHE.items()):
+    for key, (expiry, _size, _value, _origin) in list(_CACHE.items()):
         if expiry <= now:
             del _CACHE[key]
             _METRICS[key[0]]["evictions"] += 1
@@ -135,26 +136,48 @@ def _cacheable_size(result: object, key: tuple) -> int:
         return 0
 
 
+def _retrieval_stamp() -> tuple[float, str]:
+    """Monotonic age plus fixed UTC retrieval time, no user URL or text."""
+    return (time.monotonic(), datetime.fromtimestamp(
+        time.time(), tz=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"))
+
+
+def _provenance(stamp: tuple[float, str], source: str) -> dict:
+    return {
+        "retrieved_at": stamp[1],
+        "served_from_cache": source == "cache_hit",
+        "cache_age_seconds": round(max(0.0, time.monotonic() - stamp[0]), 3)
+        if source == "cache_hit" else 0.0,
+        "source": source,
+    }
+
+
+def _returned(result, stamp: tuple[float, str], source: str, include: bool):
+    return (result, _provenance(stamp, source)) if include else result
+
+
 def _store(kind: str, key: tuple, result, ttl: float | Callable[[], float], generation: int,
-           should_store, *, flight=None, refresh_token=None) -> bool:
+           should_store, *, flight=None, refresh_token=None,
+           stamp: tuple[float, str]) -> tuple[bool, bool]:
+    """Return (stored, cache_eligible); rejected content is never 'fresh'."""
     if should_store is not None and not should_store(result):
-        return False
+        return False, False
     size = _cacheable_size(result, key)
     if not size:
-        return False
+        return False, False
     # Read a live setting only after the upstream loader finishes. Never
     # hold _LOCK during filesystem I/O or retain the pre-request TTL for a
     # result inserted after an operator changed the saved settings.
     effective_ttl = ttl() if callable(ttl) else ttl
     with _LOCK:
         if kind == "fetch" and generation != _POLICY_EPOCH:
-            return False
+            return False, True
         if flight is not None and flight[2]["superseded"]:
-            return False
+            return False, True
         if refresh_token is not None and _REFRESHING.get(key) is not refresh_token:
-            return False
+            return False, True
         _purge(time.monotonic())
-        _CACHE[key] = (time.monotonic() + effective_ttl, size, deepcopy(result))
+        _CACHE[key] = (time.monotonic() + effective_ttl, size, deepcopy(result), stamp)
         _METRICS[kind]["stores"] += 1
         _CACHE.move_to_end(key)
         total = sum(entry[1] for entry in _CACHE.values())
@@ -162,11 +185,11 @@ def _store(kind: str, key: tuple, result, ttl: float | Callable[[], float], gene
             old_key, removed = _CACHE.popitem(last=False)
             _METRICS[old_key[0]]["evictions"] += 1
             total -= removed[1]
-        return key in _CACHE
+        return key in _CACHE, True
 
 
 def run(kind: str, key: tuple | None, load, *, ttl: float | Callable[[], float], fresh: bool = False,
-        should_store=None):
+        should_store=None, with_provenance: bool = False):
     """Coalesce default calls; fresh starts independent work and replaces on completion.
 
     Existing cached content remains available during a fresh request, avoiding
@@ -179,7 +202,8 @@ def run(kind: str, key: tuple | None, load, *, ttl: float | Callable[[], float],
     if key is None:
         with _LOCK:
             _METRICS[kind]["uncacheable"] += 1
-        return load()
+        result = load()
+        return _returned(result, _retrieval_stamp(), "uncached", with_provenance)
     if fresh:
         with _LOCK:
             _METRICS[kind]["refreshes"] += 1
@@ -194,14 +218,18 @@ def run(kind: str, key: tuple | None, load, *, ttl: float | Callable[[], float],
                 prior_flight[2]["superseded"] = True
         try:
             result = load()
-            saved = _store(kind, key, result, ttl, generation, should_store,
-                           refresh_token=token)
+            stamp = _retrieval_stamp()
+            saved, cache_eligible = _store(
+                kind, key, result, ttl, generation, should_store,
+                refresh_token=token, stamp=stamp)
             if not saved:
                 with _LOCK:
                     if _REFRESHING.get(key) is token:
                         if _CACHE.pop(key, None) is not None:
                             _METRICS[kind]["evictions"] += 1
-            return result
+            return _returned(result, stamp,
+                             "fresh" if cache_eligible else "uncached",
+                             with_provenance)
         except BaseException:
             with _LOCK:
                 if _REFRESHING.get(key) is token:
@@ -218,7 +246,8 @@ def run(kind: str, key: tuple | None, load, *, ttl: float | Callable[[], float],
         if value is not None:
             _METRICS[kind]["hits"] += 1
             _CACHE.move_to_end(key)
-            return deepcopy(value[2])
+            return _returned(deepcopy(value[2]), value[3], "cache_hit",
+                             with_provenance)
         prior_flight = _INFLIGHT.get(key)
         if prior_flight is not None and (
             kind != "fetch" or prior_flight[1] == _POLICY_EPOCH
@@ -239,12 +268,23 @@ def run(kind: str, key: tuple | None, load, *, ttl: float | Callable[[], float],
             generation = _POLICY_EPOCH
             _METRICS[kind]["misses"] += 1
     if not leader:
-        return deepcopy(future.result())
+        result = deepcopy(future.result())
+        # The leader records its origin before making the result visible.
+        stamp = flight[2]["stamp"]
+        return _returned(result, stamp,
+                         "coalesced" if flight[2]["cache_eligible"] else "uncached",
+                         with_provenance)
     try:
         result = load()
-        _store(kind, key, result, ttl, generation, should_store, flight=flight)
+        stamp = _retrieval_stamp()
+        _, cache_eligible = _store(kind, key, result, ttl, generation,
+                                    should_store, flight=flight, stamp=stamp)
+        flight[2]["stamp"] = stamp
+        flight[2]["cache_eligible"] = cache_eligible
         future.set_result(result)
-        return result
+        return _returned(result, stamp,
+                         "fresh" if cache_eligible else "uncached",
+                         with_provenance)
     except BaseException as exc:
         future.set_exception(exc)
         future.exception()  # Silence unobserved-future warnings.

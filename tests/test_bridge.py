@@ -1688,6 +1688,93 @@ class BridgeTests(unittest.TestCase):
                             ["https://example.com/a"], compact_chars=invalid))
                     client.assert_not_called()
 
+    def test_opt_in_fetch_retrieval_info_cache_hit_refresh_batch_and_defaults(self):
+        calls = []
+        original = httpx.Client
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            calls.append(request.url.path)
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/retrieval", "success": True,
+                "markdown": {"raw_markdown": f"Public text {len(calls)}"},
+            }]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=factory)):
+            first = self.module.web_fetch("https://example.com/retrieval",
+                                          include_retrieval_info=True)
+            default = self.module.web_fetch("https://example.com/retrieval")
+            hit = self.module.web_fetch("https://example.com/retrieval",
+                                        include_retrieval_info=True)
+            fresh = self.module.web_fetch("https://example.com/retrieval",
+                                          fresh=True, include_retrieval_info=True)
+            batch = asyncio.run(self.module.web_fetch_batch(
+                ["https://example.com/retrieval"], include_retrieval_info=True))
+            structured = self.module.web_fetch("https://example.com/retrieval",
+                            include_outline=True, include_retrieval_info=True)
+        self.assertEqual(len(calls), 3)
+        self.assertNotIn("retrieval_info", default)
+        self.assertEqual(first["markdown"], default["markdown"])
+        self.assertEqual(hit["markdown"], first["markdown"])
+        self.assertEqual(first["retrieval_info"]["source"], "fresh")
+        self.assertFalse(first["retrieval_info"]["served_from_cache"])
+        self.assertEqual(hit["retrieval_info"]["source"], "cache_hit")
+        self.assertTrue(hit["retrieval_info"]["served_from_cache"])
+        self.assertEqual(first["retrieval_info"]["retrieved_at"],
+                         hit["retrieval_info"]["retrieved_at"])
+        self.assertGreaterEqual(hit["retrieval_info"]["cache_age_seconds"], 0)
+        self.assertEqual(fresh["retrieval_info"]["source"], "fresh")
+        self.assertEqual(fresh["markdown"], "Public text 2")
+        self.assertEqual(batch["results"][0]["result"]["markdown"], "Public text 2")
+        self.assertTrue(batch["results"][0]["result"][
+            "retrieval_info"]["served_from_cache"])
+        self.assertEqual(structured["retrieval_info"]["source"], "uncached")
+        self.assertEqual(structured["markdown"], "Public text 3")
+
+    def test_long_document_with_handle_reports_uncached_even_if_fresh(self):
+        from collections import OrderedDict
+        original = httpx.Client
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/long", "success": True,
+                "markdown": {"raw_markdown": "p" * 30000},
+            }]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=factory),
+              patch.object(self.module.document_pages, "_CACHE", OrderedDict())):
+            for fresh in (False, True):
+                result = self.module.web_fetch("https://example.com/long",
+                        fresh=fresh, include_retrieval_info=True)
+                self.assertTrue(result["success"])
+                self.assertIn("document_id", result)
+                self.assertEqual(result["retrieval_info"]["source"], "uncached")
+                self.assertFalse(result["retrieval_info"]["served_from_cache"])
+            self.assertFalse(self.module.request_cache._CACHE)
+
+    def test_retrieval_info_invalid_and_blocked_results_never_disclose_metadata(self):
+        for invalid in (1, None, [], {}, "true"):
+            with self.subTest(invalid=repr(invalid)):
+                with patch.object(self.module.httpx, "Client") as upstream:
+                    with self.assertRaisesRegex(ValueError, "include_retrieval_info"):
+                        self.module.web_fetch("https://example.com/a",
+                            include_retrieval_info=invalid)
+                    with self.assertRaisesRegex(ValueError, "include_retrieval_info"):
+                        asyncio.run(self.module.web_fetch_batch(
+                            ["https://example.com/a"], include_retrieval_info=invalid))
+                    upstream.assert_not_called()
+        with patch.object(self.module, "_check_public_target",
+                          return_value={"success": False, "status": "blocked"}):
+            rejected = self.module.web_fetch("https://example.com/denied",
+                                             include_retrieval_info=True)
+        self.assertFalse(rejected["success"])
+        self.assertNotIn("retrieval_info", rejected)
+
     def test_extraction_modes_empty_fit_and_oversized_content(self):
         from collections import OrderedDict
         selected = ["raw"]
