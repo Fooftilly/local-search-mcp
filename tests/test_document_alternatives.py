@@ -88,6 +88,16 @@ View as:
         # Real links after a quoted sample are still eligible.
         self.assertEqual(len(extract(fenced + "\n" + GROUP)["alternatives"]), 3)
 
+    def test_multiple_document_stems_fail_closed(self):
+        group = """View as:
+[HTML](https://www.rfc-editor.org/rfc/rfc9110.html)
+[PDF](https://www.rfc-editor.org/rfc/rfc9111.pdf)
+[HTML](https://www.rfc-editor.org/rfc/rfc9111.html)
+[PDF](https://www.rfc-editor.org/rfc/rfc9110.pdf)
+
+"""
+        self.assertEqual(extract(group)["alternatives"], [])
+
     def test_unsafe_urls_are_filtered_without_dns_or_approval(self):
         candidates = [
             "javascript:alert(1)", "file:///etc/passwd", "data:text/html,evil",
