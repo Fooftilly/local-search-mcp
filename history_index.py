@@ -20,7 +20,7 @@ import sqlite3
 import stat
 from urllib.parse import urlsplit
 
-from history_log import history_path
+from history_log import history_path, safe_url
 
 MAX_HISTORY_ROWS = 100_000
 MAX_EVENT_BYTES = 65_536
@@ -284,18 +284,18 @@ def _history_filter(kind: str, status: str, domain: str,
 
 
 def _reveal_history_queries(rows: list[dict]) -> None:
-    """Read only explicitly selected search records from their original JSONL.
+    """Read explicitly selected search terms and fetch URLs from original JSONL.
 
     Generation and byte offset are index metadata, never query content. Validate
     the original inode plus first/last indexed line fingerprints before reading.
     If the file rotated away or changed, leave the query unavailable rather
     than guessing from a matching timestamp or a different event.
     """
-    selected = [row for row in rows if row["kind"] == "search"]
+    selected = [row for row in rows if row["kind"] in ("search", "fetch")]
     if not selected:
         return
     for row in selected:
-        row["query"] = None
+        row["query" if row["kind"] == "search" else "url"] = None
     target = history_path()
     folder = target.parent
     lock_file = folder / ".history.lock"
@@ -361,9 +361,27 @@ def _reveal_history_queries(rows: list[dict]) -> None:
                                               ("at_ms", "kind", "status", "domain",
                                                "duration_ms", "backend")):
                                 continue
-                            query = evt.get("query")
-                            if isinstance(query, str) and len(query) <= 300:
-                                row["query"] = query
+                            if row["kind"] == "search":
+                                query = evt.get("query")
+                                if isinstance(query, str) and len(query) <= 300:
+                                    row["query"] = query
+                            elif row["kind"] == "fetch":
+                                # Legacy JSONL can contain unsanitized input.
+                                # Always strip userinfo, query and fragment,
+                                # and require a public-looking HTTP(S) URL
+                                # whose host matches the indexed record.
+                                sanitized = safe_url(evt.get("url"))
+                                try:
+                                    parsed = urlsplit(sanitized)
+                                    if (parsed.scheme in ("http", "https")
+                                            and parsed.hostname == row["domain"]
+                                            and parsed.username is None
+                                            and parsed.password is None
+                                            and parsed.port is None
+                                            and not any(ord(c) < 32 for c in sanitized)):
+                                        row["url"] = sanitized
+                                except ValueError:
+                                    pass
                 finally:
                     os.close(file_fd)
         finally:
@@ -379,7 +397,7 @@ def _reveal_history_queries(rows: list[dict]) -> None:
 def search_history(*, limit: int = 25, kind: str = "", status: str = "",
                    domain: str = "", hours: int = 0,
                    reveal_queries: bool = False) -> list[dict]:
-    """Return indexed metadata; recover search queries only by explicit opt-in."""
+    """Return indexed metadata; reveal raw history details only on opt-in."""
     if type(limit) is not int or not 1 <= limit <= MAX_QUERY_RESULTS:
         raise ValueError("Invalid history page size")
     if type(reveal_queries) is not bool:

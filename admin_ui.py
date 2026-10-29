@@ -84,6 +84,8 @@ def history_items_html(kind="", status="", domain="", hours=0, show_queries=Fals
         elapsed = (str(event["duration_ms"]) if event["duration_ms"] is not None else "—")
         display = (_safe_query_display(event.get("query"))
                    if show_queries and event["kind"] == "search"
+                   else _safe_query_display(event.get("url"))
+                   if show_queries and event["kind"] == "fetch"
                    else (event["domain"] or "—") if show_queries
                    else event["domain"])
         css_class = 'domain history-query' if show_queries else 'domain'
@@ -96,7 +98,7 @@ def history_items_html(kind="", status="", domain="", hours=0, show_queries=Fals
 
 
 def recent_rows(kind="", status="", domain="", hours=0, show_queries=False):
-    column = "Search query / domain" if show_queries else "Domain"
+    column = "Search query / page URL / domain" if show_queries else "Domain"
     return ('<div class="scroll"><table><thead><tr><th>UTC time</th>'
             '<th>Operation</th><th>Status</th><th>' + column + '</th>'
             '<th>Duration (ms)</th></tr></thead>'
