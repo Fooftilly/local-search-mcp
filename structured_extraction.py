@@ -217,7 +217,10 @@ def prepare_table_continuation(page: dict) -> dict | None:
         total_bytes += fixed_size
         rows: list[list[str]] = []
         for record in source_rows[:MAX_RETAINED_ROWS]:
-            cells = _bounded_cells(record if isinstance(record, list) else [])
+            if not isinstance(record, list):
+                # Match preview semantics: malformed entries are not rows.
+                continue
+            cells = _bounded_cells(record)
             cost = _size({"cells": cells})
             if total_bytes + cost > MAX_RETAINED_BYTES:
                 truncated = True
@@ -241,7 +244,9 @@ def prepare_table_continuation(page: dict) -> dict | None:
         "entries": entries,
         "size_bytes": total_bytes,
         "source_tables_observed": len(raw),
-        "retention_truncated": truncated or len(entries) < len(raw),
+        "retention_truncated": truncated or len(entries) < len(raw) or any(
+            entry["retained_truncated"] or entry["columns_truncated"]
+            for entry in entries),
     }
 
 
