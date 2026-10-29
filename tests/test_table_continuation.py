@@ -138,6 +138,17 @@ class TableContinuationTests(unittest.TestCase):
         self.assertTrue(clipped["entries"][0]["columns_truncated"])
         self.assertTrue(clipped["retention_truncated"])
 
+    def test_aggregate_retention_byte_limit_enforced_with_large_source(self):
+        raw = {"tables": [{
+            "headers": [f"H{col}" for col in range(8)],
+            "rows": [["x" * 200 for _ in range(8)] for _ in range(250)]
+        } for _ in range(4)]}
+        payload = extraction.prepare_table_continuation(raw)
+        self.assertTrue(payload["retention_truncated"])
+        self.assertLessEqual(payload["size_bytes"], extraction.MAX_RETAINED_BYTES)
+        self.assertLessEqual(len(json.dumps(payload, ensure_ascii=True).encode()),
+                             payload["size_bytes"])
+
     def test_batch_finalizer_rejects_already_evicted_table_capability(self):
         from batch_fetch import _finalize_result
         payload = extraction.prepare_table_continuation(source(1, 20))
