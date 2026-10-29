@@ -85,6 +85,10 @@ class Supervisor:
         self._locks = {name: threading.Lock() for name in ("crawl4ai", "searxng")}
         self._state = {"crawl4ai": "sleeping", "searxng": "sleeping"}
         self._verified_at = {"crawl4ai": 0.0, "searxng": 0.0}
+        # Health is the inexpensive signal for attended, external wakes.
+        # In case the endpoint later fails while Docker is still running,
+        # verify project ownership at most once per five minutes.
+        self._last_sleep_inventory = time.monotonic()
         self._stop_event = threading.Event()
         # Do not start Docker here, only arm verified already-running backends.
         for name in self._locks:
@@ -178,6 +182,33 @@ class Supervisor:
                             self._state[service] = "running"
                         else:
                             self._state[service] = "sleeping"
+                        continue
+                    if (service == "searxng"
+                            and self._state[service] == "sleeping"
+                            and not self.tracker.snapshot(service)["armed"]):
+                        # The attended engine wizard can WAKE SearXNG from
+                        # another process without passing through MCP lease().
+                        # Reconcile only a freshly verified running backend,
+                        # then start the normal idle countdown. Never start,
+                        # stop, or reset an active request from this path.
+                        # A sleeping backend is observed through the cheap
+                        # fixed loopback /healthz first. Never run the full
+                        # multi-command Docker inventory every ten seconds
+                        # when SearXNG is intentionally stopped.
+                        now = time.monotonic()
+                        healthy = _healthy("searxng")
+                        if (not healthy and
+                                now - self._last_sleep_inventory < 300):
+                            continue
+                        self._last_sleep_inventory = now
+                        try:
+                            target = docker._safe_target(service)
+                        except docker.LifecycleError:
+                            continue
+                        if target.running:
+                            self.tracker.arm_running(service)
+                            self._state[service] = "running"
+                            self._verified_at[service] = 0.0
                         continue
                     if not self.tracker.claim_idle_stop(service):
                         continue
