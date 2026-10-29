@@ -129,10 +129,15 @@ def logged_tool(kind: str):
                 if params.get("ranking") == "source_count":
                     event["ranking"] = "source_count"
             elif kind == "page":
-                # Never persist bearer document handles, page text, or target URL.
-                requested_page = params.get("page", 2)
-                if type(requested_page) is int:
-                    event["page"] = requested_page
+                # Both continuation reads and in-document finds use this
+                # existing audit type; never store document handles, search
+                # strings, snippets or a target URL.
+                if "page" in sig.parameters:
+                    requested_page = params.get("page", 2)
+                    if type(requested_page) is int:
+                        event["page"] = requested_page
+                else:
+                    event["action"] = "find"
             else:
                 event["url"] = safe_url(params.get("url"))
                 try:
