@@ -276,6 +276,60 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn(b'<tbody id="live-history">', html_page)
         self.assertIn(b'&lt;script&gt;', html_page)
 
+    def test_history_queries_require_opt_in_and_survive_live_filter_refresh(self):
+        from history_log import append_history
+        long_query = ("Full Unicode café 猫 " + "x" * 240 +
+                      ' <script>alert("x")</script>&\\u202e')
+        self.assertLessEqual(len(long_query), 300)
+        append_history({"time_utc": datetime.now(timezone.utc).isoformat(),
+                        "kind": "search", "status": "success",
+                        "backend": "SearXNG", "duration_ms": 10,
+                        "query": long_query})
+        append_history({"time_utc": datetime.now(timezone.utc).isoformat(),
+                        "kind": "fetch", "status": "success", "duration_ms": 12,
+                        "url": "https://docs.example.org/private?secret=yes"})
+        base_status, normal, _ = self.exchange("GET", "/history")
+        self.assertEqual(base_status, 200)
+        self.assertNotIn(b"Full Unicode", normal)
+        self.assertNotIn(b"private?secret", normal)
+        self.assertNotIn(b'checked> Show search queries', normal)
+        live_normal = json.loads(self.exchange("GET", "/live?view=history")[1])
+        self.assertNotIn("Full Unicode", live_normal["history_html"])
+        uri = "/history?hours=24&kind=search&show_queries=1"
+        code, revealed, headers = self.exchange("GET", uri)
+        self.assertEqual(code, 200)
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        visible = revealed.decode("utf-8")
+        self.assertIn("Full Unicode café 猫", visible)
+        self.assertIn("x" * 240, visible)
+        self.assertIn("&lt;script&gt;", visible)
+        self.assertIn("&quot;x&quot;", visible)
+        self.assertIn("&amp;", visible)
+        self.assertNotIn("<script>alert", visible)
+        self.assertNotIn("\\u202e", visible)  # actual bidi is escaped to inert text
+        self.assertIn("Show search queries", visible)
+        self.assertIn('value="1" checked', visible)
+        self.assertIn('Search query / domain', visible)
+        live = json.loads(self.exchange(
+            "GET", "/live?view=history&kind=search&hours=24&show_queries=1")[1])
+        self.assertIn("Full Unicode café 猫", live["history_html"])
+        self.assertIn("&lt;script&gt;", live["history_html"])
+        self.assertNotIn("<script>", live["history_html"])
+        self.assertNotIn("Full Unicode", live["history_summary_html"])
+        no_reveal = json.loads(self.exchange(
+            "GET", "/live?view=history&kind=search&hours=24")[1])
+        self.assertNotIn("Full Unicode", str(no_reveal))
+        fetch_only = json.loads(self.exchange(
+            "GET", "/live?view=history&kind=fetch&show_queries=1")[1])
+        self.assertNotIn("Full Unicode", str(fetch_only))
+        self.assertIn("docs.example.org", fetch_only["history_html"])
+        self.assertNotIn("private?secret", str(fetch_only))
+        for bad in ("2", "yes", "%3Cscript%3E", "1&show_queries=1"):
+            self.assertEqual(self.exchange(
+                "GET", "/history?show_queries=" + bad)[0], 400)
+            self.assertEqual(self.exchange(
+                "GET", "/live?view=history&show_queries=" + bad)[0], 400)
+
     def test_history_window_filters_and_live_summary_bars_are_safe(self):
         from datetime import timedelta
         from history_log import append_history
