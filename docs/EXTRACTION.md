@@ -54,12 +54,21 @@ The default flags are false: existing Markdown, metadata, pagination and
 cache formats are unchanged.
 
 - `links`: up to **24** discovered HTTP(S) URLs from Crawl4AI's `internal`
-  and `external` groups, preserving their kind and bounded text/title.
+  and `external` groups, preserving the first-seen kind and bounded text/title.
+  Duplicate **normalized safe URLs** are collapsed before the limit, using
+  the longest available safe label/title when the same link appears more than
+  once. With 24 or fewer unique safe candidates, their original crawl order
+  is retained. With more candidates, a **bounded, deterministic heuristic**
+  favors longer descriptive labels and document/article/report-like paths,
+  deprioritizes obvious menus/login/privacy navigation, and reserves up to
+  two places for distinct external links. Ties keep source order. This is a
+  selection convenience, **not a verified relevance/ranking signal**, and
+  the 24-link sample is never a complete page link inventory.
   Relative links are resolved against the approved final page URL. Invalid,
   local-only, IP-literal, credential-bearing, forbidden-port, non-HTTP(S),
   and ambiguous-IDN links are omitted. Fragments are removed. Unapproved
   **external public links may be listed**, but are never fetched or approved
-  automatically. To follow any listed URL, use the ordinary `web_fetch`
+  automatically. To follow a listed URL, use the ordinary `web_fetch`
   tool, which checks operator approval and public-DNS/egress protections.
 - `tables`: up to **4** structures, each capped at 8 columns, 10 rows,
   200 characters per cell and bounded caption/summary. Malformed entries
