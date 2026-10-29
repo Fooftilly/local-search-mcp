@@ -158,6 +158,53 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(all(x["urls"] == ["https://example.com/articles/index"]
                             for x in posted))
 
+    def test_opt_in_outline_single_batch_and_default_cache_separation(self):
+        from collections import OrderedDict
+        content = ("# Intro 🧭\n" + "a" * 24000 +
+                   "\n## Documents\n" + "Closing notes\n")
+        calls = []
+        original = httpx.Client
+        def handler(request):
+            calls.append(request.url.path)
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/long", "success": True,
+                "markdown": {"raw_markdown": content},
+            }]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=factory),
+              patch.object(self.module.document_pages, "_CACHE", OrderedDict())):
+            import domain_policy
+            domain_policy.decide("example.com", "allow", scope="exact")
+            normal = self.module.web_fetch("https://example.com/long")
+            outlined = self.module.web_fetch(
+                "https://example.com/long", include_outline=True)
+            self.assertTrue(outlined["success"])
+            self.assertNotIn("outline", normal)
+            self.assertEqual([e["heading"] for e in outlined["outline"]],
+                             ["Intro 🧭", "Documents"])
+            self.assertEqual(outlined["outline"][1]["page"], 2)
+            self.assertIn("document_id", outlined)
+            self.assertTrue(self.module.web_fetch_page(
+                outlined["document_id"], 2)["success"])
+            batch = asyncio.run(self.module.web_fetch_batch(
+                ["https://example.com/long"], include_outline=True))
+            self.assertTrue(batch["results"][0]["result"]["success"])
+            self.assertEqual(len(batch["results"][0]["result"]["outline"]), 2)
+        self.assertEqual(calls.count("/crawl"), 3)
+        with patch.object(self.module.httpx, "Client") as client:
+            for invalid in (1, "true", None):
+                with self.assertRaises(ValueError):
+                    self.module.web_fetch("https://example.com/long",
+                                          include_outline=invalid)
+                with self.assertRaises(ValueError):
+                    asyncio.run(self.module.web_fetch_batch(
+                        ["https://example.com/long"], include_outline=invalid))
+            client.assert_not_called()
+
     def test_structured_data_not_returned_on_blocked_or_failed_fetch(self):
         calls = []
         original_client = httpx.Client
