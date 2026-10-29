@@ -245,6 +245,7 @@ def web_search_capabilities() -> dict:
         return failure
     seen = set()
     enabled = []
+    omitted_unselectable = 0
     categories = set()
     for row in rows:
         if not isinstance(row, dict):
@@ -252,7 +253,7 @@ def web_search_capabilities() -> dict:
         name = row.get("name")
         group = row.get("categories")
         if (not isinstance(name, str)
-                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}", name)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}", name)
                 or name.casefold() in seen
                 or type(row.get("enabled")) is not bool
                 or not isinstance(group, list) or not 1 <= len(group) <= 16
@@ -262,6 +263,13 @@ def web_search_capabilities() -> dict:
             return failure
         seen.add(name.casefold())
         if row["enabled"]:
+            # SearXNG allows 80-character names, but web_search's explicit
+            # engine selector intentionally caps names at 40. Valid longer
+            # names must not hide other selectable providers, nor be offered
+            # to clients as a selector that web_search cannot accept.
+            if len(name) > 40:
+                omitted_unselectable += 1
+                continue
             groups = sorted(set(group))
             enabled.append({"name": name, "categories": groups})
             categories.update(groups)
@@ -270,7 +278,8 @@ def web_search_capabilities() -> dict:
         "success": True, "status": "available",
         "enabled_engines": enabled, "categories": sorted(categories),
         "enabled_engine_count": len(enabled),
-        "scope": "enabled engines in a bounded read of local SearXNG /config",
+        "omitted_unselectable_engine_count": omitted_unselectable,
+        "scope": "enabled engines selectable by web_search in bounded local /config",
     }
 
 
