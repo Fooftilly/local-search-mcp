@@ -36,6 +36,24 @@ class StructuredExtractionTests(unittest.TestCase):
         self.assertEqual(actual["links"][0]["text"], "Notice")
         self.assertNotIn("tables", actual)
 
+    def test_explicit_empty_query_does_not_inherit_original_query(self):
+        cases = {
+            "?": "https://example.com/article?",
+            "?#section": "https://example.com/article?",
+            "other?": "https://example.com/other?",
+            "/absolute?": "https://example.com/absolute?",
+            "https://outside.example/target?": "https://outside.example/target?",
+            "?edition=latest": "https://example.com/article?edition=latest",
+            "#section": "https://example.com/article?edition=old",
+        }
+        for href, expected in cases.items():
+            with self.subTest(href=href):
+                links = subject.extract(
+                    {"links": {"internal": [{"href": href}]}},
+                    "https://example.com/article?edition=old",
+                    include_links=True, include_tables=False)["links"]
+                self.assertEqual([row["url"] for row in links], [expected])
+
     def test_tables_bounded_and_text_safe(self):
         page = {"tables": [{
             "headers": ["h"] * 30,
