@@ -37,6 +37,25 @@ there is no permission-changing MCP tool.
   not search potentially sensitive source text. The bars show counts for **all**
   matching retained events, not only the 25 most recent table rows.
 
+## Opt-in original history details
+
+The **Show search queries and page URLs** checkbox on the Request history
+page is disabled by default. When explicitly enabled, search rows display
+their original stored search query and fetch rows display the stored page URL
+(scheme, hostname and path) rather than only the domain. Live refresh and
+filter submissions preserve the operator's selection. Continuation reads
+remain domain-only and never reveal private document handles.
+
+This view uses the index's existing generation and byte-offset coordinates
+to retrieve matching records from the original private rotating JSONL files.
+No URL paths or search terms are copied into SQLite. Missing, evicted, or
+unverifiable source records display an unavailable placeholder; there is no
+timestamp-based fallback. Untrusted text is safely escaped and long paths
+wrap in the existing table. **URL query parameters, fragments, credentials
+and ports are stripped by the audit writer**, so the original full URL
+including these components cannot be reconstructed from past history.
+The displayed URL does not approve or fetch the target.
+
 ## Operational notes
 
 The indexed view and read-only MCP metrics address the roadmap's basic
