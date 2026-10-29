@@ -410,9 +410,12 @@ def _run_search_network(params: dict, max_results: int, *,
         include_published_date=include_published_date,
     )
     if include_search_status:
-        return {"success": True, "status": "ok",
+        diagnostic = _search_failure_status(payload)
+        return {"success": True,
+                "status": ("degraded" if diagnostic["coverage"] == "partial"
+                           else "ok"),
                 "results": result,
-                "search_status": _search_failure_status(payload)}
+                "search_status": diagnostic}
     return result
 
 
