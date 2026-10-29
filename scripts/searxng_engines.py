@@ -390,16 +390,20 @@ def _category_engines(engines: list[dict], category: str) -> list[dict]:
     return [row for row in engines if category in row["categories"]]
 
 
-def _choose_numbers(rows: list[dict]) -> tuple[str, ...] | None:
+def _choose_numbers(rows: list[dict], *, allow_none: bool = False) -> tuple[str, ...] | None:
     for index, row in enumerate(rows, 1):
         tag = ("tested working here" if row["name"] == "yahoo" else
                "candidate (not verified here)" if row["name"] in RECOMMENDED else "")
         active = "default on" if row["enabled"] else "default off"
         shared = ", ".join(row["categories"])
         print(f"{index:2}  {row['name']}  ({active}; categories: {shared}) {tag}")
-    raw = input("Comma-separated engine numbers (blank cancels): ").strip()
+    prompt = ("Comma-separated engine numbers, NONE to disable all, blank cancels: "
+              if allow_none else "Comma-separated engine numbers (blank cancels): ")
+    raw = input(prompt).strip()
     if not raw:
         return None
+    if allow_none and raw == "NONE":
+        return ()
     pieces = [x.strip() for x in raw.split(",")]
     if (len(pieces) > len(rows) or not all(x.isascii() and x.isdigit()
             and 1 <= int(x) <= len(rows) for x in pieces)):
@@ -496,7 +500,7 @@ def main() -> int:
             cat = categories[int(raw) - 1]
             rows = _category_engines(engines, cat)
             print(f"Choose defaults for {cat}. Shared engines affect ALL listed categories.")
-            chosen = _choose_numbers(rows)
+            chosen = _choose_numbers(rows, allow_none=(cat != "general"))
             if chosen is None:
                 return 0
             controlled = tuple(row["name"] for row in rows)
