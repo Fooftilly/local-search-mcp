@@ -1733,6 +1733,30 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(structured["retrieval_info"]["source"], "uncached")
         self.assertEqual(structured["markdown"], "Public text 3")
 
+    def test_long_document_with_handle_reports_uncached_even_if_fresh(self):
+        from collections import OrderedDict
+        original = httpx.Client
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/long", "success": True,
+                "markdown": {"raw_markdown": "p" * 30000},
+            }]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=factory),
+              patch.object(self.module.document_pages, "_CACHE", OrderedDict())):
+            for fresh in (False, True):
+                result = self.module.web_fetch("https://example.com/long",
+                        fresh=fresh, include_retrieval_info=True)
+                self.assertTrue(result["success"])
+                self.assertIn("document_id", result)
+                self.assertEqual(result["retrieval_info"]["source"], "uncached")
+                self.assertFalse(result["retrieval_info"]["served_from_cache"])
+            self.assertFalse(self.module.request_cache._CACHE)
+
     def test_retrieval_info_invalid_and_blocked_results_never_disclose_metadata(self):
         for invalid in (1, None, [], {}, "true"):
             with self.subTest(invalid=repr(invalid)):
