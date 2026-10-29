@@ -32,7 +32,7 @@ class DocumentPageTests(unittest.TestCase):
         for size in (2048, 4096, pages.PAGE_CHARS):
             for extra in (1, 2500, pages.PAGE_CHARS, pages.PAGE_CHARS + 11):
                 with self.subTest(first=size, extra=extra):
-                    content = "🧭" * 12 + "a" * (size + extra - 24)
+                    content = "🧭" * 12 + "a" * (size + extra - 12)
                     token, count = pages.save(
                         "https://example.com/p", content, {"title": "P"},
                         first_page_chars=size)
