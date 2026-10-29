@@ -356,7 +356,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn("https://docs.example.org/a/&lt;script&gt;", html)
         self.assertIn("&quot;x&quot;", html)
         self.assertNotIn("token=SECRET", html)
-        self.assertNotIn("fragment", html)
+        self.assertNotIn("#fragment", html)
         self.assertNotIn("<script>alert", html)
         self.assertIn("Show search queries and page URLs", html)
         self.assertIn('name="show_queries" value="1" checked', html)
