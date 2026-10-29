@@ -350,7 +350,7 @@ def _reveal_history_queries(rows: list[dict]) -> None:
                                 continue
                             stream.seek(pos)
                             line = stream.readline(MAX_EVENT_BYTES + 1)
-                            if not line.endswith(b"\\n") or len(line) > MAX_EVENT_BYTES:
+                            if not line.endswith(b"\n") or len(line) > MAX_EVENT_BYTES:
                                 continue
                             try:
                                 evt = json.loads(line)
