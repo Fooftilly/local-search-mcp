@@ -103,6 +103,32 @@ an attended stop; the wizard does not force an immediate shutdown, since
 another MCP client may now be using it. No engine selection alters domain
 approvals or intentionally enables Google providers.
 
+### Read-only search provider discovery
+
+After updating the MCP bridge and reconnecting your client, call
+`web_search_capabilities()` before requesting explicit search-engine names.
+This lightweight **read-only** MCP tool sends one bounded GET to the
+configured local SearXNG `/config` endpoint and returns only:
+`enabled_engines` (names with their reported category lists),
+`categories`, `enabled_engine_count` and
+`omitted_unselectable_engine_count`. Disabled engines (including
+operator-excluded Google entries) are omitted. SearXNG may support engine
+names longer than `web_search(engines=...)` accepts; those valid but
+unselectable enabled names are counted as omitted, not advertised as usable
+or allowed to hide shorter selectable providers. The output is a validated
+snapshot of **enabled** providers, not a ranking, guarantee of availability,
+proof of default category routing, or proof that an engine supports every
+filter. Provider settings and any secret fields in `/config` are never
+forwarded to the agent.
+
+When SearXNG is sleeping, unreachable or returns an invalid/oversized
+inventory, the tool returns `status=unavailable` without waking Docker,
+running a provider search, changing any configuration or modifying domain
+approvals. The operator-only `./setup.sh --search-engines` wizard (with
+its separate `WAKE` and `APPLY` choices) remains the only engine
+configuration workflow. Existing `web_search` behavior and its
+explicit-engine fail-closed preflight remain unchanged.
+
 **Operator configuration:** SearXNG needs `search.formats: [html, json]` (or equivalent) enabled. Search categories and engines are defined by the local instance's `settings.yml`, may differ by installation, and some individual engines do not support language, pagination or time filters. Prefer selecting only engines visibly enabled on the local SearXNG preferences page. Results are not re-fetched by the optional deduplication and ranking features; the original default remains unmodified. Check the [official SearXNG Search API](https://docs.searxng.org/dev/search_api.html) for parameters and capabilities.
 
 Search queries, effective page numbers, supplied filters and limited result metadata are logged in private local JSONL history; avoid including secrets in queries or filters.

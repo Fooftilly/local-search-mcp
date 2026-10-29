@@ -202,6 +202,112 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all("deduplicate" not in dict(url.params)
                             and "ranking" not in dict(url.params) for url in urls))
 
+    async def test_search_capabilities_read_only_live_inventory_over_mcp(self):
+        original = httpx.Client
+        requests = []
+        config = {"engines": [
+            {"name": "yahoo", "enabled": True, "categories": ["general"]},
+            {"name": "duckduckgo news", "enabled": True, "categories": ["news"]},
+            {"name": "bing images", "enabled": True,
+             "categories": ["images", "general"]},
+            {"name": "google cse images", "enabled": False,
+             "categories": ["images"]},
+        ], "secret_key": "NEVER_LEAK_CONFIG_SECRET"}
+        def handler(request):
+            requests.append(str(request.url))
+            self.assertEqual(request.url.path, "/config")
+            return httpx.Response(200, json=config)
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with (patch.object(bridge.httpx, "Client", side_effect=factory),
+              patch.object(bridge.on_demand, "lease",
+                           side_effect=AssertionError("Never wake sleeping backend"))):
+            async with Client(bridge.mcp) as client:
+                tools = {x.name: x for x in await client.list_tools()}
+                self.assertIn("web_search_capabilities", tools)
+                result = await client.call_tool("web_search_capabilities", {})
+        self.assertFalse(result.is_error)
+        data = result.data
+        self.assertTrue(data["success"])
+        self.assertEqual(data["status"], "available")
+        self.assertEqual([e["name"] for e in data["enabled_engines"]],
+                         ["bing images", "duckduckgo news", "yahoo"])
+        self.assertEqual(data["categories"], ["general", "images", "news"])
+        self.assertEqual(data["enabled_engine_count"], 3)
+        self.assertNotIn("google cse images", str(data))
+        self.assertNotIn("NEVER_LEAK_CONFIG_SECRET", str(data))
+        self.assertEqual(len(requests), 1)
+
+    async def test_long_valid_engine_names_do_not_hide_selectable_providers(self):
+        long_disabled = "disabled-" + "a" * 45
+        long_enabled = "enabled-" + "b" * 44
+        self.assertGreater(len(long_disabled), 40)
+        config = {"engines": [
+            {"name": long_disabled, "enabled": False, "categories": ["news"]},
+            {"name": long_enabled, "enabled": True, "categories": ["science"]},
+            {"name": "yahoo", "enabled": True, "categories": ["general"]},
+        ]}
+        original = httpx.Client
+        def handler(request):
+            self.assertEqual(request.url.path, "/config")
+            return httpx.Response(200, json=config)
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with patch.object(bridge.httpx, "Client", side_effect=factory):
+            async with Client(bridge.mcp) as client:
+                result = await client.call_tool("web_search_capabilities", {})
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.data["status"], "available")
+        self.assertEqual([e["name"] for e in result.data["enabled_engines"]],
+                         ["yahoo"])
+        self.assertEqual(result.data["categories"], ["general"])
+        self.assertEqual(result.data["enabled_engine_count"], 1)
+        self.assertEqual(result.data["omitted_unselectable_engine_count"], 1)
+        self.assertNotIn(long_disabled, str(result.data))
+        self.assertNotIn(long_enabled, str(result.data))
+
+    async def test_search_capabilities_fail_closed_on_bad_or_absent_inventory(self):
+        original = httpx.Client
+        cases = [
+            httpx.Response(503, json={"secret": "SECRET"}),
+            httpx.Response(200, json={"engines": [
+                {"name": "malicious\\nprovider", "categories": ["general"],
+                 "enabled": True}]}),
+            httpx.Response(200, json={"engines": [
+                {"name": "yahoo", "categories": ["general"], "enabled": 1}]}),
+            httpx.Response(200, json={"engines": [
+                {"name": "yahoo", "categories": ["general"], "enabled": True},
+                {"name": "yahoo", "categories": ["images"], "enabled": True}]}),
+            httpx.Response(200, content=b"x" * (bridge.MAX_SEARCH_CONFIG_BYTES + 1)),
+            httpx.Response(200, json={"engines": []}),
+        ]
+        async with Client(bridge.mcp) as client:
+            for response in cases:
+                with self.subTest(response=response.status_code):
+                    def handler(request):
+                        self.assertEqual(request.url.path, "/config")
+                        return response
+                    def factory(**kwargs):
+                        return original(transport=httpx.MockTransport(handler),
+                                        trust_env=False)
+                    with (patch.object(bridge.httpx, "Client", side_effect=factory),
+                          patch.object(bridge.on_demand, "lease",
+                                       side_effect=AssertionError("No wake"))):
+                        result = await client.call_tool(
+                            "web_search_capabilities", {})
+                    self.assertFalse(result.is_error)
+                    self.assertEqual(result.data["status"], "unavailable")
+                    self.assertFalse(result.data["success"])
+                    self.assertNotIn("SECRET", str(result.data))
+            def error(_request):
+                raise httpx.ConnectError("SECRET_LOCAL_BACKEND_ERROR")
+            def failure_factory(**kwargs):
+                return original(transport=httpx.MockTransport(error), trust_env=False)
+            with patch.object(bridge.httpx, "Client", side_effect=failure_factory):
+                result = await client.call_tool("web_search_capabilities", {})
+            self.assertEqual(result.data["status"], "unavailable")
+            self.assertNotIn("SECRET", str(result.data))
+
     async def test_optional_search_filters_are_exposed_over_real_mcp(self):
         seen = []
         def handler(request: httpx.Request):
