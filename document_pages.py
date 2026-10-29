@@ -128,9 +128,7 @@ def find_with_security_context(
     if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
         raise ValueError("Invalid document handle")
     if (not isinstance(query, str) or not 1 <= len(query) <= MAX_FIND_QUERY
-            or not query.strip()
-            or any(ord(c) < 32 or 127 <= ord(c) <= 159
-                   or 0xD800 <= ord(c) <= 0xDFFF for c in query)):
+            or not query.strip() or not query.isprintable()):
         raise ValueError("Query must be 1–160 printable characters")
     if type(max_matches) is not int or not 1 <= max_matches <= MAX_FIND_MATCHES:
         raise ValueError("max_matches must be between 1 and 20")
