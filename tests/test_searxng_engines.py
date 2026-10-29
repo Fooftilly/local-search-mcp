@@ -318,6 +318,133 @@ class EngineChooserTests(unittest.TestCase):
                 self.assertEqual(e.main(), 0)
             self.assertEqual(self.file.read_text(), self.original)
 
+    def test_sleeping_inventory_requires_separate_operator_wake_consent(self):
+        stopped = Target("searxng", "a" * 64, False, "no")
+        inventory = [
+            {"name": "yahoo", "enabled": True, "categories": ("general",)},
+            {"name": "google cse images", "enabled": True,
+             "categories": ("images",)},
+            {"name": "bing images", "enabled": True, "categories": ("images",)},
+        ]
+        for inputs, expected_wakes in (
+            (["0"], 0),
+            (["3", "NO"], 0),
+            (["2", ""], 0),
+            (["3", "WAKE", "CANCEL"], 1),
+            (["3", "WAKE", "APPLY"], 1),
+        ):
+            with (self.subTest(inputs=inputs),
+                  patch.object(e.on_demand_docker, "_safe_target",
+                               side_effect=lambda _service: stopped),
+                  patch.object(e, "_check_bind_mount"),
+                  patch.object(e.on_demand_settings, "read",
+                               return_value={"enabled": True, "idle_minutes": 30}),
+                  patch.object(e, "_wake_for_engine_inventory",
+                               return_value=inventory) as wake,
+                  patch.object(e, "apply", return_value="applied") as applied,
+                  patch.object(e.os, "geteuid", return_value=1000),
+                  patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
+                  patch("builtins.input", side_effect=inputs),
+                  contextlib.redirect_stdout(io.StringIO()) as output):
+                self.assertEqual(e.main(), 0)
+            self.assertEqual(wake.call_count, expected_wakes)
+            self.assertEqual(applied.call_count, int(inputs[-1] == "APPLY"))
+            if expected_wakes:
+                wake.assert_called_once_with(stopped)
+                self.assertIn("may remain active", output.getvalue())
+            self.assertEqual(self.file.read_text(), self.original)
+
+    def test_sleeping_disabled_on_demand_and_running_invalid_inventory_fail_closed(self):
+        for target, enabled in (
+            (Target("searxng", "a" * 64, False, "no"), False),
+            (Target("searxng", "a" * 64, True, "no"), True),
+        ):
+            with (self.subTest(running=target.running),
+                  patch.object(e.on_demand_docker, "_safe_target",
+                               return_value=target),
+                  patch.object(e, "_check_bind_mount"),
+                  patch.object(e.on_demand_settings, "read",
+                               return_value={"enabled": enabled, "idle_minutes": 30}),
+                  patch.object(e, "live_engines",
+                               side_effect=e.EngineSetupError("private secret")),
+                  patch.object(e, "_wake_for_engine_inventory",
+                               side_effect=AssertionError("no Docker wake")) as wake,
+                  patch.object(e, "apply",
+                               side_effect=AssertionError("no mutation")),
+                  patch.object(e.os, "geteuid", return_value=1000),
+                  patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
+                  patch("builtins.input", side_effect=["3"]),
+                  contextlib.redirect_stdout(io.StringIO()),
+                  contextlib.redirect_stderr(io.StringIO()) as err):
+                self.assertEqual(e.main(), 1)
+            wake.assert_not_called()
+            self.assertEqual(self.file.read_text(), self.original)
+            self.assertNotIn("private secret", err.getvalue())
+            self.assertIn(
+                "inventory is unavailable" if target.running
+                else "on-demand mode is disabled", err.getvalue())
+
+    def test_verified_wake_rechecks_target_ownership_and_never_writes_settings(self):
+        stopped = Target("searxng", "a" * 64, False, "no")
+        running = Target("searxng", "a" * 64, True, "no")
+        response = [{"name": "yahoo", "categories": ("general",),
+                     "enabled": True}]
+        with (patch.object(e.on_demand_settings, "read",
+                           return_value={"enabled": True, "idle_minutes": 30}),
+              patch.object(e.on_demand_docker, "_safe_target",
+                           return_value=stopped),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e.on_demand_docker, "start",
+                           return_value=True) as start,
+              patch.object(e, "live_engines", return_value=response) as read,
+              patch.object(e, "searxng_ok", return_value=True)):
+            self.assertEqual(e._wake_for_engine_inventory(stopped), response)
+            start.assert_called_once()
+            self.assertEqual(start.call_args.args, ("searxng",))
+            self.assertEqual(start.call_args.kwargs["timeout"], 30)
+            self.assertTrue(start.call_args.kwargs["health"]("searxng"))
+            read.assert_called_once()
+        self.assertEqual(self.file.read_text(), self.original)
+
+        for actual in (Target("searxng", "b" * 64, False, "no"),
+                       Target("searxng", "a" * 64, False, "unless-stopped")):
+            with (self.subTest(actual=actual),
+                  patch.object(e.on_demand_settings, "read",
+                               return_value={"enabled": True}),
+                  patch.object(e.on_demand_docker, "_safe_target",
+                               return_value=actual),
+                  patch.object(e.on_demand_docker, "start",
+                               side_effect=AssertionError("no wake")) as start):
+                with self.assertRaisesRegex(e.EngineSetupError,
+                                            "identity or restart policy"):
+                    e._wake_for_engine_inventory(stopped)
+                start.assert_not_called()
+
+        with (patch.object(e.on_demand_settings, "read",
+                           return_value={"enabled": False}),
+              patch.object(e.on_demand_docker, "_safe_target",
+                           side_effect=AssertionError("no inspection")),
+              patch.object(e.on_demand_docker, "start",
+                           side_effect=AssertionError("no wake"))):
+            with self.assertRaisesRegex(e.EngineSetupError, "disabled"):
+                e._wake_for_engine_inventory(stopped)
+
+    def test_wake_failure_does_not_disclose_docker_error_or_change_settings(self):
+        stopped = Target("searxng", "a" * 64, False, "no")
+        with (patch.object(e.on_demand_settings, "read",
+                           return_value={"enabled": True}),
+              patch.object(e.on_demand_docker, "_safe_target",
+                           return_value=stopped),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e.on_demand_docker, "start",
+                           side_effect=e.on_demand_docker.LifecycleError(
+                               "PRIVATE DOCKER STDERR"))):
+            with self.assertRaisesRegex(e.EngineSetupError,
+                                        "wake failed") as error:
+                e._wake_for_engine_inventory(stopped)
+        self.assertNotIn("PRIVATE", str(error.exception))
+        self.assertEqual(self.file.read_text(), self.original)
+
     def test_bind_mount_in_place_update_keeps_inode(self):
         inode = self.file.stat().st_ino
         e._save(self.file, "use_default_settings: true\nengines: []\n",

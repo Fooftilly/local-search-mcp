@@ -21,7 +21,9 @@ import time
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts import backend_inventory, on_demand_coordination, on_demand_docker
+from scripts import (backend_inventory, on_demand_coordination, on_demand_docker,
+                     on_demand_settings)
+from health_cli import searxng_ok
 
 START = "# BEGIN local-search-mcp managed engine selection"
 END = "# END local-search-mcp managed engine selection"
@@ -411,6 +413,34 @@ def _choose_numbers(rows: list[dict], *, allow_none: bool = False) -> tuple[str,
     return tuple(dict.fromkeys(rows[int(x) - 1]["name"] for x in pieces))
 
 
+def _wake_for_engine_inventory(original: on_demand_docker.Target) -> list[dict]:
+    """Operator-confirmed inventory wake, with a verified project-only target.
+
+    An in-flight bridge wake/idle or full-stop transition uses the same
+    cross-process lock. Never mutate a service without an explicit WAKE.
+    Do not force a stop after inspection: a concurrent MCP client may have
+    begun using the backend; normal managed idle/attended stop owns teardown.
+    """
+    with on_demand_coordination.exclusive():
+        if on_demand_settings.read()["enabled"] is not True:
+            raise EngineSetupError(
+                "On-demand mode is disabled; start owned SearXNG through setup first")
+        current = on_demand_docker._safe_target("searxng")
+        if (current.ident != original.ident or current.policy != original.policy):
+            raise EngineSetupError(
+                "Verified SearXNG identity or restart policy changed; no wake")
+        _check_bind_mount(current.ident, settings_path())
+        try:
+            on_demand_docker.start(
+                "searxng", health=lambda service: searxng_ok(), timeout=30)
+        except on_demand_docker.LifecycleError as exc:
+            raise EngineSetupError(
+                "Verified SearXNG wake failed; inspect local Docker and retry") from exc
+        # A failed /config after a confirmed wake is not a license to
+        # mutate settings or guess engine inventory from another provider.
+        return live_engines()
+
+
 def main() -> int:
     if not sys.stdin.isatty() or os.geteuid() == 0:
         print("Interactive normal-user terminal required", file=sys.stderr)
@@ -463,6 +493,27 @@ def main() -> int:
         choice = input("Choose: ").strip()
         if choice == "0":
             return 0
+        if choice in ("2", "3", "4") and not engines:
+            if target.running:
+                raise EngineSetupError(
+                    "Running SearXNG engine inventory is unavailable; verify "
+                    "127.0.0.1:8888/config and retry. No settings changed")
+            if on_demand_settings.read()["enabled"] is not True:
+                raise EngineSetupError(
+                    "SearXNG is stopped and on-demand mode is disabled. "
+                    "Start the owned backend through setup and retry")
+            print("SearXNG is sleeping: the installed engine list cannot be read yet.")
+            print("An explicit wake starts only the verified managed SearXNG "
+                  "container, without changing engine settings.")
+            if input("Type WAKE to inspect installed engines, anything else cancels: "
+                     ).strip() != "WAKE":
+                print("Cancelled; SearXNG remains sleeping and settings are unchanged")
+                return 0
+            engines = _wake_for_engine_inventory(target)
+            print("Verified SearXNG is running. It may remain active until "
+                  "managed idle or an attended stop.")
+            general = _category_engines(engines, "general")
+            names = tuple(row["name"] for row in general)
         if choice == "1":
             if names and "yahoo" not in names:
                 raise EngineSetupError("Yahoo is not in the running SearXNG general engine list")
@@ -508,8 +559,7 @@ def main() -> int:
             print("Other categories' previously managed choices are retained, "
                   "except shared engine flags which apply globally.")
         else:
-            print("Cancelled; installed engine list unavailable or invalid choice")
-            return 0
+            raise EngineSetupError("Invalid engine choice; no settings changed")
         print("Enable by default in this selection: " +
               (", ".join(selected) if selected else "(none)"))
         print("Other affected engines will be excluded from default searches.")
