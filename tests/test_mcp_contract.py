@@ -688,6 +688,10 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
             audit = (Path(self.tmp.name) / "history.jsonl").read_text()
             self.assertNotIn(handle, audit)
             self.assertNotIn("PRIVATE_CELL_", audit)
+            events = [json.loads(line) for line in audit.splitlines()]
+            self.assertTrue(any(entry["kind"] == "page"
+                                and entry.get("action") == "table_page"
+                                for entry in events))
 
     async def test_long_document_continuation_over_actual_mcp_dispatch(self):
         from collections import OrderedDict
