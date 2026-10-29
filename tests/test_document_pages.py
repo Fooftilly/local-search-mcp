@@ -61,6 +61,37 @@ class DocumentPageTests(unittest.TestCase):
         self.assertEqual(pages.read(tokens[1], 2)["markdown"], "x")
         self.assertEqual(pages.read(tokens[2], 2)["markdown"], "x")
 
+    def test_outline_multipage_headings_unicode_setext_and_code_fences(self):
+        prefix = "# Intro 🧭\n" + "x" * (pages.PAGE_CHARS - len("# Intro 🧭\n"))
+        markdown = (prefix + "\n## Second section\n" +
+                    "This is a section\n---------------\n" +
+                    "```python\n# fake heading\n```\n" +
+                    "~~~\n# also fake\n~~~\n" +
+                    "## Final\n")
+        outline = pages.build_outline(markdown)
+        titles = [x["heading"] for x in outline["outline"]]
+        self.assertEqual(titles, ["Intro 🧭", "Second section",
+                                  "This is a section", "Final"])
+        self.assertFalse(outline["outline_truncated"])
+        self.assertEqual(outline["outline"][0]["offset"], 0)
+        self.assertEqual(outline["outline"][1]["offset"], pages.PAGE_CHARS + 1)
+        self.assertEqual(outline["outline"][1]["page"], 2)
+        for row in outline["outline"]:
+            self.assertIn(row["heading"], markdown[row["offset"]:row["offset"] + 200])
+
+    def test_outline_bounded_and_safe_on_untrusted_headings(self):
+        lines = "\n".join(f"### Section {i}" for i in range(60))
+        result = pages.build_outline(lines)
+        self.assertEqual(len(result["outline"]), pages.MAX_OUTLINE_HEADINGS)
+        self.assertTrue(result["outline_truncated"])
+        self.assertEqual(result["outline"][-1]["heading"], "Section 39")
+        unsafe = "# A\\u202eB <script>evil</script> " + "x" * 600
+        safe = pages.build_outline(unsafe)["outline"][0]["heading"]
+        self.assertNotIn("\\u202e", safe)
+        self.assertLessEqual(len(safe), pages.MAX_OUTLINE_HEADING_CHARS)
+        self.assertEqual(pages.build_outline("No headings")["outline"], [])
+        self.assertFalse(pages.build_outline("")["outline_truncated"])
+
     def test_literal_find_crosses_page_boundary_with_correct_source_offset(self):
         content = "x" * (pages.PAGE_CHARS - 3) + "Grant Deadline" + "z" * pages.PAGE_CHARS
         handle, _ = pages.save("https://example.com/long", content, {"title": "Long"})
