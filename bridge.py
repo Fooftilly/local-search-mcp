@@ -166,7 +166,7 @@ def _run_search(params: dict, max_results: int, *,
                 "reason": "On-demand search backend unavailable; check Docker ownership and setup, then retry."}
 
 
-MAX_SEARCH_CONFIG_BYTES = 128 * 1024
+MAX_SEARCH_CONFIG_BYTES = 512 * 1024
 
 
 def _verify_explicit_search_engines(client: httpx.Client, params: dict) -> dict | None:
@@ -194,7 +194,7 @@ def _verify_explicit_search_engines(client: httpx.Client, params: dict) -> dict 
     except (httpx.RequestError, UnicodeError, ValueError, TypeError):
         return failure
     engines = payload.get("engines") if isinstance(payload, dict) else None
-    if not isinstance(engines, list) or len(engines) > 200:
+    if not isinstance(engines, list) or len(engines) > 512:
         return failure
     active = set()
     for row in engines:
