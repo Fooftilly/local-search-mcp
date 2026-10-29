@@ -63,6 +63,13 @@ class TableContinuationTests(unittest.TestCase):
                 self.assertLessEqual(len(json.dumps({"cells": row},
                     ensure_ascii=True).encode()), extraction.MAX_ROW_BYTES)
         self.assertTrue(payload["entries"][0]["retained_truncated"])
+        # An invalid row must not hide a later wide retained row.
+        mixed = {"tables": [{"headers": ["A"], "rows":
+            [{"bad": "row"}] + [["x"]] * 9 + [[str(i) for i in range(30)]]}]}
+        normalized = extraction.prepare_table_continuation(mixed)
+        self.assertEqual(len(normalized["entries"][0]["rows"]), 10)
+        self.assertTrue(normalized["entries"][0]["columns_truncated"])
+        self.assertTrue(normalized["retention_truncated"])
 
     def test_column_continuation_recovers_bounded_columns_without_duplicates(self):
         src = source(1, 12)
