@@ -165,6 +165,85 @@ class StructuredExtractionTests(unittest.TestCase):
                 self.assertTrue(all(len(cell) <= 200 for cell in record))
         self.assertNotIn("links", output)
 
+    def test_structured_info_distinguishes_missing_and_bounded_source(self):
+        missing = subject.extract({}, "https://example.com/",
+                                  include_links=True, include_tables=True)
+        self.assertEqual(missing["structured_info"]["source_completeness"], "unknown")
+        self.assertFalse(missing["structured_info"]["links"]["upstream_field_present"])
+        self.assertFalse(missing["structured_info"]["tables"]["upstream_field_present"])
+        self.assertFalse(missing["structured_info"]["links"]["truncated"])
+        self.assertEqual(missing["structured_info"]["links"]["returned"], 0)
+        exact = subject.extract({"links": {"internal": [
+            {"href": f"/articles/{i}"} for i in range(24)]},
+            "tables": [{"headers": ["Name"], "rows": [["ok"]]}]},
+            "https://example.com/", include_links=True, include_tables=True)
+        self.assertEqual(exact["structured_info"]["links"]["unique_safe_candidates_examined"], 24)
+        self.assertEqual(exact["structured_info"]["links"]["returned"], 24)
+        self.assertFalse(exact["structured_info"]["links"]["truncated"])
+        self.assertFalse(exact["structured_info"]["tables"]["truncated"])
+
+    def test_truncation_reports_observed_candidates_not_unverified_page_totals(self):
+        links = [{"href": f"/articles/report-{i}", "text": f"Article {i}"}
+                 for i in range(115)]
+        # More than 100 inputs is intentionally not exhaustively inspected.
+        tables = [{"headers": [str(x) for x in range(11)],
+                   "rows": [[str(x) for x in range(10)] for _ in range(17)]}
+                  for _ in range(12)]
+        output = subject.extract({"links": {"internal": links}, "tables": tables},
+                                 "https://example.com/", include_links=True,
+                                 include_tables=True)
+        stats = output["structured_info"]
+        self.assertTrue(stats["links"]["input_scan_capped"])
+        self.assertEqual(stats["links"]["unique_safe_candidates_examined"], 100)
+        self.assertTrue(stats["links"]["truncated"])
+        self.assertEqual(stats["links"]["returned"], 24)
+        self.assertTrue(stats["tables"]["input_scan_capped"])
+        self.assertEqual(stats["tables"]["candidates_observed"], 12)
+        self.assertTrue(stats["tables"]["truncated"])
+        self.assertEqual(stats["tables"]["returned"], 4)
+        self.assertTrue(stats["tables"]["table_limits"][0]["rows_truncated"])
+        self.assertTrue(stats["tables"]["table_limits"][0]["columns_truncated"])
+        self.assertEqual(stats["tables"]["table_limits"][0]["rows_observed"], 17)
+        self.assertLessEqual(len(json.dumps(output, ensure_ascii=True).encode()),
+                             subject.MAX_OUTPUT_BYTES)
+
+    def test_metadata_budget_allows_backfill_and_malformed_table_rows_reported(self):
+        # 24 expensive links outrank a small 25th link. The metadata reserve
+        # must be in effect during selection, not after selection.
+        expensive = [{"href": "/articles/" + "x" * 700 + str(i),
+                      "text": "A descriptive research article"}
+                     for i in range(24)]
+        page = {"links": {"internal": expensive + [
+            {"href": "/articles/short", "text": "Short report"}]},
+            "tables": [{"headers": ["H"], "rows": [
+                ["one"], {"malformed": "not a row"}, ["three"]]}]}
+        result = subject.extract(page, "https://example.com/",
+                                 include_links=True, include_tables=True)
+        self.assertIn("https://example.com/articles/short",
+                      [x["url"] for x in result["links"]])
+        self.assertEqual(result["tables"][0]["rows"], [["one"], ["three"]])
+        limits = result["structured_info"]["tables"]["table_limits"][0]
+        self.assertEqual(limits["rows_observed"], 3)
+        self.assertTrue(limits["rows_truncated"])
+        self.assertLessEqual(len(json.dumps(result, ensure_ascii=True).encode()),
+                             subject.MAX_OUTPUT_BYTES)
+
+    def test_metadata_reports_byte_budget_omissions_and_dedupe(self):
+        page = {"links": {"internal": [
+            {"href": "/same#one"}, {"href": "/same#two"},
+            *[{"href": "/articles/" + str(i) + "x" * 1800}
+              for i in range(35)]]}}
+        answer = subject.extract(page, "https://example.com/",
+                                 include_links=True, include_tables=False)
+        stats = answer["structured_info"]["links"]
+        self.assertLess(stats["unique_safe_candidates_examined"], 37)
+        self.assertTrue(stats["truncated"])
+        self.assertEqual(stats["returned"], len(answer["links"]))
+        self.assertLessEqual(len(json.dumps(answer, ensure_ascii=True).encode()),
+                             subject.MAX_OUTPUT_BYTES)
+        self.assertEqual(subject.extract({}, "https://example.com/",
+                                         include_links=False, include_tables=False), {})
+
     def test_malformed_structures_never_crash_or_leak_python_objects(self):
         tests = [
             {"links": 3, "tables": {"rows": "bad"}},

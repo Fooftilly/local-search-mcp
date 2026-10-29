@@ -101,7 +101,20 @@ cache formats are unchanged.
 - `tables`: up to **4** structures, each capped at 8 columns, 10 rows,
   200 characters per cell and bounded caption/summary. Malformed entries
   are ignored.
-- Combined structured fields have a **20,000-byte JSON item budget**.
+- Opted-in structured extraction also returns `structured_info` with the
+  number of **safe unique link candidates examined**, returned links,
+  source-field presence, and whether link scan/selection limits omitted any
+  candidates. For tables it includes observed input item count, returned table
+  count, and per-returned-table observed row counts and row/column truncation.
+  These are observations of bounded Crawl4AI output, **not original-site
+  totals**. `source_completeness="unknown"` is always explicit; a missing
+  Crawl4AI field is not evidence that the page contains no such content.
+  Input scan limits (first 100 links per kind and first 10 tables) are
+  separately flagged. Malformed items or shared-byte-budget omissions can
+  also mark an output truncated.
+- Combined structured fields, **including** `structured_info`, retain the
+  **20,000-byte JSON item budget**; metadata space is reserved from the
+  existing extraction allowance.
   Truncation is a deliberate resource bound, not a claim that the entire
   page's links or tables were captured.
 

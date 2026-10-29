@@ -105,7 +105,7 @@ def _link_score(item: dict) -> int:
     return score
 
 
-def _select_links(raw: dict, base: str) -> list[dict]:
+def _select_links(raw: dict, base: str, *, budget: int = MAX_OUTPUT_BYTES) -> tuple[list[dict], int]:
     """Deduplicate bounded crawl links before selecting a useful 24-item mix.
 
     Preserve original order for <=24 unique URLs. On overflow, sort by an
@@ -153,7 +153,7 @@ def _select_links(raw: dict, base: str) -> list[dict]:
     else:
         ordered = indexed
     chosen = []
-    budget = MAX_OUTPUT_BYTES
+    budget = min(budget, MAX_OUTPUT_BYTES)
     for index, item in ordered:
         if len(chosen) >= MAX_LINKS:
             break
@@ -164,7 +164,7 @@ def _select_links(raw: dict, base: str) -> list[dict]:
     if overflowing:
         # Restore ranked/source order after the external reservation phase.
         chosen.sort(key=lambda pair: (-_link_score(pair[1]), pair[0]))
-    return [row for _, row in chosen]
+    return [row for _, row in chosen], len(candidates)
 
 
 def extract(page: dict, base: str, *, include_links: bool, include_tables: bool) -> dict:
@@ -174,19 +174,37 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool)
     tables=[{headers:[...],rows:[[...]],caption,summary}].
     """
     output = {}
-    remaining = MAX_OUTPUT_BYTES
+    # Reserve a fixed bounded allowance for structural metadata. Counts are
+    # observations of the Crawl4AI response, not exhaustive website totals.
+    remaining = MAX_OUTPUT_BYTES - 1200
+    info = {}
     if include_links:
         links = []
         raw = page.get("links")
+        observed = 0
         if isinstance(raw, dict):
-            for item in _select_links(raw, base):
+            selected, observed = _select_links(raw, base, budget=remaining)
+            for item in selected:
                 size = _size(item)
                 if size <= remaining:
                     links.append(item)
                     remaining -= size
         output["links"] = links
+        info["links"] = {
+            "upstream_field_present": isinstance(raw, dict),
+            "unique_safe_candidates_examined": observed,
+            "returned": len(links),
+            "input_scan_capped": bool(isinstance(raw, dict) and any(
+                isinstance(raw.get(kind), list) and len(raw[kind]) > 100
+                for kind in ("internal", "external"))),
+            "truncated": observed > len(links) or bool(
+                isinstance(raw, dict) and any(
+                    isinstance(raw.get(kind), list) and len(raw[kind]) > 100
+                    for kind in ("internal", "external"))),
+        }
     if include_tables:
         tables = []
+        limits = []
         raw = page.get("tables")
         if isinstance(raw, list):
             for row in raw[:10]:
@@ -194,8 +212,9 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool)
                     break
                 if not isinstance(row, dict):
                     continue
-                headers = row.get("headers")
-                headers = [_text(x, 200) for x in headers[:MAX_COLUMNS]] if isinstance(headers, list) else []
+                original_headers = row.get("headers")
+                headers = ([_text(x, 200) for x in original_headers[:MAX_COLUMNS]]
+                           if isinstance(original_headers, list) else [])
                 source_rows = row.get("rows")
                 cells = []
                 if isinstance(source_rows, list):
@@ -211,5 +230,30 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool)
                 if size <= remaining:
                     tables.append(item)
                     remaining -= size
+                    limits.append({
+                        "rows_observed": len(source_rows) if isinstance(source_rows, list) else 0,
+                        "rows_truncated": (isinstance(source_rows, list) and (
+                            len(source_rows) > MAX_ROWS or
+                            len(cells) < min(len(source_rows), MAX_ROWS))),
+                        "columns_truncated": (isinstance(original_headers, list) and len(original_headers) > MAX_COLUMNS)
+                        or (isinstance(source_rows, list) and any(
+                            isinstance(record, list) and len(record) > MAX_COLUMNS
+                            for record in source_rows[:MAX_ROWS])),
+                    })
         output["tables"] = tables
+        info["tables"] = {
+            "upstream_field_present": isinstance(raw, list),
+            "candidates_observed": len(raw) if isinstance(raw, list) else 0,
+            "returned": len(tables),
+            "input_scan_capped": isinstance(raw, list) and len(raw) > 10,
+            "truncated": isinstance(raw, list) and len(raw) > len(tables),
+            "table_limits": limits,
+        }
+    if include_links or include_tables:
+        # This is only present on opt-in structured fetches. Do not imply
+        # completeness of the original web page: upstream may omit content.
+        output["structured_info"] = {
+            "source_completeness": "unknown",
+            **info,
+        }
     return output
