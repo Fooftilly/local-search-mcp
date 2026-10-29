@@ -102,6 +102,80 @@ class DocumentPageTests(unittest.TestCase):
         self.assertEqual(nohit["matches"], [])
         self.assertFalse(nohit["has_more"])
 
+    def test_find_pagination_reconstructs_every_overlapping_hit(self):
+        # The first hit begins immediately before a 24K page boundary; Unicode
+        # before the hits proves offsets count characters rather than UTF-8 bytes.
+        beginning = "🧭" + "x" * (pages.PAGE_CHARS - 2)
+        content = beginning + "a" * 67 + "z" * pages.PAGE_CHARS
+        handle, _ = pages.save("https://example.com/long", content, {})
+        expected = list(range(len(beginning), len(beginning) + 66))
+        actual = []
+        offset = 0
+        while True:
+            result, source, _ = pages.find_with_security_context(
+                handle, "AA", max_matches=7, start_offset=offset)
+            self.assertTrue(result["success"])
+            self.assertLessEqual(result["match_count"], 7)
+            self.assertEqual(source, "https://example.com/long")
+            self.assertTrue(all(len(m["excerpt"]) <= 222 for m in result["matches"]))
+            actual.extend(m["offset"] for m in result["matches"])
+            if not result["has_more"]:
+                self.assertIsNone(result["next_offset"])
+                break
+            self.assertIsInstance(result["next_offset"], int)
+            self.assertGreater(result["next_offset"], offset)
+            self.assertEqual(result["next_offset"],
+                             result["matches"][-1]["offset"] + 1)
+            offset = result["next_offset"]
+        self.assertEqual(actual, expected)
+        self.assertEqual(actual[0], pages.PAGE_CHARS - 1)
+        page_crossing, _, _ = pages.find_with_security_context(
+            handle, "aa", max_matches=1, start_offset=pages.PAGE_CHARS - 1)
+        self.assertEqual(page_crossing["matches"][0]["page"], 1)
+        self.assertEqual(page_crossing["next_offset"], pages.PAGE_CHARS)
+
+    def test_find_pagination_exact_end_empty_and_unicode_offsets(self):
+        content = "🧭Až ŽiVOt aAa" + "q" * (pages.PAGE_CHARS + 1)
+        handle, _ = pages.save("https://example.com/doc", content, {})
+        first, _, _ = pages.find_with_security_context(
+            handle, "aA", max_matches=1)
+        self.assertTrue(first["has_more"])
+        nxt, _, _ = pages.find_with_security_context(
+            handle, "AA", max_matches=1,
+            start_offset=first["next_offset"])
+        self.assertFalse(nxt["has_more"])
+        self.assertIsNone(nxt["next_offset"])
+        self.assertEqual([first["matches"][0]["offset"],
+                          nxt["matches"][0]["offset"]], [10, 11])
+        unicode, _, _ = pages.find_with_security_context(handle, "život")
+        self.assertEqual(unicode["matches"][0]["offset"], 4)
+        nohit, _, _ = pages.find_with_security_context(
+            handle, "aA", start_offset=len(content))
+        self.assertEqual(nohit["match_count"], 0)
+        self.assertFalse(nohit["has_more"])
+        self.assertIsNone(nohit["next_offset"])
+        with self.assertRaises(ValueError):
+            pages.find_with_security_context(
+                handle, "aA", start_offset=len(content) + 1)
+
+    def test_find_pagination_rejects_invalid_offsets_without_disclosure(self):
+        content = "SECRET" + "x" * pages.PAGE_CHARS
+        with patch.object(pages.time, "monotonic", return_value=50):
+            handle, _ = pages.save("https://example.com/page", content, {})
+        for invalid in (-1, True, 1.0, "0", None,
+                        pages.MAX_DOCUMENT_CHARS + 1):
+            with self.subTest(invalid=repr(invalid)), self.assertRaises(ValueError):
+                pages.find_with_security_context(
+                    handle, "SECRET", start_offset=invalid)
+        with patch.object(pages.time, "monotonic",
+                          return_value=50 + pages.TTL_SECONDS):
+            expired, src, proof = pages.find_with_security_context(
+                handle, "SECRET", start_offset=1)
+        self.assertEqual(expired["status"], "expired_or_unknown")
+        self.assertNotIn("SECRET", str(expired))
+        self.assertIsNone(src)
+        self.assertIsNone(proof)
+
     def test_find_expiry_eviction_and_invalid_parameters_are_safe(self):
         content = "SECRET PASSAGE " + "x" * pages.PAGE_CHARS
         with patch.object(pages.time, "monotonic", return_value=200):

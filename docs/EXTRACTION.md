@@ -12,15 +12,43 @@ fastmcp call http://127.0.0.1:8790/mcp web_fetch_page document_id='<handle-from-
 ### Find passages in an existing long document
 
 After `web_fetch` returns a `document_id` for a long approved page, call
-`web_find(document_id, query, max_matches=10)`. The search is literal and
-case-insensitive (not regular expressions), with at most **160 printable
-characters** in the query and **20 matches** per request. Each match returns
-a short bounded excerpt, its zero-based character offset in the already
-extracted Markdown, and the 1-based continuation `page` in which it begins.
-A match crossing a page boundary is reported under its starting page. The
-response also contains `match_count`, `page_count` and `has_more`.
-Overlapping occurrences are included. Use `web_fetch_page` to read the
-surrounding page when more context is needed.
+`web_find(document_id, query, max_matches=10, start_offset=0)`. The search is
+literal and case-insensitive (not regular expressions), with at most **160
+printable characters** in the query and **20 matches** per request. Each match
+returns a short bounded excerpt, its zero-based character offset in the
+already extracted Markdown, and the 1-based continuation `page` in which it
+begins. An occurrence crossing a 24,000-character page boundary is assigned
+to its starting page. The response includes `match_count`, `page_count`,
+`has_more`, and `next_offset`.
+
+**To read further matches**, when `has_more=true`, repeat the *same query*
+and `document_id` with `start_offset=next_offset`. The offset is the
+zero-based **Unicode character position in extracted Markdown** (not byte,
+HTML, or page number). It points one character after the last returned
+match's starting position, so overlapping hits are preserved without
+repeating prior hits. When there are no more matches,
+`has_more=false` and `next_offset=null`. The optional offset defaults
+to zero for compatible original calls; it must be an integer between zero
+and the document length, inclusive (at most 1,000,000). Returned matches
+stay limited to 20, regardless of the offset. A valid `start_offset`
+can also be used to begin searching later in the document.
+
+Use `web_fetch_page` to read the surrounding text. Pagination is still
+subject to the same original/final-domain, policy-epoch, expiry, evicted
+handle and one-use-grant checks on **each** request. A 15-minute document
+handle can expire between calls. No new crawl, DNS request, or durable
+search index is created.
+
+Example, using a private handle returned by an approved long fetch:
+
+```bash
+./.venv/bin/fastmcp call http://127.0.0.1:8790/mcp web_find \
+  document_id='<handle>' query='HTTP' max_matches=10 start_offset=0 --auth none
+# If has_more=true, pass the returned next_offset in a second call.
+```
+
+After deploying this schema change, refresh or reconnect the ChatGPT MCP
+plugin if its tool definitions are still cached.
 
 `web_find` does **not** fetch URLs, make a DNS request, create a new domain
 approval, store an index or read local files. It searches only the document

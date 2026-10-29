@@ -236,6 +236,50 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
             "time_range": "day", "engines": "qwant", "pageno": "2",
         }])
 
+    async def test_web_find_match_offset_pagination_over_actual_mcp(self):
+        from collections import OrderedDict
+        content = "a" * (bridge.document_pages.PAGE_CHARS + 37)
+        with (patch.object(bridge.document_pages, "_CACHE", OrderedDict()),
+              patch.object(bridge.httpx, "Client",
+                           side_effect=AssertionError("No crawler/search HTTP permitted"))):
+            domain_policy.decide("example.com", "allow", scope="exact")
+            token, count = bridge.document_pages.save(
+                "https://example.com/long", content, {})
+            self.assertEqual(count, 2)
+            async with Client(bridge.mcp) as client:
+                tools = {tool.name: tool for tool in await client.list_tools()}
+                self.assertIn("web_find", tools)
+                self.assertIn("start_offset", tools["web_find"].inputSchema["properties"])
+                first = await client.call_tool("web_find", {
+                    "document_id": token, "query": "A", "max_matches": 3,
+                })
+                self.assertFalse(first.is_error)
+                self.assertEqual(
+                    [m["offset"] for m in first.data["matches"]], [0, 1, 2])
+                self.assertTrue(first.data["has_more"])
+                self.assertEqual(first.data["next_offset"], 3)
+                second = await client.call_tool("web_find", {
+                    "document_id": token, "query": "a", "max_matches": 3,
+                    "start_offset": first.data["next_offset"],
+                })
+                self.assertFalse(second.is_error)
+                self.assertEqual(
+                    [m["offset"] for m in second.data["matches"]], [3, 4, 5])
+                self.assertEqual(second.data["next_offset"], 6)
+                last = await client.call_tool("web_find", {
+                    "document_id": token, "query": "A", "max_matches": 3,
+                    "start_offset": len(content) - 2,
+                })
+                self.assertFalse(last.is_error)
+                self.assertEqual(
+                    [m["offset"] for m in last.data["matches"]],
+                    [len(content) - 2, len(content) - 1])
+                self.assertFalse(last.data["has_more"])
+                self.assertIsNone(last.data["next_offset"])
+        audit = (Path(self.tmp.name) / "history.jsonl").read_text()
+        self.assertNotIn(token, audit)
+        self.assertNotIn(content[:500], audit)
+
     async def test_long_document_continuation_over_actual_mcp_dispatch(self):
         from collections import OrderedDict
         content = "A" * 24000 + "B" * 17000

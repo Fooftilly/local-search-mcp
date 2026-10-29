@@ -808,17 +808,20 @@ def web_fetch_page(document_id: str, page: int = 2) -> dict:
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 @logged_tool("page")
-def web_find(document_id: str, query: str, max_matches: int = 10) -> dict:
+def web_find(document_id: str, query: str, max_matches: int = 10,
+             start_offset: int = 0) -> dict:
     """Find bounded, literal case-insensitive excerpts in a fetched document.
 
-    Only unexpired web_fetch continuation handles are accepted; no network,
-    filesystem or permanent index. Original and final domain grants, including
-    one-use proof, are rechecked just as for web_fetch_page. Neither bearer
-    handles nor search queries are written to the audit log.
+    When has_more is true, pass next_offset as start_offset to continue without
+    repeating overlapping matches. Offsets count Python Unicode characters in
+    the fetched Markdown (zero-based), not bytes or source HTML positions.
+    Only unexpired web_fetch handles are accepted; no network, filesystem or
+    permanent index. Source/final grants and one-use proofs are rechecked on
+    every call just as for web_fetch_page. Never audit bearer handles or text.
     """
     epoch = request_cache.policy_epoch()
     result, source_url, once_proof = document_pages.find_with_security_context(
-        document_id, query, max_matches)
+        document_id, query, max_matches, start_offset)
     return _authorized_saved_document(result, source_url, once_proof, epoch)
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
