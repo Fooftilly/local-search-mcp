@@ -309,6 +309,100 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual([x["title"] for x in ranked], ["First", "Other"])
         self.assertEqual(ranked[0]["source_count"], 2)
 
+    def test_source_domain_filter_preserves_order_and_cache_separation(self):
+        original = httpx.Client
+        calls = []
+        urls = [
+            "https://example.org/official",
+            "https://news.example.org/item",
+            "https://another.example.org/item",
+            "https://notexample.org/falsematch",
+            "https://EXAMPLE.org:443/another",
+            "https://example.org:8443/unsupported",
+            "http://example.org/public",
+            "https://user:pass@example.org/unsafe",
+        ]
+        def handler(request):
+            self.assertEqual(request.url.path, "/search")
+            calls.append(dict(request.url.params))
+            return httpx.Response(200, json={"results": [
+                {"title": f"Result {i}", "url": url, "engine": "yahoo",
+                 "content": f"Public snippet {i}"}
+                for i, url in enumerate(urls)]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with (patch.object(self.module.httpx, "Client", side_effect=factory),
+              patch.object(domain_policy, "request",
+                           side_effect=AssertionError("Search filter must not approve crawls")),
+              patch.object(domain_policy.socket, "getaddrinfo",
+                           side_effect=AssertionError("Search filter must not resolve DNS"))):
+            normal = self.module.web_search("gov public")
+            exact = self.module.web_search(
+                "gov public", allowed_result_domains="example.org")
+            self.assertEqual(
+                self.module.web_search("gov public", allowed_result_domains="EXAMPLE.ORG"),
+                exact)
+            children = self.module.web_search(
+                "gov public", allowed_result_domains="*.example.org")
+            both = self.module.web_search(
+                "gov public", allowed_result_domains="example.org,*.example.org")
+            empty = self.module.web_search(
+                "gov public", allowed_result_domains="unrelated.org")
+            dedup = self.module.web_search(
+                "gov public", allowed_result_domains="example.org",
+                deduplicate=True, ranking="source_count")
+            diagnostic = self.module.web_search(
+                "gov public", allowed_result_domains="*.example.org",
+                include_search_status=True)
+        self.assertEqual([r["title"] for r in normal],
+                         ["Result 0", "Result 1", "Result 2", "Result 3",
+                          "Result 4", "Result 6"])
+        self.assertEqual([r["title"] for r in exact],
+                         ["Result 0", "Result 4", "Result 6"])
+        self.assertEqual([r["title"] for r in children], ["Result 1", "Result 2"])
+        self.assertEqual([r["title"] for r in both],
+                         ["Result 0", "Result 1", "Result 2", "Result 4", "Result 6"])
+        self.assertEqual(empty, [])
+        self.assertEqual([r["title"] for r in dedup],
+                         ["Result 0", "Result 4", "Result 6"])
+        self.assertEqual(diagnostic["results"], children)
+        self.assertEqual(diagnostic["status"], "ok")
+        self.assertEqual(len(calls), 7)
+        self.assertTrue(all(c == {"q": "gov public", "format": "json"} for c in calls))
+
+    def test_source_domain_filter_invalid_inputs_rejected_without_network(self):
+        invalid = [
+            5, False, None, [], "*", "*.co.uk", "co.uk",
+            "*.github.io", "github.io", "*.localhost", "127.0.0.1",
+            "*.127.0.0.1", "site.local", "https://example.org",
+            "example.org:443", "foo@example.org", "example.org/path",
+            "example.org,*example.org", "example.org,,news.example.org",
+            "example.org,EXAMPLE.ORG", "x" * 255 + ".org",
+            ",".join(f"site{i}.example.org" for i in range(9)),
+            "faß.de",  # IDNA2003 vs modern browser UTS46 ambiguity
+        ]
+        for item in invalid:
+            with self.subTest(input=repr(item)):
+                with patch.object(self.module.httpx, "Client") as client:
+                    with self.assertRaises(ValueError):
+                        self.module.web_search(
+                            "safe query", allowed_result_domains=item)
+                    client.assert_not_called()
+
+    def test_source_domain_filter_validates_exact_and_subdomain_rules(self):
+        filt = self.module._result_host_filter("example.org,*.example.org")
+        self.assertEqual(filt, (("example.org", False), ("example.org", True)))
+        for host, expected in [
+            ("example.org", True), ("news.example.org", True),
+            ("archive.news.example.org", True), ("evil-example.org", False),
+            ("example.org.evil.net", False), ("notexample.org", False)
+        ]:
+            self.assertEqual(self.module._result_host_allowed(host, filt),
+                             expected, host)
+        self.assertFalse(self.module._result_host_allowed(
+            "example.org", self.module._result_host_filter("*.example.org")))
+        self.assertEqual(self.module._result_host_filter(""), ())
+
     def test_search_dedupe_invalid_options_do_not_contact_backend(self):
         cases = [
             {"deduplicate": 1},
