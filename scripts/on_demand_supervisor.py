@@ -85,6 +85,10 @@ class Supervisor:
         self._locks = {name: threading.Lock() for name in ("crawl4ai", "searxng")}
         self._state = {"crawl4ai": "sleeping", "searxng": "sleeping"}
         self._verified_at = {"crawl4ai": 0.0, "searxng": 0.0}
+        # Health is the inexpensive signal for attended, external wakes.
+        # In case the endpoint later fails while Docker is still running,
+        # verify project ownership at most once per five minutes.
+        self._last_sleep_inventory = time.monotonic()
         self._stop_event = threading.Event()
         # Do not start Docker here, only arm verified already-running backends.
         for name in self._locks:
@@ -191,8 +195,12 @@ class Supervisor:
                         # fixed loopback /healthz first. Never run the full
                         # multi-command Docker inventory every ten seconds
                         # when SearXNG is intentionally stopped.
-                        if not _healthy("searxng"):
+                        now = time.monotonic()
+                        healthy = _healthy("searxng")
+                        if (not healthy and
+                                now - self._last_sleep_inventory < 300):
                             continue
+                        self._last_sleep_inventory = now
                         try:
                             target = docker._safe_target(service)
                         except docker.LifecycleError:
