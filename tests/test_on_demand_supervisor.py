@@ -100,6 +100,8 @@ class OnDemandSupervisorTests(unittest.TestCase):
             running[0] = False
             return True
         with (patch.object(manager, "_enabled", return_value=True),
+              patch.object(sup, "_healthy",
+                           side_effect=lambda service: running[0] if service == "searxng" else False),
               patch.object(sup.docker, "_safe_target", side_effect=target),
               patch.object(sup.docker, "start",
                            side_effect=AssertionError("Passive reconciliation woke Docker")),
@@ -128,6 +130,7 @@ class OnDemandSupervisorTests(unittest.TestCase):
               patch.object(sup.threading.Thread, "start")):
             manager = sup.Supervisor(1)
         with (patch.object(manager, "_enabled", return_value=True),
+              patch.object(sup, "_healthy", return_value=True),
               patch.object(sup.docker, "_safe_target",
                            side_effect=LifecycleError("unverified")) as lookup,
               patch.object(sup.docker, "start",
@@ -138,6 +141,25 @@ class OnDemandSupervisorTests(unittest.TestCase):
         self.assertFalse(manager.snapshot()["searxng"]["armed"])
         self.assertEqual(manager.snapshot()["searxng"]["state"], "sleeping")
         self.assertGreaterEqual(lookup.call_count, 1)
+
+    def test_sleeping_searxng_health_absent_never_scans_docker(self):
+        with (patch.object(sup.docker, "_safe_target",
+                           return_value=Target("searxng", "a" * 64, False, "no")),
+              patch.object(sup.threading.Thread, "start")):
+            manager = sup.Supervisor(1)
+        with (patch.object(manager, "_enabled", return_value=True),
+              patch.object(sup, "_healthy", return_value=False) as health,
+              patch.object(sup.docker, "_safe_target",
+                           side_effect=AssertionError("No Docker polling while asleep")),
+              patch.object(sup.docker, "start",
+                           side_effect=AssertionError("No Docker start")),
+              patch.object(sup.docker, "stop",
+                           side_effect=AssertionError("No Docker stop"))):
+            for _ in range(50):
+                manager.idle_once()
+        self.assertEqual(health.call_count, 50)
+        self.assertEqual(manager.snapshot()["searxng"]["state"], "sleeping")
+        self.assertFalse(manager.snapshot()["searxng"]["armed"])
 
     def test_actual_wake_failure_not_passively_cleared(self):
         manager = self.new_supervisor()
