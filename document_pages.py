@@ -117,7 +117,8 @@ FIND_SNIPPET_AFTER = 130
 
 
 def find_with_security_context(
-        token: str, query: str, max_matches: int = 10
+        token: str, query: str, max_matches: int = 10,
+        start_offset: int = 0
 ) -> tuple[dict, str | None, tuple[str, str] | None]:
     """Literal case-insensitive matches in *existing* temporary document text.
 
@@ -132,6 +133,8 @@ def find_with_security_context(
         raise ValueError("Query must be 1–160 printable characters")
     if type(max_matches) is not int or not 1 <= max_matches <= MAX_FIND_MATCHES:
         raise ValueError("max_matches must be between 1 and 20")
+    if type(start_offset) is not int or not 0 <= start_offset <= MAX_DOCUMENT_CHARS:
+        raise ValueError("start_offset must be a character position from 0 to 1000000")
     with _LOCK:
         _purge_expired(time.monotonic())
         item = _CACHE.get(token)
@@ -140,9 +143,11 @@ def find_with_security_context(
                      "reason": "Temporary document not found or expired; fetch the approved URL again."},
                     None, None)
         expires_at, url, markdown, metadata, source_url, once_proof = item
+        if start_offset > len(markdown):
+            raise ValueError("start_offset exceeds the document length")
         matcher = re.compile(re.escape(query), re.IGNORECASE)
         matches = []
-        next_from = 0
+        next_from = start_offset
         # Search from match.start()+1 to include overlapping literal hits.
         # At most 1 million cached characters, 20 returned matches.
         while len(matches) < max_matches:
@@ -160,7 +165,8 @@ def find_with_security_context(
         count = (len(markdown) + PAGE_CHARS - 1) // PAGE_CHARS
         result = {"success": True, "url": url, "document_id": token,
                   "page_count": count, "matches": matches,
-                  "match_count": len(matches), "has_more": has_more}
+                  "match_count": len(matches), "has_more": has_more,
+                  "next_offset": next_from if has_more else None}
         return result, source_url, once_proof
 
 
