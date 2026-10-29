@@ -135,6 +135,68 @@ class SearchResultTests(unittest.TestCase):
         self.assertEqual([x["source_count"] for x in grouped], [24, 2, 1])
         self.assertEqual(grouped[0]["source_engines"], engines)
 
+    def test_captured_searxng_json_dates_are_opt_in_and_source_labeled(self):
+        # Representative real SearXNG 2026.10.19 JSON captured on 2026-10-21:
+        # https://gannet.dbhq.uk/searxng-search-api/
+        # A result can have publishedDate=null; another has an ISO-like
+        # timestamp with no timezone. Never infer UTC from the latter.
+        missing = row("https://example.org/first", "brave", "Undated")
+        missing["publishedDate"] = None
+        dated = row("https://example.org/second", "brave", "Dated")
+        dated["publishedDate"] = "2024-10-23T12:00:38"
+        defaults = enrich_search_results([missing, dated], 2)
+        self.assertTrue(all(set(r) == {"title", "url", "snippet", "engine"}
+                            for r in defaults))
+        enhanced = enrich_search_results([missing, dated], 2,
+                                         include_published_date=True)
+        self.assertNotIn("published_date", enhanced[0])
+        self.assertEqual(enhanced[1]["published_date"], "2024-10-23")
+        self.assertEqual(enhanced[1]["date_source"], "searxng.publishedDate")
+        self.assertNotIn("date_source", enhanced[0])
+
+    def test_date_parser_rejects_invalid_untrusted_metadata(self):
+        good = ["2024-02-29", "2024-02-29T12:30:40",
+                "2024-02-29T12:30:40Z", "2024-02-29T23:59:59+14:00",
+                "2024-02-29T00:00:00.012345-05:30"]
+        for value in good:
+            with self.subTest(value=value):
+                r = row("https://example.org/post", "news")
+                r["publishedDate"] = value
+                result = enrich_search_results([r], 1, include_published_date=True)[0]
+                self.assertEqual(result["published_date"], "2024-02-29")
+                self.assertEqual(result["date_source"], "searxng.publishedDate")
+        bad = [None, 12, True, [], {}, "", "now", "2024-02-30",
+               "2024-13-01T12:00:00", "2024-10-23T25:00:00",
+               "2024-10-23T12:00:00+25:00", "2024-10-23T12:00:00+0200",
+               "2024-10-23T12:00:00Z\\n", "\\u202e2024-10-23",
+               "2024-10-23<script>", "\\ud800", "x" * 100000]
+        for value in bad:
+            with self.subTest(value=repr(value)):
+                r = row("https://example.org/post", "news")
+                r["publishedDate"] = value
+                r["pubdate"] = "2020-01-01 00:00:00"
+                result = enrich_search_results([r], 1, include_published_date=True)[0]
+                self.assertNotIn("published_date", result)
+                self.assertNotIn("date_source", result)
+
+    def test_grouping_does_not_attribute_later_engine_date_to_primary_source(self):
+        first = row("https://EXAMPLE.org/path#first", "yahoo", "Primary")
+        second = row("https://example.org/path#second", "brave", "Alternate")
+        second["publishedDate"] = "2026-10-01T12:00:00Z"
+        grouped = enrich_search_results([first, second], 2, deduplicate=True,
+                                        include_published_date=True)
+        self.assertEqual(len(grouped), 1)
+        self.assertEqual(grouped[0]["source_engines"], ["yahoo", "brave"])
+        self.assertNotIn("published_date", grouped[0])
+        # If the primary source itself provides a date, retain it across
+        # grouping without copying conflicting later-source metadata.
+        first["publishedDate"] = "2026-10-02T11:00:00Z"
+        grouped = enrich_search_results([first, second], 2, deduplicate=True,
+                                        include_published_date=True)
+        self.assertEqual(grouped[0]["published_date"], "2026-10-02")
+        self.assertEqual(grouped[0]["date_source"], "searxng.publishedDate")
+
+
     def test_default_keeps_legacy_shape_first_n_and_order(self):
         rows = [
             row("https://example.com/a", "qwant", "First", "1"),
