@@ -187,6 +187,12 @@ class Supervisor:
                         # Reconcile only a freshly verified running backend,
                         # then start the normal idle countdown. Never start,
                         # stop, or reset an active request from this path.
+                        # A sleeping backend is observed through the cheap
+                        # fixed loopback /healthz first. Never run the full
+                        # multi-command Docker inventory every ten seconds
+                        # when SearXNG is intentionally stopped.
+                        if not _healthy("searxng"):
+                            continue
                         try:
                             target = docker._safe_target(service)
                         except docker.LifecycleError:
