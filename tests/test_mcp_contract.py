@@ -205,6 +205,18 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("PRIVATE_TOKEN", str(diagnostic))
         self.assertNotIn("SECRET_PRIVATE_DETAIL", str(diagnostic))
         self.assertEqual(len(seen), 3)
+        audit = [json.loads(line) for line in
+                 (Path(self.tmp.name) / "history.jsonl").read_text().splitlines()]
+        searches = [row for row in audit if row.get("kind") == "search"]
+        self.assertEqual(len(searches), 3)
+        self.assertTrue(all(row["status"] == "success" for row in searches))
+        self.assertTrue(all(row["result_count"] == 1 for row in searches))
+        self.assertTrue(all(row["results"][0]["title"] == "Official reference"
+                            for row in searches))
+        self.assertTrue(all("error_type" not in row for row in searches))
+        self.assertNotIn("PRIVATE_TOKEN", str(searches))
+        self.assertNotIn("SECRET_PRIVATE_DETAIL", str(searches))
+        self.assertNotIn("Public source text", str(searches))
         self.assertTrue(all(path == "/search" for path, _ in seen))
         self.assertTrue(all(params == {"q": "public info", "format": "json"}
                             for _, params in seen))
@@ -237,6 +249,8 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(status["coverage"],
                                      "no_failures_reported" if len(seen) == 1
                                      else "unverifiable")
+                    self.assertEqual(response.data["status"],
+                                     "ok" if len(seen) == 1 else "unknown")
                     self.assertNotIn("PRIVATE_SECRET", str(status))
                 failed = await client.call_tool("web_search", {
                     "query": "public provider status",
