@@ -137,7 +137,7 @@ def logged_tool(kind: str):
                     if type(requested_page) is int:
                         event["page"] = requested_page
                 else:
-                    event["action"] = "find"
+                    event["action"] = "table_page" if "table_index" in sig.parameters else "find"
             else:
                 event["url"] = safe_url(params.get("url"))
                 try:

@@ -7,6 +7,7 @@ expiry, or memory-pressure eviction invalidates the handle explicitly.
 from __future__ import annotations
 
 from collections import OrderedDict
+import json
 import re
 import secrets
 import threading
@@ -21,9 +22,16 @@ MAX_DOCUMENTS = 8
 TTL_SECONDS = 900
 
 # token -> (expires_at, approved_final_url, markdown, public_metadata,
-#           source_url, PRIVATE one-use proof or None, first_page_chars)
-_CACHE: OrderedDict[str, tuple[float, str, str, dict, str, tuple[str, str] | None, int]] = OrderedDict()
+#           source_url, PRIVATE one-use proof or None, first_page_chars,
+#           sanitized table payload or None)
+_CACHE: OrderedDict[str, tuple] = OrderedDict()
 _LOCK = threading.Lock()
+
+
+def _entry_weight(entry: tuple) -> int:
+    """Count Markdown and table rows against one conservative memory budget."""
+    tables = entry[7] if len(entry) > 7 else None
+    return len(entry[2]) + (tables["size_bytes"] if tables is not None else 0)
 
 
 def _purge_expired(now: float) -> None:
@@ -86,14 +94,14 @@ def save(url: str, markdown: str, metadata: dict, *,
         _purge_expired(now)
         while _CACHE and (
             len(_CACHE) >= MAX_DOCUMENTS
-            or sum(len(doc[2]) for doc in _CACHE.values()) + len(markdown) > MAX_TOTAL_CHARS
+            or sum(_entry_weight(doc) for doc in _CACHE.values()) + len(markdown) > MAX_TOTAL_CHARS
         ):
             _CACHE.popitem(last=False)
         token = secrets.token_urlsafe(24)
         while token in _CACHE:
             token = secrets.token_urlsafe(24)
         _CACHE[token] = (now + TTL_SECONDS, url, markdown, dict(metadata),
-                         source_url, once_proof, first_page_chars)
+                         source_url, once_proof, first_page_chars, None)
     return token, _page_count(len(markdown), first_page_chars)
 
 
@@ -111,7 +119,7 @@ def read_with_security_context(
         if item is None:
             return ({"success": False, "status": "expired_or_unknown",
                      "reason": "Temporary document not found or expired; fetch the approved URL again."}, None, None)
-        expires_at, url, markdown, metadata, source_url, once_proof, first_page_chars = item
+        expires_at, url, markdown, metadata, source_url, once_proof, first_page_chars, _tables = item
         count = _page_count(len(markdown), first_page_chars)
         if page > count:
             raise ValueError(f"Page must be between 2 and {count}")
@@ -124,6 +132,138 @@ def read_with_security_context(
         if metadata:
             result["metadata"] = dict(metadata)
         return result, source_url, once_proof
+
+
+
+MAX_TABLE_PAGE_ROWS = 10
+MAX_TABLE_PAGE_COLUMNS = 8
+MAX_TABLE_PAGE_BYTES = 20_000
+MAX_RETAINED_TABLE_COLUMNS = 24
+
+
+def save_tables(url: str, payload: dict, *, source_url: str,
+                once_proof: tuple[str, str] | None = None) -> str:
+    """Keep pre-normalized table rows in the existing document-capability cache."""
+    size = payload.get("size_bytes") if isinstance(payload, dict) else None
+    if (type(size) is not int or not 0 < size <= 800_000
+            or not isinstance(payload.get("entries"), list)
+            or not payload["entries"]):
+        raise ValueError("Invalid bounded table payload")
+    try:
+        target, source = urlsplit(url), urlsplit(source_url)
+        if any(part.scheme not in ("http", "https") or not part.hostname
+               or part.username is not None or part.password is not None
+               for part in (target, source)):
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Only approved public URLs may be saved") from exc
+    if once_proof is not None and (
+            not isinstance(once_proof, tuple) or len(once_proof) != 2
+            or not all(isinstance(v, str) for v in once_proof)
+            or not re.fullmatch(r"[a-f0-9]{32}", once_proof[1])):
+        raise ValueError("Invalid private authorization context")
+    now = time.monotonic()
+    with _LOCK:
+        _purge_expired(now)
+        while _CACHE and (len(_CACHE) >= MAX_DOCUMENTS or
+                          sum(_entry_weight(doc) for doc in _CACHE.values())
+                          + size > MAX_TOTAL_CHARS):
+            _CACHE.popitem(last=False)
+        token = secrets.token_urlsafe(24)
+        while token in _CACHE:
+            token = secrets.token_urlsafe(24)
+        _CACHE[token] = (now + TTL_SECONDS, url, "", {}, source_url,
+                         once_proof, PAGE_CHARS, payload)
+    return token
+
+
+def table_handle_exists(token: str) -> bool:
+    """Check handle liveness without exposing table content or authorization."""
+    if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
+        return False
+    with _LOCK:
+        _purge_expired(time.monotonic())
+        item = _CACHE.get(token)
+        return item is not None and item[7] is not None
+
+
+def read_table_with_security_context(
+        token: str, table_index: int, row_offset: int = 0,
+        max_rows: int = MAX_TABLE_PAGE_ROWS, column_offset: int = 0,
+        max_columns: int = MAX_TABLE_PAGE_COLUMNS
+) -> tuple[dict, str | None, tuple[str, str] | None]:
+    """Read retained rows only; bridge must reauthorize before content release."""
+    if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
+        raise ValueError("Invalid table handle")
+    if type(table_index) is not int or not 0 <= table_index < 16:
+        raise ValueError("table_index must be between 0 and 15")
+    if type(row_offset) is not int or not 0 <= row_offset <= 250:
+        raise ValueError("row_offset must be between 0 and 250")
+    if type(max_rows) is not int or not 1 <= max_rows <= MAX_TABLE_PAGE_ROWS:
+        raise ValueError("max_rows must be between 1 and 10")
+    if type(column_offset) is not int or not 0 <= column_offset <= MAX_RETAINED_TABLE_COLUMNS:
+        raise ValueError("column_offset must be between 0 and 24")
+    if type(max_columns) is not int or not 1 <= max_columns <= MAX_TABLE_PAGE_COLUMNS:
+        raise ValueError("max_columns must be between 1 and 8")
+    with _LOCK:
+        _purge_expired(time.monotonic())
+        item = _CACHE.get(token)
+        if item is None or item[7] is None:
+            return ({"success": False, "status": "expired_or_unknown",
+                     "reason": "Temporary table not found or expired; fetch the approved URL again."},
+                    None, None)
+        _, url, _, _, source_url, once_proof, _, payload = item
+        entry = next((table for table in payload["entries"]
+                      if table["table_index"] == table_index), None)
+        if entry is None:
+            raise ValueError("Unknown table_index for this fetch")
+        rows = entry["rows"]
+        if row_offset > len(rows):
+            raise ValueError("row_offset exceeds retained rows")
+        selected = rows[row_offset:row_offset + max_rows]
+        next_offset = row_offset + len(selected)
+        more = next_offset < len(rows)
+        retained_columns = max(len(entry["headers"]),
+                               max((len(row) for row in rows), default=0))
+        if column_offset > retained_columns:
+            raise ValueError("column_offset exceeds retained columns")
+        next_column = column_offset + max_columns
+        more_columns = next_column < retained_columns
+        response = {
+            "success": True, "url": url, "table_id": token,
+            "table_index": table_index, "row_offset": row_offset,
+            "headers": entry["headers"][column_offset:next_column],
+            "rows": [row[column_offset:next_column] for row in selected],
+            "column_offset": column_offset, "retained_columns": retained_columns,
+            "has_more_columns": more_columns,
+            "next_column_offset": next_column if more_columns else None,
+            "caption": entry["caption"], "summary": entry["summary"],
+            "retained_rows": len(rows),
+            "source_rows_observed": entry["source_rows_observed"],
+            "retained_truncated": entry["retained_truncated"],
+            "columns_truncated": entry["columns_truncated"],
+            "cells_truncated": entry["cells_truncated"],
+            "source_completeness": "unknown",
+            "has_more": more, "next_offset": next_offset if more else None,
+        }
+        # Whole-response budget, including headers/captions/source URL. A
+        # smaller row page is valid, but must advance by exactly its row count.
+        while (response["rows"] and len(json.dumps(
+                response, ensure_ascii=True).encode("utf-8")) > MAX_TABLE_PAGE_BYTES):
+            response["rows"].pop()
+            next_offset = row_offset + len(response["rows"])
+            more = next_offset < len(rows)
+            response["has_more"] = more
+            response["next_offset"] = next_offset if more else None
+        if len(json.dumps(response, ensure_ascii=True).encode("utf-8")) > MAX_TABLE_PAGE_BYTES:
+            return ({"success": False, "status": "table_page_too_large",
+                     "reason": "The retained table page cannot fit the response limit."},
+                    source_url, once_proof)
+        if row_offset < len(rows) and not response["rows"]:
+            return ({"success": False, "status": "table_page_too_large",
+                     "reason": "One row exceeds the response limit."},
+                    source_url, once_proof)
+        return response, source_url, once_proof
 
 
 MAX_OUTLINE_HEADINGS = 40
@@ -236,7 +376,7 @@ def find_with_security_context(
             return ({"success": False, "status": "expired_or_unknown",
                      "reason": "Temporary document not found or expired; fetch the approved URL again."},
                     None, None)
-        expires_at, url, markdown, metadata, source_url, once_proof, first_page_chars = item
+        expires_at, url, markdown, metadata, source_url, once_proof, first_page_chars, _tables = item
         if start_offset > len(markdown):
             raise ValueError("start_offset exceeds the document length")
         matcher = re.compile(re.escape(query), re.IGNORECASE)

@@ -1733,6 +1733,110 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(structured["retrieval_info"]["source"], "uncached")
         self.assertEqual(structured["markdown"], "Public text 3")
 
+    def test_structured_table_continuation_rechecks_permission_and_does_not_recrawl(self):
+        from collections import OrderedDict
+        original = httpx.Client
+        crawl_calls = []
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            crawl_calls.append(request.url.path)
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/tables", "success": True,
+                "markdown": {"raw_markdown": "A short public page"},
+                "tables": [{"headers": ["Code"], "rows": [[f"PRIVATE_ROW_{i}"]
+                           for i in range(25)]} for _ in range(6)],
+            }]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=factory),
+              patch.object(self.module.document_pages, "_CACHE", OrderedDict()),
+              patch.object(self.module, "_current_permissions_for_fetched_urls",
+                           return_value=True) as policy):
+            first = self.module.web_fetch("https://example.com/tables",
+                                          include_tables=True)
+            self.assertTrue(first["success"])
+            self.assertEqual(len(first["tables"]), 4)
+            self.assertEqual(first["structured_info"]["tables"][
+                "returned_source_indices"], [0, 1, 2, 3])
+            token = first["table_continuation"]["table_id"]
+            second = self.module.web_table_page(token, 5, max_rows=10)
+            self.assertEqual(len(second["rows"]), 10)
+            self.assertEqual(second["next_offset"], 10)
+            third = self.module.web_table_page(token, 5, row_offset=10,
+                                                 max_rows=10)
+            self.assertEqual(third["next_offset"], 20)
+            last = self.module.web_table_page(token, 5, row_offset=20)
+            self.assertFalse(last["has_more"])
+            self.assertEqual([row[0] for page in (second, third, last)
+                              for row in page["rows"]],
+                             [f"PRIVATE_ROW_{i}" for i in range(25)])
+            self.assertEqual(crawl_calls, ["/crawl"])
+            policy.return_value = False
+            blocked = self.module.web_table_page(token, 5)
+            self.assertFalse(blocked["success"])
+            self.assertEqual(blocked["status"], "blocked")
+            self.assertNotIn("PRIVATE_ROW_", str(blocked))
+            self.assertEqual(crawl_calls, ["/crawl"])
+
+    def test_column_only_preview_overflow_exposes_continuation(self):
+        from collections import OrderedDict
+        original = httpx.Client
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/wide", "success": True,
+                "markdown": {"raw_markdown": "Short"},
+                "tables": [{"headers": [f"H{i}" for i in range(9)],
+                            "rows": [[f"C{i}" for i in range(9)]]}],
+            }]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=factory),
+              patch.object(self.module.document_pages, "_CACHE", OrderedDict()),
+              patch.object(self.module, "_current_permissions_for_fetched_urls",
+                           return_value=True)):
+            first = self.module.web_fetch("https://example.com/wide",
+                                          include_tables=True)
+            self.assertTrue(first["success"])
+            self.assertTrue(first["structured_info"]["tables"][
+                "table_limits"][0]["columns_truncated"])
+            token = first["table_continuation"]["table_id"]
+            beyond_preview = self.module.web_table_page(token, 0, column_offset=8)
+        self.assertEqual(beyond_preview["headers"], ["H8"])
+        self.assertEqual(beyond_preview["rows"], [["C8"]])
+        self.assertFalse(beyond_preview["has_more_columns"])
+
+    def test_table_continuation_revalidates_one_use_proof_and_epoch(self):
+        from collections import OrderedDict
+        payload = self.module.structured_extraction.prepare_table_continuation({
+            "tables": [{"headers": ["H"], "rows": [["PRIVATE_PROOF_ROW"]] * 11}]})
+        proof = ("example.com", "a" * 32)
+        with patch.object(self.module.document_pages, "_CACHE", OrderedDict()):
+            token = self.module.document_pages.save_tables(
+                "https://example.com/a", payload, source_url="https://example.com/a",
+                once_proof=proof)
+            with patch.object(self.module.domain_policy, "_once_proof_current",
+                              return_value=True):
+                permitted = self.module.web_table_page(token, 0)
+            self.assertTrue(permitted["success"])
+            with patch.object(self.module.domain_policy, "_once_proof_current",
+                              return_value=False):
+                denied = self.module.web_table_page(token, 0)
+            self.assertEqual(denied["status"], "blocked")
+            self.assertNotIn("PRIVATE_PROOF_ROW", str(denied))
+            def revoke_while_checking(*_args):
+                self.module.request_cache.invalidate_fetch()
+                return True
+            with patch.object(self.module.domain_policy, "_once_proof_current",
+                              side_effect=revoke_while_checking):
+                raced = self.module.web_table_page(token, 0)
+            self.assertEqual(raced["status"], "blocked")
+            self.assertNotIn("PRIVATE_PROOF_ROW", str(raced))
+
     def test_long_document_with_handle_reports_uncached_even_if_fresh(self):
         from collections import OrderedDict
         original = httpx.Client

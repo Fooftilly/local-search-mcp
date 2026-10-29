@@ -71,3 +71,41 @@ Concurrent identical default requests share one in-flight upstream operation eve
 SearXNG GET and Crawl4AI health GET calls retry *at most once* for transient connection errors, timeouts, HTTP 429, and selected 5xx statuses. Crawl4AI **POST** retries only connect-phase errors and explicit HTTP 429/500/502/503/504 responses; read timeouts and ambiguous response-loss failures are not retried because the original browser job may still be running. No retry is attempted for normal invalid arguments, authentication failures, 400/401/403/404 or other permanent responses. Retry-After values are never allowed to create an unbounded sleep. Failed or malformed results are not cached. Empty SearXNG responses containing nonempty `unresponsive_engines` are reported as an explicit upstream error instead of being cached as a valid zero-result search. Search keeps its existing list return shape on success, but errors now return structured `{success:false,status,backend,reason,http_status?}`. Fetch errors use the existing structured failure-result pattern and preserve the original requested URL. Clients should inspect the `success` or `status` field on an error instead of assuming all responses are a list.
 
 The cache is deliberately ephemeral and process-local: there is no disk schema, cleanup job, persistent archive, or multi-worker sharing requirement.
+
+## Bounded structured table continuation
+
+An approved `web_fetch(include_tables=true)` retains its current bounded
+four-table, ten-row preview. If the extracted source exceeds that preview,
+the response also contains `table_continuation.table_id` and retained
+source-table indices. Call `web_table_page(table_id, table_index,
+row_offset=0, max_rows=10, column_offset=0, max_columns=8)` to continue without a new crawl. The preview's
+`structured_info.tables.returned_source_indices` maps the four preview
+positions to Crawl4AI's extracted table indices.
+
+Only table rows in the **same** approved Crawl4AI response can be retained.
+No links are followed, new approvals requested or documents persisted.
+The bridge normalizes at most 16 extracted tables, 250 rows per table and
+24 retained columns, served in pages of at most 8 columns; cells and
+serialized rows are bounded. Retention uses at most
+800,000 conservative serialized/Python-object estimated bytes per handle, with the **same**
+15-minute expiry, eight-entry capacity and combined 3-million-character/byte
+memory budget as Markdown continuation. Large tables may evict older
+Markdown documents and vice versa.
+
+The response's `has_more` and `next_offset` apply to **retained** rows.
+`has_more_columns` and `next_column_offset` describe retained column pages;
+callers can combine both offsets to reconstruct a bounded 2D table.
+`retained_truncated`, `columns_truncated`, `cells_truncated` and top-level
+`retention_truncated` expose bridge truncation; even short source strings
+may be clipped to meet the response budget. A complete serialized table page
+is limited to 20 KB, so fewer than the requested ten rows may be returned.
+Follow the returned offset rather than assuming a fixed page size. The source may contain
+tables/rows that Crawl4AI did not extract: `source_completeness=unknown`
+is intentional, and reaching the last retained row does not prove
+publisher completeness.
+
+Every table page revalidates original/final domain authorization, the
+policy epoch and single-use proofs through the existing document gate.
+The table handle and content are not written to request history. The
+operator's installed-host Crawl4AI 0.9.5+ table shape and memory behavior
+still need attended acceptance testing.

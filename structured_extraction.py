@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from domain_policy import normalize_domain
@@ -167,6 +168,110 @@ def _select_links(raw: dict, base: str, *, budget: int = MAX_OUTPUT_BYTES) -> tu
     return [row for _, row in chosen], len(candidates)
 
 
+
+# Only already-extracted table cells are eligible for bounded continuation.
+MAX_RETAINED_TABLES = 16
+MAX_RETAINED_ROWS = 250
+MAX_RETAINED_COLUMNS = 24
+MAX_RETAINED_BYTES = 800_000
+MAX_ROW_BYTES = 1_500
+
+
+def _bounded_cells(values: list) -> tuple[list[str], bool]:
+    cells = [_text(value, 200) for value in values[:MAX_RETAINED_COLUMNS]]
+    clipped = len(values) > MAX_RETAINED_COLUMNS or any(
+        isinstance(value, str) and len(value.strip()) > 200
+        for value in values[:MAX_RETAINED_COLUMNS])
+    # ensure_ascii JSON can expand non-ASCII and escaped characters.
+    while _size({"cells": cells}) > MAX_ROW_BYTES:
+        index = max(range(len(cells)), key=lambda i: len(cells[i]))
+        cells[index] = cells[index][:len(cells[index]) // 2]
+        clipped = True
+    return cells, clipped
+
+
+def _resident_cells_bytes(cells: list[str]) -> int:
+    """Conservative Python object allocation, not just serialized text size."""
+    return sys.getsizeof(cells) + sum(sys.getsizeof(value) for value in cells) + 64
+
+
+def prepare_table_continuation(page: dict) -> dict | None:
+    """Keep a bounded normalized subset of this crawl, never raw HTML."""
+    raw = page.get("tables")
+    if not isinstance(raw, list) or not raw:
+        return None
+    entries: list[dict] = []
+    total_bytes = 512
+    truncated = len(raw) > MAX_RETAINED_TABLES
+    for index, original in enumerate(raw[:MAX_RETAINED_TABLES]):
+        if not isinstance(original, dict):
+            continue
+        original_headers = original.get("headers")
+        original_rows = original.get("rows")
+        headers, header_clipped = (_bounded_cells(original_headers)
+                                  if isinstance(original_headers, list) else ([], False))
+        source_rows = original_rows if isinstance(original_rows, list) else []
+        if not headers and not source_rows:
+            continue
+        fixed = {
+            "table_index": index,
+            "headers": headers,
+            "caption": _text(original.get("caption"), 200),
+            "summary": _text(original.get("summary"), 240),
+            "source_rows_observed": len(source_rows),
+        }
+        fixed_size = max(_size(fixed) + 150,
+                         sys.getsizeof(fixed) + _resident_cells_bytes(headers)
+                         + sys.getsizeof(fixed["caption"])
+                         + sys.getsizeof(fixed["summary"]) + 256)
+        if total_bytes + fixed_size > MAX_RETAINED_BYTES:
+            truncated = True
+            break
+        total_bytes += fixed_size
+        rows: list[list[str]] = []
+        cells_truncated = header_clipped
+        columns_truncated = (isinstance(original_headers, list)
+                             and len(original_headers) > MAX_RETAINED_COLUMNS)
+        budget_exhausted = False
+        for record in source_rows[:MAX_RETAINED_ROWS]:
+            if not isinstance(record, list):
+                # Match preview semantics: malformed entries are not rows.
+                continue
+            columns_truncated = columns_truncated or len(record) > MAX_RETAINED_COLUMNS
+            cells, clipped = _bounded_cells(record)
+            cost = max(_size({"cells": cells}), _resident_cells_bytes(cells))
+            if total_bytes + cost > MAX_RETAINED_BYTES:
+                truncated = True
+                budget_exhausted = True
+                break
+            rows.append(cells)
+            cells_truncated = cells_truncated or clipped
+            total_bytes += cost
+        entries.append({
+            **fixed,
+            "rows": rows,
+            "cells_truncated": cells_truncated,
+            "retained_truncated": len(rows) < len(source_rows),
+            "columns_truncated": columns_truncated,
+        })
+        # Malformed records are intentionally skipped, not evidence that
+        # retention ran out of memory. Continue to later source tables unless
+        # the actual aggregate byte budget stopped the current table.
+        if budget_exhausted:
+            break
+    if not entries:
+        return None
+    return {
+        "entries": entries,
+        "size_bytes": total_bytes,
+        "source_tables_observed": len(raw),
+        "retention_truncated": truncated or len(entries) < len(raw) or any(
+            entry["retained_truncated"] or entry["columns_truncated"]
+            or entry["cells_truncated"]
+            for entry in entries),
+    }
+
+
 def extract(page: dict, base: str, *, include_links: bool, include_tables: bool) -> dict:
     """Return only requested bounded fields from a successfully crawled page.
 
@@ -205,9 +310,10 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool)
     if include_tables:
         tables = []
         limits = []
+        returned_indices = []
         raw = page.get("tables")
         if isinstance(raw, list):
-            for row in raw[:10]:
+            for source_index, row in enumerate(raw[:10]):
                 if len(tables) >= MAX_TABLES or remaining <= 0:
                     break
                 if not isinstance(row, dict):
@@ -230,6 +336,7 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool)
                 if size <= remaining:
                     tables.append(item)
                     remaining -= size
+                    returned_indices.append(source_index)
                     limits.append({
                         "rows_observed": len(source_rows) if isinstance(source_rows, list) else 0,
                         "rows_truncated": (isinstance(source_rows, list) and (
@@ -248,6 +355,7 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool)
             "input_scan_capped": isinstance(raw, list) and len(raw) > 10,
             "truncated": isinstance(raw, list) and len(raw) > len(tables),
             "table_limits": limits,
+            "returned_source_indices": returned_indices,
         }
     if include_links or include_tables:
         # This is only present on opt-in structured fetches. Do not imply
