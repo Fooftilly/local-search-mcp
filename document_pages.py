@@ -14,14 +14,15 @@ import time
 from urllib.parse import urlsplit
 
 PAGE_CHARS = 24_000
+MIN_FIRST_PAGE_CHARS = 2_048
 MAX_DOCUMENT_CHARS = 1_000_000
 MAX_TOTAL_CHARS = 3_000_000
 MAX_DOCUMENTS = 8
 TTL_SECONDS = 900
 
 # token -> (expires_at, approved_final_url, markdown, public_metadata,
-#           source_url, PRIVATE one-use proof or None)
-_CACHE: OrderedDict[str, tuple[float, str, str, dict, str, tuple[str, str] | None]] = OrderedDict()
+#           source_url, PRIVATE one-use proof or None, first_page_chars)
+_CACHE: OrderedDict[str, tuple[float, str, str, dict, str, tuple[str, str] | None, int]] = OrderedDict()
 _LOCK = threading.Lock()
 
 
@@ -32,15 +33,30 @@ def _purge_expired(now: float) -> None:
             del _CACHE[key]
 
 
+def _page_count(length: int, first_page_chars: int) -> int:
+    return 1 + (max(0, length - first_page_chars) + PAGE_CHARS - 1) // PAGE_CHARS
+
+
+def page_for_offset(offset: int, first_page_chars: int = PAGE_CHARS) -> int:
+    """Page containing a zero-based Markdown character offset."""
+    return (1 if offset < first_page_chars else
+            2 + (offset - first_page_chars) // PAGE_CHARS)
+
+
 def save(url: str, markdown: str, metadata: dict, *,
          source_url: str | None = None,
-         once_proof: tuple[str, str] | None = None) -> tuple[str, int]:
+         once_proof: tuple[str, str] | None = None,
+         first_page_chars: int = PAGE_CHARS) -> tuple[str, int]:
     """Cache a bounded document and return an unpredictable read capability.
 
-    Small documents need no capability; caller invokes this only for content
-    longer than one page. No bytes are written to disk.
+    Ordinary short documents need no capability; the caller may also save a
+    shorter, opt-in first page for safe continuation. Nothing is persisted.
     """
-    if not isinstance(markdown, str) or not PAGE_CHARS < len(markdown) <= MAX_DOCUMENT_CHARS:
+    if (type(first_page_chars) is not int
+            or not MIN_FIRST_PAGE_CHARS <= first_page_chars <= PAGE_CHARS):
+        raise ValueError("first_page_chars must be between 2048 and 24000")
+    if (not isinstance(markdown, str)
+            or not first_page_chars < len(markdown) <= MAX_DOCUMENT_CHARS):
         raise ValueError("Document is not eligible for temporary pagination")
     try:
         target = urlsplit(url) if isinstance(url, str) else None
@@ -77,8 +93,8 @@ def save(url: str, markdown: str, metadata: dict, *,
         while token in _CACHE:
             token = secrets.token_urlsafe(24)
         _CACHE[token] = (now + TTL_SECONDS, url, markdown, dict(metadata),
-                         source_url, once_proof)
-    return token, (len(markdown) + PAGE_CHARS - 1) // PAGE_CHARS
+                         source_url, once_proof, first_page_chars)
+    return token, _page_count(len(markdown), first_page_chars)
 
 
 def read_with_security_context(
@@ -95,11 +111,11 @@ def read_with_security_context(
         if item is None:
             return ({"success": False, "status": "expired_or_unknown",
                      "reason": "Temporary document not found or expired; fetch the approved URL again."}, None, None)
-        expires_at, url, markdown, metadata, source_url, once_proof = item
-        count = (len(markdown) + PAGE_CHARS - 1) // PAGE_CHARS
+        expires_at, url, markdown, metadata, source_url, once_proof, first_page_chars = item
+        count = _page_count(len(markdown), first_page_chars)
         if page > count:
             raise ValueError(f"Page must be between 2 and {count}")
-        start = (page - 1) * PAGE_CHARS
+        start = first_page_chars + (page - 2) * PAGE_CHARS
         chunk = markdown[start:start + PAGE_CHARS]
         result = {"url": url, "success": True, "markdown": chunk,
                   "truncated": page < count, "document_id": token,
@@ -128,7 +144,7 @@ def _outline_title(raw: str) -> str:
     return clean[:MAX_OUTLINE_HEADING_CHARS]
 
 
-def build_outline(markdown: str) -> dict:
+def build_outline(markdown: str, *, first_page_chars: int = PAGE_CHARS) -> dict:
     """Summarize headings in already-approved Markdown, never a new crawl.
 
     Offsets count Python Unicode characters in the normalized extracted text
@@ -173,7 +189,7 @@ def build_outline(markdown: str) -> dict:
                     truncated = True
                     break
                 headings.append({"level": level, "heading": name,
-                                 "offset": start, "page": 1 + start // PAGE_CHARS})
+                                 "offset": start, "page": page_for_offset(start, first_page_chars)})
             # Preserve a bounded prefix of long Setext title candidates,
             # rather than discarding their entire heading. Four-space or
             # tab-indented text is Markdown code, not a Setext title. A tab
@@ -220,7 +236,7 @@ def find_with_security_context(
             return ({"success": False, "status": "expired_or_unknown",
                      "reason": "Temporary document not found or expired; fetch the approved URL again."},
                     None, None)
-        expires_at, url, markdown, metadata, source_url, once_proof = item
+        expires_at, url, markdown, metadata, source_url, once_proof, first_page_chars = item
         if start_offset > len(markdown):
             raise ValueError("start_offset exceeds the document length")
         matcher = re.compile(re.escape(query), re.IGNORECASE)
@@ -235,12 +251,12 @@ def find_with_security_context(
             start, end = found.span()
             excerpt = markdown[max(0, start - FIND_SNIPPET_BEFORE):
                                min(len(markdown), end + FIND_SNIPPET_AFTER)]
-            matches.append({"page": 1 + start // PAGE_CHARS,
+            matches.append({"page": page_for_offset(start, first_page_chars),
                             "offset": start, "excerpt": excerpt})
             next_from = start + 1
         has_more = bool(matches and len(matches) >= max_matches
                         and matcher.search(markdown, next_from) is not None)
-        count = (len(markdown) + PAGE_CHARS - 1) // PAGE_CHARS
+        count = _page_count(len(markdown), first_page_chars)
         result = {"success": True, "url": url, "document_id": token,
                   "page_count": count, "matches": matches,
                   "match_count": len(matches), "has_more": has_more,
