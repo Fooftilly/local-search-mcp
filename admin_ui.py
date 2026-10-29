@@ -84,7 +84,8 @@ def history_items_html(kind="", status="", domain="", hours=0, show_queries=Fals
         elapsed = (str(event["duration_ms"]) if event["duration_ms"] is not None else "—")
         display = (_safe_query_display(event.get("query"))
                    if show_queries and event["kind"] == "search"
-                   else event["domain"] or "—")
+                   else (event["domain"] or "—") if show_queries
+                   else event["domain"])
         css_class = 'domain history-query' if show_queries else 'domain'
         out.append(
             f'<tr><td class="small">{esc(stamp)}</td><td>{esc(event["kind"])}</td>'
