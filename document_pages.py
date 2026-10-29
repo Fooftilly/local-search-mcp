@@ -135,6 +135,8 @@ def read_with_security_context(
 
 
 MAX_TABLE_PAGE_ROWS = 10
+MAX_TABLE_PAGE_COLUMNS = 8
+MAX_RETAINED_TABLE_COLUMNS = 24
 
 
 def save_tables(url: str, payload: dict, *, source_url: str,
@@ -175,7 +177,8 @@ def save_tables(url: str, payload: dict, *, source_url: str,
 
 def read_table_with_security_context(
         token: str, table_index: int, row_offset: int = 0,
-        max_rows: int = MAX_TABLE_PAGE_ROWS
+        max_rows: int = MAX_TABLE_PAGE_ROWS, column_offset: int = 0,
+        max_columns: int = MAX_TABLE_PAGE_COLUMNS
 ) -> tuple[dict, str | None, tuple[str, str] | None]:
     """Read retained rows only; bridge must reauthorize before content release."""
     if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
@@ -186,6 +189,10 @@ def read_table_with_security_context(
         raise ValueError("row_offset must be between 0 and 250")
     if type(max_rows) is not int or not 1 <= max_rows <= MAX_TABLE_PAGE_ROWS:
         raise ValueError("max_rows must be between 1 and 10")
+    if type(column_offset) is not int or not 0 <= column_offset <= MAX_RETAINED_TABLE_COLUMNS:
+        raise ValueError("column_offset must be between 0 and 24")
+    if type(max_columns) is not int or not 1 <= max_columns <= MAX_TABLE_PAGE_COLUMNS:
+        raise ValueError("max_columns must be between 1 and 8")
     with _LOCK:
         _purge_expired(time.monotonic())
         item = _CACHE.get(token)
@@ -204,10 +211,20 @@ def read_table_with_security_context(
         selected = rows[row_offset:row_offset + max_rows]
         next_offset = row_offset + len(selected)
         more = next_offset < len(rows)
+        retained_columns = max(len(entry["headers"]),
+                               max((len(row) for row in rows), default=0))
+        if column_offset > retained_columns:
+            raise ValueError("column_offset exceeds retained columns")
+        next_column = column_offset + max_columns
+        more_columns = next_column < retained_columns
         return ({
             "success": True, "url": url, "table_id": token,
             "table_index": table_index, "row_offset": row_offset,
-            "headers": list(entry["headers"]), "rows": [list(row) for row in selected],
+            "headers": entry["headers"][column_offset:next_column],
+            "rows": [row[column_offset:next_column] for row in selected],
+            "column_offset": column_offset, "retained_columns": retained_columns,
+            "has_more_columns": more_columns,
+            "next_column_offset": next_column if more_columns else None,
             "caption": entry["caption"], "summary": entry["summary"],
             "retained_rows": len(rows),
             "source_rows_observed": entry["source_rows_observed"],
