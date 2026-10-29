@@ -179,6 +179,23 @@ class Supervisor:
                         else:
                             self._state[service] = "sleeping"
                         continue
+                    if (service == "searxng"
+                            and self._state[service] == "sleeping"
+                            and not self.tracker.snapshot(service)["armed"]):
+                        # The attended engine wizard can WAKE SearXNG from
+                        # another process without passing through MCP lease().
+                        # Reconcile only a freshly verified running backend,
+                        # then start the normal idle countdown. Never start,
+                        # stop, or reset an active request from this path.
+                        try:
+                            target = docker._safe_target(service)
+                        except docker.LifecycleError:
+                            continue
+                        if target.running:
+                            self.tracker.arm_running(service)
+                            self._state[service] = "running"
+                            self._verified_at[service] = 0.0
+                        continue
                     if not self.tracker.claim_idle_stop(service):
                         continue
                     self._state[service] = "stopping"
