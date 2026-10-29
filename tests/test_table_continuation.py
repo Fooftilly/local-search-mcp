@@ -110,6 +110,46 @@ class TableContinuationTests(unittest.TestCase):
                          "expired_or_unknown")
         self.assertTrue(pages.read_table_with_security_context(new, 0)[0]["success"])
 
+    def test_malformed_rows_match_preview_and_truncation_is_truthful(self):
+        raw = {"tables": [{"headers": ["H"], "rows": [
+            ["A"], {"bad": "not a row"}, ["B"]]}]}
+        preview = extraction.extract(raw, "https://example.com/a",
+                                     include_links=False, include_tables=True)
+        payload = extraction.prepare_table_continuation(raw)
+        self.assertEqual(payload["entries"][0]["rows"], preview["tables"][0]["rows"])
+        self.assertTrue(payload["retention_truncated"])
+        self.assertTrue(payload["entries"][0]["retained_truncated"])
+        self.assertEqual(payload["entries"][0]["source_rows_observed"], 3)
+        over = extraction.prepare_table_continuation(source(1, 251))
+        self.assertEqual(len(over["entries"][0]["rows"]), 250)
+        self.assertTrue(over["entries"][0]["retained_truncated"])
+        self.assertTrue(over["retention_truncated"])
+        wide = source(1, 11)
+        wide["tables"][0]["headers"] = [f"H{i}" for i in range(30)]
+        wide["tables"][0]["rows"][0] = [str(i) for i in range(30)]
+        clipped = extraction.prepare_table_continuation(wide)
+        self.assertTrue(clipped["entries"][0]["columns_truncated"])
+        self.assertTrue(clipped["retention_truncated"])
+
+    def test_batch_finalizer_rejects_already_evicted_table_capability(self):
+        from batch_fetch import _finalize_result
+        payload = extraction.prepare_table_continuation(source(1, 20))
+        with patch.object(pages, "MAX_DOCUMENTS", 1):
+            handle = pages.save_tables("https://example.com/table", payload,
+                                       source_url="https://example.com/table")
+            result = {"url": "https://example.com/table", "success": True,
+                      "table_continuation": {"table_id": handle},
+                      "tables": [{"rows": [["preview"]]}]}
+            self.assertTrue(_finalize_result(result["url"], result,
+                                              policy_changed=False)["success"])
+            pages.save("https://example.com/long", "x" * 24_001, {})
+            finalized = _finalize_result(result["url"], result,
+                                         policy_changed=False)
+        self.assertFalse(finalized["success"])
+        self.assertEqual(finalized["status"], "continuation_evicted")
+        self.assertNotIn("preview", str(finalized))
+        self.assertNotIn(handle, str(finalized))
+
     def test_expiry_invalid_parameters_and_private_context(self):
         payload = extraction.prepare_table_continuation(source(1, 11))
         proof = ("example.com", "a" * 32)
