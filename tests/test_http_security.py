@@ -310,7 +310,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn("\\\\u202e", visible)  # actual bidi is escaped to inert text
         self.assertIn("Show search queries", visible)
         self.assertIn('value="1" checked', visible)
-        self.assertIn('Search query / domain', visible)
+        self.assertIn('Search query / page URL / domain', visible)
         live = json.loads(self.exchange(
             "GET", "/live?view=history&kind=search&hours=24&show_queries=1")[1])
         self.assertIn("Full Unicode café 猫", live["history_html"])
@@ -323,13 +323,54 @@ class DashboardHTTPTests(unittest.TestCase):
         fetch_only = json.loads(self.exchange(
             "GET", "/live?view=history&kind=fetch&show_queries=1")[1])
         self.assertNotIn("Full Unicode", str(fetch_only))
-        self.assertIn("docs.example.org", fetch_only["history_html"])
+        self.assertIn("https://docs.example.org/private", fetch_only["history_html"])
         self.assertNotIn("private?secret", str(fetch_only))
+        self.assertNotIn("secret=yes", str(fetch_only))
+        self.assertNotIn("https://docs.example.org/private",
+                         json.loads(self.exchange("GET", "/live?view=history&kind=fetch")[1])["history_html"])
         for bad in ("2", "yes", "%3Cscript%3E", "1&show_queries=1"):
             self.assertEqual(self.exchange(
                 "GET", "/history?show_queries=" + bad)[0], 400)
             self.assertEqual(self.exchange(
                 "GET", "/live?view=history&show_queries=" + bad)[0], 400)
+
+    def test_history_fetch_urls_are_opt_in_escaped_and_live(self):
+        from history_log import append_history
+        from urllib.parse import urlencode
+        target = 'https://docs.example.org/a/<script>alert("x")</script>/new?token=SECRET#fragment'
+        append_history({"time_utc": datetime.now(timezone.utc).isoformat(),
+                        "kind": "fetch", "status": "success", "duration_ms": 1,
+                        "backend": "Crawl4AI", "url": target})
+        append_history({"time_utc": datetime.now(timezone.utc).isoformat(),
+                        "kind": "page", "status": "success", "duration_ms": 2,
+                        "backend": "Crawl4AI"})
+        code, original, _ = self.exchange("GET", "/history?kind=fetch")
+        self.assertEqual(code, 200)
+        self.assertIn(b"docs.example.org", original)
+        self.assertNotIn(b"/a/", original)
+        code, reveal, headers = self.exchange(
+            "GET", "/history?kind=fetch&hours=24&show_queries=1")
+        self.assertEqual(code, 200)
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        html = reveal.decode()
+        self.assertIn("https://docs.example.org/a/&lt;script&gt;", html)
+        self.assertIn("&quot;x&quot;", html)
+        self.assertNotIn("token=SECRET", html)
+        self.assertNotIn("fragment", html)
+        self.assertNotIn("<script>alert", html)
+        self.assertIn("Show search queries and page URLs", html)
+        self.assertIn('name="show_queries" value="1" checked', html)
+        url = "/live?view=history&kind=fetch&hours=24&show_queries=1"
+        rows = json.loads(self.exchange("GET", url)[1])
+        self.assertIn("https://docs.example.org/a/", rows["history_html"])
+        self.assertNotIn("SECRET", str(rows))
+        hidden = json.loads(self.exchange(
+            "GET", "/live?view=history&kind=fetch&hours=24")[1])
+        self.assertNotIn("https://", hidden["history_html"])
+        cont = json.loads(self.exchange(
+            "GET", "/live?view=history&kind=page&show_queries=1")[1])
+        self.assertNotIn("https://docs.example.org", str(cont))
+        self.assertNotIn("document_id", str(cont))
 
     def test_history_window_filters_and_live_summary_bars_are_safe(self):
         from datetime import timedelta
