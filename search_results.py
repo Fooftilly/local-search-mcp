@@ -91,8 +91,8 @@ def _published_date(row: dict) -> str | None:
     value = row.get("publishedDate")
     if (not isinstance(value, str) or len(value) > 40 or
             re.fullmatch(
-                r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}"
-                r"(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?)?", value
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+                r"(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})?)?", value
             ) is None):
         return None
     try:
