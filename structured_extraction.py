@@ -212,8 +212,9 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool)
                     break
                 if not isinstance(row, dict):
                     continue
-                headers = row.get("headers")
-                headers = [_text(x, 200) for x in headers[:MAX_COLUMNS]] if isinstance(headers, list) else []
+                original_headers = row.get("headers")
+                headers = ([_text(x, 200) for x in original_headers[:MAX_COLUMNS]]
+                           if isinstance(original_headers, list) else [])
                 source_rows = row.get("rows")
                 cells = []
                 if isinstance(source_rows, list):
@@ -232,7 +233,7 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool)
                     limits.append({
                         "rows_observed": len(source_rows) if isinstance(source_rows, list) else 0,
                         "rows_truncated": isinstance(source_rows, list) and len(source_rows) > MAX_ROWS,
-                        "columns_truncated": (isinstance(headers, list) and len(headers) > MAX_COLUMNS)
+                        "columns_truncated": (isinstance(original_headers, list) and len(original_headers) > MAX_COLUMNS)
                         or (isinstance(source_rows, list) and any(
                             isinstance(record, list) and len(record) > MAX_COLUMNS
                             for record in source_rows[:MAX_ROWS])),
