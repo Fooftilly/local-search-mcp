@@ -57,12 +57,41 @@ class TableContinuationTests(unittest.TestCase):
         self.assertLessEqual(len(payload["entries"]), 16)
         for table in payload["entries"]:
             self.assertLessEqual(len(table["rows"]), 250)
-            self.assertLessEqual(len(table["headers"]), 8)
+            self.assertLessEqual(len(table["headers"]), extraction.MAX_RETAINED_COLUMNS)
             for row in table["rows"]:
-                self.assertLessEqual(len(row), 8)
+                self.assertLessEqual(len(row), extraction.MAX_RETAINED_COLUMNS)
                 self.assertLessEqual(len(json.dumps({"cells": row},
                     ensure_ascii=True).encode()), extraction.MAX_ROW_BYTES)
         self.assertTrue(payload["entries"][0]["retained_truncated"])
+
+    def test_column_continuation_recovers_bounded_columns_without_duplicates(self):
+        src = source(1, 12)
+        src["tables"][0]["headers"] = [f"H{i}" for i in range(18)]
+        src["tables"][0]["rows"] = [
+            [f"R{row}C{column}" for column in range(18)] for row in range(12)]
+        payload = extraction.prepare_table_continuation(src)
+        token = pages.save_tables("https://example.com/a", payload,
+                                  source_url="https://example.com/a")
+        stitched = [[] for _ in range(12)]
+        for column_offset in (0, 7, 14):
+            row_offset = 0
+            while True:
+                page, _, _ = pages.read_table_with_security_context(
+                    token, 0, row_offset, 5, column_offset, 7)
+                for index, row in enumerate(page["rows"]):
+                    stitched[row_offset + index].extend(row)
+                if not page["has_more"]:
+                    break
+                row_offset = page["next_offset"]
+        self.assertEqual(stitched, src["tables"][0]["rows"])
+        first, _, _ = pages.read_table_with_security_context(
+            token, 0, column_offset=0, max_columns=7)
+        self.assertTrue(first["has_more_columns"])
+        self.assertEqual(first["next_column_offset"], 7)
+        final, _, _ = pages.read_table_with_security_context(
+            token, 0, column_offset=14, max_columns=7)
+        self.assertFalse(final["has_more_columns"])
+        self.assertIsNone(final["next_column_offset"])
 
     def test_mixed_document_and_table_handles_share_single_budget(self):
         with patch.object(pages, "MAX_TOTAL_CHARS", 24_500):
