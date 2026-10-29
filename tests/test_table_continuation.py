@@ -65,7 +65,7 @@ class TableContinuationTests(unittest.TestCase):
         self.assertTrue(payload["entries"][0]["retained_truncated"])
 
     def test_mixed_document_and_table_handles_share_single_budget(self):
-        with patch.object(pages, "MAX_TOTAL_CHARS", 26_000):
+        with patch.object(pages, "MAX_TOTAL_CHARS", 24_500):
             doc, _ = pages.save("https://example.com/doc", "d" * 24_100, {})
             payload = extraction.prepare_table_continuation(source(1, 30))
             handle = pages.save_tables("https://example.com/table", payload,
