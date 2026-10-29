@@ -158,23 +158,24 @@ def _returned(result, stamp: tuple[float, str], source: str, include: bool):
 
 def _store(kind: str, key: tuple, result, ttl: float | Callable[[], float], generation: int,
            should_store, *, flight=None, refresh_token=None,
-           stamp: tuple[float, str]) -> bool:
+           stamp: tuple[float, str]) -> tuple[bool, bool]:
+    """Return (stored, cache_eligible); rejected content is never 'fresh'."""
     if should_store is not None and not should_store(result):
-        return False
+        return False, False
     size = _cacheable_size(result, key)
     if not size:
-        return False
+        return False, False
     # Read a live setting only after the upstream loader finishes. Never
     # hold _LOCK during filesystem I/O or retain the pre-request TTL for a
     # result inserted after an operator changed the saved settings.
     effective_ttl = ttl() if callable(ttl) else ttl
     with _LOCK:
         if kind == "fetch" and generation != _POLICY_EPOCH:
-            return False
+            return False, True
         if flight is not None and flight[2]["superseded"]:
-            return False
+            return False, True
         if refresh_token is not None and _REFRESHING.get(key) is not refresh_token:
-            return False
+            return False, True
         _purge(time.monotonic())
         _CACHE[key] = (time.monotonic() + effective_ttl, size, deepcopy(result), stamp)
         _METRICS[kind]["stores"] += 1
@@ -184,7 +185,7 @@ def _store(kind: str, key: tuple, result, ttl: float | Callable[[], float], gene
             old_key, removed = _CACHE.popitem(last=False)
             _METRICS[old_key[0]]["evictions"] += 1
             total -= removed[1]
-        return key in _CACHE
+        return key in _CACHE, True
 
 
 def run(kind: str, key: tuple | None, load, *, ttl: float | Callable[[], float], fresh: bool = False,
@@ -218,14 +219,17 @@ def run(kind: str, key: tuple | None, load, *, ttl: float | Callable[[], float],
         try:
             result = load()
             stamp = _retrieval_stamp()
-            saved = _store(kind, key, result, ttl, generation, should_store,
-                           refresh_token=token, stamp=stamp)
+            saved, cache_eligible = _store(
+                kind, key, result, ttl, generation, should_store,
+                refresh_token=token, stamp=stamp)
             if not saved:
                 with _LOCK:
                     if _REFRESHING.get(key) is token:
                         if _CACHE.pop(key, None) is not None:
                             _METRICS[kind]["evictions"] += 1
-            return _returned(result, stamp, "fresh", with_provenance)
+            return _returned(result, stamp,
+                             "fresh" if cache_eligible else "uncached",
+                             with_provenance)
         except BaseException:
             with _LOCK:
                 if _REFRESHING.get(key) is token:
@@ -267,15 +271,20 @@ def run(kind: str, key: tuple | None, load, *, ttl: float | Callable[[], float],
         result = deepcopy(future.result())
         # The leader records its origin before making the result visible.
         stamp = flight[2]["stamp"]
-        return _returned(result, stamp, "coalesced", with_provenance)
+        return _returned(result, stamp,
+                         "coalesced" if flight[2]["cache_eligible"] else "uncached",
+                         with_provenance)
     try:
         result = load()
         stamp = _retrieval_stamp()
-        _store(kind, key, result, ttl, generation, should_store,
-               flight=flight, stamp=stamp)
+        _, cache_eligible = _store(kind, key, result, ttl, generation,
+                                    should_store, flight=flight, stamp=stamp)
         flight[2]["stamp"] = stamp
+        flight[2]["cache_eligible"] = cache_eligible
         future.set_result(result)
-        return _returned(result, stamp, "fresh", with_provenance)
+        return _returned(result, stamp,
+                         "fresh" if cache_eligible else "uncached",
+                         with_provenance)
     except BaseException as exc:
         future.set_exception(exc)
         future.exception()  # Silence unobserved-future warnings.
