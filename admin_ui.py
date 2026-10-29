@@ -61,11 +61,14 @@ def _safe_query_display(query):
     """Make control/bidi characters inert while retaining full printable text."""
     if not isinstance(query, str):
         return "— (unavailable)"
-    return ''.join(
-        f'\\\\u{ord(c):04x}' if ord(c) > 255 else f'\\\\x{ord(c):02x}'
-        if unicodedata.category(c) in ("Cc", "Cf", "Cs", "Zl", "Zp")
-        else c for c in query)
-
+    rendered = []
+    for char in query:
+        if unicodedata.category(char) in ("Cc", "Cf", "Cs", "Zl", "Zp"):
+            rendered.append(f"\\\\x{ord(char):02x}" if ord(char) <= 255
+                            else f"\\\\u{ord(char):04x}")
+        else:
+            rendered.append(char)
+    return "".join(rendered)
 
 def history_items_html(kind="", status="", domain="", hours=0, show_queries=False):
     try:
