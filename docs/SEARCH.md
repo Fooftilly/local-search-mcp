@@ -90,8 +90,12 @@ After updating the MCP bridge and reconnecting your client, call
 This lightweight **read-only** MCP tool sends one bounded GET to the
 configured local SearXNG `/config` endpoint and returns only:
 `enabled_engines` (names with their reported category lists),
-`categories` and `enabled_engine_count`. Disabled engines (including
-operator-excluded Google entries) are omitted. The output is a validated
+`categories`, `enabled_engine_count` and
+`omitted_unselectable_engine_count`. Disabled engines (including
+operator-excluded Google entries) are omitted. SearXNG may support engine
+names longer than `web_search(engines=...)` accepts; those valid but
+unselectable enabled names are counted as omitted, not advertised as usable
+or allowed to hide shorter selectable providers. The output is a validated
 snapshot of **enabled** providers, not a ranking, guarantee of availability,
 proof of default category routing, or proof that an engine supports every
 filter. Provider settings and any secret fields in `/config` are never
