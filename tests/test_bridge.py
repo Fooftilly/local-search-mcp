@@ -402,6 +402,31 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(paths, ["/config", "/search"] * 2)
         self.assertFalse(self.module.request_cache._CACHE)
 
+    def test_engine_selector_detects_unrequested_source_before_link_filter(self):
+        # An unusable link does not undo evidence of an unintended provider:
+        # a different engine still ran upstream and the selection failed.
+        original = httpx.Client
+        calls = []
+        def handler(request):
+            calls.append(request.url.path)
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": [
+                    {"name": "qwant", "enabled": True}
+                ]})
+            return httpx.Response(200, json={"results": [
+                {"engine": "google cse images", "url": "javascript:alert(1)"},
+                {"engine": "qwant", "url": "https://example.org/valid",
+                 "title": "Usable link"}
+            ]})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            result = self.module.web_search("source isolation", engines="qwant")
+        self.assertEqual(result["status"], "upstream_selection_mismatch")
+        self.assertEqual(calls, ["/config", "/search"])
+        self.assertNotIn("Usable link", str(result))
+        self.assertFalse(self.module.request_cache._CACHE)
+
     def test_search_results_are_cached_per_filter_with_fresh_bypass(self):
         seen = []
         def handler(request):
