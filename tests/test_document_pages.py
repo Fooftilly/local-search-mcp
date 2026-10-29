@@ -106,7 +106,8 @@ class DocumentPageTests(unittest.TestCase):
         content = "SECRET PASSAGE " + "x" * pages.PAGE_CHARS
         with patch.object(pages.time, "monotonic", return_value=200):
             handle, _ = pages.save("https://example.com/long", content, {})
-        for bad in ("", " " * 5, "a" * 161, "\n", "\x00", "\ud800", 12, None):
+        for bad in ("", " " * 5, "a" * 161, "\n", "\x00", "\ud800",
+                    "\u200b", "\u2028", "\u202e", 12, None):
             with self.subTest(bad=repr(bad)), self.assertRaises(ValueError):
                 pages.find_with_security_context(handle, bad)
         for bad in (0, -1, 21, 1.0, True, "10"):
