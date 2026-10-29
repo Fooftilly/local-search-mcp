@@ -1325,11 +1325,20 @@ class BridgeTests(unittest.TestCase):
             token, _ = self.module.document_pages.save(
                 "https://target.example.net/doc", text, {},
                 source_url="https://source.example.org/start")
-            self.assertTrue(self.module.web_find(token, "SECRET_FIND_MATCH")["success"])
+            first = self.module.web_find(token, "SECRET_FIND_MATCH", max_matches=2)
+            self.assertTrue(first["success"])
+            self.assertTrue(first["has_more"])
+            offset = first["next_offset"]
+            self.assertGreater(offset, first["matches"][-1]["offset"])
             policy.decide("unrelated.example.org", "allow", scope="exact")
-            self.assertTrue(self.module.web_find(token, "SECRET_FIND_MATCH")["success"])
+            continued = self.module.web_find(
+                token, "SECRET_FIND_MATCH", max_matches=2, start_offset=offset)
+            self.assertTrue(continued["success"])
+            self.assertEqual(continued["matches"][0]["offset"],
+                             first["matches"][-1]["offset"] + len("SECRET_FIND_MATCH_"))
             policy.decide("target.example.net", "deny", scope="exact")
-            refused = self.module.web_find(token, "SECRET_FIND_MATCH")
+            refused = self.module.web_find(
+                token, "SECRET_FIND_MATCH", start_offset=continued["next_offset"])
             self.assertEqual(refused["status"], "blocked")
             self.assertNotIn("SECRET_FIND_MATCH", str(refused))
             policy.decide("target.example.net", "allow", scope="exact")
@@ -1349,11 +1358,15 @@ class BridgeTests(unittest.TestCase):
             token, _ = self.module.document_pages.save(
                 "https://example.org/doc", secret, {},
                 once_proof=("example.org", "a" * 32))
-            valid = self.module.web_find(token, "ONCE_ONLY_EXCERPT")
+            valid = self.module.web_find(
+                token, "ONCE_ONLY_EXCERPT", max_matches=1)
             self.assertTrue(valid["success"])
+            self.assertTrue(valid["has_more"])
             self.assertEqual(proof.call_count, 1)
             proof.return_value = False
-            expired = self.module.web_find(token, "ONCE_ONLY_EXCERPT")
+            expired = self.module.web_find(
+                token, "ONCE_ONLY_EXCERPT",
+                start_offset=valid["next_offset"])
             self.assertEqual(expired["status"], "blocked")
             self.assertNotIn("ONCE_ONLY_EXCERPT", str(expired))
             # There is no new one-use grant consumption or approval request.
@@ -1374,7 +1387,8 @@ class BridgeTests(unittest.TestCase):
                 return result
             with patch.object(self.module.document_pages, "find_with_security_context",
                               side_effect=policy_changes):
-                blocked = self.module.web_find(token, "SENSITIVE_MATCH")
+                blocked = self.module.web_find(
+                    token, "SENSITIVE_MATCH", start_offset=5)
             self.assertEqual(blocked["status"], "blocked")
             self.assertNotIn("SENSITIVE_MATCH", str(blocked))
 
@@ -1387,7 +1401,10 @@ class BridgeTests(unittest.TestCase):
             policy.decide("example.org", "allow", scope="exact")
             token, _ = self.module.document_pages.save(
                 "https://example.org/doc", "PRIVATE_TERM_" * 3000, {})
-            answer = self.module.web_find(token, "PRIVATE_TERM")
+            first = self.module.web_find(token, "PRIVATE_TERM", max_matches=1)
+            self.assertTrue(first["success"])
+            answer = self.module.web_find(
+                token, "PRIVATE_TERM", start_offset=first["next_offset"])
             self.assertTrue(answer["success"])
             event = audit.call_args.args[0]
             self.assertEqual(event["kind"], "page")
