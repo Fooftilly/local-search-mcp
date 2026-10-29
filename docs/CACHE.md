@@ -78,20 +78,23 @@ An approved `web_fetch(include_tables=true)` retains its current bounded
 four-table, ten-row preview. If the extracted source exceeds that preview,
 the response also contains `table_continuation.table_id` and retained
 source-table indices. Call `web_table_page(table_id, table_index,
-row_offset=0, max_rows=10)` to continue without a new crawl. The preview's
+row_offset=0, max_rows=10, column_offset=0, max_columns=8)` to continue without a new crawl. The preview's
 `structured_info.tables.returned_source_indices` maps the four preview
 positions to Crawl4AI's extracted table indices.
 
 Only table rows in the **same** approved Crawl4AI response can be retained.
 No links are followed, new approvals requested or documents persisted.
 The bridge normalizes at most 16 extracted tables, 250 rows per table and
-8 columns; cells and serialized rows are bounded. Retention uses at most
+24 retained columns, served in pages of at most 8 columns; cells and
+serialized rows are bounded. Retention uses at most
 800,000 conservatively estimated JSON bytes per handle, with the **same**
 15-minute expiry, eight-entry capacity and combined 3-million-character/byte
 memory budget as Markdown continuation. Large tables may evict older
 Markdown documents and vice versa.
 
 The response's `has_more` and `next_offset` apply to **retained** rows.
+`has_more_columns` and `next_column_offset` describe retained column pages;
+callers can combine both offsets to reconstruct a bounded 2D table.
 `retained_truncated`, `columns_truncated`, and top-level
 `retention_truncated` expose bridge truncation. The source may contain
 tables/rows that Crawl4AI did not extract: `source_completeness=unknown`
