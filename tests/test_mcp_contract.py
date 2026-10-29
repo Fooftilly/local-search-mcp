@@ -223,13 +223,14 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
                     "query": "local query", "max_results": 2, "language": "en",
                     "engines": "qwant", "time_range": "day", "page": 2,
                 })
-                rejected = await client.call_tool("web_search", {
-                    "query": "local query", "categories": "news",
-                    "engines": "qwant",
-                })
+                with self.assertRaisesRegex(
+                        Exception, "Choose categories or engines"):
+                    await client.call_tool("web_search", {
+                        "query": "local query", "categories": "news",
+                        "engines": "qwant",
+                    })
         self.assertFalse(response.is_error)
         self.assertEqual(response.data[0]["engine"], "qwant")
-        self.assertTrue(rejected.is_error)
         self.assertEqual(seen, [{"path": "/config"}, {
             "q": "local query", "format": "json", "language": "en",
             "time_range": "day", "engines": "qwant", "pageno": "2",
