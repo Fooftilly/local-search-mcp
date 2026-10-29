@@ -759,7 +759,7 @@ def _run_fetch_network(url: str, mode: str, *,
         # DNS lookups, new domain approvals or additional crawler requests.
         output.update(structured_extraction.extract(
             page, final_url, include_links=include_links, include_tables=include_tables,
-            include_alternatives=include_alternatives, markdown=markdown)
+            include_alternatives=include_alternatives, markdown=markdown))
     if include_tables and success is True:
         table_info = output.get("structured_info", {}).get("tables", {})
         needs_pages = (table_info.get("truncated") or
@@ -870,7 +870,7 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
         load = (lambda: _run_fetch(
             url, mode, include_links=include_links, include_tables=include_tables,
             include_outline=include_outline, include_alternatives=include_alternatives,
-                compact_chars=compact_chars)
+            compact_chars=compact_chars)
         ) if opt_in else (lambda: _run_fetch(url, mode))
         cached = request_cache.run(
             "fetch", key, load,
