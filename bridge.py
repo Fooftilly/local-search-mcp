@@ -181,7 +181,9 @@ def _result_host_filter(value: str) -> tuple[tuple[str, bool], ...]:
             raise ValueError("allowed_result_domains contains duplicate hosts")
         seen.add(key)
         result.append(key)
-    return tuple(result)
+    # Selector order has no semantic effect. Canonicalize so equivalent
+    # scopes share one in-memory cache entry and cannot duplicate searches.
+    return tuple(sorted(result))
 
 
 def _result_host_allowed(host: str, patterns: tuple[tuple[str, bool], ...]) -> bool:
