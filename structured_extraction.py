@@ -38,7 +38,17 @@ def _url(value: object, base: str) -> str | None:
         value.encode("utf-8", "strict")
         # urljoin accepts relative links, but schemes other than http(s)
         # remain forbidden even after resolution.
-        absolute = urljoin(base, value)
+        # An explicit empty query delimiter is origin-visible. urllib's
+        # urljoin("?") wrongly inherits the base query, and urlunsplit drops
+        # the trailing '?' even for absolute hrefs. Retain it intentionally.
+        raw_no_fragment = value.split("#", 1)[0]
+        empty_query = raw_no_fragment.endswith("?")
+        if raw_no_fragment == "?":
+            origin = urlsplit(base)
+            absolute = urlunsplit((
+                origin.scheme, origin.netloc, origin.path or "/", "", ""))
+        else:
+            absolute = urljoin(base, value)
         parsed = urlsplit(absolute)
         if (parsed.scheme not in ("http", "https")
                 or parsed.username is not None or parsed.password is not None
@@ -47,6 +57,8 @@ def _url(value: object, base: str) -> str | None:
         host = normalize_domain(parsed.hostname or "")
         netloc = host if parsed.port is None else f"{host}:{parsed.port}"
         url = urlunsplit((parsed.scheme, netloc, parsed.path or "/", parsed.query, ""))
+        if empty_query:
+            url += "?"
         if len(url.encode("utf-8")) > 2048:
             return None
         return url
