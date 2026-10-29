@@ -1,0 +1,101 @@
+"""Bounded structured crawl data: no followup requests, local files or grants."""
+import json
+import unittest
+from unittest.mock import patch
+
+import structured_extraction as subject
+
+
+class StructuredExtractionTests(unittest.TestCase):
+    def test_relative_and_external_links_and_dangerous_urls(self):
+        raw = {"links": {"internal": [
+            {"href": "../notice?a=1#part", "text": " Notice ", "title": "Details"},
+            {"href": "javascript:alert(1)", "text": "no"},
+            {"href": "file:///etc/passwd"},
+            {"href": "http://127.0.0.1/private"},
+            {"href": "//localhost/health"},
+            {"href": "https://allowed.example@evil.example/data"},
+            {"href": "https://safe.example/fine"},
+            {"href": "https://safe.example/ctrl\nnewline"},
+            {"href": "https://faß.de/path"},
+            {"href": 23},
+        ], "external": [
+            {"href": "https://other.example/document", "text": "External"},
+        ]}}
+        with patch("domain_policy.socket.getaddrinfo",
+                   side_effect=AssertionError("No DNS should be issued")):
+            actual = subject.extract(raw, "https://safe.example/folder/page",
+                                     include_links=True, include_tables=False)
+        self.assertEqual([row["url"] for row in actual["links"]], [
+            "https://safe.example/notice?a=1",
+            "https://safe.example/fine",
+            "https://other.example/document",
+        ])
+        self.assertEqual([row["kind"] for row in actual["links"]],
+                         ["internal", "internal", "external"])
+        self.assertEqual(actual["links"][0]["text"], "Notice")
+        self.assertNotIn("tables", actual)
+
+    def test_tables_bounded_and_text_safe(self):
+        page = {"tables": [{
+            "headers": ["h"] * 30,
+            "rows": [["cell" * 200] * 20 for _ in range(50)],
+            "caption": "A" * 5000,
+            "summary": "B" * 5000,
+        }] * 12}
+        output = subject.extract(page, "https://example.com/a",
+                                 include_links=False, include_tables=True)
+        self.assertLessEqual(len(output["tables"]), 4)
+        self.assertLessEqual(len(json.dumps(output).encode()), subject.MAX_OUTPUT_BYTES + 100)
+        for table in output["tables"]:
+            self.assertLessEqual(len(table["headers"]), subject.MAX_COLUMNS)
+            self.assertLessEqual(len(table["rows"]), subject.MAX_ROWS)
+            self.assertLessEqual(len(table["caption"]), 200)
+            for record in table["rows"]:
+                self.assertLessEqual(len(record), subject.MAX_COLUMNS)
+                self.assertTrue(all(len(cell) <= 200 for cell in record))
+        self.assertNotIn("links", output)
+
+    def test_malformed_structures_never_crash_or_leak_python_objects(self):
+        tests = [
+            {"links": 3, "tables": {"rows": "bad"}},
+            {"links": {"internal": [None, {}, {"href": []}], "external": "bad"},
+             "tables": [{}, None, {"rows": [{"private": "unwanted"}]}]},
+            {"links": {"internal": [{"href": "https://example.com/a", "text": "\ud800"}]},
+             "tables": [{"headers": ["h"], "rows": [[float("nan"), {"private": "bad"}, "\ud800"]]}]},
+        ]
+        for page in tests:
+            with self.subTest(page=str(page)[:50]):
+                result = subject.extract(page, "https://example.com/",
+                                         include_links=True, include_tables=True)
+                encoded = json.dumps(result, ensure_ascii=False).encode("utf-8")
+                self.assertNotIn(b"unwanted", encoded)
+                self.assertNotIn(b"private", encoded)
+
+    def test_no_flags_keep_original_shape_and_all_entries_bounded(self):
+        page = {"links": {"internal": [{"href": f"/{i}", "text": "z" * 9999}
+                                       for i in range(1500)]},
+                "tables": [{"headers": ["H"], "rows": [["x"]]}] * 100}
+        self.assertEqual(subject.extract(page, "https://example.com/",
+                                         include_links=False, include_tables=False), {})
+        answer = subject.extract(page, "https://example.com/",
+                                 include_links=True, include_tables=True)
+        self.assertLessEqual(len(answer["links"]), subject.MAX_LINKS)
+        self.assertLessEqual(len(answer["tables"]), subject.MAX_TABLES)
+        self.assertLessEqual(len(json.dumps(answer).encode("utf-8")),
+                             subject.MAX_OUTPUT_BYTES + 200)
+
+    def test_invalid_base_or_link_schemes_do_not_become_fetchable(self):
+        for url in ["data:text/html,secret", "ftp://example.com/a", "//10.0.0.1/x",
+                    "http://example.local/a", "https://evil.invalid/a",
+                    "https://ex ample.com/", "https://example.com:8080/",
+                    "https://example.com/%0a"] * 2:
+            with self.subTest(url=url):
+                actual = subject.extract(
+                    {"links": {"internal": [{"href": url}]}}, "https://example.com/",
+                    include_links=True, include_tables=False)
+                self.assertEqual(actual["links"], [])
+
+
+if __name__ == "__main__":
+    unittest.main()
