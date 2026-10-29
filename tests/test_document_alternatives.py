@@ -79,6 +79,15 @@ View as:
 """
         self.assertEqual(extract(markdown)["alternatives"], [])
 
+    def test_code_fences_are_examples_not_offered_links(self):
+        fenced = "~~~markdown\n" + GROUP + "~~~\n"
+        self.assertEqual(extract(fenced)["alternatives"], [])
+        backticks = chr(96) * 3
+        fenced = backticks + "markdown\n" + GROUP + backticks + "\n"
+        self.assertEqual(extract(fenced)["alternatives"], [])
+        # Real links after a quoted sample are still eligible.
+        self.assertEqual(len(extract(fenced + "\n" + GROUP)["alternatives"]), 3)
+
     def test_unsafe_urls_are_filtered_without_dns_or_approval(self):
         candidates = [
             "javascript:alert(1)", "file:///etc/passwd", "data:text/html,evil",
