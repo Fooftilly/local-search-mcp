@@ -305,6 +305,57 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all("deduplicate" not in dict(url.params)
                             and "ranking" not in dict(url.params) for url in urls))
 
+    async def test_search_result_domains_filter_over_real_mcp(self):
+        original = httpx.Client
+        paths = []
+        def handler(request):
+            paths.append(str(request.url))
+            self.assertEqual(request.url.path, "/search")
+            self.assertNotIn("allowed_result_domains", request.url.params)
+            return httpx.Response(200, json={"results": [
+                {"title": "Government", "url": "https://example.org/a",
+                 "engine": "yahoo"},
+                {"title": "Government subsite", "url": "https://news.example.org/b",
+                 "engine": "yahoo"},
+                {"title": "External", "url": "https://unrelated.org/c",
+                 "engine": "yahoo"},
+            ]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with (patch.object(bridge.httpx, "Client", side_effect=factory),
+              patch.object(bridge.domain_policy, "request",
+                           side_effect=AssertionError("No approvals")),
+              patch.object(bridge.domain_policy.socket, "getaddrinfo",
+                           side_effect=AssertionError("No DNS lookups"))):
+            async with Client(bridge.mcp) as client:
+                tools = {tool.name: tool for tool in await client.list_tools()}
+                self.assertIn("allowed_result_domains",
+                              tools["web_search"].inputSchema["properties"])
+                self.assertEqual(
+                    tools["web_search"].inputSchema["properties"][
+                        "allowed_result_domains"]["default"], "")
+                exact = await client.call_tool("web_search", {
+                    "query": "official reference", "allowed_result_domains": "example.org"})
+                children = await client.call_tool("web_search", {
+                    "query": "official reference", "allowed_result_domains": "*.example.org"})
+                combo = await client.call_tool("web_search", {
+                    "query": "official reference",
+                    "allowed_result_domains": "example.org,*.example.org",
+                    "include_search_status": True})
+                none = await client.call_tool("web_search", {
+                    "query": "official reference",
+                    "allowed_result_domains": "another.org"})
+        for value in (exact, children, combo, none):
+            self.assertFalse(value.is_error)
+        self.assertEqual([x["title"] for x in exact.data], ["Government"])
+        self.assertEqual([x["title"] for x in children.data],
+                         ["Government subsite"])
+        self.assertEqual([x["title"] for x in combo.data["results"]],
+                         ["Government", "Government subsite"])
+        self.assertEqual(combo.data["status"], "ok")
+        self.assertEqual(none.data, [])
+        self.assertEqual(len(paths), 4)
+
     async def test_search_capabilities_read_only_live_inventory_over_mcp(self):
         original = httpx.Client
         requests = []

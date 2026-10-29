@@ -151,6 +151,46 @@ def _upstream_error(response, backend: str) -> dict:
     return result
 
 
+def _result_host_filter(value: str) -> tuple[tuple[str, bool], ...]:
+    """Validate local result filters: host or *.host (child domains only).
+
+    Reuse the existing offline PSL, private-suffix and ambiguous-IDN rules.
+    Returned search links are never approved for fetching by this selector.
+    """
+    if not isinstance(value, str):
+        raise ValueError("allowed_result_domains must be comma-separated hostnames")
+    if not value:
+        return ()
+    entries = value.split(",")
+    if len(entries) > 8:
+        raise ValueError("allowed_result_domains accepts at most 8 hosts")
+    result = []
+    seen = set()
+    for entry in entries:
+        token = entry.strip()
+        descendants = token.startswith("*.")
+        raw_host = token[2:] if descendants else token
+        if not raw_host or "*" in raw_host:
+            raise ValueError("allowed_result_domains requires public hostnames")
+        try:
+            host = domain_policy.normalize_domain(raw_host)
+        except (ValueError, RuntimeError) as exc:
+            raise ValueError("allowed_result_domains requires valid public hostnames") from exc
+        key = (host, descendants)
+        if key in seen:
+            raise ValueError("allowed_result_domains contains duplicate hosts")
+        seen.add(key)
+        result.append(key)
+    # Selector order has no semantic effect. Canonicalize so equivalent
+    # scopes share one in-memory cache entry and cannot duplicate searches.
+    return tuple(sorted(result))
+
+
+def _result_host_allowed(host: str, patterns: tuple[tuple[str, bool], ...]) -> bool:
+    return any(host.endswith("." + domain) if descendants else host == domain
+               for domain, descendants in patterns)
+
+
 def _search_failure_status(payload: dict) -> dict:
     """Describe only bounded upstream failure *names*, never error details.
 
@@ -199,13 +239,15 @@ def _run_search(params: dict, max_results: int, *,
                 deduplicate: bool = False,
                 ranking: str = "searxng",
                 include_published_date: bool = False,
-                include_search_status: bool = False) -> list[dict] | dict:
+                include_search_status: bool = False,
+                allowed_result_domains: tuple[tuple[str, bool], ...] = ()) -> list[dict] | dict:
     try:
         with on_demand.lease("searxng"):
             return _run_search_network(params, max_results, deduplicate=deduplicate,
                                        ranking=ranking,
                                        include_published_date=include_published_date,
-                                       include_search_status=include_search_status)
+                                       include_search_status=include_search_status,
+                                       allowed_result_domains=allowed_result_domains)
     except on_demand.BackendUnavailable:
         return {"success": False, "status": "upstream_unavailable",
                 "backend": "searxng",
@@ -333,7 +375,8 @@ def _run_search_network(params: dict, max_results: int, *,
                         deduplicate: bool = False,
                         ranking: str = "searxng",
                         include_published_date: bool = False,
-                        include_search_status: bool = False) -> list[dict] | dict:
+                        include_search_status: bool = False,
+                        allowed_result_domains: tuple[tuple[str, bool], ...] = ()) -> list[dict] | dict:
     with httpx.Client(timeout=upstream_settings.effective_timeout("searxng_seconds"),
                       trust_env=False) as client:
         selection_failure = _verify_explicit_search_engines(client, params)
@@ -405,6 +448,15 @@ def _run_search_network(params: dict, max_results: int, *,
     if rows and not valid_rows:
         return {"success": False, "status": "invalid_response", "backend": "searxng",
                 "reason": "SearXNG returned results without any usable HTTP(S) links."}
+    if allowed_result_domains:
+        # Work only on validated SearXNG hits, before deduplication and
+        # output limiting. Never follow a link or treat this as fetch approval.
+        valid_rows = [
+            row for row in valid_rows
+            if _result_host_allowed(
+                domain_policy.normalize_domain(urlsplit(row["url"]).hostname or ""),
+                allowed_result_domains)
+        ]
     result = enrich_search_results(
         valid_rows, max_results, deduplicate=deduplicate, ranking=ranking,
         include_published_date=include_published_date,
@@ -429,7 +481,8 @@ def web_search(query: str, max_results: int = 8, language: str = "",
                deduplicate: bool = False,
                ranking: Literal["searxng", "source_count"] = "searxng",
                include_published_date: bool = False,
-               include_search_status: bool = False) -> list[dict] | dict:
+               include_search_status: bool = False,
+               allowed_result_domains: str = "") -> list[dict] | dict:
     """Search SearXNG, with optional URL deduplication and source attribution.
 
     Defaults preserve SearXNG order and the historic four-field result shape.
@@ -442,6 +495,9 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     Set include_search_status=true for an uncached diagnostic wrapper with
     bounded SearXNG-reported unresponsive provider names; absent failure
     reports do not prove exhaustive coverage. No extra provider requests.
+    allowed_result_domains filters only already-returned results:
+    "gov.me" matches only that host, "*.gov.me" matches child hosts only.
+    It never changes provider selection or domain approvals.
     Choose categories OR engines: SearXNG combines both into a union.
     Engine-only calls require a verified enabled provider in local /config;
     unsupported names fail closed without searching default providers.
@@ -461,6 +517,7 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     params, max_results = _search_params(
         query, max_results, language, categories, time_range, engines, page,
     )
+    allowed_hosts = _result_host_filter(allowed_result_domains)
     # Avoid caching obviously sensitive-looking queries. No queries are saved
     # to disk by this cache; the separate opt-in history remains unchanged.
     private = bool(re.search(
@@ -471,12 +528,14 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     key = None if private or include_search_status else (
         "search", SEARXNG_URL, tuple(sorted(params.items())),
         max_results, deduplicate, ranking, include_published_date,
+        allowed_hosts,
     )
     return request_cache.run(
         "search", key, lambda: _run_search(
             params, max_results, deduplicate=deduplicate, ranking=ranking,
             include_published_date=include_published_date,
-            include_search_status=include_search_status),
+            include_search_status=include_search_status,
+            allowed_result_domains=allowed_hosts),
         ttl=lambda: cache_settings.effective_ttl('search_seconds'), fresh=fresh, should_store=lambda r: isinstance(r, list),
     )
 

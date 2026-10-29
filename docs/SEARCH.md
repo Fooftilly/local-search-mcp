@@ -15,6 +15,7 @@ The MCP tool remains compatible with existing `web_search(query, max_results=8)`
 | `ranking` | `searxng` | `searxng` or `source_count` (requires `deduplicate=true`) | Local stable ordering |
 | `include_published_date` | `false` | Boolean | Local opt-in upstream date-only metadata |
 | `include_search_status` | `false` | Boolean | Local opt-in provider-failure status (not forwarded) |
+| `allowed_result_domains` | Empty | Up to 8 comma-separated exact public hosts or `*.host` for subdomains only | Local post-result filtering (not forwarded) |
 
 A category or engine name can contain letters, digits, dots, underscores, hyphens and spaces (at most 40 characters). Dotted engine names such as `brave.news` and `crates.io` are valid. Empty names, duplicate names and arbitrary URL syntax are rejected before contacting the upstream.
 
@@ -101,6 +102,40 @@ never a verified statement about original publishers.
 
 ```bash
 fastmcp call http://127.0.0.1:8790/mcp web_search query='public research' include_search_status=true --auth none
+```
+
+## Optional source-domain filtering
+
+Use `allowed_result_domains="example.org"` in `web_search` to retain
+only results from the **exact** host `example.org`. Use
+`allowed_result_domains="*.example.org"` for its child subdomains only
+(`news.example.org`, but **not** the apex). Include both patterns if
+both should match: `example.org,*.example.org`. The filter accepts at
+most eight distinct public hosts, validating their DNS/IDN form with
+the existing offline public/private suffix list (PSL), including hosted
+tenant boundaries. Bare public suffixes such as `co.uk` and shared
+host suffixes such as `github.io` are refused.
+
+This option filters **only validated SearXNG result links already
+received by the MCP**. It is not sent to SearXNG and does not make any
+additional provider requests. Unlike a server-side `site:` query,
+this cannot cause more official hits to be retrieved if SearXNG's
+initial top results were mostly other sites. No matches yield `[]`;
+result order, source attribution, deduplication, search-provider
+selection and existing 12-result maximum remain intact. The source
+filter becomes part of the in-memory cache key so differently scoped
+queries do not share a cached response.
+
+A returned link is **not** automatically approved for crawling:
+`web_fetch` still requires the operator's normal domain permission and
+public-DNS/egress guards. This option does not enable any search engine,
+bypass excluded Google engines, approve or fetch an excluded URL, or
+change the configured search categories/engines. Suffix matching is
+label-boundary-aware, not substring matching; `evil-example.org`
+does not match `*.example.org`.
+
+```bash
+fastmcp call http://127.0.0.1:8790/mcp web_search query='government documentation' allowed_result_domains='example.org,*.example.org' --auth none
 ```
 
 ## Optional deduplication and source attribution
