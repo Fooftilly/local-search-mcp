@@ -87,7 +87,7 @@ No links are followed, new approvals requested or documents persisted.
 The bridge normalizes at most 16 extracted tables, 250 rows per table and
 24 retained columns, served in pages of at most 8 columns; cells and
 serialized rows are bounded. Retention uses at most
-800,000 conservatively estimated JSON bytes per handle, with the **same**
+800,000 conservative serialized/Python-object estimated bytes per handle, with the **same**
 15-minute expiry, eight-entry capacity and combined 3-million-character/byte
 memory budget as Markdown continuation. Large tables may evict older
 Markdown documents and vice versa.
@@ -95,8 +95,11 @@ Markdown documents and vice versa.
 The response's `has_more` and `next_offset` apply to **retained** rows.
 `has_more_columns` and `next_column_offset` describe retained column pages;
 callers can combine both offsets to reconstruct a bounded 2D table.
-`retained_truncated`, `columns_truncated`, and top-level
-`retention_truncated` expose bridge truncation. The source may contain
+`retained_truncated`, `columns_truncated`, `cells_truncated` and top-level
+`retention_truncated` expose bridge truncation; even short source strings
+may be clipped to meet the response budget. A complete serialized table page
+is limited to 20 KB, so fewer than the requested ten rows may be returned.
+Follow the returned offset rather than assuming a fixed page size. The source may contain
 tables/rows that Crawl4AI did not extract: `source_completeness=unknown`
 is intentional, and reaching the last retained row does not prove
 publisher completeness.
