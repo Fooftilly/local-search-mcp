@@ -755,11 +755,18 @@ def _run_fetch_network(url: str, mode: str, *,
         output.update(document_pages.build_outline(
             markdown, first_page_chars=compact_chars))
     if include_links or include_tables or include_alternatives:
-        # Parse only the already fetched, approved page: no link traversal,
-        # DNS lookups, new domain approvals or additional crawler requests.
+        # Alternative format groups can be pruned from fit Markdown. Inspect
+        # the same crawl's bounded raw text when available, without changing
+        # the mode-selected Markdown returned to the caller.
+        alternatives_source = markdown
+        if include_alternatives and isinstance(raw, str) and raw:
+            alternatives_source = raw[:document_pages.MAX_DOCUMENT_CHARS]
+            alternatives_source = alternatives_source.encode(
+                "utf-8", errors="replace").decode("utf-8")
+        # Only parse already fetched, approved data; never visit listed URLs.
         output.update(structured_extraction.extract(
             page, final_url, include_links=include_links, include_tables=include_tables,
-            include_alternatives=include_alternatives, markdown=markdown))
+            include_alternatives=include_alternatives, markdown=alternatives_source))
     if include_tables and success is True:
         table_info = output.get("structured_info", {}).get("tables", {})
         needs_pages = (table_info.get("truncated") or
