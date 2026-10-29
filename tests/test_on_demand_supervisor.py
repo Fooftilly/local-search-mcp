@@ -161,6 +161,49 @@ class OnDemandSupervisorTests(unittest.TestCase):
         self.assertEqual(manager.snapshot()["searxng"]["state"], "sleeping")
         self.assertFalse(manager.snapshot()["searxng"]["armed"])
 
+    def test_unhealthy_external_wake_uses_bounded_fallback_inventory(self):
+        running = [False]
+        now = [1000.0]
+        def target(name):
+            return Target(name, "a" * 64,
+                          name == "searxng" and running[0], "no")
+        with (patch.object(sup.docker, "_safe_target", side_effect=target),
+              patch.object(sup.threading.Thread, "start")):
+            manager = sup.Supervisor(1)
+        manager.tracker._clock = lambda: now[0]
+        manager._last_sleep_inventory = now[0]
+        seen = []
+        def inspect(name):
+            seen.append(name)
+            return target(name)
+        stops = []
+        def stop(service):
+            stops.append(service)
+            running[0] = False
+            return True
+        with (patch.object(manager, "_enabled", return_value=True),
+              patch.object(sup.time, "monotonic",
+                           side_effect=lambda: now[0]),
+              patch.object(sup, "_healthy", return_value=False),
+              patch.object(sup.docker, "_safe_target", side_effect=inspect),
+              patch.object(sup.docker, "start",
+                           side_effect=AssertionError("Never start in idle")),
+              patch.object(sup.docker, "stop", side_effect=stop)):
+            running[0] = True
+            for _ in range(50):
+                manager.idle_once()
+            self.assertEqual(seen, [])
+            self.assertFalse(manager.snapshot()["searxng"]["armed"])
+            now[0] += 301
+            manager.idle_once()
+            self.assertEqual(seen, ["searxng"])
+            self.assertTrue(manager.snapshot()["searxng"]["armed"])
+            self.assertEqual(stops, [])
+            now[0] += 61
+            manager.idle_once()
+            self.assertEqual(stops, ["searxng"])
+            self.assertFalse(manager.snapshot()["searxng"]["armed"])
+
     def test_actual_wake_failure_not_passively_cleared(self):
         manager = self.new_supervisor()
         manager._state["crawl4ai"] = "failed"
