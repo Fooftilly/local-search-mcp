@@ -175,7 +175,10 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(request.url.path, "/crawl")
             self.assertEqual(json.loads(request.content)["urls"], [url])
             return httpx.Response(200, json={"results": [{
-                "url": url, "success": True, "markdown": markdown,
+                "url": url, "success": True, "markdown": {
+                    "raw_markdown": markdown,
+                    "fit_markdown": "Short fit summary",
+                },
             }]})
 
         def factory(**kwargs):
@@ -187,13 +190,17 @@ class BridgeTests(unittest.TestCase):
             normal = self.module.web_fetch(url, fresh=True)
             discovered = self.module.web_fetch(
                 url, fresh=True, include_alternatives=True)
+            fitted = self.module.web_fetch(
+                url, mode="fit", fresh=True, include_alternatives=True)
             with self.assertRaises(ValueError):
                 self.module.web_fetch(url, include_alternatives="true")
         self.assertNotIn("alternatives", normal)
         self.assertNotIn("structured_info", normal)
         self.assertEqual([a["format"] for a in discovered["alternatives"]],
                          ["txt", "html", "pdf"])
-        self.assertEqual(paths.count("/crawl"), 2)
+        self.assertEqual(fitted["alternatives"], discovered["alternatives"])
+        self.assertEqual(fitted["markdown"], "Short fit summary")
+        self.assertEqual(paths.count("/crawl"), 3)
         self.assertEqual(discovered["markdown"], normal["markdown"])
 
     def test_opt_in_outline_single_batch_and_default_cache_separation(self):
