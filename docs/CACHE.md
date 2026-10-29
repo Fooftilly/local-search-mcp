@@ -18,6 +18,46 @@ Fetch cache keys retain HTTP(S) scheme, hostname, path, explicit port and raw/fi
 
 **Every** `web_fetch` call must pass the latest domain approval, public DNS and egress-precondition checks before returning a cached value. An explicit dashboard domain-rule change invalidates *all* fetch cache entries immediately (conservative, not only one hostname). Fetches started before a rule change cannot repopulate the cache, and a concurrent rule change causes a blocked result rather than exposing the in-flight content. A cache hit does not contact Crawl4AI or re-run its `/health` check; to force an upstream check, use `fresh=true`. Ensure the crawler's outbound network isolation remains deployed.
 
+## Optional fetch retrieval timestamps and cache age
+
+After updating the MCP and reconnecting a client, pass
+`include_retrieval_info=true` to `web_fetch` or `web_fetch_batch`.
+Successful fetches gain a small `retrieval_info` object without changing
+the default response, enabling extra network requests, or adding storage:
+
+- `retrieved_at`: UTC ISO-8601 timestamp recorded **when the bridge received
+  and processed the returned crawl result**. A cache hit preserves the original
+  timestamp. This is **not** a publisher's publication/update date.
+- `served_from_cache`: true only for a completed cache hit.
+- `cache_age_seconds`: nonnegative **monotonic** age of the cached result,
+  with millisecond precision; zero when the result came from this request's
+  new crawl or an in-flight coalesced crawl.
+- `source`: `fresh` (this call ran a new crawl, possibly with
+  `fresh=true`), `cache_hit` (served previously stored content),
+  `coalesced` (shared another concurrent caller's in-flight crawl), or
+  `uncached` (never eligible for the reusable short-page cache).
+
+Opting in **does not bypass or disable** caching for eligible ordinary
+short public pages; it simply reads the cache entry's own origin stamp.
+Queries/fragmented URLs, structured or compact fetches, long documents
+and one-use grants continue to bypass the reusable cache. For these,
+retrieval info is marked `uncached`; no nonexistent cache age is claimed.
+A `fresh=true` request crawls upstream and reports `fresh` when
+eligible for the cache. The existing cache policy, redirect restrictions,
+revalidation, TTL settings, size limits and coalescing are unchanged.
+
+A shifted wall clock does not alter cache age or retention: elapsed age
+uses Python's monotonic clock, while the UTC timestamp is only a display
+anchor. Errors and blocked/revoked results do **not** include retrieval
+information. No query, URL, document handle, content or timestamp is
+persisted to audit history or a new file for this feature. A cache hit
+proves only that this bridge previously retrieved the text; it does not
+prove the publisher's content is still current.
+
+```bash
+fastmcp call http://127.0.0.1:8790/mcp web_fetch url='https://example.com/approved-page' include_retrieval_info=true --auth none
+```
+
 To force a fresh request, add `fresh=true` to either MCP tool:
 
 ```bash
