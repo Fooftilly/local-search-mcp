@@ -157,7 +157,8 @@ class SearchResultTests(unittest.TestCase):
     def test_date_parser_rejects_invalid_untrusted_metadata(self):
         good = ["2024-02-29", "2024-02-29T12:30:40",
                 "2024-02-29T12:30:40Z", "2024-02-29T23:59:59+14:00",
-                "2024-02-29T00:00:00.012345-05:30"]
+                "2024-02-29T00:00:00.012345-05:30",
+                "2024-02-29T10:20:30+01:59"]
         for value in good:
             with self.subTest(value=value):
                 r = row("https://example.org/post", "news")
@@ -168,6 +169,9 @@ class SearchResultTests(unittest.TestCase):
         bad = [None, 12, True, [], {}, "", "now", "2024-02-30",
                "2024-13-01T12:00:00", "2024-10-23T25:00:00",
                "2024-10-23T12:00:00+25:00", "2024-10-23T12:00:00+0200",
+               "2024-10-23T12:00:00+01:99", "2024-10-23T12:00:00-01:99",
+               "2024-10-23T12:00:00+00:60", "2024-10-23T12:00:00-24:00",
+               "2024-10-23T12:00:00+23:60",
                "2024-10-23T12:00:00Z\n", "\u202e2024-10-23",
                "2024-10-23<script>", "\ud800", "x" * 100000]
         for value in bad:
