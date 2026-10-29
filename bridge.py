@@ -757,6 +757,24 @@ def _run_fetch_network(url: str, mode: str, *,
         # DNS lookups, new domain approvals or additional crawler requests.
         output.update(structured_extraction.extract(
             page, final_url, include_links=include_links, include_tables=include_tables))
+    if include_tables and success is True:
+        table_info = output.get("structured_info", {}).get("tables", {})
+        needs_pages = (table_info.get("truncated") or
+                       any(item.get("rows_truncated")
+                           for item in table_info.get("table_limits", [])))
+        if needs_pages:
+            payload = structured_extraction.prepare_table_continuation(page)
+            if payload is not None:
+                table_id = document_pages.save_tables(
+                    final_url, payload, source_url=url, once_proof=once_proof)
+                output["table_continuation"] = {
+                    "table_id": table_id,
+                    "source_tables_observed": payload["source_tables_observed"],
+                    "retained_table_indices": [entry["table_index"]
+                                               for entry in payload["entries"]],
+                    "retention_truncated": payload["retention_truncated"],
+                    "source_completeness": "unknown",
+                }
     if len(markdown) > compact_chars and success is not False:
         token, page_count = document_pages.save(
             final_url, markdown, metadata, source_url=url, once_proof=once_proof,
@@ -1055,6 +1073,21 @@ def web_fetch_page(document_id: str, page: int = 2) -> dict:
     epoch = request_cache.policy_epoch()
     result, source_url, once_proof = document_pages.read_with_security_context(
         document_id, page)
+    return _authorized_saved_document(result, source_url, once_proof, epoch)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+@logged_tool("page")
+def web_table_page(table_id: str, table_index: int, row_offset: int = 0,
+                   max_rows: int = 10) -> dict:
+    """Continue already-extracted tables; never recrawl, reapprove or follow links.
+
+    Indices refer to extracted source table order; offsets count retained rows,
+    not original HTML rows. Completeness of the publisher source is unknown.
+    """
+    epoch = request_cache.policy_epoch()
+    result, source_url, once_proof = document_pages.read_table_with_security_context(
+        table_id, table_index, row_offset, max_rows)
     return _authorized_saved_document(result, source_url, once_proof, epoch)
 
 
