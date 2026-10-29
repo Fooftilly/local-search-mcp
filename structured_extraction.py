@@ -30,7 +30,9 @@ def _text(value: object, limit: int) -> str:
 def _url(value: object, base: str) -> str | None:
     if not isinstance(value, str) or not 1 <= len(value) <= 2048:
         return None
-    if value != value.strip() or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+    if (value != value.strip()
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+            or re.search(r"%(?:0[0-9a-f]|1[0-9a-f]|7f)", value, re.IGNORECASE)):
         return None
     try:
         value.encode("utf-8", "strict")
