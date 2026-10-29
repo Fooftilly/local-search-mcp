@@ -157,6 +157,94 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dated.data[0]["date_source"], "searxng.publishedDate")
         self.assertNotIn("published_date", dated.data[1])
 
+    async def test_opt_in_search_status_reports_partial_provider_failures(self):
+        original = httpx.Client
+        seen = []
+        failures = [
+            ["yahoo", "timeout SECRET_PRIVATE_DETAIL"],
+            ["bing images", "backend unavailable"],
+            ["yahoo", "duplicate"],
+            ["google\\nleak", "CREDENTIAL"],
+        ]
+        def handler(request):
+            seen.append((request.url.path, dict(request.url.params)))
+            return httpx.Response(200, json={
+                "results": [
+                    {"title": "Official reference",
+                     "url": "https://example.org/reference",
+                     "content": "Public source text", "engine": "qwant"},
+                ], "unresponsive_engines": failures,
+                "private_setting": "PRIVATE_TOKEN",
+            })
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with patch.object(bridge.httpx, "Client", side_effect=factory):
+            async with Client(bridge.mcp) as client:
+                tools = {x.name: x for x in await client.list_tools()}
+                self.assertFalse(tools["web_search"].inputSchema[
+                    "properties"]["include_search_status"]["default"])
+                usual = await client.call_tool("web_search", {"query": "public info"})
+                enhanced = await client.call_tool("web_search", {
+                    "query": "public info", "include_search_status": True})
+                refreshed = await client.call_tool("web_search", {
+                    "query": "public info", "include_search_status": True})
+        self.assertFalse(usual.is_error)
+        self.assertIsInstance(usual.data, list)
+        self.assertEqual(set(usual.data[0]), {"title", "url", "snippet", "engine"})
+        self.assertEqual(enhanced.data["results"], usual.data)
+        self.assertTrue(enhanced.data["success"])
+        diagnostic = enhanced.data["search_status"]
+        self.assertEqual(diagnostic["coverage"], "partial")
+        self.assertEqual(diagnostic["reported_count"], 4)
+        self.assertEqual(diagnostic["unresponsive_engines"],
+                         ["yahoo", "bing images"])
+        self.assertEqual(diagnostic["unparsed_count"], 1)
+        self.assertFalse(diagnostic["truncated"])
+        self.assertEqual(enhanced.data, refreshed.data)
+        self.assertNotIn("PRIVATE_TOKEN", str(diagnostic))
+        self.assertNotIn("SECRET_PRIVATE_DETAIL", str(diagnostic))
+        self.assertEqual(len(seen), 3)
+        self.assertTrue(all(path == "/search" for path, _ in seen))
+        self.assertTrue(all(params == {"q": "public info", "format": "json"}
+                            for _, params in seen))
+
+    async def test_search_status_reports_absence_and_does_not_change_failures(self):
+        original = httpx.Client
+        payloads = [
+            {"results": [{"url": "https://example.org/a", "title": "A",
+                          "engine": "yahoo"}]},
+            {"results": [{"url": "https://example.org/b", "title": "B",
+                          "engine": "yahoo"}],
+             "unresponsive_engines": {"PRIVATE_SECRET": "wrong schema"}},
+            {"results": [], "unresponsive_engines": [
+                ["yahoo", "timeout SECRET"]]},
+        ]
+        seen = []
+        def handler(request):
+            seen.append(request.url.path)
+            return httpx.Response(200, json=payloads[len(seen) - 1])
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with patch.object(bridge.httpx, "Client", side_effect=factory):
+            async with Client(bridge.mcp) as client:
+                for _ in range(2):
+                    response = await client.call_tool("web_search", {
+                        "query": "public provider status",
+                        "include_search_status": True})
+                    self.assertFalse(response.is_error)
+                    status = response.data["search_status"]
+                    self.assertEqual(status["coverage"],
+                                     "no_failures_reported" if len(seen) == 1
+                                     else "unverifiable")
+                    self.assertNotIn("PRIVATE_SECRET", str(status))
+                failed = await client.call_tool("web_search", {
+                    "query": "public provider status",
+                    "include_search_status": True})
+        self.assertEqual(failed.data["status"], "upstream_unavailable")
+        self.assertFalse(failed.data["success"])
+        self.assertNotIn("SECRET", str(failed.data))
+        self.assertEqual(seen, ["/search"] * 3)
+
     async def test_search_dedupe_and_source_count_rank_over_real_mcp(self):
         urls = []
         original = httpx.Client
