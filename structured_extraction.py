@@ -174,8 +174,8 @@ def _select_links(raw: dict, base: str, *, budget: int = MAX_OUTPUT_BYTES) -> tu
 # explicit "View as:" group in Crawl4AI Markdown. Selected Crawl4AI links
 # can omit the group entirely under their 24-link cap, so inspect only
 # this narrowly evidenced source-advertised pattern; never guess URLs.
-_ALT_MARKER = re.compile(r"(?im)^[ \\t]{0,3}View as:[ \\t]*$")
-_ALT_LINK = re.compile(r"\\[([^\\]\\n]{1,40})\\]\\(([^)\\s]{1,2048})\\)")
+_ALT_MARKER = re.compile(r"(?im)^[ \t]{0,3}View as:[ \t]*$")
+_ALT_LINK = re.compile(r"\[([^\]\n]{1,40})\]\(([^)\s]{1,2048})\)")
 _ALT_LABELS = {
     "plain text": "txt", "text": "txt",
     "compact html": "html", "html": "html", "pdf": "pdf",
@@ -195,7 +195,7 @@ def _advertised_alternatives(markdown: str, base: str, *, budget: int) -> list[d
         if match_index >= 8:
             break
         # A single adjacent group only: never match unrelated later nav links.
-        group = markdown[marker.end():marker.end() + 900].split("\\n\\n", 1)[0]
+        group = markdown[marker.end():marker.end() + 900].split("\n\n", 1)[0]
         candidates: dict[str, tuple[str, str]] = {}
         for link in _ALT_LINK.finditer(group):
             fmt = _ALT_LABELS.get(link.group(1).strip().casefold())
@@ -232,8 +232,6 @@ def _advertised_alternatives(markdown: str, base: str, *, budget: int) -> list[d
                 budget -= _size(item)
         return results
     return []
-
-
 
 # Only already-extracted table cells are eligible for bounded continuation.
 MAX_RETAINED_TABLES = 16
