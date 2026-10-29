@@ -105,7 +105,7 @@ def _link_score(item: dict) -> int:
     return score
 
 
-def _select_links(raw: dict, base: str) -> tuple[list[dict], int]:
+def _select_links(raw: dict, base: str, *, budget: int = MAX_OUTPUT_BYTES) -> tuple[list[dict], int]:
     """Deduplicate bounded crawl links before selecting a useful 24-item mix.
 
     Preserve original order for <=24 unique URLs. On overflow, sort by an
@@ -153,7 +153,7 @@ def _select_links(raw: dict, base: str) -> tuple[list[dict], int]:
     else:
         ordered = indexed
     chosen = []
-    budget = MAX_OUTPUT_BYTES
+    budget = min(budget, MAX_OUTPUT_BYTES)
     for index, item in ordered:
         if len(chosen) >= MAX_LINKS:
             break
@@ -183,7 +183,7 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool)
         raw = page.get("links")
         observed = 0
         if isinstance(raw, dict):
-            selected, observed = _select_links(raw, base)
+            selected, observed = _select_links(raw, base, budget=remaining)
             for item in selected:
                 size = _size(item)
                 if size <= remaining:
@@ -232,7 +232,9 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool)
                     remaining -= size
                     limits.append({
                         "rows_observed": len(source_rows) if isinstance(source_rows, list) else 0,
-                        "rows_truncated": isinstance(source_rows, list) and len(source_rows) > MAX_ROWS,
+                        "rows_truncated": (isinstance(source_rows, list) and (
+                            len(source_rows) > MAX_ROWS or
+                            len(cells) < min(len(source_rows), MAX_ROWS))),
                         "columns_truncated": (isinstance(original_headers, list) and len(original_headers) > MAX_COLUMNS)
                         or (isinstance(source_rows, list) and any(
                             isinstance(record, list) and len(record) > MAX_COLUMNS
