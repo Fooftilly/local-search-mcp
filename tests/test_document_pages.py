@@ -79,6 +79,43 @@ class DocumentPageTests(unittest.TestCase):
         for row in outline["outline"]:
             self.assertIn(row["heading"], markdown[row["offset"]:row["offset"] + 200])
 
+    def test_long_setext_title_keeps_bounded_prefix_and_original_page(self):
+        title = "A" * 481
+        page_prefix = "before\n" + "x" * (pages.PAGE_CHARS - 250 - len("before\n")) + "\n"
+        markdown = page_prefix + title + "\n---\n"
+        outline = pages.build_outline(markdown)
+        self.assertEqual(len(outline["outline"]), 1)
+        heading = outline["outline"][0]
+        self.assertEqual(heading["heading"], "A" * pages.MAX_OUTLINE_HEADING_CHARS)
+        self.assertEqual(heading["level"], 2)
+        self.assertEqual(heading["offset"], len(page_prefix))
+        self.assertEqual(heading["page"], 1)
+        self.assertGreater(len(page_prefix) + len(title), pages.PAGE_CHARS)
+        self.assertFalse(outline["outline_truncated"])
+
+        next_page = "x" * pages.PAGE_CHARS + "\n" + title + "\n===\n"
+        outline_next = pages.build_outline(next_page)["outline"]
+        self.assertEqual(len(outline_next), 1)
+        self.assertEqual(outline_next[0]["heading"], "A" * 160)
+        self.assertEqual(outline_next[0]["page"], 2)
+        self.assertEqual(outline_next[0]["offset"], pages.PAGE_CHARS + 1)
+        self.assertEqual(outline_next[0]["level"], 1)
+
+    def test_indented_code_never_creates_setext_heading(self):
+        for code_line in (
+            "    print('hello')",
+            "\tprint('hello')",
+            " \tprint('hello')",
+            "   \tprint('hello')",
+        ):
+            with self.subTest(code=repr(code_line)):
+                result = pages.build_outline(code_line + "\n---\n")
+                self.assertEqual(result["outline"], [])
+        real = pages.build_outline("   An actual section\n---\n")
+        self.assertEqual([h["heading"] for h in real["outline"]],
+                         ["An actual section"])
+        self.assertEqual(real["outline"][0]["level"], 2)
+
     def test_outline_bounded_and_safe_on_untrusted_headings(self):
         lines = "\n".join(f"### Section {i}" for i in range(60))
         result = pages.build_outline(lines)
