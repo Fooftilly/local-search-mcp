@@ -7,6 +7,7 @@ expiry, or memory-pressure eviction invalidates the handle explicitly.
 from __future__ import annotations
 
 from collections import OrderedDict
+import json
 import re
 import secrets
 import threading
@@ -136,6 +137,7 @@ def read_with_security_context(
 
 MAX_TABLE_PAGE_ROWS = 10
 MAX_TABLE_PAGE_COLUMNS = 8
+MAX_TABLE_PAGE_BYTES = 20_000
 MAX_RETAINED_TABLE_COLUMNS = 24
 
 
@@ -227,7 +229,7 @@ def read_table_with_security_context(
             raise ValueError("column_offset exceeds retained columns")
         next_column = column_offset + max_columns
         more_columns = next_column < retained_columns
-        return ({
+        response = {
             "success": True, "url": url, "table_id": token,
             "table_index": table_index, "row_offset": row_offset,
             "headers": entry["headers"][column_offset:next_column],
@@ -240,9 +242,28 @@ def read_table_with_security_context(
             "source_rows_observed": entry["source_rows_observed"],
             "retained_truncated": entry["retained_truncated"],
             "columns_truncated": entry["columns_truncated"],
+            "cells_truncated": entry["cells_truncated"],
             "source_completeness": "unknown",
             "has_more": more, "next_offset": next_offset if more else None,
-        }, source_url, once_proof)
+        }
+        # Whole-response budget, including headers/captions/source URL. A
+        # smaller row page is valid, but must advance by exactly its row count.
+        while (response["rows"] and len(json.dumps(
+                response, ensure_ascii=True).encode("utf-8")) > MAX_TABLE_PAGE_BYTES):
+            response["rows"].pop()
+            next_offset = row_offset + len(response["rows"])
+            more = next_offset < len(rows)
+            response["has_more"] = more
+            response["next_offset"] = next_offset if more else None
+        if len(json.dumps(response, ensure_ascii=True).encode("utf-8")) > MAX_TABLE_PAGE_BYTES:
+            return ({"success": False, "status": "table_page_too_large",
+                     "reason": "The retained table page cannot fit the response limit."},
+                    source_url, once_proof)
+        if row_offset < len(rows) and not response["rows"]:
+            return ({"success": False, "status": "table_page_too_large",
+                     "reason": "One row exceeds the response limit."},
+                    source_url, once_proof)
+        return response, source_url, once_proof)
 
 
 MAX_OUTLINE_HEADINGS = 40
