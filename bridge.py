@@ -382,13 +382,15 @@ def _crawl_metadata(page: dict, final_url: str) -> dict:
 
 def _run_fetch(url: str, mode: str, *,
                once_proof: tuple[str, str] | None = None,
-               include_links: bool = False, include_tables: bool = False) -> dict:
+               include_links: bool = False, include_tables: bool = False,
+               include_outline: bool = False) -> dict:
     try:
         with on_demand.lease("crawl4ai"):
-            if include_links or include_tables:
+            if include_links or include_tables or include_outline:
                 return _run_fetch_network(
                     url, mode, once_proof=once_proof,
-                    include_links=include_links, include_tables=include_tables)
+                    include_links=include_links, include_tables=include_tables,
+                    include_outline=include_outline)
             return _run_fetch_network(url, mode, once_proof=once_proof)
     except on_demand.BackendUnavailable:
         return {"url": url, "success": False, "status": "upstream_unavailable",
@@ -397,7 +399,8 @@ def _run_fetch(url: str, mode: str, *,
 
 def _run_fetch_network(url: str, mode: str, *,
                        once_proof: tuple[str, str] | None = None,
-                       include_links: bool = False, include_tables: bool = False) -> dict:
+                       include_links: bool = False, include_tables: bool = False,
+                       include_outline: bool = False) -> dict:
     """Crawl only after the caller has passed current local policy checks."""
     headers = {"Authorization": f"Bearer {CRAWL4AI_TOKEN}"} if CRAWL4AI_TOKEN else {}
     crawler_params = {"stream": False}
@@ -547,6 +550,8 @@ def _run_fetch_network(url: str, mode: str, *,
     }
     if metadata:
         output["metadata"] = metadata
+    if include_outline:
+        output.update(document_pages.build_outline(markdown))
     if include_links or include_tables:
         # Parse only the already fetched, approved page: no link traversal,
         # DNS lookups, new domain approvals or additional crawler requests.
@@ -566,7 +571,8 @@ def _run_fetch_network(url: str, mode: str, *,
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
 @logged_tool("fetch")
 def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
-              include_links: bool = False, include_tables: bool = False) -> dict:
+              include_links: bool = False, include_tables: bool = False,
+              include_outline: bool = False) -> dict:
     """Fetch an approved page; bounded memory cache for public short pages.
 
     Authorization runs before every cache hit. Fresh skips both cache and
@@ -576,8 +582,9 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
         raise ValueError("mode must be raw or fit")
     if not isinstance(fresh, bool):
         raise ValueError("fresh must be a boolean")
-    if not isinstance(include_links, bool) or not isinstance(include_tables, bool):
-        raise ValueError("include_links and include_tables must be booleans")
+    if not all(isinstance(flag, bool) for flag in
+               (include_links, include_tables, include_outline)):
+        raise ValueError("include_links, include_tables and include_outline must be booleans")
     before = request_cache.policy_epoch()
     once_proof = None
     # Ordinary permanent grants take precedence: a one-use grant must not be
@@ -612,19 +619,21 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
     if once_proof is not None:
         # One-use access never reads, stores, refreshes or coalesces a reusable
         # fetch cache entry. Proof stays local to this invocation.
-        if include_links or include_tables:
+        if include_links or include_tables or include_outline:
             response = _run_fetch(
                 url, mode, once_proof=once_proof,
-                include_links=include_links, include_tables=include_tables)
+                include_links=include_links, include_tables=include_tables,
+                include_outline=include_outline)
         else:
             response = _run_fetch(url, mode, once_proof=once_proof)
     else:
         # Opt-in structured data must not reuse the legacy Markdown-only
         # cache entry or populate it with mismatched response shape.
-        key = None if include_links or include_tables else request_cache.fetch_key(url, mode)
+        key = None if include_links or include_tables or include_outline else request_cache.fetch_key(url, mode)
         load = (lambda: _run_fetch(
-            url, mode, include_links=include_links, include_tables=include_tables)
-        ) if include_links or include_tables else (lambda: _run_fetch(url, mode))
+            url, mode, include_links=include_links, include_tables=include_tables,
+            include_outline=include_outline)
+        ) if include_links or include_tables or include_outline else (lambda: _run_fetch(url, mode))
         response = request_cache.run(
             "fetch", key, load,
             ttl=lambda: cache_settings.effective_ttl('fetch_seconds'), fresh=fresh,
@@ -714,13 +723,15 @@ def _batch_currently_authorized(requested_url: str, result: dict) -> bool:
 
 
 def _batch_fetch_without_once(url: str, mode: str, fresh: bool,
-                              include_links: bool = False, include_tables: bool = False) -> dict:
+                              include_links: bool = False, include_tables: bool = False,
+                              include_outline: bool = False) -> dict:
     """Preserve web_fetch logging, but prohibit one-use grants in batch workers."""
     token = _BATCH_PERMANENT_ONLY.set(True)
     try:
-        if include_links or include_tables:
+        if include_links or include_tables or include_outline:
             return web_fetch(url, mode, fresh,
-                             include_links=include_links, include_tables=include_tables)
+                             include_links=include_links, include_tables=include_tables,
+                             include_outline=include_outline)
         return web_fetch(url, mode, fresh)
     finally:
         _BATCH_PERMANENT_ONLY.reset(token)
@@ -729,20 +740,24 @@ def _batch_fetch_without_once(url: str, mode: str, fresh: bool,
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
 async def web_fetch_batch(urls: list[str], mode: str = "raw",
                           fresh: bool = False, include_links: bool = False,
-                          include_tables: bool = False) -> dict:
+                          include_tables: bool = False,
+                          include_outline: bool = False) -> dict:
     """Fetch 1–8 approved URLs, at most 3 concurrently, with ordered results.
 
     Each unique URL uses the existing guarded web_fetch path. If the MCP call
     is cancelled, pending jobs are skipped; browser jobs already running
     cannot be forcibly stopped.
     """
-    if not isinstance(include_links, bool) or not isinstance(include_tables, bool):
-        raise ValueError("include_links and include_tables must be booleans")
+    if not all(isinstance(flag, bool) for flag in
+               (include_links, include_tables, include_outline)):
+        raise ValueError("include_links, include_tables and include_outline must be booleans")
     cancelled = threading.Event()
-    fetcher = (_batch_fetch_without_once if not (include_links or include_tables)
+    fetcher = (_batch_fetch_without_once
+               if not (include_links or include_tables or include_outline)
                else lambda url, mode, fresh: _batch_fetch_without_once(
                    url, mode, fresh,
-                   include_links=include_links, include_tables=include_tables))
+                   include_links=include_links, include_tables=include_tables,
+                   include_outline=include_outline))
     try:
         return await asyncio.to_thread(
             fetch_many, urls, mode, fresh, fetcher,
