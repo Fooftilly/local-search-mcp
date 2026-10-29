@@ -84,6 +84,61 @@ class OnDemandSupervisorTests(unittest.TestCase):
         self.assertEqual(guarded.call_count, 1)
         self.assertIs(guarded.call_args.kwargs["crawler_probe"], sup._probe_crawler)
 
+    def test_attended_searxng_wake_is_passively_armed_and_idles_safely(self):
+        running = [False]
+        def target(name):
+            return Target(name, "a" * 64,
+                          name == "searxng" and running[0], "no")
+        with (patch.object(sup.docker, "_safe_target", side_effect=target),
+              patch.object(sup.threading.Thread, "start")):
+            manager = sup.Supervisor(1)
+        self.now = [1000.0]
+        manager.tracker._clock = lambda: self.now[0]
+        stop_calls = []
+        def stop(service):
+            stop_calls.append(service)
+            running[0] = False
+            return True
+        with (patch.object(manager, "_enabled", return_value=True),
+              patch.object(sup.docker, "_safe_target", side_effect=target),
+              patch.object(sup.docker, "start",
+                           side_effect=AssertionError("Passive reconciliation woke Docker")),
+              patch.object(sup.docker, "stop", side_effect=stop)):
+            manager.idle_once()
+            self.assertFalse(manager.snapshot()["searxng"]["armed"])
+            running[0] = True  # Operator explicitly confirmed WAKE in setup.
+            manager.idle_once()
+            self.assertEqual(manager.snapshot()["searxng"]["state"], "running")
+            self.assertTrue(manager.snapshot()["searxng"]["armed"])
+            self.assertEqual(manager.snapshot()["searxng"]["active_requests"], 0)
+            self.assertEqual(stop_calls, [])
+            self.assertEqual(manager._verified_at["searxng"], 0.0)
+            self.now[0] += 59
+            manager.idle_once()
+            self.assertEqual(stop_calls, [])
+            self.now[0] += 2
+            manager.idle_once()
+            self.assertEqual(stop_calls, ["searxng"])
+            self.assertEqual(manager.snapshot()["searxng"]["state"], "sleeping")
+            self.assertFalse(manager.snapshot()["searxng"]["armed"])
+
+    def test_attended_wake_requires_verified_running_owned_searxng(self):
+        with (patch.object(sup.docker, "_safe_target",
+                           return_value=Target("searxng", "a" * 64, False, "no")),
+              patch.object(sup.threading.Thread, "start")):
+            manager = sup.Supervisor(1)
+        with (patch.object(manager, "_enabled", return_value=True),
+              patch.object(sup.docker, "_safe_target",
+                           side_effect=LifecycleError("unverified")) as lookup,
+              patch.object(sup.docker, "start",
+                           side_effect=AssertionError("Must never wake backend")),
+              patch.object(sup.docker, "stop",
+                           side_effect=AssertionError("Must never stop backend"))):
+            manager.idle_once()
+        self.assertFalse(manager.snapshot()["searxng"]["armed"])
+        self.assertEqual(manager.snapshot()["searxng"]["state"], "sleeping")
+        self.assertGreaterEqual(lookup.call_count, 1)
+
     def test_actual_wake_failure_not_passively_cleared(self):
         manager = self.new_supervisor()
         manager._state["crawl4ai"] = "failed"
