@@ -205,6 +205,11 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_optional_search_filters_are_exposed_over_real_mcp(self):
         seen = []
         def handler(request: httpx.Request):
+            if request.url.path == "/config":
+                seen.append({"path": "/config"})
+                return httpx.Response(200, json={"engines": [
+                    {"name": "qwant", "enabled": True, "categories": ["general"]},
+                ]})
             seen.append(dict(request.url.params))
             return httpx.Response(200, json={"results": [
                 {"title": "One", "url": "https://example.org", "content": "ok", "engine": "qwant"}
@@ -216,13 +221,19 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
             async with Client(bridge.mcp) as client:
                 response = await client.call_tool("web_search", {
                     "query": "local query", "max_results": 2, "language": "en",
-                    "categories": "news", "engines": "qwant", "time_range": "day", "page": 2,
+                    "engines": "qwant", "time_range": "day", "page": 2,
                 })
+                with self.assertRaisesRegex(
+                        Exception, "Choose categories or engines"):
+                    await client.call_tool("web_search", {
+                        "query": "local query", "categories": "news",
+                        "engines": "qwant",
+                    })
         self.assertFalse(response.is_error)
         self.assertEqual(response.data[0]["engine"], "qwant")
-        self.assertEqual(seen, [{
+        self.assertEqual(seen, [{"path": "/config"}, {
             "q": "local query", "format": "json", "language": "en",
-            "categories": "news", "time_range": "day", "engines": "qwant", "pageno": "2",
+            "time_range": "day", "engines": "qwant", "pageno": "2",
         }])
 
     async def test_long_document_continuation_over_actual_mcp_dispatch(self):

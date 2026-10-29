@@ -93,6 +93,23 @@ class EngineChooserTests(unittest.TestCase):
             with self.subTest(selected=selected), self.assertRaises(e.EngineSetupError):
                 e.render(self.original, selected, controlled)
 
+    def test_live_inventory_accepts_current_all_category_engine_count(self):
+        rows = [
+            {"name": f"sample-{i}", "categories": ["general"], "enabled": False}
+            for i in range(280)
+        ] + [{"name": "yahoo", "categories": ["general"], "enabled": True},
+             {"name": "google cse images", "categories": ["images"],
+              "enabled": True}]
+        conn = Mock()
+        reply = Mock(status=200)
+        reply.read.return_value = json.dumps({"engines": rows}).encode()
+        conn.getresponse.return_value = reply
+        with patch.object(e, "HTTPConnection", return_value=conn):
+            result = e.live_engines()
+        self.assertEqual(len(result), 282)
+        self.assertEqual(result[0]["name"], "yahoo")
+        self.assertIn("google cse images", {item["name"] for item in result})
+
     def test_live_inventory_includes_news_images_and_sorts_recommendations(self):
         response = {"engines": [
             {"name": "brave", "categories": ["general"], "enabled": True},
