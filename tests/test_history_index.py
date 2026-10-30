@@ -30,6 +30,30 @@ class HistoryIndexTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
+    def test_dashboard_snapshot_rows_and_count_share_one_index_generation(self):
+        append_history(event("search", "success", backend="SearXNG",
+                             query="first search"))
+        original = history_index.sync_history
+        triggered = []
+        def append_between_sync_and_read():
+            original()
+            triggered.append(True)
+            append_history(event("fetch", "blocked",
+                                 url="https://new.example.org/private?x=SECRET"))
+        with patch.object(history_index, "sync_history",
+                          side_effect=append_between_sync_and_read) as sync:
+            snapshot = history_index.dashboard_history_snapshot()
+            sync.assert_called_once_with()
+        self.assertEqual(triggered, [True])
+        self.assertEqual(snapshot["total"], 1)
+        self.assertEqual(len(snapshot["rows"]), 1)
+        self.assertEqual(snapshot["rows"][0]["kind"], "search")
+        self.assertEqual(sum(x["count"] for x in snapshot["metrics"]), 1)
+        # The newly appended event is consistently included next time.
+        refreshed = history_index.dashboard_history_snapshot()
+        self.assertEqual(refreshed["total"], 2)
+        self.assertEqual(len(refreshed["rows"]), 2)
+
     def test_dashboard_snapshot_syncs_once_and_clamps_consistent_page(self):
         stamp = datetime.now(timezone.utc).isoformat()
         for i in range(56):
