@@ -60,6 +60,8 @@ class DashboardTemplateTests(unittest.TestCase):
         self.assertNotIn("Bearer", rendered)
         unavailable = admin_ui.operations_overview_html(None)
         self.assertIn("history is unavailable", unavailable)
+        self.assertIn("Operational history unavailable",
+                      admin_ui.overview_summary_html(None))
         self.assertNotIn("<b>0</b>", unavailable)
         self.assertIn("Operations</span><b>0</b>",
                       admin_ui.operations_overview_html([]))
