@@ -627,6 +627,11 @@ async def web_search_batch(queries: list[str], max_results: int = 5,
         raise ValueError("fresh must be a boolean")
     cleaned = []
     for query in queries:
+        # A search batch never delegates to SearXNG bang shortcuts, even
+        # without explicit filters. Those could override provider selection
+        # and broaden the queried engines unexpectedly.
+        if re.search(r"(?<!\S)![^\s]+", query):
+            raise ValueError("Bang provider shortcuts are not supported in batch search")
         params, _ = _search_params(query, max_results, language, categories,
                                    time_range, engines, 1)
         cleaned.append(params["q"])
