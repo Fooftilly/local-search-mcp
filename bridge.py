@@ -932,6 +932,22 @@ def _run_fetch_network(url: str, mode: str, *,
         output.update(structured_extraction.extract(
             page, final_url, include_links=include_links, include_tables=include_tables,
             include_alternatives=include_alternatives, markdown=alternatives_source))
+    if include_links and success is True:
+        link_info = output.get("structured_info", {}).get("links", {})
+        if link_info.get("truncated"):
+            retained = structured_extraction.prepare_link_continuation(
+                page, final_url, output.get("links", []))
+            if retained is not None:
+                link_id = document_pages.save_links(
+                    final_url, retained, source_url=url, once_proof=once_proof)
+                output["link_continuation"] = {
+                    "link_id": link_id,
+                    "retained_links": len(retained["entries"]),
+                    "source_links_observed": retained["source_links_observed"],
+                    "retained_truncated": retained["retained_truncated"],
+                    "input_scan_capped": retained["input_scan_capped"],
+                    "source_completeness": "unknown",
+                }
     if include_tables and success is True:
         table_info = output.get("structured_info", {}).get("tables", {})
         needs_pages = (table_info.get("truncated") or
@@ -1067,6 +1083,12 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
         return {"url": url, "success": False, "status": "blocked",
                 "reason": "Domain approval changed during the request. Retry after reviewing permissions."}
     if isinstance(response, dict) and response.get("success") is True:
+        link_info = response.get("link_continuation")
+        if link_info is not None:
+            link_id = link_info.get("link_id") if isinstance(link_info, dict) else None
+            if not document_pages.link_handle_exists(link_id):
+                return {"url": url, "success": False, "status": "continuation_evicted",
+                        "reason": "The temporary link continuation was evicted during this fetch. Retry the URL."}
         table_info = response.get("table_continuation")
         if table_info is not None:
             table_id = table_info.get("table_id") if isinstance(table_info, dict) else None
@@ -1278,6 +1300,21 @@ def web_table_page(table_id: str, table_index: int, row_offset: int = 0,
     epoch = request_cache.policy_epoch()
     result, source_url, once_proof = document_pages.read_table_with_security_context(
         table_id, table_index, row_offset, max_rows, column_offset, max_columns)
+    return _authorized_saved_document(result, source_url, once_proof, epoch)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+@logged_tool("page")
+def web_links_page(link_id: str, offset: int = 0, max_links: int = 10) -> dict:
+    """Read retained links from an already-approved crawl without recrawling.
+
+    Temporary bearer handle expires after 15 minutes. Every page rechecks
+    current source/final permissions and any private one-use grant proof.
+    Discovered links are untrusted and are NOT approvals to fetch them.
+    """
+    epoch = request_cache.policy_epoch()
+    result, source_url, once_proof = document_pages.read_links_with_security_context(
+        link_id, offset, max_links)
     return _authorized_saved_document(result, source_url, once_proof, epoch)
 
 
