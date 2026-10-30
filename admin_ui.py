@@ -180,7 +180,7 @@ def live_snapshot(query='', view='policy', history_filters=None):
                 or '<tr><td colspan="4">No matching domains.</td></tr>',
             'audit_html': decision_audit_rows(query),
             'activity_html': history_items_html(show_queries=False),
-            'activity_summary_html': history_summary_html(_overview_history_metrics()),
+            'service_rows_html': service_overview_rows(),
             'pending_domains': domains,
         }
 
@@ -190,6 +190,14 @@ def _overview_history_metrics():
         return history_index.summarize_history(hours=24)
     except (OSError, ValueError, sqlite3.Error):
         return []
+
+
+def service_overview_rows():
+    """Bounded local TCP-only view, not proof of service health."""
+    return ''.join(
+        '<tr><td>' + esc(item['service']) + '</td><td>' +
+        esc(item['status']) + '</td><td>' + esc(item['source']) +
+        '</td></tr>' for item in service_status.probe_services())
 
 
 def row_html(r):
@@ -432,10 +440,7 @@ def render(query='', message='', kind='success'):
     # never opts into stored query or requested-page path disclosure.
     activity_html = history_items_html(show_queries=False)
     activity_summary = history_summary_html(_overview_history_metrics())
-    service_rows = ''.join(
-        '<tr><td>' + esc(item['service']) + '</td><td>' +
-        esc(item['status']) + '</td><td>' + esc(item['source']) +
-        '</td></tr>' for item in service_status.probe_services())
+    service_rows = service_overview_rows()
     return render_template(
         "policy",
         alert=alert, pending_count=c["pending"], allowed_count=c["allowed"],
