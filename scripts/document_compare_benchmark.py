@@ -42,6 +42,16 @@ def _cases() -> dict[str, tuple[str, str]]:
     reordered = "".join(base[200:] + base[:200])
     repetitive = ("Menu\n" * 500) + ("Article content.\n" * 80)
     repetitive_changed = ("Menu\n" * 500) + ("Updated article content.\n" * 80)
+    # Repetitive navigation with a moved unique anchor probes difflib
+    # alignment ambiguity, not just a changed suffix.
+    shifted_left = "".join(["Menu\n"] * 450 + ["Anchor A\n"] + ["Menu\n"] * 450)
+    shifted_right = "".join(["Menu\n"] * 500 + ["Anchor A\n"] + ["Menu\n"] * 400)
+    # Alternating repeated navigation and unique content is a separate
+    # hostile pattern; changing only article lines should remain bounded.
+    interleaved_left = "".join(
+        f"Menu\nArticle {i}\n" for i in range(420))
+    interleaved_right = "".join(
+        f"Menu\nUpdated article {i}\n" for i in range(420))
     unicode_left = ("🧭 Život, Šćepan, đakon\n" * 300)
     unicode_right = unicode_left.replace("đakon", "dokaz", 5)
     replacement = "".join(f"Old {i}\n" for i in range(900))
@@ -52,6 +62,8 @@ def _cases() -> dict[str, tuple[str, str]]:
         "replace": (original, changed),
         "reordered": (original, reordered),
         "repeated_navigation": (repetitive, repetitive_changed),
+        "shifted_repetition": (shifted_left, shifted_right),
+        "interleaved_repetition": (interleaved_left, interleaved_right),
         "unicode": (unicode_left, unicode_right),
         "full_replacement": (replacement, replacement_new),
     }
