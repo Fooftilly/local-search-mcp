@@ -49,3 +49,9 @@ h3{font-size:15px;margin:0 0 12px}
 .operations-overview .compact-stats{margin:8px 0 0;gap:8px}
 .operations-overview .compact-stats .stat{padding:10px 14px;min-width:125px}
 .operations-overview .compact-stats .stat b{font-size:20px;margin-top:4px}
+
+/* Two visible page controls expose older pending requests beyond the first 200. */
+.pending-pages{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:12px 0}
+.pending-pages span{font-size:12px;color:#b6c3d2}
+.pending-pages a{padding:7px 10px;border:1px solid #45515f;border-radius:3px;text-decoration:none}
+.pending-pages a:hover,.pending-pages a:focus-visible{background:#263547;text-decoration:underline}

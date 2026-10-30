@@ -9,6 +9,8 @@
   const activityBody = document.getElementById("live-activity");
   const serviceBody = document.getElementById("live-services");
   const operationsBody = document.getElementById("live-operations");
+  const pendingPages = document.getElementById("live-pending-pages");
+  const pendingPagesBottom = document.getElementById("live-pending-pages-bottom");
   const activitySummaryBody = document.getElementById("live-activity-summary");
   const historySummaryBody = document.getElementById("live-history-summary");
   const status = document.getElementById("live-status");
@@ -420,10 +422,15 @@
     const activeFilter = document.documentElement.dataset.reviewQuery;
     const query = (typeof activeFilter === "string" ? activeFilter :
       new URLSearchParams(window.location.search).get("q") || "");
+    const activePage = document.documentElement.dataset.reviewPage;
+    const pageValue = (typeof activePage === "string" ? activePage :
+      new URLSearchParams(window.location.search).get("page") || "1");
+    const page = /^([1-9]|1[0-9]|20)$/.test(pageValue) ? pageValue : "1";
     const wantsOverview = !isHistory && Date.now() >= nextOverviewAt;
     const endpoint = isHistory ?
       "/live?view=history&" + new URLSearchParams(window.location.search).toString() :
       "/live?view=policy&q=" + encodeURIComponent(query.slice(0, 100)) +
+      (page === "1" ? "" : "&page=" + page) +
       (wantsOverview ? "&overview=1" : "");
     try {
       const controller = new AbortController();
@@ -454,6 +461,16 @@
       } else {
         updateTable(pendingBody, data.pending_html);
         syncBulkSelection();
+        if (typeof data.pending_pages_html === "string") {
+          updateTable(pendingPages, data.pending_pages_html);
+          updateTable(pendingPagesBottom, data.pending_pages_html);
+        }
+        // A decision may empty the final page. Follow the server's
+        // bounded last-valid-page result on the next poll, never an old URL.
+        if (Number.isSafeInteger(data.pending_page) &&
+            data.pending_page >= 1 && data.pending_page <= 20) {
+          document.documentElement.dataset.reviewPage = String(data.pending_page);
+        }
         updateTable(decidedBody, data.decided_html);
         updateTable(auditBody, data.audit_html);
         updateTable(activityBody, data.activity_html);

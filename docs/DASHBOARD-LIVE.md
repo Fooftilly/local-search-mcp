@@ -1,5 +1,21 @@
 # Live dashboard updates and optional desktop notifications
 
+**Pending review pagination:** The dashboard now displays 200 pending domains per
+page, with accessible Previous 200 / Next 200 links at both ends of the
+review table. The full 512-domain policy-limited queue can be reviewed without
+guessing a search term. A page is bounded to a maximum of 20; the database
+returns deterministic timestamp/domain order and a separately counted number
+of filtered pending rows. Filters and current page are retained through
+domain/one-use/bulk decisions, including stale POST error feedback, and
+through the existing live polling path. Changing pages does **not** transfer
+selected checkboxes or submit any authorization; batch selections remain
+page-local and capped at 25 by the server. If the operator
+approves the final request on the final page, the server and live dashboard
+automatically move to the last valid page rather than rendering an empty
+nonexistent one. During simultaneous incoming requests or reviews, items may
+shift between pages; stale request IDs still fail closed. The usual 200-per-page table remains the default without
+JavaScript.
+
 The home page also shows **24-hour operational totals** from the existing
 retention-controlled history index: all operations, searches, fetches, and
 non-success outcomes (which includes denied, pending and errors). These are
