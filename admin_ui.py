@@ -156,19 +156,35 @@ def _pending_page(value):
     return page
 
 
+def _pending_sort(value):
+    if type(value) is not str or value not in policy.PENDING_SORT_MODES:
+        raise ValueError("Invalid pending review sort")
+    return value
+
+
+def pending_sort_options(selected):
+    labels = (("recent", "Newest activity"), ("oldest", "Oldest waiting"),
+              ("frequent", "Most requests"))
+    return ''.join('<option value="' + mode + '"' +
+                   (' selected' if mode == selected else '') + '>' +
+                   label + '</option>' for mode, label in labels)
+
+
 def _last_pending_page(total):
     return min(MAX_PENDING_PAGE, max(
         1, (total + PENDING_PAGE_SIZE - 1) // PENDING_PAGE_SIZE))
 
 
-def pending_pagination_html(query, page, total):
+def pending_pagination_html(query, page, total, pending_sort='recent'):
     """Accessible navigation over bounded pending rows; never alters rules."""
     pages = _last_pending_page(total)
     first = (page - 1) * PENDING_PAGE_SIZE + 1 if total and page <= pages else 0
     last = min(page * PENDING_PAGE_SIZE, total) if first else 0
 
     def href(number):
-        return esc('/?q=' + quote(query, safe='') + '&page=' + str(number))
+        return esc('/?q=' + quote(query, safe='') + '&page=' + str(number) +
+                   ('' if pending_sort == 'recent' else
+                    '&sort=' + pending_sort))
 
     links = []
     if page > 1:
@@ -185,7 +201,7 @@ def pending_pagination_html(query, page, total):
 
 
 def live_snapshot(query='', view='policy', history_filters=None,
-                  include_overview=False, pending_page=1):
+                  include_overview=False, pending_page=1, pending_sort='recent'):
     """Order loopback snapshots across threads, including out-of-order delivery.
 
     Each policy snapshot has a strictly increasing, safely representable
@@ -212,7 +228,8 @@ def live_snapshot(query='', view='policy', history_filters=None,
         pending_page = min(pending_page, _last_pending_page(pending_total))
         pending_rows = policy.entries(
             query, limit=PENDING_PAGE_SIZE, status='pending',
-            offset=(pending_page - 1) * PENDING_PAGE_SIZE)
+            offset=(pending_page - 1) * PENDING_PAGE_SIZE,
+            pending_sort=pending_sort)
         decisions = policy.entries(query, limit=2000, status='decided')
         domains = [row['domain'] for row in policy.entries(
             limit=policy.MAX_PENDING_TOTAL, status='pending')]
@@ -224,17 +241,19 @@ def live_snapshot(query='', view='policy', history_filters=None,
             'snapshot_us': _LAST_LIVE_SNAPSHOT_US,
             'counts': counts,
             'pending_html': ''.join(row_html(
-                r, query=query, page=pending_page) for r in pending_rows)
+                r, query=query, page=pending_page, pending_sort=pending_sort)
+                for r in pending_rows)
                 or '<tr><td colspan="4">No pending requests.</td></tr>',
             'decided_html': ''.join(row_html(
-                r, query=query, page=pending_page) for r in decisions)
+                r, query=query, page=pending_page, pending_sort=pending_sort)
+                for r in decisions)
                 or '<tr><td colspan="4">No matching domains.</td></tr>',
             'audit_html': decision_audit_rows(query),
             'activity_html': history_items_html(show_queries=False),
             'service_rows_html': service_overview_rows(),
             'pending_domains': domains,
             'pending_pages_html': pending_pagination_html(
-                query, pending_page, pending_total),
+                query, pending_page, pending_total, pending_sort),
             'pending_page': pending_page,
         }
         if include_overview:
@@ -286,14 +305,16 @@ def service_overview_rows():
         '</td></tr>' for item in service_status.probe_services())
 
 
-def row_html(r, query='', page=1):
+def row_html(r, query='', page=1, pending_sort='recent'):
     dom = esc(r['domain'])
     # This value only restores the local review filter after POST. It never
     # affects the permission decision or its stale-request/CSRF checks.
     review_context = (f'<input type="hidden" name="review_query" '
                       f'value="{esc(query[:100])}">'
                       f'<input type="hidden" name="review_page" '
-                      f'value="{page}">')
+                      f'value="{page}">'
+                      f'<input type="hidden" name="review_sort" '
+                      f'value="{pending_sort}">')
     stat = esc('expired' if r.get('expired') else r['status'])
     token = esc(CSRF)
     scope = r.get('match_scope', 'subdomains')
@@ -432,7 +453,7 @@ def decision_audit_html(search=""):
             decision_audit_rows(search) + '</tbody></table></div>')
 
 
-def once_grants_html(search="", page=1):
+def once_grants_html(search="", page=1, pending_sort='recent'):
     """Escaped, bounded local status; never expose bearer grant IDs."""
     rows = policy.once_grant_entries(search=search)
     cells = ''.join(
@@ -445,6 +466,7 @@ def once_grants_html(search="", page=1):
         '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
         '<input type="hidden" name="review_query" value="' + esc(search[:100]) + '">'
         '<input type="hidden" name="review_page" value="' + str(page) + '">'
+        '<input type="hidden" name="review_sort" value="' + pending_sort + '">'
         '<input type="hidden" name="domain" value="' + esc(r['domain']) + '">'
         '<label class="small">Reason (optional) <input name="reason" '
         'maxlength="160" placeholder="Short local note"></label>'
@@ -519,22 +541,27 @@ def import_preview_html(plan: dict) -> str:
             '<p><a href="/">Return without applying</a></p></main></body></html>')
 
 
-def render(query='', message='', kind='success', page=1):
+def render(query='', message='', kind='success', page=1,
+           pending_sort='recent'):
     c=policy.counts()
     # Pending rows have independent pages; explicit decisions are never hidden
     # by a large pending queue.
+    pending_sort = _pending_sort(pending_sort)
     pending_total = policy.pending_match_count(query)
     page = min(page, _last_pending_page(pending_total))
-    pending=''.join(row_html(r, query=query, page=page) for r in policy.entries(
+    pending=''.join(row_html(r, query=query, page=page,
+                              pending_sort=pending_sort) for r in policy.entries(
         query, limit=PENDING_PAGE_SIZE, status='pending',
-        offset=(page - 1) * PENDING_PAGE_SIZE))
-    other=''.join(row_html(r, query=query, page=page) for r in policy.entries(
+        offset=(page - 1) * PENDING_PAGE_SIZE, pending_sort=pending_sort))
+    other=''.join(row_html(r, query=query, page=page,
+                            pending_sort=pending_sort) for r in policy.entries(
         query, limit=2000, status='decided'))
     alert=f'<p class="alert {"error" if kind=="error" else "success"}">{esc(message)}</p>' if message else ''
     table_head='<div class="scroll"><table><thead><tr><th>Domain</th><th>Decision / scope / expiry</th><th>Requests / latest</th><th>Manage</th></tr></thead>'
     query_escaped=esc(query)
     audit_html = decision_audit_html(query)
-    once_html = once_grants_html(query, page=page)
+    once_html = once_grants_html(query, page=page,
+                                pending_sort=pending_sort)
     once_log = once_audit_html(query)
     # Reuse the existing privacy-preserving history index. The overview
     # never opts into stored query or requested-page path disclosure.
@@ -558,9 +585,14 @@ def render(query='', message='', kind='success', page=1):
         pending_rows=pending or '<tr><td colspan="4">No pending requests.</td></tr>',
         max_bulk_decisions=policy.MAX_BULK_DECISIONS,
         query_escaped=query_escaped, pending_page=page,
-        pending_pages_html=pending_pagination_html(query, page, pending_total),
+        pending_sort=pending_sort,
+        pending_sort_options=pending_sort_options(pending_sort),
+        pending_pages_html=pending_pagination_html(
+            query, page, pending_total, pending_sort),
         refresh_href=esc('/?q=' + quote(query[:100], safe='') +
-                         '&page=' + str(page)),
+                         '&page=' + str(page) +
+                         ('' if pending_sort == 'recent' else
+                          '&sort=' + pending_sort)),
         other_rows=other or '<tr><td colspan="4">No matching domains.</td></tr>',
         audit_html=audit_html,
         database_path=esc(policy.database_path()),
@@ -857,8 +889,12 @@ class Handler(BaseHTTPRequestHandler):
             q=query.get('q',[''])[0][:100]
             try:
                 page = _pending_page(query.get('page', ['1'])[0])
+                sort_values = query.get('sort', ['recent'])
+                if len(sort_values) != 1:
+                    raise ValueError("Duplicate pending sort")
+                pending_sort = _pending_sort(sort_values[0])
             except ValueError:
-                return self._respond(400, 'Invalid pending review page')
+                return self._respond(400, 'Invalid pending review page or sort')
             overview_flag = query.get('overview', ['0'])
             if (len(overview_flag) != 1
                     or overview_flag[0] not in ('0', '1')
@@ -870,7 +906,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._respond(400, 'Invalid history filter')
             return self._respond(200,json.dumps(live_snapshot(
                 q, view, filters, include_overview=overview_flag[0] == '1',
-                pending_page=page)),
+                pending_page=page, pending_sort=pending_sort)),
                                  'application/json; charset=utf-8')
         if path.path=='/settings':
             if not self._read_origin_valid():return self._respond(403,'Forbidden')
@@ -946,9 +982,14 @@ class Handler(BaseHTTPRequestHandler):
         q=query.get('q',[''])[0][:100]
         try:
             page = _pending_page(query.get('page', ['1'])[0])
+            sorts = query.get('sort', ['recent'])
+            if len(sorts) != 1:
+                raise ValueError("Duplicate pending sort")
+            pending_sort = _pending_sort(sorts[0])
         except ValueError:
-            return self._respond(400, 'Invalid pending review page')
-        return self._respond(200,render(q, page=page))
+            return self._respond(400, 'Invalid pending review page or sort')
+        return self._respond(200,render(q, page=page,
+                                        pending_sort=pending_sort))
     def _post_origin_valid(self):
         """Accept same-origin forms even when Firefox omits Origin.
 
@@ -1014,14 +1055,18 @@ class Handler(BaseHTTPRequestHandler):
             review_page = _pending_page(val('review_page') or '1')
         except ValueError:
             review_page = 1
+        try:
+            review_sort = _pending_sort(val('review_sort') or 'recent')
+        except ValueError:
+            review_sort = 'recent'
         review_raw = val('review_query')
         review_query = (review_raw if len(review_raw) <= 100 and
                         all(ch.isprintable() for ch in review_raw) else '')
         if self.path == '/pending/clear':
             if val('confirm') != 'CLEAR':
-                return self._respond(400, render(query=review_query, page=review_page, message='Type CLEAR to confirm removal.', kind='error'))
+                return self._respond(400, render(query=review_query, page=review_page, pending_sort=review_sort, message='Type CLEAR to confirm removal.', kind='error'))
             removed = policy.clear_pending_requests()
-            return self._respond(200,render(query=review_query, page=review_page, message=f"Cleared {removed} pending requests."))
+            return self._respond(200,render(query=review_query, page=review_page, pending_sort=review_sort, message=f"Cleared {removed} pending requests."))
         if self.path in ('/portable-settings/preview', '/portable-settings/apply'):
             try:
                 if self.path == '/portable-settings/preview':
@@ -1139,18 +1184,18 @@ class Handler(BaseHTTPRequestHandler):
                         reason=reason,
                         expected_request_id=val('request_id') or None)
                     return self._respond(200, render(
-                        query=review_query, page=review_page, message=f'One-time grant staged for {domain[:253]}.'))
+                        query=review_query, page=review_page, pending_sort=review_sort, message=f'One-time grant staged for {domain[:253]}.'))
                 if action == 'revoke':
                     policy._revoke_once_grant(domain, reason=reason)
                     return self._respond(200, render(
-                        query=review_query, page=review_page, message=f'One-time grant revoked for {domain[:253]}.'))
+                        query=review_query, page=review_page, pending_sort=review_sort, message=f'One-time grant revoked for {domain[:253]}.'))
                 raise ValueError('Unrecognized one-use action')
             if self.path == '/bulk':
                 amount = policy.bulk_decide(vals.get('selected', []), val('action'),
                     scope=val('scope'), expires_minutes=int(val('expires_minutes')),
                     reason=val('reason'))
                 return self._respond(200, render(
-                    query=review_query, page=review_page, message=f"Updated {amount} pending requests."))
+                    query=review_query, page=review_page, pending_sort=review_sort, message=f"Updated {amount} pending requests."))
             # The new-domain and existing-rule forms require an explicit
             # duration. A missing/blank field must not silently turn a
             # temporary approval into a permanent grant.
@@ -1165,9 +1210,9 @@ class Handler(BaseHTTPRequestHandler):
                           reason=val('reason'),
                           expected_request_id=val('request_id') or None)
             msg=f"Decision updated for {val('domain')[:253]}"
-            return self._respond(200,render(query=review_query, page=review_page, message=msg))
+            return self._respond(200,render(query=review_query, page=review_page, pending_sort=review_sort, message=msg))
         except (ValueError,sqlite3.IntegrityError) as exc:
-            return self._respond(400,render(query=review_query, page=review_page, message=str(exc),kind='error'))
+            return self._respond(400,render(query=review_query, page=review_page, pending_sort=review_sort, message=str(exc),kind='error'))
 
 
 def create_dashboard_server():
