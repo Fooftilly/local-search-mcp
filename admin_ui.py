@@ -29,6 +29,8 @@ from runtime_ports import MCP_PORT
 HOST='127.0.0.1'
 PORT=int(os.environ.get('LOCAL_SEARCH_MCP_DASHBOARD_PORT','8791'))
 CSRF=secrets.token_urlsafe(32)
+PENDING_PAGE_SIZE = 200
+MAX_PENDING_PAGE = 20
 _LIVE_SNAPSHOT_LOCK = threading.Lock()
 _LAST_LIVE_SNAPSHOT_US = 0
 # Ephemeral ID distinguishes dashboard process restarts even if system time
@@ -144,8 +146,41 @@ def _history_filters(query, *, validate_text=True):
     return values
 
 
+def _pending_page(value):
+    if (not isinstance(value, str) or not value.isascii() or
+            not value.isdecimal() or len(value) > 2):
+        raise ValueError("Invalid pending review page")
+    page = int(value)
+    if not 1 <= page <= MAX_PENDING_PAGE:
+        raise ValueError("Invalid pending review page")
+    return page
+
+
+def pending_pagination_html(query, page, total):
+    """Accessible navigation over bounded pending rows; never alters rules."""
+    pages = max(1, (total + PENDING_PAGE_SIZE - 1) // PENDING_PAGE_SIZE)
+    first = (page - 1) * PENDING_PAGE_SIZE + 1 if total and page <= pages else 0
+    last = min(page * PENDING_PAGE_SIZE, total) if first else 0
+
+    def href(number):
+        return esc('/?q=' + quote(query, safe='') + '&page=' + str(number))
+
+    links = []
+    if page > 1:
+        links.append('<a rel="prev" href="' + href(page - 1) +
+                     '">Previous 200</a>')
+    if page < pages:
+        links.append('<a rel="next" href="' + href(page + 1) +
+                     '">Next 200</a>')
+    return ('<nav class="pending-pages" aria-label="Pending request pages">'
+            '<span role="status">Showing ' + str(first) + '–' + str(last) +
+            ' of ' + str(total) + ' matching pending domains · page ' +
+            str(page) + ' of ' + str(pages) + '</span>' +
+            ''.join(links) + '</nav>')
+
+
 def live_snapshot(query='', view='policy', history_filters=None,
-                  include_overview=False):
+                  include_overview=False, pending_page=1):
     """Order loopback snapshots across threads, including out-of-order delivery.
 
     Each policy snapshot has a strictly increasing, safely representable
@@ -168,7 +203,10 @@ def live_snapshot(query='', view='policy', history_filters=None,
                 if include_overview else None)
     global _LAST_LIVE_SNAPSHOT_US
     with _LIVE_SNAPSHOT_LOCK:
-        pending_rows = policy.entries(query, limit=200, status='pending')
+        pending_total = policy.pending_match_count(query)
+        pending_rows = policy.entries(
+            query, limit=PENDING_PAGE_SIZE, status='pending',
+            offset=(pending_page - 1) * PENDING_PAGE_SIZE)
         decisions = policy.entries(query, limit=2000, status='decided')
         domains = [row['domain'] for row in policy.entries(
             limit=policy.MAX_PENDING_TOTAL, status='pending')]
@@ -179,14 +217,18 @@ def live_snapshot(query='', view='policy', history_filters=None,
             'snapshot_run': _LIVE_SNAPSHOT_RUN,
             'snapshot_us': _LAST_LIVE_SNAPSHOT_US,
             'counts': counts,
-            'pending_html': ''.join(row_html(r, query=query) for r in pending_rows)
+            'pending_html': ''.join(row_html(
+                r, query=query, page=pending_page) for r in pending_rows)
                 or '<tr><td colspan="4">No pending requests.</td></tr>',
-            'decided_html': ''.join(row_html(r, query=query) for r in decisions)
+            'decided_html': ''.join(row_html(
+                r, query=query, page=pending_page) for r in decisions)
                 or '<tr><td colspan="4">No matching domains.</td></tr>',
             'audit_html': decision_audit_rows(query),
             'activity_html': history_items_html(show_queries=False),
             'service_rows_html': service_overview_rows(),
             'pending_domains': domains,
+            'pending_pages_html': pending_pagination_html(
+                query, pending_page, pending_total),
         }
         if include_overview:
             result['operations_html'] = operations_overview_html(overview)
@@ -237,12 +279,14 @@ def service_overview_rows():
         '</td></tr>' for item in service_status.probe_services())
 
 
-def row_html(r, query=''):
+def row_html(r, query='', page=1):
     dom = esc(r['domain'])
     # This value only restores the local review filter after POST. It never
     # affects the permission decision or its stale-request/CSRF checks.
     review_context = (f'<input type="hidden" name="review_query" '
-                      f'value="{esc(query[:100])}">')
+                      f'value="{esc(query[:100])}">'
+                      f'<input type="hidden" name="review_page" '
+                      f'value="{page}">')
     stat = esc('expired' if r.get('expired') else r['status'])
     token = esc(CSRF)
     scope = r.get('match_scope', 'subdomains')
@@ -381,7 +425,7 @@ def decision_audit_html(search=""):
             decision_audit_rows(search) + '</tbody></table></div>')
 
 
-def once_grants_html(search=""):
+def once_grants_html(search="", page=1):
     """Escaped, bounded local status; never expose bearer grant IDs."""
     rows = policy.once_grant_entries(search=search)
     cells = ''.join(
@@ -393,6 +437,7 @@ def once_grants_html(search=""):
         '<td><form method="post" action="/once">'
         '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
         '<input type="hidden" name="review_query" value="' + esc(search[:100]) + '">'
+        '<input type="hidden" name="review_page" value="' + str(page) + '">'
         '<input type="hidden" name="domain" value="' + esc(r['domain']) + '">'
         '<label class="small">Reason (optional) <input name="reason" '
         'maxlength="160" placeholder="Short local note"></label>'
@@ -467,16 +512,21 @@ def import_preview_html(plan: dict) -> str:
             '<p><a href="/">Return without applying</a></p></main></body></html>')
 
 
-def render(query='', message='', kind='success'):
+def render(query='', message='', kind='success', page=1):
     c=policy.counts()
-    # Separate independent limits: pending floods cannot hide stored decisions.
-    pending=''.join(row_html(r, query=query) for r in policy.entries(query,limit=200,status='pending'))
-    other=''.join(row_html(r, query=query) for r in policy.entries(query,limit=2000,status='decided'))
+    # Pending rows have independent pages; explicit decisions are never hidden
+    # by a large pending queue.
+    pending_total = policy.pending_match_count(query)
+    pending=''.join(row_html(r, query=query, page=page) for r in policy.entries(
+        query, limit=PENDING_PAGE_SIZE, status='pending',
+        offset=(page - 1) * PENDING_PAGE_SIZE))
+    other=''.join(row_html(r, query=query, page=page) for r in policy.entries(
+        query, limit=2000, status='decided'))
     alert=f'<p class="alert {"error" if kind=="error" else "success"}">{esc(message)}</p>' if message else ''
     table_head='<div class="scroll"><table><thead><tr><th>Domain</th><th>Decision / scope / expiry</th><th>Requests / latest</th><th>Manage</th></tr></thead>'
     query_escaped=esc(query)
     audit_html = decision_audit_html(query)
-    once_html = once_grants_html(query)
+    once_html = once_grants_html(query, page=page)
     once_log = once_audit_html(query)
     # Reuse the existing privacy-preserving history index. The overview
     # never opts into stored query or requested-page path disclosure.
@@ -499,8 +549,10 @@ def render(query='', message='', kind='success'):
         table_head=table_head,
         pending_rows=pending or '<tr><td colspan="4">No pending requests.</td></tr>',
         max_bulk_decisions=policy.MAX_BULK_DECISIONS,
-        query_escaped=query_escaped,
-        refresh_href=esc('/?q=' + quote(query[:100], safe='') if query else '/'),
+        query_escaped=query_escaped, pending_page=page,
+        pending_pages_html=pending_pagination_html(query, page, pending_total),
+        refresh_href=esc('/?q=' + quote(query[:100], safe='') +
+                         '&page=' + str(page)),
         other_rows=other or '<tr><td colspan="4">No matching domains.</td></tr>',
         audit_html=audit_html,
         database_path=esc(policy.database_path()),
@@ -795,6 +847,10 @@ class Handler(BaseHTTPRequestHandler):
             view=query.get('view',['policy'])[0]
             if view not in ('policy','history'):return self._respond(400,'Invalid view')
             q=query.get('q',[''])[0][:100]
+            try:
+                page = _pending_page(query.get('page', ['1'])[0])
+            except ValueError:
+                return self._respond(400, 'Invalid pending review page')
             overview_flag = query.get('overview', ['0'])
             if (len(overview_flag) != 1
                     or overview_flag[0] not in ('0', '1')
@@ -805,7 +861,8 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 return self._respond(400, 'Invalid history filter')
             return self._respond(200,json.dumps(live_snapshot(
-                q, view, filters, include_overview=overview_flag[0] == '1')),
+                q, view, filters, include_overview=overview_flag[0] == '1',
+                pending_page=page)),
                                  'application/json; charset=utf-8')
         if path.path=='/settings':
             if not self._read_origin_valid():return self._respond(403,'Forbidden')
@@ -877,8 +934,13 @@ class Handler(BaseHTTPRequestHandler):
                     "hostname (not a URL), and a supported operation/status."))
             return self._respond(200,history_page(**filters))
         if path.path!='/':return self._respond(404,'Not found')
-        q=parse_qs(path.query).get('q',[''])[0][:100]
-        return self._respond(200,render(q))
+        query = parse_qs(path.query)
+        q=query.get('q',[''])[0][:100]
+        try:
+            page = _pending_page(query.get('page', ['1'])[0])
+        except ValueError:
+            return self._respond(400, 'Invalid pending review page')
+        return self._respond(200,render(q, page=page))
     def _post_origin_valid(self):
         """Accept same-origin forms even when Firefox omits Origin.
 
@@ -940,14 +1002,18 @@ class Handler(BaseHTTPRequestHandler):
         # Browser-submitted view state is presentation-only, not authority.
         # Limit its size and reject controls to keep HTML and database
         # search behavior consistent with the bounded GET filter.
+        try:
+            review_page = _pending_page(val('review_page') or '1')
+        except ValueError:
+            review_page = 1
         review_raw = val('review_query')
         review_query = (review_raw if len(review_raw) <= 100 and
                         all(ch.isprintable() for ch in review_raw) else '')
         if self.path == '/pending/clear':
             if val('confirm') != 'CLEAR':
-                return self._respond(400, render(query=review_query, message='Type CLEAR to confirm removal.', kind='error'))
+                return self._respond(400, render(query=review_query, page=review_page, message='Type CLEAR to confirm removal.', kind='error'))
             removed = policy.clear_pending_requests()
-            return self._respond(200,render(query=review_query, message=f"Cleared {removed} pending requests."))
+            return self._respond(200,render(query=review_query, page=review_page, message=f"Cleared {removed} pending requests."))
         if self.path in ('/portable-settings/preview', '/portable-settings/apply'):
             try:
                 if self.path == '/portable-settings/preview':
@@ -1065,18 +1131,18 @@ class Handler(BaseHTTPRequestHandler):
                         reason=reason,
                         expected_request_id=val('request_id') or None)
                     return self._respond(200, render(
-                        query=review_query, message=f'One-time grant staged for {domain[:253]}.'))
+                        query=review_query, page=review_page, message=f'One-time grant staged for {domain[:253]}.'))
                 if action == 'revoke':
                     policy._revoke_once_grant(domain, reason=reason)
                     return self._respond(200, render(
-                        query=review_query, message=f'One-time grant revoked for {domain[:253]}.'))
+                        query=review_query, page=review_page, message=f'One-time grant revoked for {domain[:253]}.'))
                 raise ValueError('Unrecognized one-use action')
             if self.path == '/bulk':
                 amount = policy.bulk_decide(vals.get('selected', []), val('action'),
                     scope=val('scope'), expires_minutes=int(val('expires_minutes')),
                     reason=val('reason'))
                 return self._respond(200, render(
-                    query=review_query, message=f"Updated {amount} pending requests."))
+                    query=review_query, page=review_page, message=f"Updated {amount} pending requests."))
             # The new-domain and existing-rule forms require an explicit
             # duration. A missing/blank field must not silently turn a
             # temporary approval into a permanent grant.
@@ -1091,9 +1157,9 @@ class Handler(BaseHTTPRequestHandler):
                           reason=val('reason'),
                           expected_request_id=val('request_id') or None)
             msg=f"Decision updated for {val('domain')[:253]}"
-            return self._respond(200,render(query=review_query, message=msg))
+            return self._respond(200,render(query=review_query, page=review_page, message=msg))
         except (ValueError,sqlite3.IntegrityError) as exc:
-            return self._respond(400,render(query=review_query, message=str(exc),kind='error'))
+            return self._respond(400,render(query=review_query, page=review_page, message=str(exc),kind='error'))
 
 
 def create_dashboard_server():
