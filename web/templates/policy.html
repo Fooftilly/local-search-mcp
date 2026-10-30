@@ -16,7 +16,7 @@
 </div>
 <p> Decisions are atomic: any stale request invalidates the whole selection. Explicit child exceptions are preserved; scope and duration apply to every selection.</p>
 <form id="bulk-form" method="post" action="/bulk">
-<input type="hidden" name="csrf" value="${csrf}">
+<input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="review_query" value="${query_escaped}">
 <label>Scope <select name="scope" required><option value="exact" selected>Exact host only</option><option value="subdomains">Host + subdomains</option></select></label>
 <label>Duration <select name="expires_minutes" required><option value="60" selected>1 hour</option><option value="0">Permanent</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label>
 <label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label>
@@ -43,12 +43,12 @@ ${audit_html}
 </details>
 </section>
 <section id="configuration" aria-label="Policy tools and settings"><h2>Policy tools &amp; settings</h2><p class="subtle">Advanced actions stay available without cluttering the review queue.</p>
-<details class="panel"><summary>Add a domain manually</summary><div class="panel-body"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="${csrf}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><label>Scope <select name="scope"><option value="subdomains">Host + subdomains</option><option value="exact">Exact host only</option></select></label><label>Duration <select name="expires_minutes" required><option value="" selected disabled>Choose duration</option><option value="0">Permanent</option><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label><label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Select exact host to exclude subdomains, and optionally set a 1-hour, 24-hour or 7-day expiry. Older rules remain permanent with subdomains. Never approve private-network addresses.</p></div>
+<details class="panel"><summary>Add a domain manually</summary><div class="panel-body"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="review_query" value="${query_escaped}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><label>Scope <select name="scope"><option value="subdomains">Host + subdomains</option><option value="exact">Exact host only</option></select></label><label>Duration <select name="expires_minutes" required><option value="" selected disabled>Choose duration</option><option value="0">Permanent</option><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label><label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Select exact host to exclude subdomains, and optionally set a 1-hour, 24-hour or 7-day expiry. Older rules remain permanent with subdomains. Never approve private-network addresses.</p></div>
 </details>
 <details class="panel"><summary>Single-use grants &amp; activity</summary><div class="panel-body"><h2>Single-use domain permission</h2>
 <p>Allow exactly one standalone fetch after public DNS validation. Does not grant permanent access, cannot be consumed by a batch fetch, and a long-document continuation is part of the same authorization. Denied domains cannot be granted.</p>
 <form method="post" action="/once">
-<input type="hidden" name="csrf" value="${csrf}">
+<input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="review_query" value="${query_escaped}">
 <input name="domain" class="wide" placeholder="example.org" maxlength="253" required aria-label="One-use domain">
 <label>Scope <select name="scope"><option value="exact">Exact host</option><option value="subdomains">Host + subdomains</option></select></label>
 <label>Valid for <select name="expires_minutes"><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label>
@@ -61,7 +61,7 @@ ${once_log}</details></div>
 </details>
 <details class="panel"><summary>Clear the entire pending queue</summary><div class="panel-body"><h2 style="margin-top:0">Clear pending requests</h2>
 <p>Removes <strong>all pending requests</strong>, including rows not currently shown or matching the filter. Existing allow/deny rules and the rolling-hour admission limits are not affected. Agents may need to retry after the rate limit expires.</p>
-<form method="post" action="/pending/clear"><input type="hidden" name="csrf" value="${csrf}"><label for="clear-confirm">Type CLEAR to confirm</label><input id="clear-confirm" name="confirm" placeholder="CLEAR" pattern="CLEAR" maxlength="5" required><button type="submit" class="delete">Clear all pending</button></form>
+<form method="post" action="/pending/clear"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="review_query" value="${query_escaped}"><label for="clear-confirm">Type CLEAR to confirm</label><input id="clear-confirm" name="confirm" placeholder="CLEAR" pattern="CLEAR" maxlength="5" required><button type="submit" class="delete">Clear all pending</button></form>
 </div>
 </details>
 <details class="panel"><summary>Import or export domain rules</summary><div class="panel-body"><h2 style="margin-top:0">Portable domain rules (issue #13)</h2>
