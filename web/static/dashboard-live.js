@@ -426,11 +426,16 @@
     const pageValue = (typeof activePage === "string" ? activePage :
       new URLSearchParams(window.location.search).get("page") || "1");
     const page = /^([1-9]|1[0-9]|20)$/.test(pageValue) ? pageValue : "1";
+    const sortValue = document.documentElement.dataset.reviewSort ??
+      new URLSearchParams(window.location.search).get("sort") ?? "recent";
+    const sort = ["recent", "oldest", "frequent"].includes(sortValue) ?
+      sortValue : "recent";
     const wantsOverview = !isHistory && Date.now() >= nextOverviewAt;
     const endpoint = isHistory ?
       "/live?view=history&" + new URLSearchParams(window.location.search).toString() :
       "/live?view=policy&q=" + encodeURIComponent(query.slice(0, 100)) +
       (page === "1" ? "" : "&page=" + page) +
+      (sort === "recent" ? "" : "&sort=" + sort) +
       (wantsOverview ? "&overview=1" : "");
     try {
       const controller = new AbortController();
