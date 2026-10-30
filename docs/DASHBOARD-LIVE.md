@@ -1,5 +1,23 @@
 # Live dashboard updates and optional desktop notifications
 
+The home page also shows **24-hour operational totals** from the existing
+retention-controlled history index: all operations, searches, fetches, and
+non-success outcomes (which includes denied, pending and errors). These are
+counts across all recorded statuses, not rankings or uptime percentages; the
+existing detailed history table remains available behind its disclosure
+control. The first page load displays a snapshot, and an existing same-origin
+policy polling request adds `overview=1` at most once per minute per open
+tab. The server does **not** recompute the grouped history summary on normal
+ten-second polls. Failed summary refreshes retry with the next regular poll.
+If retained history is unavailable, the cards show an explicit unavailable
+state rather than misleading zeros. Summary output never includes query text,
+URLs, hosts, paths, credentials, or raw history records.
+
+This UI intentionally does **not** display process-lifetime cache metrics:
+the dashboard process is separate from the MCP bridge, so its local cache
+counters would be misleading. The read-only MCP `web_metrics` tool continues
+to report bridge-process cache counters and retention-bounded outcomes.
+
 The dashboard at `http://127.0.0.1:8791/` refreshes the **pending approval queue**, stored allow/deny decisions, and summary counts approximately every 10 seconds while it is open. The `/history` page automatically refreshes its latest 25 audit rows as well. This uses a small same-origin external JavaScript response (bundled as a fixed trusted program literal) and a bounded local `GET /live?view=policy&q=...` or `GET /live?view=history` endpoint. It does **not** grant permissions, issue crawler requests, or forward anything to the remote agent. A manual **Refresh requests** link and ordinary server-rendered pages continue to work with JavaScript disabled.
 
 Live policy snapshots carry a per-process random 128-bit run identifier and an increasing server-issued microsecond sequence. Tabs ignore older responses from the same run and late replies from retired server processes, but accept a new run's lower sequence even after a system-clock rollback. Corrupt, non-finite or out-of-safe-integer-range stored snapshot numbers are replaced by the next valid snapshot instead of blocking future updates. This prevents a delayed HTTP response from restoring obsolete pending state or re-alerting an already noticed request. The live endpoint is available only on the dashboard's loopback listener. Exact local Host checks, Origin/Referer validation when supplied, Fetch Metadata restrictions, no-store response headers, and the current CSRF-protected POST approval forms are retained. The CSP explicitly permits only **same-origin** external scripts and network connections. No inline scripts, remote SDKs, WebSocket listeners, extra tunnels, or new deployment ports are needed.
