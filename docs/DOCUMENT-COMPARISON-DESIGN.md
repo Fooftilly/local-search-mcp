@@ -40,9 +40,11 @@ Run `python3 scripts/document_compare_benchmark.py` from the repo root. It synth
 1. **Unchanged:** exact repeated normalized Markdown; zero edits.
 2. **Insertion/removal:** several distinct inserted lines; verify edits identified.
 3. **Reorder:** same fragments moved; detect structural differences without claiming publisher revision.
-4. **Repeated navigation:** many duplicate heading/menu lines; ensure bounded time and memory.
-5. **Unicode:** multibyte emoji, Montenegrin Latin/diacritic text; verify code-point vs byte distinction.
-6. **Full replacement:** all lines differ; ensure output remains bounded.
+4. **Repeated navigation:** many duplicate heading/menu lines, with a changed aligned suffix.
+5. **Shifted repetition:** identical menu lines with a unique anchor moved by 50 positions, testing ambiguous matching.
+6. **Interleaved repetition:** repeated menu lines alternating with 420 independently changed article lines, testing expensive alignment patterns.
+7. **Unicode:** multibyte emoji, Montenegrin Latin/diacritic text; verify code-point vs byte distinction.
+8. **Full replacement:** all lines differ; ensure output remains bounded.
 
 Record interpreter version, synthetic character counts, peak traced Python memory, elapsed milliseconds and edit-operation counts per case. A benchmark run measures only the offline algorithm; it **does not** validate the actual MCP protocol, security, network isolation, deployment, concurrent requests or real corpus quality.
 
@@ -56,5 +58,7 @@ Record interpreter version, synthetic character counts, peak traced Python memor
 - [ ] Confirm independent publisher source identities and the difference between observed retrieval time and document publication/revision time.
 - [ ] Add real in-process FastMCP tests and user-agent cross-client acceptance *after* the design gate.
 - [ ] Leave #213 open until the gated production feature is implemented and accepted.
+
+**Review finding addressed:** The initial aligned repeated-navigation corpus did not capture shifted or interleaved repetitive cases. Both are now included as distinct synthetic cases. A green CI run establishes functional bounded-input behavior, *not* a measured runtime guarantee on the operator host. Algorithm choice and timing/memory thresholds remain an explicit pending design decision.
 
 **Out of scope:** PDF parser work (#141), screenshot/pixel diffs, crawling links, automatic price watching, source archive, periodic polling, change notifications, approvals or Docker management.
