@@ -118,6 +118,9 @@ def live_engines() -> list[dict]:
             # Fail without changing settings if its name or categories
             # cannot be represented by the conservative managed YAML editor.
             google_named = name.casefold().startswith("google")
+            if google_named and type(row.get("enabled")) is not bool:
+                raise EngineSetupError(
+                    "Cannot safely identify every Google engine; no settings changed")
             if not NAME.fullmatch(name):
                 if google_named:
                     raise EngineSetupError(
