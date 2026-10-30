@@ -41,7 +41,7 @@ ${table_head}<tbody id="live-decided">${other_rows}</tbody></table></div>
 <div class="row section-heading"><h2>Recent MCP activity</h2><a href="/history">All history &amp; filters</a></div>
 <p class="subtle">The latest 25 indexed operations; domains and outcomes only. Search terms and fetched URL paths stay hidden here, even when a separate history page is set to reveal them.</p>
 <div class="scroll"><table><thead><tr><th>UTC time</th><th>Operation</th><th>Status</th><th>Domain</th><th>Duration (ms)</th></tr></thead><tbody id="live-activity">${activity_html}</tbody></table></div>
-<details class="panel"><summary>Activity breakdown · past 24 hours (page-load snapshot)</summary><div class="scroll"><table><thead><tr><th>Operation</th><th>Outcome</th><th>Relative volume</th><th>Count</th><th>Average ms</th></tr></thead><tbody id="live-activity-summary">${activity_summary}</tbody></table></div></details>
+<details class="panel"><summary>Activity breakdown · past 24 hours (refreshes about once a minute)</summary><div class="scroll"><table><thead><tr><th>Operation</th><th>Outcome</th><th>Relative volume</th><th>Count</th><th>Average ms</th></tr></thead><tbody id="live-activity-summary">${activity_summary}</tbody></table></div></details>
 <details class="panel"><summary>Recent local rule decisions</summary><h2>Recent local decisions</h2>
 <p class="subtle">Only the most recent 25 actions; no page bodies or URL query strings.</p>
 ${audit_html}
