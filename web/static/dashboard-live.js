@@ -44,8 +44,9 @@
       const all = boxes();
       const selected = count();
       const rest = Math.max(0, max - selected);
-      label.textContent = notice ||
-        `${selected} selected · max ${max}`;
+      const message = notice || `${selected} selected · max ${max}`;
+      // Avoid repeated screen-reader announcements on unchanged live polls.
+      if (label.textContent !== message) label.textContent = message;
       select.disabled = !rest || !all.some(box => !box.checked);
       clear.disabled = selected === 0;
       // Prevent the browser from selecting above the server's hard cap,
