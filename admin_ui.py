@@ -355,6 +355,7 @@ def once_grants_html(search=""):
         '<td>' + esc(r['expires_at'] or 'Never') + '</td>'
         '<td><form method="post" action="/once">'
         '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
+        '<input type="hidden" name="review_query" value="' + esc(search[:100]) + '">'
         '<input type="hidden" name="domain" value="' + esc(r['domain']) + '">'
         '<label class="small">Reason (optional) <input name="reason" '
         'maxlength="160" placeholder="Short local note"></label>'
