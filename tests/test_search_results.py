@@ -12,6 +12,115 @@ def row(url, engine, title="", content="", engines=None):
 
 
 class SearchResultTests(unittest.TestCase):
+    def test_captured_searxng_image_fields_are_opt_in_and_source_labeled(self):
+        # Operator's 2026-10-30 localhost /search?categories=images JSON
+        # reported img_src, thumbnail_src, resolution and source as strings
+        # in Bing Images and Pinterest rows (no private values captured).
+        image = row("https://photos.example.com/gallery/1",
+                    "bing images", "Public photo")
+        image.update(category="images", img_src="https://cdn.example.com/1.jpg",
+                     thumbnail_src="https://thumb.example.com/1.webp",
+                     resolution="1920x1080", source="Unverified provider label",
+                     img_format="JPEG")
+        plain = enrich_search_results([image], 1)
+        self.assertEqual(set(plain[0]), {"title", "url", "snippet", "engine"})
+        selected = enrich_search_results([image], 1,
+                                         include_image_metadata=True)[0]
+        self.assertEqual(selected["image_url"], "https://cdn.example.com/1.jpg")
+        self.assertEqual(selected["thumbnail_url"],
+                         "https://thumb.example.com/1.webp")
+        self.assertEqual(selected["source_page_url"],
+                         "https://photos.example.com/gallery/1")
+        self.assertEqual((selected["image_width"], selected["image_height"]),
+                         (1920, 1080))
+        self.assertNotIn("source", selected)
+        self.assertNotIn("img_format", selected)
+        self.assertNotIn("resolution", selected)
+        import json
+        json.dumps(selected, ensure_ascii=False).encode("utf-8")
+
+        regular = row("https://example.com/news", "yahoo", "News")
+        regular.update(category="general", img_src="https://cdn.example.com/a.jpg",
+                       thumbnail_src="https://cdn.example.com/a-thumb.jpg")
+        self.assertEqual(set(enrich_search_results(
+            [regular], 1, include_image_metadata=True)[0]),
+            {"title", "url", "snippet", "engine"})
+
+    def test_image_links_reject_unsafe_provider_urls_without_network(self):
+        from unittest.mock import patch
+        from search_results import _public_image_link
+        invalid = (
+            "http://cdn.example.com/img.jpg", "data:image/png;base64,AAA",
+            "file:///etc/passwd", "javascript:alert(1)",
+            "https://localhost/img.jpg", "https://127.0.0.1/img.jpg",
+            "https://10.0.0.1/image", "https://[::1]/img.jpg",
+            "https://user:pass@cdn.example.com/x",
+            "https://@cdn.example.com/x",
+            "https://cdn.example.com:8080/x",
+            "https://cdn.example.com:/x",
+            "https://cdn.example.com./x",
+            "https://xn--bcher-kva.example.com/x",
+            "https://bücher.example.com/x",
+            "https://cdn.example.com/x\\evil",
+            "https://cdn.example.com/x\nheader: injected",
+            "https://cdn.example.com/x%0Aheader",
+            "https://cdn.example.com/x%5cwin",
+            "https://cdn.example.com/x%7F",
+            "https://cdn.example.com/x image",
+            "https://cdn.example.com/x\ud800",
+            "https://cdn.example.com/" + "x" * 2200,
+            "https://com/x", "https://cdn.local/x",
+            "https://cdn.example.com:65536/x",
+            None, [], 42,
+        )
+        with patch("socket.getaddrinfo", side_effect=AssertionError("no DNS")):
+            for value in invalid:
+                with self.subTest(url=str(value)[:90]):
+                    self.assertIsNone(_public_image_link(value))
+            self.assertEqual(
+                _public_image_link("https://CDN.example.com:443/photo.jpg?q=x&size=2"),
+                "https://CDN.example.com:443/photo.jpg?q=x&size=2")
+
+    def test_image_dimensions_strictly_bounded_and_primary_only(self):
+        from search_results import _image_dimensions
+        self.assertEqual(_image_dimensions("1920x1080"), (1920, 1080))
+        for bad in ("0x10", "2x0", "20001x1080", "20x50000",
+                    "1920 x 1080", "1920×1080", "80:40", "001x100",
+                    "999999999999x10", None, 128):
+            with self.subTest(value=bad):
+                self.assertIsNone(_image_dimensions(bad))
+        first = row("https://example.org/image", "bing images", "Primary")
+        first.update(category="images",
+                     img_src="https://one.example.com/first.jpg",
+                     thumbnail_src="http://bad.example.com/thumb",
+                     resolution="1920x1080")
+        second = row("https://example.org/image", "pinterest", "Duplicate")
+        second.update(category="images",
+                      img_src="https://two.example.com/second.jpg",
+                      thumbnail_src="https://two.example.com/second-thumb.jpg",
+                      resolution="400x200")
+        merged = enrich_search_results([first, second], 2, deduplicate=True,
+                                       ranking="source_count",
+                                       include_image_metadata=True)[0]
+        self.assertEqual(merged["duplicate_count"], 2)
+        self.assertEqual(merged["source_engines"], ["bing images", "pinterest"])
+        self.assertEqual(merged["image_url"],
+                         "https://one.example.com/first.jpg")
+        self.assertNotIn("thumbnail_url", merged)
+        self.assertEqual(merged["image_width"], 1920)
+        self.assertEqual(merged["image_height"], 1080)
+        self.assertNotIn("image_url", merged["source_matches"][0])
+        self.assertNotIn("second.jpg", str(merged))
+        swapped = enrich_search_results([second, first], 2, deduplicate=True,
+                                        include_image_metadata=True)[0]
+        self.assertEqual(swapped["image_url"],
+                         "https://two.example.com/second.jpg")
+        text = row("https://example.org/image", "yahoo", "Main page")
+        text["category"] = "general"
+        self.assertNotIn("image_url", enrich_search_results(
+            [text, first], 2, deduplicate=True,
+            include_image_metadata=True)[0])
+
     def test_invalid_unicode_search_metadata_cannot_break_mcp_json(self):
         import json
         value = "bad\ud800text"
