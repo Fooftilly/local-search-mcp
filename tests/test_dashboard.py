@@ -111,6 +111,33 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(policy.pending_match_count(), 207)
         self.assertEqual(policy.counts()["pending"], 207)
 
+    def test_frequent_ties_use_last_request_not_row_update(self):
+        with policy._db() as db:
+            db.executemany("""INSERT INTO domains
+                (domain,status,created_at,updated_at,last_requested_at,
+                 request_count,request_id)
+                VALUES (?,'pending',?,?,?,?,?)""", [
+                ("recent-activity.example.org", "2026-01-01T00:00:00Z",
+                 "2026-01-01T00:00:00Z", "2026-05-05T00:00:00Z",
+                 3, "a" * 24),
+                ("stale-activity.example.org", "2026-01-02T00:00:00Z",
+                 "2026-05-01T00:00:00Z", "2026-01-03T00:00:00Z",
+                 3, "b" * 24),
+                ("legacy-no-timestamp.example.org", "2026-01-01T00:00:00Z",
+                 "2026-01-10T00:00:00Z", "", 3, "c" * 24),
+            ])
+            db.commit()
+        ordered = [r["domain"] for r in policy.entries(
+            status="pending", pending_sort="frequent")]
+        self.assertEqual(ordered, [
+            "recent-activity.example.org",
+            "legacy-no-timestamp.example.org",
+            "stale-activity.example.org",
+        ])
+        # Existing default remains based on row updated_at.
+        self.assertEqual(policy.entries(status="pending")[0]["domain"],
+                         "stale-activity.example.org")
+
     def test_triage_sort_survives_page_post_and_live_refresh(self):
         with policy._db() as db:
             now = policy.utcnow()
@@ -184,6 +211,12 @@ class DashboardTests(unittest.TestCase):
                     "/live?view=policy&sort=" + invalid)[0], 400)
         self.assertEqual(request(
             "/?sort=oldest&sort=frequent")[0], 400)
+        for malformed in ("sort=", "sort=oldest&sort=", "sort=&sort=frequent",
+                          "sort=&sort="):
+            with self.subTest(malformed=malformed):
+                self.assertEqual(request("/?" + malformed)[0], 400)
+                self.assertEqual(request("/live?view=policy&" + malformed)[0],
+                                 400)
 
     def test_pending_pagination_exposes_later_rows_without_moving_decisions(self):
         with policy._db() as db:
