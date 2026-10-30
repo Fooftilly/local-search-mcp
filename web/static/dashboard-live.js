@@ -6,6 +6,8 @@
   const decidedBody = document.getElementById("live-decided");
   const auditBody = document.getElementById("live-audit");
   const historyBody = document.getElementById("live-history");
+  const historyPages = document.getElementById("live-history-pages");
+  const historyPagesBottom = document.getElementById("live-history-pages-bottom");
   const activityBody = document.getElementById("live-activity");
   const serviceBody = document.getElementById("live-services");
   const operationsBody = document.getElementById("live-operations");
@@ -431,8 +433,15 @@
     const sort = ["recent", "oldest", "frequent"].includes(sortValue) ?
       sortValue : "recent";
     const wantsOverview = !isHistory && Date.now() >= nextOverviewAt;
+    const historyParams = new URLSearchParams(window.location.search);
+    const currentHistoryPage = document.documentElement.dataset.historyPage;
+    if (isHistory && typeof currentHistoryPage === "string" &&
+        /^([1-9][0-9]{0,3})$/.test(currentHistoryPage)) {
+      if (currentHistoryPage === "1") historyParams.delete("page");
+      else historyParams.set("page", currentHistoryPage);
+    }
     const endpoint = isHistory ?
-      "/live?view=history&" + new URLSearchParams(window.location.search).toString() :
+      "/live?view=history&" + historyParams.toString() :
       "/live?view=policy&q=" + encodeURIComponent(query.slice(0, 100)) +
       (page === "1" ? "" : "&page=" + page) +
       (sort === "recent" ? "" : "&sort=" + sort) +
@@ -463,6 +472,14 @@
       if (isHistory) {
         updateTable(historyBody, data.history_html);
         updateTable(historySummaryBody, data.history_summary_html);
+        if (typeof data.history_pages_html === "string") {
+          updateTable(historyPages, data.history_pages_html);
+          updateTable(historyPagesBottom, data.history_pages_html);
+        }
+        if (Number.isSafeInteger(data.history_page) &&
+            data.history_page >= 1 && data.history_page <= 4000) {
+          document.documentElement.dataset.historyPage = String(data.history_page);
+        }
       } else {
         updateTable(pendingBody, data.pending_html);
         syncBulkSelection();

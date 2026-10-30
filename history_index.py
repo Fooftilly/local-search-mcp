@@ -396,12 +396,14 @@ def _reveal_history_queries(rows: list[dict]) -> None:
 
 def search_history(*, limit: int = 25, kind: str = "", status: str = "",
                    domain: str = "", hours: int = 0,
-                   reveal_queries: bool = False) -> list[dict]:
+                   reveal_queries: bool = False, offset: int = 0) -> list[dict]:
     """Return indexed metadata; reveal raw history details only on opt-in."""
     if type(limit) is not int or not 1 <= limit <= MAX_QUERY_RESULTS:
         raise ValueError("Invalid history page size")
     if type(reveal_queries) is not bool:
         raise ValueError("Invalid query visibility setting")
+    if type(offset) is not int or not 0 <= offset < MAX_HISTORY_ROWS:
+        raise ValueError("Invalid history offset")
     suffix, args = _history_filter(kind, status, domain, hours)
     sync_history()
     columns = ("generation_id,byte_offset," if reveal_queries else "") + (
@@ -410,7 +412,8 @@ def search_history(*, limit: int = 25, kind: str = "", status: str = "",
         conn.row_factory = sqlite3.Row
         rows = [dict(r) for r in conn.execute(
             "SELECT " + columns + " FROM history" +
-            suffix + " ORDER BY at_ms DESC,rowid DESC LIMIT ?", (*args, limit))]
+            suffix + " ORDER BY at_ms DESC,rowid DESC LIMIT ? OFFSET ?",
+            (*args, limit, offset))]
     if reveal_queries:
         _reveal_history_queries(rows)
         for row in rows:

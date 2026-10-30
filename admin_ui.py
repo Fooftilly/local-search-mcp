@@ -72,11 +72,63 @@ def _safe_query_display(query):
             rendered.append(char)
     return "".join(rendered)
 
-def history_items_html(kind="", status="", domain="", hours=0, show_queries=False):
+HISTORY_PAGE_SIZE = 25
+MAX_HISTORY_PAGE = history_index.MAX_HISTORY_ROWS // HISTORY_PAGE_SIZE
+
+
+def _history_page_number(raw):
+    if (type(raw) is not str or not raw.isascii() or
+            not raw.isdecimal() or len(raw) > 4):
+        raise ValueError("Invalid history page")
+    value = int(raw)
+    if not 1 <= value <= MAX_HISTORY_PAGE:
+        raise ValueError("Invalid history page")
+    return value
+
+
+def _history_last_page(total):
+    return min(MAX_HISTORY_PAGE, max(
+        1, (total + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE))
+
+
+def history_pagination_html(filters, page, total):
+    """Read-only, escaped navigation retaining filters and opt-in display."""
+    final = _history_last_page(total)
+    first = (page - 1) * HISTORY_PAGE_SIZE + 1 if total and page <= final else 0
+    last = min(page * HISTORY_PAGE_SIZE, total) if first else 0
+
+    def href(number):
+        args = [(key, str(filters.get(key, ''))) for key in
+                ('kind', 'status', 'domain')]
+        args += [('hours', str(filters.get('hours', 0))),
+                 ('page', str(number))]
+        if filters.get('show_queries'):
+            args.append(('show_queries', '1'))
+        return esc('/history?' + '&'.join(
+            quote(k, safe='') + '=' + quote(v, safe='')
+            for k, v in args))
+
+    links = []
+    if page > 1:
+        links.append('<a rel="prev" href="' + href(page - 1) +
+                     '">Previous 25</a>')
+    if page < final:
+        links.append('<a rel="next" href="' + href(page + 1) +
+                     '">Next 25</a>')
+    return ('<nav class="pending-pages" aria-label="History pages">'
+            '<span role="status">Showing ' + str(first) + '–' + str(last) +
+            ' of ' + str(total) + ' matching history events · page ' +
+            str(page) + ' of ' + str(final) + '</span>' +
+            ''.join(links) + '</nav>')
+
+
+def history_items_html(kind="", status="", domain="", hours=0,
+                       show_queries=False, page=1):
     try:
         items = history_index.search_history(kind=kind, status=status,
                                               domain=domain, hours=hours,
-                                              reveal_queries=show_queries)
+                                              reveal_queries=show_queries,
+                                              offset=(page - 1) * HISTORY_PAGE_SIZE)
     except (OSError, ValueError, sqlite3.Error):
         return '<tr><td colspan="5">Indexed history is unavailable; check local configuration.</td></tr>'
     out = []
@@ -99,13 +151,15 @@ def history_items_html(kind="", status="", domain="", hours=0, show_queries=Fals
     return ''.join(out) or '<tr><td colspan="5">No matching MCP history.</td></tr>'
 
 
-def recent_rows(kind="", status="", domain="", hours=0, show_queries=False):
+def recent_rows(kind="", status="", domain="", hours=0, show_queries=False,
+                page=1):
     column = "Search query / page URL / domain" if show_queries else "Domain"
     return ('<div class="scroll"><table><thead><tr><th>UTC time</th>'
             '<th>Operation</th><th>Status</th><th>' + column + '</th>'
             '<th>Duration (ms)</th></tr></thead>'
             '<tbody id="live-history">' +
-            history_items_html(kind, status, domain, hours, show_queries) +
+            history_items_html(kind, status, domain, hours, show_queries,
+                               page=page) +
             '</tbody></table></div>')
 
 
@@ -139,6 +193,10 @@ def _history_filters(query, *, validate_text=True):
     if len(visible) != 1 or visible[0] not in ('0', '1'):
         raise ValueError("Invalid history query visibility")
     values['show_queries'] = visible[0] == '1'
+    pages = query.get('page', ['1'])
+    if len(pages) != 1:
+        raise ValueError("Invalid history page")
+    values['page'] = _history_page_number(pages[0])
     # Invalid text filters may be displayed, but never passed to a query.
     if validate_text:
         history_index._history_filter(**{k: values[k] for k in
@@ -216,8 +274,14 @@ def live_snapshot(query='', view='policy', history_filters=None,
                 if k in filters})
         except (OSError, ValueError, sqlite3.Error):
             metrics = []
-        return {'history_html': history_items_html(**filters),
-                'history_summary_html': history_summary_html(metrics)}
+        total = sum(int(x['count']) for x in metrics)
+        page = min(filters.get('page', 1), _history_last_page(total))
+        return {'history_html': history_items_html(
+                    **{**filters, 'page': page}),
+                'history_summary_html': history_summary_html(metrics),
+                'history_pages_html': history_pagination_html(
+                    filters, page, total),
+                'history_page': page}
     # Aggregate history is read only on an explicit, less-frequent overview
     # poll. Avoid repeating a full history sync on every ten-second refresh.
     overview = (_overview_history_metrics()
@@ -781,7 +845,7 @@ def status_page():
 
 
 def history_page(kind="", status="", domain="", hours=0, show_queries=False,
-                 filter_error=""):
+                 filter_error="", page=1):
     filters = {"kind": kind, "status": status, "domain": domain, "hours": hours}
     try:
         retention_label = str(history_index._retention_days())
@@ -796,7 +860,13 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=False,
         f'<option value="{esc(kind)}" selected disabled>'
         f'Unsupported operation: {esc(kind)}</option>'
         if filter_error and kind not in ("", "search", "fetch", "page") else '')
-    rows = (recent_rows(**filters, show_queries=show_queries) if not filter_error
+    total = sum(int(x['count']) for x in metrics)
+    page = min(page, _history_last_page(total))
+    full_filters = {**filters, 'show_queries': show_queries}
+    pages_html = (history_pagination_html(full_filters, page, total)
+                  if not filter_error else '')
+    rows = (recent_rows(**filters, show_queries=show_queries, page=page)
+            if not filter_error
             else '<p class="subtle">Correct the filters above to view history.</p>')
     options = ''.join(
         f'<option value="{n}"{" selected" if hours == n else ""}>{label}</option>'
@@ -811,6 +881,7 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=False,
         status=esc(status), domain=esc(domain), options=options,
         query_checked=' checked' if show_queries else '',
         warning=warning, rows=rows,
+        page=page, pages_html=pages_html,
         summary_html=history_summary_html(metrics),
         retention_label=esc(retention_label),
     )
@@ -887,14 +958,21 @@ class Handler(BaseHTTPRequestHandler):
             view=query.get('view',['policy'])[0]
             if view not in ('policy','history'):return self._respond(400,'Invalid view')
             q=query.get('q',[''])[0][:100]
-            try:
-                page = _pending_page(query.get('page', ['1'])[0])
-                sort_values = query.get('sort', ['recent'])
-                if len(sort_values) != 1:
-                    raise ValueError("Duplicate pending sort")
-                pending_sort = _pending_sort(sort_values[0])
-            except ValueError:
-                return self._respond(400, 'Invalid pending review page or sort')
+            # History uses its own 1–4000 page bound. Applying the policy
+            # queue's 1–20 limit here would break live updates on older pages.
+            page, pending_sort = 1, 'recent'
+            if view == 'policy':
+                try:
+                    page_values = query.get('page', ['1'])
+                    if len(page_values) != 1:
+                        raise ValueError("Duplicate pending page")
+                    page = _pending_page(page_values[0])
+                    sort_values = query.get('sort', ['recent'])
+                    if len(sort_values) != 1:
+                        raise ValueError("Duplicate pending sort")
+                    pending_sort = _pending_sort(sort_values[0])
+                except ValueError:
+                    return self._respond(400, 'Invalid pending review page or sort')
             overview_flag = query.get('overview', ['0'])
             if (len(overview_flag) != 1
                     or overview_flag[0] not in ('0', '1')
@@ -972,7 +1050,7 @@ class Handler(BaseHTTPRequestHandler):
                     # kind/status/domain text; invalid windows still hard-fail.
                     filters = _history_filters(query, validate_text=False)
                 except ValueError:
-                    return self._respond(400, 'Invalid history time window')
+                    return self._respond(400, 'Invalid history window or page')
                 return self._respond(400, history_page(
                     **filters, filter_error="Invalid history filter. Use a "
                     "hostname (not a URL), and a supported operation/status."))

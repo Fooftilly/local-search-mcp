@@ -30,6 +30,52 @@ class HistoryIndexTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
+    def test_history_offsets_reveal_only_the_selected_original_events(self):
+        when = datetime.now(timezone.utc).isoformat()
+        for i in range(64):
+            if i % 3 == 0:
+                append_history(event("search", backend="SearXNG",
+                                     time_utc=when, query=f"private-query-{i:02d}"))
+            elif i % 3 == 1:
+                append_history(event("fetch", backend="Crawl4AI",
+                                     time_utc=when,
+                                     url=f"https://docs.example.org/page/{i:02d}"
+                                         "?secret=DO_NOT_SHOW#frag"))
+            else:
+                append_history(event("page", backend="Crawl4AI",
+                                     time_utc=when, document_id="private-handle"))
+        first = history_index.search_history(limit=25)
+        second = history_index.search_history(limit=25, offset=25)
+        third = history_index.search_history(limit=25, offset=50)
+        self.assertEqual((len(first), len(second), len(third)), (25, 25, 14))
+        self.assertEqual(first[0]["kind"], "search")
+        self.assertEqual(third[-1]["kind"], "search")
+        for rows in (first, second, third):
+            self.assertTrue(all("url" not in item and "query" not in item
+                                and "byte_offset" not in item for item in rows))
+        revealed = history_index.search_history(
+            limit=25, offset=25, reveal_queries=True)
+        self.assertEqual(len(revealed), 25)
+        self.assertTrue(all(not (item["kind"] == "page" and
+                                 ("url" in item or "query" in item))
+                            for item in revealed))
+        fetch_urls = [item["url"] for item in revealed if item["kind"] == "fetch"]
+        self.assertTrue(fetch_urls)
+        self.assertTrue(all(url.startswith("https://docs.example.org/page/")
+                            and "secret=" not in url for url in fetch_urls))
+        for item in revealed:
+            self.assertNotIn("generation_id", item)
+            self.assertNotIn("byte_offset", item)
+        self.assertEqual(
+            history_index.search_history(limit=25, offset=25), second)
+        indexed = history_index.index_path().read_bytes()
+        for secret in (b"private-query", b"/page/", b"DO_NOT_SHOW",
+                       b"private-handle"):
+            self.assertNotIn(secret, indexed)
+        for invalid in (-1, 100_000, True, 1.5, "25"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                history_index.search_history(offset=invalid)
+
     def test_reveal_fetch_page_urls_only_from_matching_original_jsonl(self):
         stamp = datetime.now(timezone.utc).isoformat()
         target = "https://docs.example.org/articles/guide/part-2"
