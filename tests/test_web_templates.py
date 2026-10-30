@@ -206,8 +206,9 @@ class DashboardTemplateTests(unittest.TestCase):
         self.assertEqual(history_read.call_args.kwargs["reveal_queries"], False)
 
     def test_history_filters_remain_html_escaped(self):
-        with (patch.object(admin_ui.history_index, "summarize_history",
-                           return_value=[]),
+        with (patch.object(admin_ui.history_index, "dashboard_history_snapshot",
+                           return_value={"metrics": [], "rows": [],
+                                         "total": 0, "page": 1}),
               patch.object(admin_ui.history_index, "_retention_days",
                            return_value=30),
               patch.object(admin_ui, "recent_rows", return_value="safe rows")):

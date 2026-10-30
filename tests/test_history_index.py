@@ -30,6 +30,79 @@ class HistoryIndexTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
+    def test_dashboard_snapshot_rows_and_count_share_one_index_generation(self):
+        append_history(event("search", "success", backend="SearXNG",
+                             query="first search"))
+        original = history_index.sync_history
+        triggered = []
+        def append_between_sync_and_read():
+            original()
+            triggered.append(True)
+            append_history(event("fetch", "blocked",
+                                 url="https://new.example.org/private?x=SECRET"))
+        with patch.object(history_index, "sync_history",
+                          side_effect=append_between_sync_and_read) as sync:
+            snapshot = history_index.dashboard_history_snapshot()
+            sync.assert_called_once_with()
+        self.assertEqual(triggered, [True])
+        self.assertEqual(snapshot["total"], 1)
+        self.assertEqual(len(snapshot["rows"]), 1)
+        self.assertEqual(snapshot["rows"][0]["kind"], "search")
+        self.assertEqual(sum(x["count"] for x in snapshot["metrics"]), 1)
+        # The newly appended event is consistently included next time.
+        refreshed = history_index.dashboard_history_snapshot()
+        self.assertEqual(refreshed["total"], 2)
+        self.assertEqual(len(refreshed["rows"]), 2)
+
+    def test_dashboard_snapshot_syncs_once_and_clamps_consistent_page(self):
+        stamp = datetime.now(timezone.utc).isoformat()
+        for i in range(56):
+            if i % 2:
+                append_history(event("search", "success", time_utc=stamp,
+                                     query=f"PRIVATE-{i:02d}", backend="SearXNG"))
+            else:
+                append_history(event("fetch", "blocked", time_utc=stamp,
+                                     url=f"https://docs.example.org/secret/{i:02d}"
+                                         "?token=HIDDEN", backend="Crawl4AI"))
+        sync = history_index.sync_history
+        with patch.object(history_index, "sync_history", wraps=sync) as wrapped:
+            third = history_index.dashboard_history_snapshot(page=3)
+            wrapped.assert_called_once_with()
+        self.assertEqual(third["total"], 56)
+        self.assertEqual(third["page"], 3)
+        self.assertEqual(len(third["rows"]), 6)
+        self.assertEqual(sum(x["count"] for x in third["metrics"]), 56)
+        self.assertEqual(
+            [(m["kind"], m["status"], m["count"]) for m in third["metrics"]],
+            [("fetch", "blocked", 28), ("search", "success", 28)])
+        self.assertTrue(all("query" not in row and "url" not in row and
+                            "generation_id" not in row and "byte_offset" not in row
+                            for row in third["rows"]))
+        with patch.object(history_index, "sync_history", wraps=sync) as wrapped:
+            reveal = history_index.dashboard_history_snapshot(
+                page=3, reveal_queries=True)
+            wrapped.assert_called_once_with()
+        self.assertEqual(reveal["rows"][0]["kind"], "search")
+        self.assertEqual(reveal["rows"][0]["query"], "PRIVATE-05")
+        self.assertTrue(all("generation_id" not in r and "byte_offset" not in r
+                            for r in reveal["rows"]))
+        self.assertNotIn(b"PRIVATE-", history_index.index_path().read_bytes())
+        self.assertNotIn(b"/secret/", history_index.index_path().read_bytes())
+        self.assertNotIn(b"token=HIDDEN", history_index.index_path().read_bytes())
+        with patch.object(history_index, "sync_history", wraps=sync) as wrapped:
+            clamped = history_index.dashboard_history_snapshot(page=3500)
+            wrapped.assert_called_once_with()
+        self.assertEqual(clamped["page"], 3)
+        self.assertEqual(clamped["total"], 56)
+        for invalid in (0, 4001, -1, "2", True, 2.5):
+            with self.subTest(page=invalid), self.assertRaises(ValueError):
+                history_index.dashboard_history_snapshot(page=invalid)
+        for invalid in (0, 101, True, 24):
+            with self.subTest(size=invalid), self.assertRaises(ValueError):
+                history_index.dashboard_history_snapshot(page_size=invalid)
+        with self.assertRaises(ValueError):
+            history_index.dashboard_history_snapshot(reveal_queries=1)
+
     def test_history_offsets_reveal_only_the_selected_original_events(self):
         when = datetime.now(timezone.utc).isoformat()
         for i in range(64):

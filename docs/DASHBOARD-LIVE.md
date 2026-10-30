@@ -1,5 +1,17 @@
 # Live dashboard updates and optional desktop notifications
 
+**Consistent indexed-history refresh:** The `/history` page and
+`/live?view=history` now synchronize the retained JSONL index **once per
+response**, and read both the matched outcome aggregates and the selected
+25-event page from a single SQLite read transaction. Concurrent appends do
+not make a page count describe a different indexed generation than the
+displayed rows; events arriving after synchronization appear on a later
+refresh. The original source-file generation/inode/byte-offset/fingerprint
+checks still apply separately to each explicitly revealed query or sanitized
+fetch URL. If the index is unreadable, both table and page navigation report
+**unavailable**, not an invented empty history. Existing CLI, MCP metrics and
+per-call `search_history` / `summarize_history` APIs remain unchanged.
+
 **Retained-history pagination:** The `/history` page shows 25 indexed events at
 a time, with Previous / Next links at both ends of the table. This replaces
 the previous first-25-only view without increasing the size of any live
