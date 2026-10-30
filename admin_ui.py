@@ -12,7 +12,7 @@ import sqlite3
 import threading
 import time
 import unicodedata
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 import domain_policy as policy
 import policy_transfer
@@ -174,9 +174,9 @@ def live_snapshot(query='', view='policy', history_filters=None):
             'snapshot_run': _LIVE_SNAPSHOT_RUN,
             'snapshot_us': _LAST_LIVE_SNAPSHOT_US,
             'counts': counts,
-            'pending_html': ''.join(row_html(r) for r in pending_rows)
+            'pending_html': ''.join(row_html(r, query=query) for r in pending_rows)
                 or '<tr><td colspan="4">No pending requests.</td></tr>',
-            'decided_html': ''.join(row_html(r) for r in decisions)
+            'decided_html': ''.join(row_html(r, query=query) for r in decisions)
                 or '<tr><td colspan="4">No matching domains.</td></tr>',
             'audit_html': decision_audit_rows(query),
             'activity_html': history_items_html(show_queries=False),
@@ -200,8 +200,12 @@ def service_overview_rows():
         '</td></tr>' for item in service_status.probe_services())
 
 
-def row_html(r):
+def row_html(r, query=''):
     dom = esc(r['domain'])
+    # This value only restores the local review filter after POST. It never
+    # affects the permission decision or its stale-request/CSRF checks.
+    review_context = (f'<input type="hidden" name="review_query" '
+                      f'value="{esc(query[:100])}">')
     stat = esc('expired' if r.get('expired') else r['status'])
     token = esc(CSRF)
     scope = r.get('match_scope', 'subdomains')
@@ -231,7 +235,7 @@ def row_html(r):
                     '<input name="reason" maxlength="160" '
                     'placeholder="Short local note"></label>')
         return (f'<form method="post" action="/domain">'
-                f'<input type="hidden" name="csrf" value="{token}">'
+                f'<input type="hidden" name="csrf" value="{token}">' + review_context +
                 f'<input type="hidden" name="domain" value="{dom}">'
                 + controls +
                 f'<button class="{cls}" type="submit" name="action" value="{name}">'
@@ -242,7 +246,7 @@ def row_html(r):
     # Never default to the indefinite ("0") permission from policy.decide().
     quick = (
         f'<form class="quick-decision" method="post" action="/domain">'
-        f'<input type="hidden" name="csrf" value="{token}">'
+        f'<input type="hidden" name="csrf" value="{token}">' + review_context +
         f'<input type="hidden" name="domain" value="{dom}">'
         f'<input type="hidden" name="request_id" value="{esc(r.get("request_id") or "")}">'
         '<label class="small">Scope <select name="scope" aria-label="Rule scope">'
@@ -268,7 +272,7 @@ def row_html(r):
     # one hour by default, and never become durable permission rules.
     once = (
         f'<form class="once-action" method="post" action="/once">'
-        f'<input type="hidden" name="csrf" value="{token}">'
+        f'<input type="hidden" name="csrf" value="{token}">' + review_context +
         f'<input type="hidden" name="domain" value="{dom}">'
         f'<input type="hidden" name="request_id" value="{esc(r.get("request_id") or "")}">'
         '<button class="allow" name="action" value="stage">Allow once</button>'
@@ -287,7 +291,7 @@ def row_html(r):
         else ''
     )
     edit = (f'<form method="post" action="/domain">'
-            f'<input type="hidden" name="csrf" value="{token}">'
+            f'<input type="hidden" name="csrf" value="{token}">' + review_context +
             f'<input type="hidden" name="domain" value="{dom}">'
             f'<label class="small">Reason (optional) '
             f'<input name="reason" maxlength="160" placeholder="Short local note"></label>'
@@ -351,6 +355,7 @@ def once_grants_html(search=""):
         '<td>' + esc(r['expires_at'] or 'Never') + '</td>'
         '<td><form method="post" action="/once">'
         '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
+        '<input type="hidden" name="review_query" value="' + esc(search[:100]) + '">'
         '<input type="hidden" name="domain" value="' + esc(r['domain']) + '">'
         '<label class="small">Reason (optional) <input name="reason" '
         'maxlength="160" placeholder="Short local note"></label>'
@@ -428,8 +433,8 @@ def import_preview_html(plan: dict) -> str:
 def render(query='', message='', kind='success'):
     c=policy.counts()
     # Separate independent limits: pending floods cannot hide stored decisions.
-    pending=''.join(row_html(r) for r in policy.entries(query,limit=200,status='pending'))
-    other=''.join(row_html(r) for r in policy.entries(query,limit=2000,status='decided'))
+    pending=''.join(row_html(r, query=query) for r in policy.entries(query,limit=200,status='pending'))
+    other=''.join(row_html(r, query=query) for r in policy.entries(query,limit=2000,status='decided'))
     alert=f'<p class="alert {"error" if kind=="error" else "success"}">{esc(message)}</p>' if message else ''
     table_head='<div class="scroll"><table><thead><tr><th>Domain</th><th>Decision / scope / expiry</th><th>Requests / latest</th><th>Manage</th></tr></thead>'
     query_escaped=esc(query)
@@ -456,6 +461,7 @@ def render(query='', message='', kind='success'):
         pending_rows=pending or '<tr><td colspan="4">No pending requests.</td></tr>',
         max_bulk_decisions=policy.MAX_BULK_DECISIONS,
         query_escaped=query_escaped,
+        refresh_href=esc('/?q=' + quote(query[:100], safe='') if query else '/'),
         other_rows=other or '<tr><td colspan="4">No matching domains.</td></tr>',
         audit_html=audit_html,
         database_path=esc(policy.database_path()),
@@ -886,11 +892,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._respond(400,'Invalid form data')
         def val(key):return vals.get(key,[''])[0]
         if not secrets.compare_digest(val('csrf'),CSRF):return self._respond(403,'Invalid CSRF token')
+        # Browser-submitted view state is presentation-only, not authority.
+        # Limit its size and reject controls to keep HTML and database
+        # search behavior consistent with the bounded GET filter.
+        review_raw = val('review_query')
+        review_query = (review_raw if len(review_raw) <= 100 and
+                        all(ch.isprintable() for ch in review_raw) else '')
         if self.path == '/pending/clear':
             if val('confirm') != 'CLEAR':
-                return self._respond(400, render(message='Type CLEAR to confirm removal.', kind='error'))
+                return self._respond(400, render(query=review_query, message='Type CLEAR to confirm removal.', kind='error'))
             removed = policy.clear_pending_requests()
-            return self._respond(200,render(message=f"Cleared {removed} pending requests."))
+            return self._respond(200,render(query=review_query, message=f"Cleared {removed} pending requests."))
         if self.path in ('/portable-settings/preview', '/portable-settings/apply'):
             try:
                 if self.path == '/portable-settings/preview':
@@ -1008,18 +1020,18 @@ class Handler(BaseHTTPRequestHandler):
                         reason=reason,
                         expected_request_id=val('request_id') or None)
                     return self._respond(200, render(
-                        message=f'One-time grant staged for {domain[:253]}.'))
+                        query=review_query, message=f'One-time grant staged for {domain[:253]}.'))
                 if action == 'revoke':
                     policy._revoke_once_grant(domain, reason=reason)
                     return self._respond(200, render(
-                        message=f'One-time grant revoked for {domain[:253]}.'))
+                        query=review_query, message=f'One-time grant revoked for {domain[:253]}.'))
                 raise ValueError('Unrecognized one-use action')
             if self.path == '/bulk':
                 amount = policy.bulk_decide(vals.get('selected', []), val('action'),
                     scope=val('scope'), expires_minutes=int(val('expires_minutes')),
                     reason=val('reason'))
                 return self._respond(200, render(
-                    message=f"Updated {amount} pending requests."))
+                    query=review_query, message=f"Updated {amount} pending requests."))
             # The new-domain and existing-rule forms require an explicit
             # duration. A missing/blank field must not silently turn a
             # temporary approval into a permanent grant.
@@ -1034,9 +1046,9 @@ class Handler(BaseHTTPRequestHandler):
                           reason=val('reason'),
                           expected_request_id=val('request_id') or None)
             msg=f"Decision updated for {val('domain')[:253]}"
-            return self._respond(200,render(message=msg))
+            return self._respond(200,render(query=review_query, message=msg))
         except (ValueError,sqlite3.IntegrityError) as exc:
-            return self._respond(400,render(message=str(exc),kind='error'))
+            return self._respond(400,render(query=review_query, message=str(exc),kind='error'))
 
 
 def create_dashboard_server():

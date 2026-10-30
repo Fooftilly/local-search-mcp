@@ -36,7 +36,7 @@ function Notification(name, options) {
 Notification.permission = "granted";
 Notification.requestPermission = async () => "granted";
 
-function createTab(initialDomains, view = "policy", query = "") {
+function createTab(initialDomains, view = "policy", query = "", activeFilter) {
   const state = { domains: [...initialDomains], timers: [], handlers: {},
                   nextSnapshotUs: null, nextSnapshotRun: null, pendingOverride: null,
                   historyRows: "history: before", historyBars: "bars: before",
@@ -75,7 +75,10 @@ function createTab(initialDomains, view = "policy", query = "") {
     return targets.get(id);
   }
   const document = {
-    documentElement: { dataset: { liveView: view } },
+    documentElement: { dataset: {
+      liveView: view,
+      ...(activeFilter === undefined ? {} : { reviewQuery: activeFilter })
+    } },
     activeElement: null,
     getElementById: element
   };
@@ -368,6 +371,18 @@ async function main() {
   assert.equal(notifications.length, 4, "reopen must not alert old backlog");
   assert.deepEqual(JSON.parse(storage.get("local-search-mcp.notification-owed.v1")), []);
   reopened.close();
+
+  // A POST response returns /domain without a ?q= in the address bar.
+  // Its server-rendered reviewQuery must survive subsequent /live polling.
+  const postResult = createTab([], "policy", "", "related.example.net");
+  await settle();
+  assert.equal(postResult.state.lastEndpoint,
+               "/live?view=policy&q=related.example.net",
+               "post-result filter survives subsequent live refresh");
+  await poll(postResult, 425000);
+  assert.equal(postResult.state.lastEndpoint,
+               "/live?view=policy&q=related.example.net");
+  postResult.close();
 
   // Simulate an unclean browser exit: a tab never receives pagehide and
   // leaves an orphaned presence key behind. Explicitly disabling from a

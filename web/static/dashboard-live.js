@@ -408,7 +408,13 @@
 
   async function refresh(generation) {
     if (stopped || generation !== refreshGeneration) return;
-    const query = new URLSearchParams(window.location.search).get("q") || "";
+    // POST responses contain the operator's active review filter even
+    // though the browser address remains /domain, /bulk or /once. Use the
+    // server-rendered immutable view context, not the address bar or
+    // editable filter input, so later polling never resets the review list.
+    const activeFilter = document.documentElement.dataset.reviewQuery;
+    const query = (typeof activeFilter === "string" ? activeFilter :
+      new URLSearchParams(window.location.search).get("q") || "");
     const endpoint = isHistory ?
       "/live?view=history&" + new URLSearchParams(window.location.search).toString() :
       "/live?view=policy&q=" + encodeURIComponent(query.slice(0, 100));

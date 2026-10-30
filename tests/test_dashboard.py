@@ -125,6 +125,104 @@ class DashboardTests(unittest.TestCase):
                      if r["domain"] == domain)
         self.assertEqual(final["status"], "allowed")
 
+    def test_filtered_review_survives_single_bulk_once_and_errors(self):
+        for domain in ("one.example.net", "other.example.net",
+                       "bulk.example.net", "once.example.net"):
+            policy.request(domain, "https://" + domain + "/private/path?secret=hidden")
+        base = f"http://127.0.0.1:{self.server_port}"
+        def submit(path, fields):
+            request = Request(base + path,
+                              data=urlencode({"csrf": admin_ui.CSRF, **fields}).encode(),
+                              method="POST")
+            try:
+                with urlopen(request, timeout=3) as response:
+                    return response.status, response.read().decode("utf-8")
+            except HTTPError as exc:
+                return exc.code, exc.read().decode("utf-8")
+
+        with urlopen(base + "/?q=one.example.net", timeout=3) as response:
+            filtered = response.read().decode("utf-8")
+        self.assertIn('name="review_query" value="one.example.net"', filtered)
+        self.assertIn('data-review-query="one.example.net"', filtered)
+        self.assertIn('href="/?q=one.example.net">Refresh</a>', filtered)
+        self.assertIn('name="q" value="one.example.net"', filtered)
+        self.assertNotIn('aria-label="Select other.example.net"', filtered)
+        first = next(x for x in policy.entries(status="pending")
+                     if x["domain"] == "one.example.net")
+        fields = {"domain": first["domain"], "request_id": first["request_id"],
+                  "action": "allow", "scope": "exact", "expires_minutes": "60",
+                  "review_query": "one.example.net"}
+        code, page = submit("/domain", fields)
+        self.assertEqual(code, 200)
+        self.assertIn('name="q" value="one.example.net"', page)
+        self.assertIn('data-review-query="one.example.net"', page)
+        self.assertIn('one.example.net', page)
+        self.assertNotIn('aria-label="Select other.example.net"', page)
+        self.assertEqual(next(x["status"] for x in policy.entries()
+                              if x["domain"] == "one.example.net"), "allowed")
+
+        code, page = submit("/domain", fields)
+        self.assertEqual(code, 400, "stale request still fails closed")
+        self.assertIn('name="q" value="one.example.net"', page)
+
+        once = next(x for x in policy.entries(status="pending")
+                    if x["domain"] == "once.example.net")
+        code, page = submit("/once", {
+            "domain": once["domain"], "request_id": once["request_id"],
+            "action": "stage", "scope": "exact", "expires_minutes": "60",
+            "review_query": "once.example.net"})
+        self.assertEqual(code, 200)
+        self.assertIn('name="q" value="once.example.net"', page)
+        self.assertIn('name="review_query" value="once.example.net"', page)
+        self.assertNotIn('aria-label="Select other.example.net"', page)
+        # The grant-revocation form must also retain the active filter.
+        self.assertIn('name="action" value="revoke"', page)
+        code, page = submit("/once", {
+            "domain": once["domain"], "action": "revoke",
+            "review_query": "once.example.net"})
+        self.assertEqual(code, 200)
+        self.assertIn('name="q" value="once.example.net"', page)
+
+        bulk = next(x for x in policy.entries(status="pending")
+                    if x["domain"] == "bulk.example.net")
+        code, page = submit("/bulk", {
+            "selected": bulk["domain"] + "|" + bulk["request_id"],
+            "action": "deny", "scope": "exact", "expires_minutes": "60",
+            "review_query": "bulk.example.net"})
+        self.assertEqual(code, 200)
+        self.assertIn('name="q" value="bulk.example.net"', page)
+        self.assertEqual(next(x["status"] for x in policy.entries()
+                              if x["domain"] == "bulk.example.net"), "denied")
+
+    def test_review_filter_is_presentation_only_and_escaped(self):
+        policy.request("safe.example.net", "https://safe.example.net/")
+        code, page = (None, None)
+        base = f"http://127.0.0.1:{self.server_port}/domain"
+        for injected, expected in (
+            ('<img src=x onerror=alert(1)>', '&lt;img src=x onerror=alert(1)&gt;'),
+            ('x' * 101, None),
+            ('bad' + chr(10) + 'filter', None),
+            ('bad' + chr(0x202e) + 'filter', None),
+        ):
+            with self.subTest(injected=injected):
+                data = urlencode({
+                    "domain": "safe.example.net", "action": "invalid",
+                    "csrf": admin_ui.CSRF, "review_query": injected,
+                }).encode()
+                try:
+                    with urlopen(Request(base, data=data, method="POST"), timeout=3) as response:
+                        code, page = response.status, response.read().decode()
+                except HTTPError as exc:
+                    code, page = exc.code, exc.read().decode()
+                self.assertEqual(code, 400)
+                if expected:
+                    self.assertIn('name="q" value="' + expected + '"', page)
+                    self.assertNotIn(injected, page)
+                else:
+                    self.assertIn('name="q" value=""', page)
+                self.assertEqual(next(x["status"] for x in policy.entries()
+                                      if x["domain"] == "safe.example.net"), "pending")
+
     def test_reject_csrf(self):
         self.assertEqual(self.post(csrf='bad'),403)
 
