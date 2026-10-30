@@ -334,31 +334,39 @@ def web_search_capabilities() -> dict:
     seen = set()
     enabled = []
     omitted_unselectable = 0
+    omitted_unselectable_categories = 0
     categories = set()
     for row in rows:
         if not isinstance(row, dict):
             return failure
         name = row.get("name")
         group = row.get("categories")
-        if (not isinstance(name, str)
-                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}", name)
+        # SearXNG /config contains valid upstream names which this MCP
+        # deliberately cannot accept as explicit selectors (e.g. "naver (KO)").
+        # Reject malformed/control-bearing records, but do not let benign
+        # unselectable names — even on disabled engines — hide Yahoo et al.
+        if (not isinstance(name, str) or not 1 <= len(name) <= 80
+                or not name.isprintable() or name != name.strip()
                 or name.casefold() in seen
                 or type(row.get("enabled")) is not bool
                 or not isinstance(group, list) or not 1 <= len(group) <= 16
-                or any(not isinstance(cat, str) or not re.fullmatch(
-                    r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}", cat)
-                    for cat in group)):
+                or any(not isinstance(cat, str) or not 1 <= len(cat) <= 40
+                       or not cat.isprintable() or cat != cat.strip()
+                       for cat in group)):
             return failure
         seen.add(name.casefold())
         if row["enabled"]:
-            # SearXNG allows 80-character names, but web_search's explicit
-            # engine selector intentionally caps names at 40. Valid longer
-            # names must not hide other selectable providers, nor be offered
-            # to clients as a selector that web_search cannot accept.
-            if len(name) > 40:
+            # Report only names web_search(engines=...) can actually select.
+            # Printable upstream punctuation is not an engine-selection
+            # permission and must never broaden the search-argument grammar.
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}", name) is None:
                 omitted_unselectable += 1
                 continue
-            groups = sorted(set(group))
+            groups = sorted({
+                cat for cat in group if re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}", cat)
+            })
+            omitted_unselectable_categories += len(set(group)) - len(groups)
             enabled.append({"name": name, "categories": groups})
             categories.update(groups)
     enabled.sort(key=lambda item: item["name"].casefold())
@@ -367,6 +375,7 @@ def web_search_capabilities() -> dict:
         "enabled_engines": enabled, "categories": sorted(categories),
         "enabled_engine_count": len(enabled),
         "omitted_unselectable_engine_count": omitted_unselectable,
+        "omitted_unselectable_category_count": omitted_unselectable_categories,
         "scope": "enabled engines selectable by web_search in bounded local /config",
     }
 
