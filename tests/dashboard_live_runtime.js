@@ -37,10 +37,13 @@ Notification.permission = "granted";
 Notification.requestPermission = async () => "granted";
 
 function createTab(initialDomains, view = "policy", query = "", activeFilter,
-                   activePage, activeSort) {
+                   activePage, activeSort, activeHistoryPage) {
   const state = { domains: [...initialDomains], timers: [], handlers: {},
                   nextSnapshotUs: null, nextSnapshotRun: null, pendingOverride: null,
                   historyRows: "history: before", historyBars: "bars: before",
+                  historyPages: "history pages: before",
+                  historyPage: activeHistoryPage === undefined ? 1 :
+                               Number(activeHistoryPage),
                   activityRows: "activity: before", serviceRows: "services: before",
                   pendingPages: "pending pagination: original",
                   pendingPage: activePage === undefined ? 1 : Number(activePage),
@@ -84,7 +87,9 @@ function createTab(initialDomains, view = "policy", query = "", activeFilter,
       liveView: view,
       ...(activeFilter === undefined ? {} : { reviewQuery: activeFilter }),
       ...(activePage === undefined ? {} : { reviewPage: activePage }),
-      ...(activeSort === undefined ? {} : { reviewSort: activeSort })
+      ...(activeSort === undefined ? {} : { reviewSort: activeSort }),
+      ...(activeHistoryPage === undefined ? {} :
+        { historyPage: activeHistoryPage })
     } },
     activeElement: null,
     getElementById: element
@@ -118,6 +123,8 @@ function createTab(initialDomains, view = "policy", query = "", activeFilter,
         decided_html: "decided: " + domains.join(","),
         history_html: state.historyRows,
         history_summary_html: state.historyBars,
+        history_pages_html: state.historyPages,
+        history_page: state.historyPage,
         activity_html: state.activityRows,
         service_rows_html: state.serviceRows,
         pending_pages_html: state.pendingPages,
@@ -507,6 +514,33 @@ async function main() {
   assert.equal(historyTab.element("live-history").innerHTML, "history: updated");
   assert.equal(historyTab.element("live-history-summary").innerHTML, "bars: updated");
   historyTab.close();
+
+  // History pagination keeps opt-in query visibility and filters unchanged.
+  // If retention removes the final page, use the server-clamped page next poll.
+  const olderHistory = createTab([], "history",
+    "?kind=fetch&hours=24&domain=example.org&page=3&show_queries=1",
+    undefined, undefined, undefined, "3");
+  await settle();
+  assert.equal(olderHistory.state.lastEndpoint,
+    "/live?view=history&kind=fetch&hours=24&domain=example.org&page=3&show_queries=1");
+  olderHistory.state.historyPages = "history pages: now changed";
+  await poll(olderHistory, 551000);
+  assert.equal(olderHistory.element("live-history-pages").innerHTML,
+               "history pages: now changed");
+  assert.equal(olderHistory.element("live-history-pages-bottom").innerHTML,
+               "history pages: now changed");
+  olderHistory.state.historyPage = 2;
+  await poll(olderHistory, 552000);
+  assert.equal(olderHistory.document.documentElement.dataset.historyPage, "2");
+  await poll(olderHistory, 553000);
+  assert.equal(olderHistory.state.lastEndpoint,
+    "/live?view=history&kind=fetch&hours=24&domain=example.org&page=2&show_queries=1");
+  olderHistory.state.historyPage = 1;
+  await poll(olderHistory, 554000);
+  await poll(olderHistory, 555000);
+  assert.equal(olderHistory.state.lastEndpoint,
+    "/live?view=history&kind=fetch&hours=24&domain=example.org&show_queries=1");
+  olderHistory.close();
 
   console.log("dashboard live browser state tests passed");
 }
