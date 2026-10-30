@@ -109,6 +109,35 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual({r["domain"] for r in policy.entries(status="decided")},
                          {"example.com"})
 
+    def test_final_page_clamps_after_last_pending_decision(self):
+        with policy._db() as db:
+            now = policy.utcnow()
+            db.executemany("""INSERT INTO domains
+                (domain,status,created_at,updated_at,request_id)
+                VALUES (?,'pending',?,?,?)""", [
+                (f"p{i:03d}.queue-example.org", now, now, f"{i:024x}")
+                for i in range(201)
+            ])
+            db.commit()
+        lone = policy.entries(limit=200, status="pending", offset=200)[0]
+        endpoint = f"http://127.0.0.1:{self.server_port}/domain"
+        request = Request(endpoint, data=urlencode({
+            "csrf": admin_ui.CSRF, "domain": lone["domain"],
+            "request_id": lone["request_id"], "action": "allow",
+            "scope": "exact", "expires_minutes": "60",
+            "review_page": "2"}).encode(), method="POST")
+        with urlopen(request, timeout=4) as result:
+            self.assertEqual(result.status, 200)
+            page = result.read().decode()
+        self.assertIn('data-review-page="1"', page)
+        self.assertIn('page 1 of 1', page)
+        self.assertIn('aria-label="Select p000.queue-example.org"', page)
+        self.assertNotIn('name="review_page" value="2"', page)
+        snapshot = admin_ui.live_snapshot(pending_page=2)
+        self.assertEqual(snapshot["pending_page"], 1)
+        self.assertIn('page 1 of 1', snapshot["pending_pages_html"])
+        self.assertEqual(policy.pending_match_count(), 200)
+
     def test_review_page_survives_post_and_live_poll(self):
         with policy._db() as db:
             now = policy.utcnow()
