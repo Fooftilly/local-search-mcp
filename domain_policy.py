@@ -330,7 +330,11 @@ def entries(search: str = "", limit: int = 1000, status: str | None = None,
         pending_orders = {
             "recent": "updated_at DESC, domain ASC",
             "oldest": "created_at ASC, domain ASC",
-            "frequent": "request_count DESC, updated_at DESC, domain ASC",
+            # request() changes last_requested_at, not updated_at. Legacy
+            # rows with no request timestamp sort by their row update time.
+            "frequent": ("request_count DESC, "
+                         "COALESCE(NULLIF(last_requested_at,''), updated_at) "
+                         "DESC, domain ASC"),
         }
         order = (pending_orders[pending_sort] if status == "pending" else
                  "CASE status WHEN 'pending' THEN 0 "
