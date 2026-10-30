@@ -163,7 +163,7 @@ def _pending_sort(value):
 
 
 def pending_sort_options(selected):
-    labels = (("recent", "Newest activity"), ("oldest", "Oldest waiting"),
+    labels = (("recent", "Recently updated"), ("oldest", "Oldest waiting"),
               ("frequent", "Most requests"))
     return ''.join('<option value="' + mode + '"' +
                    (' selected' if mode == selected else '') + '>' +
@@ -883,7 +883,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._respond(200, LIVE_SCRIPT, 'text/javascript; charset=utf-8')
         if path.path=='/live':
             if not self._read_origin_valid():return self._respond(403,'Forbidden')
-            query=parse_qs(path.query)
+            query=parse_qs(path.query, keep_blank_values=True)
             view=query.get('view',['policy'])[0]
             if view not in ('policy','history'):return self._respond(400,'Invalid view')
             q=query.get('q',[''])[0][:100]
@@ -963,7 +963,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._respond(200, document, 'application/json; charset=utf-8',
                                  download_name='domain-rules-v1.json')
         if path.path=='/history':
-            query=parse_qs(path.query)
+            query=parse_qs(path.query, keep_blank_values=True)
             try:
                 filters = _history_filters(query)
             except ValueError:
