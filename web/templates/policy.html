@@ -1,4 +1,4 @@
-<!doctype html><html lang="en" data-live-view="policy" data-review-query="${query_escaped}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Operator workspace</title><link rel="stylesheet" href="/dashboard.css"><script defer src="/dashboard-live.js"></script></head><body>
+<!doctype html><html lang="en" data-live-view="policy" data-review-query="${query_escaped}" data-review-page="${pending_page}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Operator workspace</title><link rel="stylesheet" href="/dashboard.css"><script defer src="/dashboard-live.js"></script></head><body>
 <header><div class="brand">LOCAL SEARCH MCP</div><nav aria-label="Operator workspace"><a href="#review">Review</a><a href="#decisions">Rules</a><a href="#activity">Activity</a><a href="#configuration">Tools &amp; settings</a><a href="/status">Diagnostics</a></nav></header>
 <main><h1 id="review">Operator workspace</h1><p>Review new requests, inspect recent local activity, and manage domain rules from one screen. Only this loopback dashboard can approve domains; the MCP tools cannot grant permissions.</p>${alert}
 <section class="stats" aria-label="Domain decision totals"><div class="stat"><span>Awaiting review</span><b id="live-count-pending">${pending_count}</b></div><div class="stat"><span>Allowed</span><b id="live-count-allowed">${allowed_count}</b></div><div class="stat"><span>Denied</span><b id="live-count-denied">${denied_count}</b></div></section>
@@ -11,7 +11,7 @@
 <section aria-label="Pending approval queue">
 <div class="row" style="justify-content:space-between"><h2>Pending requests</h2><div><form method="get" action="/"><input name="q" value="${query_escaped}" placeholder="Filter domains" aria-label="Filter pending and saved domains"><button type="submit">Filter</button></form> <button type="button" id="notification-toggle">Enable desktop notifications</button> <a href="${refresh_href}">Refresh</a></div></div>
 <p class="subtle" role="status" id="live-status">Live updates starting · manual refresh works without JavaScript.</p>
-<p class="subtle">Showing at most 200 pending entries (use the filter under Rules to narrow by host). Agent-created queue entries are limited to ${max_pending_total} total, ${max_pending_global_hour} globally per hour, ${max_pending_per_site} per registrable domain and ${max_pending_site_hour} new hosts per site per hour. Manual allow/deny remains available even when the queue is full. Existing entries are never silently removed.</p>
+<p class="subtle">Showing 200 pending requests per page. Use Next 200 and Previous 200 to review the entire queue, or filter by host. Agent-created queue entries are limited to ${max_pending_total} total, ${max_pending_global_hour} globally per hour, ${max_pending_per_site} per registrable domain and ${max_pending_site_hour} new hosts per site per hour. Manual allow/deny remains available even when the queue is full. Existing entries are never silently removed.</p>
 <div class="panel compact-bulk"><h3>Batch decisions</h3>
 <p>Select up to ${max_bulk_decisions} pending rows below. Shortcuts never approve domains.</p>
 <div id="bulk-selection-tools" class="bulk-selection-tools" data-max="${max_bulk_decisions}" hidden>
@@ -21,7 +21,7 @@
 </div>
 <p> Decisions are atomic: any stale request invalidates the whole selection. Explicit child exceptions are preserved; scope and duration apply to every selection.</p>
 <form id="bulk-form" method="post" action="/bulk">
-<input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="review_query" value="${query_escaped}">
+<input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="review_query" value="${query_escaped}"><input type="hidden" name="review_page" value="${pending_page}">
 <label>Scope <select name="scope" required><option value="exact" selected>Exact host only</option><option value="subdomains">Host + subdomains</option></select></label>
 <label>Duration <select name="expires_minutes" required><option value="60" selected>1 hour</option><option value="0">Permanent</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label>
 <label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label>
@@ -29,7 +29,9 @@
 <button name="action" value="deny" class="deny">Deny selected</button>
 </form></div>
 
+<div id="live-pending-pages">${pending_pages_html}</div>
 ${table_head}<tbody id="live-pending">${pending_rows}</tbody></table></div>
+<div id="live-pending-pages-bottom">${pending_pages_html}</div>
 
 </section>
 <section id="decisions" aria-label="Saved domain rules">
@@ -48,12 +50,12 @@ ${audit_html}
 </details>
 </section>
 <section id="configuration" aria-label="Policy tools and settings"><h2>Policy tools &amp; settings</h2><p class="subtle">Advanced actions stay available without cluttering the review queue.</p>
-<details class="panel"><summary>Add a domain manually</summary><div class="panel-body"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="review_query" value="${query_escaped}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><label>Scope <select name="scope"><option value="subdomains">Host + subdomains</option><option value="exact">Exact host only</option></select></label><label>Duration <select name="expires_minutes" required><option value="" selected disabled>Choose duration</option><option value="0">Permanent</option><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label><label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Select exact host to exclude subdomains, and optionally set a 1-hour, 24-hour or 7-day expiry. Older rules remain permanent with subdomains. Never approve private-network addresses.</p></div>
+<details class="panel"><summary>Add a domain manually</summary><div class="panel-body"><h2 style="margin-top:0">Add domain</h2><form method="post" action="/domain"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="review_query" value="${query_escaped}"><input type="hidden" name="review_page" value="${pending_page}"><input name="domain" class="wide" placeholder="example.org" required maxlength="253" aria-label="New domain"><label>Scope <select name="scope"><option value="subdomains">Host + subdomains</option><option value="exact">Exact host only</option></select></label><label>Duration <select name="expires_minutes" required><option value="" selected disabled>Choose duration</option><option value="0">Permanent</option><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label><label>Reason (optional) <input name="reason" maxlength="160" placeholder="Short local note"></label><button name="action" value="allow" class="allow">Add allowed</button><button name="action" value="deny" class="deny">Add denied</button></form><p class="subtle">Domains only (no URLs or IPs). Select exact host to exclude subdomains, and optionally set a 1-hour, 24-hour or 7-day expiry. Older rules remain permanent with subdomains. Never approve private-network addresses.</p></div>
 </details>
 <details class="panel"><summary>Single-use grants &amp; activity</summary><div class="panel-body"><h2>Single-use domain permission</h2>
 <p>Allow exactly one standalone fetch after public DNS validation. Does not grant permanent access, cannot be consumed by a batch fetch, and a long-document continuation is part of the same authorization. Denied domains cannot be granted.</p>
 <form method="post" action="/once">
-<input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="review_query" value="${query_escaped}">
+<input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="review_query" value="${query_escaped}"><input type="hidden" name="review_page" value="${pending_page}">
 <input name="domain" class="wide" placeholder="example.org" maxlength="253" required aria-label="One-use domain">
 <label>Scope <select name="scope"><option value="exact">Exact host</option><option value="subdomains">Host + subdomains</option></select></label>
 <label>Valid for <select name="expires_minutes"><option value="60">1 hour</option><option value="1440">24 hours</option><option value="10080">7 days</option></select></label>
@@ -66,7 +68,7 @@ ${once_log}</details></div>
 </details>
 <details class="panel"><summary>Clear the entire pending queue</summary><div class="panel-body"><h2 style="margin-top:0">Clear pending requests</h2>
 <p>Removes <strong>all pending requests</strong>, including rows not currently shown or matching the filter. Existing allow/deny rules and the rolling-hour admission limits are not affected. Agents may need to retry after the rate limit expires.</p>
-<form method="post" action="/pending/clear"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="review_query" value="${query_escaped}"><label for="clear-confirm">Type CLEAR to confirm</label><input id="clear-confirm" name="confirm" placeholder="CLEAR" pattern="CLEAR" maxlength="5" required><button type="submit" class="delete">Clear all pending</button></form>
+<form method="post" action="/pending/clear"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="review_query" value="${query_escaped}"><input type="hidden" name="review_page" value="${pending_page}"><label for="clear-confirm">Type CLEAR to confirm</label><input id="clear-confirm" name="confirm" placeholder="CLEAR" pattern="CLEAR" maxlength="5" required><button type="submit" class="delete">Clear all pending</button></form>
 </div>
 </details>
 <details class="panel"><summary>Import or export domain rules</summary><div class="panel-body"><h2 style="margin-top:0">Portable domain rules (issue #13)</h2>
