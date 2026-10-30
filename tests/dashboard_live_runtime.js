@@ -36,11 +36,13 @@ function Notification(name, options) {
 Notification.permission = "granted";
 Notification.requestPermission = async () => "granted";
 
-function createTab(initialDomains, view = "policy", query = "", activeFilter) {
+function createTab(initialDomains, view = "policy", query = "", activeFilter,
+                   activePage) {
   const state = { domains: [...initialDomains], timers: [], handlers: {},
                   nextSnapshotUs: null, nextSnapshotRun: null, pendingOverride: null,
                   historyRows: "history: before", historyBars: "bars: before",
                   activityRows: "activity: before", serviceRows: "services: before",
+                  pendingPages: "pending pagination: original",
                   operationsRows: "operations: before", summaryRows: "summary: before",
                   skipOverview: false,
                   bulkBoxes: [], nextBulkBoxes: null, lastEndpoint: null };
@@ -79,7 +81,8 @@ function createTab(initialDomains, view = "policy", query = "", activeFilter) {
   const document = {
     documentElement: { dataset: {
       liveView: view,
-      ...(activeFilter === undefined ? {} : { reviewQuery: activeFilter })
+      ...(activeFilter === undefined ? {} : { reviewQuery: activeFilter }),
+      ...(activePage === undefined ? {} : { reviewPage: activePage })
     } },
     activeElement: null,
     getElementById: element
@@ -115,6 +118,7 @@ function createTab(initialDomains, view = "policy", query = "", activeFilter) {
         history_summary_html: state.historyBars,
         activity_html: state.activityRows,
         service_rows_html: state.serviceRows,
+        pending_pages_html: state.pendingPages,
         ...(endpoint.includes("&overview=1") && !state.skipOverview ? {
           operations_html: state.operationsRows,
           activity_summary_html: state.summaryRows
@@ -406,6 +410,24 @@ async function main() {
   assert.equal(postResult.state.lastEndpoint,
                "/live?view=policy&q=related.example.net");
   postResult.close();
+
+  // Page 3 of the review queue must be retained after filtered POSTs,
+  // and its navigation controls must update with the live queue.
+  const pageThree = createTab([], "policy", "", "example.net", "3");
+  await settle();
+  assert.equal(pageThree.state.lastEndpoint,
+               "/live?view=policy&q=example.net&page=3");
+  assert.equal(pageThree.element("live-pending-pages").innerHTML,
+               "pending pagination: original");
+  pageThree.state.pendingPages = "pending pagination: after decision";
+  await poll(pageThree, 426000);
+  assert.equal(pageThree.state.lastEndpoint,
+               "/live?view=policy&q=example.net&page=3");
+  assert.equal(pageThree.element("live-pending-pages").innerHTML,
+               "pending pagination: after decision");
+  assert.equal(pageThree.element("live-pending-pages-bottom").innerHTML,
+               "pending pagination: after decision");
+  pageThree.close();
 
   // Simulate an unclean browser exit: a tab never receives pagehide and
   // leaves an orphaned presence key behind. Explicitly disabling from a
