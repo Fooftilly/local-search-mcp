@@ -43,6 +43,7 @@ function createTab(initialDomains, view = "policy", query = "", activeFilter,
                   historyRows: "history: before", historyBars: "bars: before",
                   activityRows: "activity: before", serviceRows: "services: before",
                   pendingPages: "pending pagination: original",
+                  pendingPage: activePage === undefined ? 1 : Number(activePage),
                   operationsRows: "operations: before", summaryRows: "summary: before",
                   skipOverview: false,
                   bulkBoxes: [], nextBulkBoxes: null, lastEndpoint: null };
@@ -119,6 +120,7 @@ function createTab(initialDomains, view = "policy", query = "", activeFilter,
         activity_html: state.activityRows,
         service_rows_html: state.serviceRows,
         pending_pages_html: state.pendingPages,
+        pending_page: state.pendingPage,
         ...(endpoint.includes("&overview=1") && !state.skipOverview ? {
           operations_html: state.operationsRows,
           activity_summary_html: state.summaryRows
@@ -427,6 +429,13 @@ async function main() {
                "pending pagination: after decision");
   assert.equal(pageThree.element("live-pending-pages-bottom").innerHTML,
                "pending pagination: after decision");
+  pageThree.state.pendingPage = 2;
+  await poll(pageThree, 427000);
+  assert.equal(pageThree.document.documentElement.dataset.reviewPage, "2",
+               "server-clamped final page becomes the active page");
+  await poll(pageThree, 428000);
+  assert.equal(pageThree.state.lastEndpoint,
+               "/live?view=policy&q=example.net&page=2");
   pageThree.close();
 
   // Simulate an unclean browser exit: a tab never receives pagehide and
