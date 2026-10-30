@@ -236,6 +236,7 @@ def row_html(r):
         f'<form class="quick-decision" method="post" action="/domain">'
         f'<input type="hidden" name="csrf" value="{token}">'
         f'<input type="hidden" name="domain" value="{dom}">'
+        f'<input type="hidden" name="request_id" value="{esc(r.get("request_id") or "")}">'
         '<label class="small">Scope <select name="scope" aria-label="Rule scope">'
         '<option value="exact" selected>Exact host</option>'
         '<option value="subdomains">Host + subdomains</option></select></label>'
@@ -1025,7 +1026,8 @@ class Handler(BaseHTTPRequestHandler):
             policy.decide(val('domain'), action, val('new_domain'),
                           scope=val('scope') or 'subdomains',
                           expires_minutes=int(duration) if action in ('allow', 'deny') else 0,
-                          reason=val('reason'))
+                          reason=val('reason'),
+                          expected_request_id=val('request_id') or None)
             msg=f"Decision updated for {val('domain')[:253]}"
             return self._respond(200,render(message=msg))
         except (ValueError,sqlite3.IntegrityError) as exc:
