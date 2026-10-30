@@ -131,6 +131,68 @@ class EngineChooserTests(unittest.TestCase):
         conn.request.assert_called_once_with("GET", "/config")
         conn.close.assert_called_once()
 
+    def test_parenthesized_engine_names_remain_visible_and_managed(self):
+        # Parenthesized labels are valid SearXNG configuration names but were
+        # previously discarded before the wizard's Google-exclusion choice.
+        rows = [
+            {"name": "yahoo", "categories": ["general"], "enabled": True},
+            {"name": "naver (KO)", "categories": ["general"], "enabled": False},
+            {"name": "google (images)", "categories": ["images"], "enabled": True},
+        ]
+        connection = Mock()
+        connection.getresponse.return_value = Mock(
+            status=200, read=Mock(return_value=json.dumps({"engines": rows}).encode()))
+        with patch.object(e, "HTTPConnection", return_value=connection):
+            inventory = e.live_engines()
+        self.assertEqual({x["name"] for x in inventory},
+                         {"yahoo", "naver (KO)", "google (images)"})
+        self.assertEqual(inventory[0]["name"], "yahoo")
+
+        # Even when choice 3 targets a different category from the selected
+        # default search, Google is included in the exact managed set.
+        target = Target("searxng", "a" * 64, True, "no")
+        captured = []
+        with (patch.object(e.on_demand_docker, "_safe_target", return_value=target),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e, "live_engines", return_value=inventory),
+              patch.object(e, "apply", side_effect=lambda selected, controlled:
+                           captured.append((selected, controlled)) or "applied"),
+              patch.object(e.os, "geteuid", return_value=1000),
+              patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
+              patch("builtins.input", side_effect=["3", "APPLY"]),
+              contextlib.redirect_stdout(io.StringIO())):
+            self.assertEqual(e.main(), 0)
+        self.assertEqual(captured, [((), ("google (images)",))])
+        managed = e.render(self.original, *captured[0])
+        self.assertIn('  - name: "google (images)"\\n    disabled: true', managed)
+        updated = e.render(managed, ("yahoo",), ("yahoo", "naver (KO)"))
+        self.assertIn('  - name: "naver (KO)"\\n    disabled: true', updated)
+        self.assertIn('  - name: "google (images)"\\n    disabled: true', updated)
+        self.assertEqual(e.render(updated, ("yahoo",), ("yahoo",)), updated)
+
+    def test_unsafe_google_named_engine_fails_closed_not_silently_skipped(self):
+        # Skipping an unrepresentable Google-named row would make option 3
+        # falsely report an exhaustive exclusion across all categories.
+        for bad in (
+            {"name": "google [images]", "enabled": True, "categories": ["images"]},
+            {"name": "google\\\\images", "enabled": True, "categories": ["images"]},
+            {"name": "google images", "enabled": True, "categories": ["images:unsafe"]},
+            {"name": "google images", "enabled": True, "categories": []},
+        ):
+            with self.subTest(bad=bad):
+                reply = Mock(status=200)
+                reply.read.return_value = json.dumps({"engines": [
+                    {"name": "yahoo", "categories": ["general"], "enabled": True},
+                    bad,
+                ]}).encode()
+                connection = Mock()
+                connection.getresponse.return_value = reply
+                with patch.object(e, "HTTPConnection", return_value=connection):
+                    with self.assertRaisesRegex(
+                            e.EngineSetupError, "Cannot safely identify every Google engine"):
+                        e.live_engines()
+                self.assertEqual(self.file.read_text(), self.original)
+
     def test_managed_general_selection_survives_image_google_exclusion(self):
         initial = e.render(self.original, ("yahoo",), ("yahoo", "brave"))
         next_text = e.render(initial, (), ("google cse images", "google images"))
