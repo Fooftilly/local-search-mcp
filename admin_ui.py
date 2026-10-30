@@ -958,14 +958,21 @@ class Handler(BaseHTTPRequestHandler):
             view=query.get('view',['policy'])[0]
             if view not in ('policy','history'):return self._respond(400,'Invalid view')
             q=query.get('q',[''])[0][:100]
-            try:
-                page = _pending_page(query.get('page', ['1'])[0])
-                sort_values = query.get('sort', ['recent'])
-                if len(sort_values) != 1:
-                    raise ValueError("Duplicate pending sort")
-                pending_sort = _pending_sort(sort_values[0])
-            except ValueError:
-                return self._respond(400, 'Invalid pending review page or sort')
+            # History uses its own 1–4000 page bound. Applying the policy
+            # queue's 1–20 limit here would break live updates on older pages.
+            page, pending_sort = 1, 'recent'
+            if view == 'policy':
+                try:
+                    page_values = query.get('page', ['1'])
+                    if len(page_values) != 1:
+                        raise ValueError("Duplicate pending page")
+                    page = _pending_page(page_values[0])
+                    sort_values = query.get('sort', ['recent'])
+                    if len(sort_values) != 1:
+                        raise ValueError("Duplicate pending sort")
+                    pending_sort = _pending_sort(sort_values[0])
+                except ValueError:
+                    return self._respond(400, 'Invalid pending review page or sort')
             overview_flag = query.get('overview', ['0'])
             if (len(overview_flag) != 1
                     or overview_flag[0] not in ('0', '1')
