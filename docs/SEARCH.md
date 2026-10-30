@@ -186,11 +186,17 @@ This lightweight **read-only** MCP tool sends one bounded GET to the
 configured local SearXNG `/config` endpoint and returns only:
 `enabled_engines` (names with their reported category lists),
 `categories`, `enabled_engine_count` and
-`omitted_unselectable_engine_count`. Disabled engines (including
+`omitted_unselectable_engine_count` and
+`omitted_unselectable_category_count`. Disabled engines (including
 operator-excluded Google entries) are omitted. SearXNG may support engine
-names longer than `web_search(engines=...)` accepts; those valid but
-unselectable enabled names are counted as omitted, not advertised as usable
-or allowed to hide shorter selectable providers. The output is a validated
+names longer than `web_search(engines=...)` accepts, and real
+upstream names may also include punctuation (such as `naver (KO)`).
+Those valid but unselectable enabled names are counted as omitted, not
+advertised as usable or allowed to hide shorter selectable providers.
+Likewise, printable upstream category labels outside the explicit
+`web_search(categories=...)` grammar are not advertised as selectable;
+`omitted_unselectable_category_count` reports that omission. Malformed
+inventory records still fail closed. The output is a validated
 snapshot of **enabled** providers, not a ranking, guarantee of availability,
 proof of default category routing, or proof that an engine supports every
 filter. Provider settings and any secret fields in `/config` are never
