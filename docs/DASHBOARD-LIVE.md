@@ -1,5 +1,24 @@
 # Live dashboard updates and optional desktop notifications
 
+**Retained-history pagination:** The `/history` page shows 25 indexed events at
+a time, with Previous / Next links at both ends of the table. This replaces
+the previous first-25-only view without increasing the size of any live
+response, reading a new backend, or copying sensitive JSONL fields to SQLite.
+The page number is bounded to 1–4000 (the existing 100,000-row index cap);
+out-of-range page parameters fail with HTTP 400. Page links retain the exact
+kind, status, domain, time window, and **explicit opt-in** search-query/URL
+visibility setting. All link parameters are encoded and HTML-escaped. The
+normal view still displays domains only.
+
+The history count is derived from the existing matching aggregate rows,
+rather than running a separate scan on every live poll. When rotation or
+retention removes events from the final page, the server and live view move
+back to the last valid page. The original-JSONL proof of generation/inode,
+byte offset and fingerprints remains mandatory before revealing an older
+search term or sanitized fetch URL. Document handles and removed URL query
+strings are never revealed; history pagination does not modify policy rules,
+retention, or operator settings.
+
 **Pending triage order:** The dashboard's domain-filter form also offers
 **Recently updated** (unchanged row-update-time default),
 **Oldest waiting** (creation time, oldest first), and **Most requests**
