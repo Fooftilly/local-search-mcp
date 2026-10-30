@@ -169,6 +169,8 @@ class DashboardTemplateTests(unittest.TestCase):
             page = admin_ui.render()
         self.assertIn('id="live-activity"', page)
         self.assertIn('id="live-activity-summary"', page)
+        self.assertIn("refreshes about once a minute", page)
+        self.assertNotIn("page-load snapshot", page)
         self.assertIn('id="live-count-pending"', page)
         self.assertIn('id="bulk-form"', page)
         self.assertLess(page.index('id="bulk-form"'),
