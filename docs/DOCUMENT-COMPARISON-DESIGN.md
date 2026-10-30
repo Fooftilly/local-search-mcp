@@ -42,7 +42,7 @@ Run `python3 scripts/document_compare_benchmark.py` from the repo root. It synth
 3. **Reorder:** same fragments moved; detect structural differences without claiming publisher revision.
 4. **Repeated navigation:** many duplicate heading/menu lines, with a changed aligned suffix.
 5. **Shifted repetition:** identical menu lines with a unique anchor moved by 50 positions, testing ambiguous matching.
-6. **Interleaved repetition:** repeated menu lines alternating with 420 independently changed article lines, testing expensive alignment patterns.
+6. **Interleaved repetition:** repeated menu lines alternating with 300 unique stable anchors and localized changes on every seventh article line, forcing many distinct matched regions even with difflib autojunk enabled.
 7. **Unicode:** multibyte emoji, Montenegrin Latin/diacritic text; verify code-point vs byte distinction.
 8. **Full replacement:** all lines differ; ensure output remains bounded.
 
