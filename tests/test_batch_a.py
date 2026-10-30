@@ -81,6 +81,28 @@ class BatchAContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("grant deadline", audit)
         self.assertIn('"action":"section"', audit)
 
+    async def test_table_only_handle_cannot_be_read_as_markdown(self):
+        payload = {
+            "size_bytes": 128,
+            "entries": [{"table_index": 0, "headers": ["Private"],
+                         "rows": [["DO_NOT_RELEASE_AS_DOCUMENT"]],
+                         "caption": "", "summary": "", "source_rows_observed": 1,
+                         "retained_truncated": False, "columns_truncated": False,
+                         "cells_truncated": False}],
+            "source_tables_observed": 1, "retention_truncated": False,
+        }
+        with patch.object(document_pages, "_CACHE", OrderedDict()):
+            handle = document_pages.save_tables(
+                "https://example.com/table", payload,
+                source_url="https://example.com/table")
+            result, source, proof = document_pages.section_with_security_context(
+                handle, 0, 100)
+            self.assertFalse(result["success"])
+            self.assertEqual(result["status"], "expired_or_unknown")
+            self.assertIsNone(source)
+            self.assertIsNone(proof)
+            self.assertNotIn("DO_NOT_RELEASE_AS_DOCUMENT", str(result))
+
     async def test_compact_capability_filters_preserve_default_and_never_wake(self):
         config = {"engines": [
             {"name": "yahoo", "enabled": True, "categories": ["general", "web"]},
