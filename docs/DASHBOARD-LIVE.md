@@ -1,5 +1,17 @@
 # Live dashboard updates and optional desktop notifications
 
+**Pending triage order:** The dashboard's domain-filter form also offers
+**Newest activity** (unchanged default), **Oldest waiting** (creation time,
+oldest first), and **Most requests** (descending request count, then latest
+activity). Ordering affects only the visible pending queue, not persisted
+permissions, explicit rule order, saved history, or alert baselines. Every mode
+uses a deterministic hostname tie-breaker across pages. The chosen order is
+preserved through filtered page navigation, single/bulk/once POST feedback,
+manual Refresh, and live snapshots; changing the order uses the normal GET
+form and begins at page 1. Only three fixed sort modes are accepted and SQL
+ORDER BY clauses are server-owned constants, never user interpolations.
+Incoming requests may reorder a live queue; stale IDs still fail closed.
+
 **Pending review pagination:** The dashboard now displays 200 pending domains per
 page, with accessible Previous 200 / Next 200 links at both ends of the
 review table. The full 512-domain policy-limited queue can be reviewed without
