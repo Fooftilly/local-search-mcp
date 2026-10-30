@@ -420,6 +420,48 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(long_disabled, str(result.data))
         self.assertNotIn(long_enabled, str(result.data))
 
+    async def test_search_capabilities_tolerates_valid_unselectable_upstream_labels(self):
+        # SearXNG /config can include named engines with parentheses even
+        # when they are disabled. Those are valid upstream, not valid MCP
+        # engine selectors. An irrelevant disabled name must not hide Yahoo.
+        original = httpx.Client
+        config = {"engines": [
+            {"name": "seznam (CZ)", "enabled": False,
+             "categories": ["general"]},
+            {"name": "naver (KO)", "enabled": True,
+             "categories": ["general"]},
+            {"name": "yahoo", "enabled": True,
+             "categories": ["general", "q&a"]},
+            {"name": "duckduckgo images", "enabled": True,
+             "categories": ["images"]},
+        ]}
+        requests = []
+        def handler(request):
+            requests.append(str(request.url))
+            self.assertEqual(request.url.path, "/config")
+            return httpx.Response(200, json=config)
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler),
+                            trust_env=False)
+        with (patch.object(bridge.httpx, "Client", side_effect=factory),
+              patch.object(bridge.on_demand, "lease",
+                           side_effect=AssertionError("No silent wake"))):
+            async with Client(bridge.mcp) as client:
+                result = await client.call_tool("web_search_capabilities", {})
+        self.assertFalse(result.is_error)
+        data = result.data
+        self.assertEqual(data["status"], "available")
+        self.assertEqual([row["name"] for row in data["enabled_engines"]],
+                         ["duckduckgo images", "yahoo"])
+        self.assertEqual(data["categories"], ["general", "images"])
+        self.assertEqual(data["enabled_engine_count"], 2)
+        self.assertEqual(data["omitted_unselectable_engine_count"], 1)
+        self.assertEqual(data["omitted_unselectable_category_count"], 1)
+        self.assertNotIn("naver (KO)", str(data))
+        self.assertNotIn("seznam (CZ)", str(data))
+        self.assertNotIn("q&a", str(data))
+        self.assertEqual(len(requests), 1)
+
     async def test_search_capabilities_fail_closed_on_bad_or_absent_inventory(self):
         original = httpx.Client
         cases = [
@@ -433,6 +475,9 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
                 {"name": "yahoo", "categories": ["general"], "enabled": True},
                 {"name": "yahoo", "categories": ["images"], "enabled": True}]}),
             httpx.Response(200, content=b"x" * (bridge.MAX_SEARCH_CONFIG_BYTES + 1)),
+            httpx.Response(200, json={"engines": [
+                {"name": "yahoo", "categories": ["general\\nunsafe"],
+                 "enabled": True}]}),
             httpx.Response(200, json={"engines": []}),
         ]
         async with Client(bridge.mcp) as client:
