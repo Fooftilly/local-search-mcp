@@ -400,6 +400,52 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertNotIn("https://docs.example.org", str(cont))
         self.assertNotIn("document_id", str(cont))
 
+    def test_history_page_and_live_each_sync_index_only_once(self):
+        from history_log import append_history
+        from datetime import datetime, timezone
+        append_history({"time_utc": datetime.now(timezone.utc).isoformat(),
+                        "kind": "fetch", "status": "success",
+                        "url": "https://docs.example.org/private/SECRET?token=HIDDEN",
+                        "duration_ms": 5})
+        original = admin_ui.history_index.sync_history
+        with patch.object(admin_ui.history_index, "sync_history",
+                          wraps=original) as wrapped:
+            code, rendered, _ = self.exchange("GET", "/history?kind=fetch")
+            wrapped.assert_called_once_with()
+        self.assertEqual(code, 200)
+        self.assertIn(b"1 matching history events", rendered)
+        self.assertIn(b"docs.example.org", rendered)
+        self.assertNotIn(b"/private/SECRET", rendered)
+        with patch.object(admin_ui.history_index, "sync_history",
+                          wraps=original) as wrapped:
+            code, data, _ = self.exchange(
+                "GET", "/live?view=history&kind=fetch&show_queries=1")
+            wrapped.assert_called_once_with()
+        self.assertEqual(code, 200)
+        live = json.loads(data)
+        self.assertIn("https://docs.example.org/private/SECRET",
+                      live["history_html"])
+        self.assertNotIn("token=HIDDEN", repr(live))
+        self.assertEqual(live["history_page"], 1)
+        self.assertIn("1 matching history events", live["history_pages_html"])
+        with patch.object(admin_ui.history_index,
+                          "dashboard_history_snapshot",
+                          side_effect=OSError("unavailable")):
+            code, rendered, _ = self.exchange("GET", "/history?kind=fetch")
+            self.assertEqual(code, 200)
+            self.assertIn(b"Indexed history is unavailable", rendered)
+            self.assertIn(b"History pages unavailable", rendered)
+            self.assertNotIn(b"1 matching history events", rendered)
+            code, data, _ = self.exchange(
+                "GET", "/live?view=history&kind=fetch")
+            self.assertEqual(code, 200)
+            live = json.loads(data)
+            self.assertIn("Indexed history is unavailable",
+                          live["history_html"])
+            self.assertIn("History pages unavailable",
+                          live["history_pages_html"])
+            self.assertNotIn("1 matching history events", repr(live))
+
     def test_history_pagination_filters_visibility_and_rotation_safety(self):
         from history_log import append_history, history_path
         from datetime import datetime, timezone
