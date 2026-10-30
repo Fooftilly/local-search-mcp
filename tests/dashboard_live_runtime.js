@@ -41,16 +41,23 @@ function createTab(initialDomains, view = "policy", query = "") {
                   nextSnapshotUs: null, nextSnapshotRun: null, pendingOverride: null,
                   historyRows: "history: before", historyBars: "bars: before",
                   activityRows: "activity: before", serviceRows: "services: before",
-                  lastEndpoint: null };
+                  bulkBoxes: [], lastEndpoint: null };
   const targets = new Map();
   function element(id) {
     if (!targets.has(id)) {
       targets.set(id, {
         textContent: "", innerHTML: "server-rendered", disabled: false,
+        dataset: id === "bulk-selection-tools" ? { max: "25" } : {},
+        hidden: id === "bulk-selection-tools",
         focusChild: null, bulkSelected: false,
         contains(child) { return child !== null && this.focusChild === child; },
         querySelector(selector) {
-          return selector === 'input[name="selected"]:checked' && this.bulkSelected ? {} : null;
+          return selector === 'input[name="selected"]:checked' &&
+            (this.bulkSelected || state.bulkBoxes.some(box => box.checked)) ? {} : null;
+        },
+        querySelectorAll(selector) {
+          return selector === 'input[name="selected"][form="bulk-form"]' &&
+            id === "live-pending" ? state.bulkBoxes : [];
         },
         addEventListener(kind, fn) { this["on" + kind] = fn; }
       });
@@ -134,6 +141,37 @@ async function main() {
   assert.equal(notifications.length, 0, "existing backlog must not alert");
   assert.equal(tab.element("live-activity").innerHTML, "activity: before");
   assert.equal(tab.element("live-services").innerHTML, "services: before");
+  // The optional selection helpers must not submit or authorize anything.
+  // They preserve the existing server-validated bulk form and its 25 cap.
+  const select = tab.element("bulk-select-visible");
+  const clear = tab.element("bulk-clear-selection");
+  const tools = tab.element("bulk-selection-tools");
+  const summary = tab.element("bulk-selection-count");
+  const pending = tab.element("live-pending");
+  assert.equal(tools.hidden, false, "JS progressively enables selection tools");
+  tab.state.bulkBoxes = Array.from({ length: 28 }, () =>
+    ({ checked: false, disabled: false }));
+  select.onclick();
+  assert.equal(tab.state.bulkBoxes.filter(x => x.checked).length, 25);
+  assert.equal(tab.state.bulkBoxes.filter(x => x.disabled).length, 3);
+  assert.match(summary.textContent, /25 selected/);
+  assert.equal(select.disabled, true, "cap disables Select all visible");
+  clear.onclick();
+  assert.equal(tab.state.bulkBoxes.filter(x => x.checked).length, 0);
+  assert.equal(tab.state.bulkBoxes.filter(x => x.disabled).length, 0);
+  assert.equal(clear.disabled, true);
+  tab.state.bulkBoxes[0].checked = true;
+  pending.onchange({ target: tab.state.bulkBoxes[0] });
+  assert.match(summary.textContent, /1 selected/);
+  select.onclick();
+  assert.equal(tab.state.bulkBoxes.filter(x => x.checked).length, 25);
+  // Unexpected over-selection (for example a synthetic change) is reverted.
+  tab.state.bulkBoxes[25].checked = true;
+  pending.onchange({ target: tab.state.bulkBoxes[25] });
+  assert.equal(tab.state.bulkBoxes[25].checked, false);
+  assert.match(summary.textContent, /Selection limit: 25/);
+  clear.onclick();
+  tab.state.bulkBoxes = [];
   tab.state.activityRows = "activity: refreshed";
   tab.state.serviceRows = "services: refreshed";
 
