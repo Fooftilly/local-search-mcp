@@ -7,3 +7,32 @@
 
 /* Only the operator-selected reveal view renders full stored search queries. */
 .history-query{white-space:pre-wrap;overflow-wrap:anywhere;max-width:56ch}
+
+/* Progressive operator workbench: actions remain plain forms without JS. */
+nav{display:flex;flex-wrap:wrap;gap:12px}nav a{margin-left:0}
+nav a:hover,nav a:focus-visible{text-decoration:underline}
+section[aria-label]{scroll-margin-top:20px}
+.section-heading{justify-content:space-between;align-items:baseline}
+.section-heading h2{margin:16px 0 8px}
+h3{font-size:15px;margin:0 0 12px}
+.panel>summary{cursor:pointer;font-weight:650;font-size:15px;padding:2px 0}
+.panel[open]>summary{margin-bottom:14px}
+.panel-body{margin-top:8px}
+.quick-decision,.once-action{display:flex;align-items:end;gap:6px;margin:2px 0 8px}
+.quick-decision label,.once-action label{display:inline-flex;flex-direction:column;gap:4px}
+.quick-decision select,.once-action select,form select{background:#0f141a;color:#e9edf2;border:1px solid #45515f;border-radius:3px;padding:8px;max-width:185px}
+.quick-decision .inline-options,.once-action .inline-options{flex-basis:100%;font-size:12px}
+.inline-options summary,.secondary-actions summary{color:#aaccf0;cursor:pointer}
+.inline-options[open]{padding:8px;border:1px solid #343b44}
+.inline-options[open] label{margin-top:6px}
+.secondary-actions{margin-top:5px;padding-top:5px;border-top:1px solid #343b44}
+.secondary-actions[open] form{margin:9px 8px 0 0}
+.compact-bulk{padding:12px 16px;margin:10px 0 16px}
+.compact-bulk p{margin:4px 0 10px}
+.service-overview{padding:12px 16px}
+.service-overview h2{margin:0}
+.service-overview table td,.service-overview table th{padding:7px 10px}
+.settings-links{display:flex;flex-wrap:wrap;gap:10px 20px}
+.settings-links a{display:inline-block}
+.actions{min-width:270px}
+@media (max-width:700px){main{padding:16px 12px 48px}header{padding:12px}h1{font-size:22px}.panel{padding:12px}.quick-decision{align-items:stretch}.quick-decision select{max-width:100%}.actions{min-width:220px}}
