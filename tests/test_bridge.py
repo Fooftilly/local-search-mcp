@@ -107,6 +107,82 @@ class BridgeTests(unittest.TestCase):
                 self.module._run_fetch("https://example.com/a", "raw")
             self.assertEqual(observed, [12, 90])
 
+    def test_empty_successful_crawls_are_explicit_and_access_hints_are_cautious(self):
+        """Do not mistake empty 200 responses for usable text or leak errors."""
+        original = httpx.Client
+        requests = []
+        samples = {
+            "/empty": {"markdown": "", "metadata": {"title": "A normal document"}},
+            "/spaces": {"markdown": " \n\t ", "metadata": {"title": "A normal document"}},
+            "/fit": {"markdown": {"raw_markdown": "  \n", "fit_markdown": "Valid fitted article"},
+                     "metadata": {"title": "An article"}},
+            "/titlefallback": {"markdown": "", "metadata": {"title": "  "},
+                               "title": "Just a moment..."},
+            "/login": {"markdown": "", "metadata": {"title": "Unrelated heading"}},
+            "/attention": {"markdown": "", "metadata": {"title": "Just a moment..."}},
+            "/guide": {"markdown": "How to solve CAPTCHA challenges safely",
+                       "metadata": {"title": "CAPTCHA guide"}},
+            "/legitimate": {"markdown": "",
+                            "metadata": {"title": "CAPTCHA troubleshooting guide"}},
+            "/blocked": {"markdown": "SECRET_BROKEN_BODY",
+                         "status_code": 403,
+                         "metadata": {"title": "Just a moment..."}},
+            "/rate": {"markdown": "SECRET_BROKEN_BODY",
+                      "status_code": 429},
+            "/failed": {"markdown": "SECRET_BROKEN_BODY", "success": False,
+                        "error_message": "SECRET_CRAWL_ERROR"},
+        }
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            self.assertEqual(request.url.path, "/crawl")
+            sent = json.loads(request.content)["urls"][0]
+            requests.append(sent)
+            path = httpx.URL(sent).path
+            page = {"url": sent, "success": True, **samples[path]}
+            return httpx.Response(200, json={"results": [page]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=factory)):
+            empty = self.module.web_fetch("https://example.com/empty")
+            spaces = self.module.web_fetch("https://example.com/spaces")
+            fitted = self.module.web_fetch("https://example.com/fit")
+            title_fallback = self.module.web_fetch("https://example.com/titlefallback")
+            login = self.module.web_fetch("https://example.com/login")
+            challenge = self.module.web_fetch("https://example.com/attention")
+            legitimate = self.module.web_fetch("https://example.com/legitimate")
+            guide = self.module.web_fetch("https://example.com/guide")
+            blocked = self.module.web_fetch("https://example.com/blocked")
+            rate = self.module.web_fetch("https://example.com/rate")
+            failed = self.module.web_fetch("https://example.com/failed")
+            repeat = self.module.web_fetch("https://example.com/empty")
+        self.assertEqual(empty["status"], "empty_extraction")
+        self.assertFalse(empty["success"])
+        self.assertNotIn("possible_access_gate", empty)
+        self.assertEqual(spaces["status"], "empty_extraction")
+        self.assertTrue(fitted["success"])
+        self.assertEqual(fitted["markdown"], "Valid fitted article")
+        self.assertEqual(title_fallback["possible_access_gate"]["evidence"],
+                         "exact_document_title")
+        self.assertEqual(login["possible_access_gate"]["evidence"], "final_url_path")
+        self.assertEqual(challenge["possible_access_gate"]["evidence"],
+                         "exact_document_title")
+        self.assertEqual(challenge["possible_access_gate"]["confidence"], "heuristic")
+        self.assertNotIn("possible_access_gate", legitimate)
+        self.assertTrue(guide["success"])
+        self.assertNotIn("possible_access_gate", guide)
+        self.assertEqual(blocked["status"], "http_error")
+        self.assertEqual(blocked["http_status"], 403)
+        self.assertEqual(rate["status"], "http_error")
+        self.assertEqual(rate["http_status"], 429)
+        self.assertEqual(failed["status"], "crawl_failed")
+        self.assertNotIn("SECRET_", str([empty, spaces, login, challenge, legitimate,
+                                          title_fallback, fitted, blocked, rate, failed]))
+        self.assertEqual(repeat, empty)
+        self.assertEqual(len(requests), 12)  # failures are never cached
+        self.assertTrue(all(request.startswith("https://example.com/") for request in requests))
+
     def test_opt_in_structured_fetch_uses_existing_crawl_and_separate_cache(self):
         posted = []
         original_client = httpx.Client
