@@ -108,6 +108,12 @@ def _finalize_result(url: str, answer: dict, *, policy_changed: bool) -> dict:
             # rather than presenting a fake usable long-document result.
             return {"url": url, "success": False, "status": "continuation_evicted",
                     "reason": "The temporary continuation expired or was evicted while fetching other batch URLs. Fetch this URL individually."}
+    if answer.get("success") is True and "link_continuation" in answer:
+        link_info = answer["link_continuation"]
+        handle = link_info.get("link_id") if isinstance(link_info, dict) else None
+        if not document_pages.link_handle_exists(handle):
+            return {"url": url, "success": False, "status": "continuation_evicted",
+                    "reason": "The temporary link continuation expired or was evicted while fetching other batch URLs. Fetch this URL individually."}
     if answer.get("success") is True and "table_continuation" in answer:
         table_info = answer["table_continuation"]
         handle = table_info.get("table_id") if isinstance(table_info, dict) else None
@@ -190,7 +196,7 @@ def fetch_many(urls: list[str], mode: str, fresh: bool,
             answer = row["result"]
             # Even unsuccessful crawls may carry extracted Markdown, public
             # metadata or continuation handles. They require the same check.
-            if not any(k in answer for k in ("markdown", "metadata", "document_id", "table_continuation")):
+            if not any(k in answer for k in ("markdown", "metadata", "document_id", "table_continuation", "link_continuation")):
                 continue
             url = row["requested_url"]
             if url not in valid_by_url:
