@@ -48,10 +48,14 @@ def _cases() -> dict[str, tuple[str, str]]:
     shifted_right = "".join(["Menu\n"] * 500 + ["Anchor A\n"] + ["Menu\n"] * 400)
     # Alternating repeated navigation and unique content is a separate
     # hostile pattern; changing only article lines should remain bounded.
+    # Unique shared anchors remain matchable while repeated Menu lines
+    # are autojunk-pruned. Localized edits must force many separate regions.
     interleaved_left = "".join(
-        f"Menu\nArticle {i}\n" for i in range(420))
+        f"Menu\nAnchor {i}\nArticle {i}\n" for i in range(300))
     interleaved_right = "".join(
-        f"Menu\nUpdated article {i}\n" for i in range(420))
+        f"Menu\nAnchor {i}\n" +
+        (f"Updated article {i}\n" if i % 7 == 0 else f"Article {i}\n")
+        for i in range(300))
     unicode_left = ("🧭 Život, Šćepan, đakon\n" * 300)
     unicode_right = unicode_left.replace("đakon", "dokaz", 5)
     replacement = "".join(f"Old {i}\n" for i in range(900))
