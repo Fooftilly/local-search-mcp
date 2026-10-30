@@ -153,14 +153,16 @@ def history_items_html(kind="", status="", domain="", hours=0,
 
 
 def recent_rows(kind="", status="", domain="", hours=0, show_queries=False,
-                page=1, items=None):
+                page=1, items=None, unavailable=False):
     column = "Search query / page URL / domain" if show_queries else "Domain"
     return ('<div class="scroll"><table><thead><tr><th>UTC time</th>'
             '<th>Operation</th><th>Status</th><th>' + column + '</th>'
             '<th>Duration (ms)</th></tr></thead>'
             '<tbody id="live-history">' +
-            history_items_html(kind, status, domain, hours, show_queries,
-                               page=page, items=items) +
+            ('<tr><td colspan="5">Indexed history is unavailable; '
+             'check local configuration.</td></tr>' if unavailable else
+             history_items_html(kind, status, domain, hours, show_queries,
+                                page=page, items=items)) +
             '</tbody></table></div>')
 
 
@@ -286,7 +288,9 @@ def live_snapshot(query='', view='policy', history_filters=None,
                 'history_pages_html': '<p class="subtle" role="status">'
                                       'History pages unavailable.</p>',
                 'history_page': filters.get('page', 1)}
-        return {'history_html': history_items_html(items=snapshot['rows']),
+        return {'history_html': history_items_html(
+                    items=snapshot['rows'],
+                    show_queries=filters.get('show_queries', False)),
                 'history_summary_html': history_summary_html(snapshot['metrics']),
                 'history_pages_html': history_pagination_html(
                     filters, snapshot['page'], snapshot['total']),
@@ -884,8 +888,8 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=False,
     rows = (recent_rows(**filters, show_queries=show_queries, page=page,
                         items=snapshot['rows'])
             if snapshot is not None else
-            '<div class="scroll"><table><tbody><tr><td>Indexed history is '
-            'unavailable; check local configuration.</td></tr></tbody></table></div>'
+            recent_rows(**filters, show_queries=show_queries, page=page,
+                        items=[], unavailable=True)
             if history_unavailable else
             '<p class="subtle">Correct the filters above to view history.</p>')
     options = ''.join(
