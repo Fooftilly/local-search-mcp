@@ -465,6 +465,12 @@
           updateTable(pendingPages, data.pending_pages_html);
           updateTable(pendingPagesBottom, data.pending_pages_html);
         }
+        // A decision may empty the final page. Follow the server's
+        // bounded last-valid-page result on the next poll, never an old URL.
+        if (Number.isSafeInteger(data.pending_page) &&
+            data.pending_page >= 1 && data.pending_page <= 20) {
+          document.documentElement.dataset.reviewPage = String(data.pending_page);
+        }
         updateTable(decidedBody, data.decided_html);
         updateTable(auditBody, data.audit_html);
         updateTable(activityBody, data.activity_html);
