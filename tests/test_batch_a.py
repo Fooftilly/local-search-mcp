@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 import httpx
 
 import bridge
@@ -57,13 +58,16 @@ class BatchAContractTests(unittest.IsolatedAsyncioTestCase):
                     "start_offset": len(text) - 6, "max_chars": 100})
                 self.assertEqual(tail.data["text"], "Z" * 6)
                 self.assertIsNone(tail.data["next_offset"])
-                for invalid in (-1, True, "1", document_pages.MAX_DOCUMENT_CHARS + 1):
-                    bad = await client.call_tool("web_extract_section", {
-                        "document_id": handle, "start_offset": invalid})
-                    self.assertTrue(bad.is_error)
-                oversized = await client.call_tool("web_extract_section", {
-                    "document_id": handle, "start_offset": 0, "max_chars": 8001})
-                self.assertTrue(oversized.is_error)
+                for invalid in (-1, document_pages.MAX_DOCUMENT_CHARS + 1):
+                    with self.assertRaises(ToolError):
+                        await client.call_tool("web_extract_section", {
+                            "document_id": handle, "start_offset": invalid})
+                for invalid in (True, "1", None):
+                    with self.assertRaises(ValueError):
+                        document_pages.section_with_security_context(handle, invalid)
+                with self.assertRaises(ToolError):
+                    await client.call_tool("web_extract_section", {
+                        "document_id": handle, "start_offset": 0, "max_chars": 8001})
                 domain_policy.decide("example.com", "deny", scope="exact")
                 refused = await client.call_tool("web_extract_section", {
                     "document_id": handle, "start_offset": start, "max_chars": 70})
@@ -120,11 +124,13 @@ class BatchAContractTests(unittest.IsolatedAsyncioTestCase):
                 absent = await client.call_tool("web_search_capabilities", {
                     "engine": "google images"})
                 self.assertEqual(absent.data["status"], "not_enabled")
-                for bad in ({"max_engines": -1}, {"summary_only": 1},
+                for bad in ({"max_engines": -1},
                             {"category": "images", "engine": "yahoo"},
                             {"engine": "a@internal.invalid"}):
-                    invalid = await client.call_tool("web_search_capabilities", bad)
-                    self.assertTrue(invalid.is_error)
+                    with self.assertRaises(ToolError):
+                        await client.call_tool("web_search_capabilities", bad)
+                with self.assertRaises(ValueError):
+                    bridge.web_search_capabilities(summary_only=1)
         self.assertEqual(seen, ["/config"] * 4)
         self.assertNotIn("NEVER_REVEAL_THIS", str(default.data))
         self.assertNotIn("NEVER_REVEAL_THIS", str(filtered.data))
@@ -180,8 +186,8 @@ class BatchAContractTests(unittest.IsolatedAsyncioTestCase):
                     {"queries": ["a"], "engines": "yahoo", "categories": "images"},
                     {"queries": ["a"], "max_results": 9},
                 ):
-                    error = await client.call_tool("web_search_batch", invalid)
-                    self.assertTrue(error.is_error)
+                    with self.assertRaises(ToolError):
+                        await client.call_tool("web_search_batch", invalid)
                 self.assertEqual(len(seen), before)
         audit = (Path(self.tmp.name) / "history.jsonl").read_text()
         self.assertIn('"query":"alpha"', audit)
