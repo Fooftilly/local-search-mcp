@@ -9,6 +9,8 @@ from datetime import date, datetime
 import re
 from urllib.parse import urlsplit, urlunsplit
 
+from domain_policy import normalize_domain
+
 
 def normalized_url(value: object) -> str | None:
     """Return a conservative HTTP(S) identity or None for unsafe/invalid URLs.
@@ -105,35 +107,97 @@ def _published_date(row: dict) -> str | None:
         return None
 
 
-def _with_publication(entry: dict, row: dict, enabled: bool) -> dict:
-    if enabled:
+def _public_image_link(value: object) -> str | None:
+    """Validate *metadata only*, without DNS, downloading or granting access.
+
+    Image URLs are untrusted search-provider strings, not approved fetch URLs.
+    Only unambiguous ASCII HTTPS links to public-looking DNS hostnames are
+    exposed. This deliberately omits IDNs and unusual URL encodings.
+    """
+    if (not isinstance(value, str) or not 1 <= len(value) <= 2048
+            or not value.startswith("https://")
+            or any(not 0x21 <= ord(char) <= 0x7e for char in value)
+            or "\\" in value
+            or re.search(r"%(?:0[0-9a-f]|1[0-9a-f]|5c|7f)", value,
+                         flags=re.IGNORECASE)):
+        return None
+    try:
+        parts = urlsplit(value)
+        host = parts.hostname
+        if (parts.scheme != "https" or not host
+                or "@" in parts.netloc or parts.port not in (None, 443)
+                or parts.netloc.endswith(":") or parts.netloc.endswith(".")
+                or any(label.startswith("xn--") for label in host.split("."))):
+            return None
+        # Uses only the bundled public suffix rules. No DNS or policy write.
+        if normalize_domain(host) != host:
+            return None
+    except (UnicodeError, ValueError, RuntimeError):
+        return None
+    return value
+
+
+def _image_dimensions(value: object) -> tuple[int, int] | None:
+    """Only retain measured pixel dimensions from an exact WxH string."""
+    if not isinstance(value, str) or len(value) > 24:
+        return None
+    match = re.fullmatch(r"([1-9][0-9]{0,4})[xX]([1-9][0-9]{0,4})", value)
+    if match is None:
+        return None
+    width, height = map(int, match.groups())
+    return (width, height) if width <= 20000 and height <= 20000 else None
+
+
+def _with_optional_metadata(entry: dict, row: dict, publication: bool,
+                            images: bool) -> dict:
+    if publication:
         published = _published_date(row)
         if published is not None:
             entry["published_date"] = published
             entry["date_source"] = "searxng.publishedDate"
+    # Do not infer image attribution merely from the selected search filter.
+    # A normal web hit with a provider-supplied img_src is not an image result.
+    if images and row.get("category") == "images":
+        image = _public_image_link(row.get("img_src"))
+        thumbnail = _public_image_link(row.get("thumbnail_src"))
+        if image is not None or thumbnail is not None:
+            if image is not None:
+                entry["image_url"] = image
+            if thumbnail is not None:
+                entry["thumbnail_url"] = thumbnail
+            source = _public_image_link(row.get("url"))
+            if source is not None:
+                entry["source_page_url"] = source
+            dimensions = _image_dimensions(row.get("resolution"))
+            if dimensions is not None:
+                entry["image_width"] = dimensions[0]
+                entry["image_height"] = dimensions[1]
     return entry
 
 
 def enrich_search_results(rows: list[dict], max_results: int, *,
                           deduplicate: bool = False,
                           ranking: str = "searxng",
-                          include_published_date: bool = False) -> list[dict]:
+                          include_published_date: bool = False,
+                          include_image_metadata: bool = False) -> list[dict]:
     """Deduplicate before limiting results, retaining first-seen provenance.
 
     Optional per-item keys are source_engines, duplicate_count, source_matches
     and source_count; independently, include_published_date exposes only valid
     upstream publishedDate as a date with explicit field provenance.
+    Image metadata is opt-in, validated and copied only from the primary
+    source row; never attach another engine's picture to a grouped URL.
     The 'source_count' ranking counts distinct source engines, breaking ties
     by original SearXNG order (stable Python sort).
     """
     if not deduplicate and ranking == "searxng":
         return [
-            _with_publication({
+            _with_optional_metadata({
                 "title": _text(r.get("title", ""), 240),
                 "url": str(r.get("url", "")),
                 "snippet": _text(r.get("content", ""), 1100),
                 "engine": _engine_text(r.get("engine", "")),
-            }, r, include_published_date)
+            }, r, include_published_date, include_image_metadata)
             for r in rows[:max_results]
         ]
 
@@ -144,7 +208,7 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
         if normalized is not None and normalized in by_url:
             entry = grouped[by_url[normalized]]
         else:
-            entry = _with_publication({
+            entry = _with_optional_metadata({
                 "title": _text(row.get("title", ""), 240),
                 "url": str(row.get("url", "")),
                 "snippet": _text(row.get("content", ""), 1100),
@@ -153,7 +217,7 @@ def enrich_search_results(rows: list[dict], max_results: int, *,
                 "source_count": 0,
                 "duplicate_count": 0,
                 "source_matches": [],
-            }, row, include_published_date)
+            }, row, include_published_date, include_image_metadata)
             if normalized is not None:
                 by_url[normalized] = len(grouped)
             grouped.append(entry)
