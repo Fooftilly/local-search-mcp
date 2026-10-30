@@ -317,7 +317,9 @@ def _verify_explicit_search_selection(client: httpx.Client, params: dict) -> dic
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
-def web_search_capabilities() -> dict:
+def web_search_capabilities(category: str = "", engine: str = "",
+                            max_engines: int = 0,
+                            summary_only: bool = False) -> dict:
     """Discover currently enabled local SearXNG engines and categories.
 
     Performs one bounded loopback /config read and never starts Docker,
@@ -325,6 +327,16 @@ def web_search_capabilities() -> dict:
     a crawler domain. This is an observed snapshot, not a promise that
     each engine supports every optional search filter.
     """
+    for label, value in (("category", category), ("engine", engine)):
+        if (not isinstance(value, str) or
+                (value and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}", value))):
+            raise ValueError(f"{label} must be one selectable name up to 40 characters")
+    if category and engine:
+        raise ValueError("Choose a category or an engine filter, not both")
+    if type(max_engines) is not int or not 0 <= max_engines <= 100:
+        raise ValueError("max_engines must be between 0 and 100; 0 means all")
+    if type(summary_only) is not bool:
+        raise ValueError("summary_only must be a boolean")
     failure = {
         "success": False, "status": "unavailable",
         "reason": "SearXNG engine inventory unavailable or invalid; "
@@ -387,7 +399,7 @@ def web_search_capabilities() -> dict:
             enabled.append({"name": name, "categories": groups})
             categories.update(groups)
     enabled.sort(key=lambda item: item["name"].casefold())
-    return {
+    full = {
         "success": True, "status": "available",
         "enabled_engines": enabled, "categories": sorted(categories),
         "enabled_engine_count": len(enabled),
@@ -395,6 +407,26 @@ def web_search_capabilities() -> dict:
         "omitted_unselectable_category_count": omitted_unselectable_categories,
         "scope": "enabled engines selectable by web_search in bounded local /config",
     }
+    if not (category or engine or max_engines or summary_only):
+        return full
+    matching = [row for row in enabled
+                if (not category or category in row["categories"])
+                and (not engine or row["name"] == engine)]
+    if (category or engine) and not matching:
+        return {"success": False, "status": "not_enabled",
+                "reason": "Requested engine or category is not enabled/selectable."}
+    matching_count = len(matching)
+    chosen = matching[:max_engines] if max_engines else matching
+    full.update({
+        "enabled_engines": [] if summary_only else chosen,
+        "categories": sorted({name for row in matching for name in row["categories"]}),
+        "matching_engine_count": matching_count,
+        "returned_engine_count": 0 if summary_only else len(chosen),
+        "details_omitted": summary_only,
+        "truncated": bool(max_engines and len(chosen) < matching_count),
+        "filter": {"category": category, "engine": engine},
+    })
+    return full
 
 
 def _run_search_network(params: dict, max_results: int, *,
@@ -573,6 +605,58 @@ def web_search(query: str, max_results: int = 8, language: str = "",
             allowed_result_domains=allowed_hosts),
         ttl=lambda: cache_settings.effective_ttl('search_seconds'), fresh=fresh, should_store=lambda r: isinstance(r, list),
     )
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def web_search_batch(queries: list[str], max_results: int = 5,
+                           language: str = "", categories: str = "",
+                           time_range: str = "", engines: str = "",
+                           fresh: bool = False) -> dict:
+    """Search 1–4 distinct public queries using existing web_search safeguards.
+
+    At most two underlying searches run concurrently. Each item uses existing
+    engine/category validation, cache, lease, attribution and private audit.
+    Cancellation skips queued tasks but cannot stop already running threads.
+    """
+    if (not isinstance(queries, list) or not 1 <= len(queries) <= 4
+            or any(not isinstance(query, str) for query in queries)):
+        raise ValueError("queries must be a list of 1–4 public query strings")
+    if type(max_results) is not int or not 1 <= max_results <= 8:
+        raise ValueError("max_results must be between 1 and 8 for batch search")
+    if type(fresh) is not bool:
+        raise ValueError("fresh must be a boolean")
+    cleaned = []
+    for query in queries:
+        params, _ = _search_params(query, max_results, language, categories,
+                                   time_range, engines, 1)
+        cleaned.append(params["q"])
+    if len({query.casefold() for query in cleaned}) != len(cleaned):
+        raise ValueError("queries must be distinct")
+    semaphore = asyncio.Semaphore(2)
+
+    async def run_one(query: str) -> dict:
+        async with semaphore:
+            try:
+                output = await asyncio.to_thread(
+                    web_search, query, max_results, language, categories,
+                    time_range, engines, 1, fresh)
+            except Exception:
+                return {"query": query, "success": False, "status": "search_failed",
+                        "reason": "The search could not complete."}
+            if isinstance(output, list):
+                return {"query": query, "success": True,
+                        "result_count": len(output), "results": output}
+            if isinstance(output, dict):
+                return {"query": query, "success": False,
+                        "status": str(output.get("status", "search_failed"))[:64],
+                        "reason": str(output.get("reason", "Search unavailable"))[:200]}
+            return {"query": query, "success": False, "status": "invalid_response",
+                    "reason": "Search returned an invalid result."}
+
+    results = await asyncio.gather(*(run_one(query) for query in cleaned))
+    return {"success": all(item["success"] for item in results),
+            "query_count": len(results), "results": results}
+
 
 def _crawl_metadata(page: dict, final_url: str) -> dict:
     """Return only short, safe, untrusted public-page metadata."""
@@ -1168,6 +1252,22 @@ def web_find(document_id: str, query: str, max_matches: int = 10,
     result, source_url, once_proof = document_pages.find_with_security_context(
         document_id, query, max_matches, start_offset)
     return _authorized_saved_document(result, source_url, once_proof, epoch)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+@logged_tool("page")
+def web_extract_section(document_id: str, start_offset: int,
+                        max_chars: int = document_pages.DEFAULT_SECTION_CHARS) -> dict:
+    """Read a bounded Unicode span from an existing authorized document.
+
+    Recheck source/final host and one-use proof; never recrawl or persist text.
+    The passage may cross the original continuation page boundary.
+    """
+    epoch = request_cache.policy_epoch()
+    result, source_url, once_proof = document_pages.section_with_security_context(
+        document_id, start_offset, max_chars)
+    return _authorized_saved_document(result, source_url, once_proof, epoch)
+
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 def web_metrics(hours: Literal[1, 24, 168] = 24) -> dict:
