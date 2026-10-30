@@ -663,6 +663,42 @@ async def web_search_batch(queries: list[str], max_results: int = 5,
             "query_count": len(results), "results": results}
 
 
+def _empty_extraction_diagnostic(page: dict, final_url: str) -> dict:
+    """No usable Markdown was extracted; any access-gate hint is heuristic.
+
+    Inspect only the verified final URL's final path segment and a short
+    exact-match document title. Never return upstream diagnostic bodies,
+    arbitrary metadata or page text from an empty/blocked crawl.
+    """
+    result = {
+        "url": final_url, "success": False, "status": "empty_extraction",
+        "reason": "Crawl4AI reported success but returned no usable page text.",
+    }
+    try:
+        segment = urlsplit(final_url).path.rstrip("/").rsplit("/", 1)[-1].casefold()
+    except ValueError:
+        segment = ""
+    if segment in ("login", "log-in", "signin", "sign-in", "captcha",
+                   "challenge", "verify"):
+        result["possible_access_gate"] = {
+            "evidence": "final_url_path", "confidence": "heuristic",
+        }
+        return result
+    meta = page.get("metadata")
+    meta = meta if isinstance(meta, dict) else {}
+    title = meta.get("title")
+    if not isinstance(title, str) or not title.strip():
+        title = page.get("title")
+    if isinstance(title, str) and len(title) <= 200 and title.strip().casefold() in (
+            "just a moment...", "just a moment", "attention required!",
+            "verify you are human", "security verification",
+            "sign in", "log in", "login required"):
+        result["possible_access_gate"] = {
+            "evidence": "exact_document_title", "confidence": "heuristic",
+        }
+    return result
+
+
 def _crawl_metadata(page: dict, final_url: str) -> dict:
     """Return only short, safe, untrusted public-page metadata."""
     raw = page.get("metadata")
@@ -851,6 +887,9 @@ def _run_fetch_network(url: str, mode: str, *,
         raw, fit = markdown_response, page.get("fit_markdown")
     if mode == "fit":
         markdown = fit
+    elif isinstance(raw, str) and not raw.strip() and isinstance(fit, str) and fit.strip():
+        # Blank raw markup must not conceal a usable fitted extraction.
+        markdown = fit
     else:
         markdown = raw or fit or ""
     if mode == "fit" and (markdown is None or markdown == ""):
@@ -859,6 +898,8 @@ def _run_fetch_network(url: str, mode: str, *,
     if not isinstance(markdown, str):
         return {"url": final_url, "success": False, "status": "invalid_extraction",
                 "reason": "Crawl4AI returned an invalid Markdown representation"}
+    if not markdown.strip():
+        return _empty_extraction_diagnostic(page, final_url)
     if len(markdown) > document_pages.MAX_DOCUMENT_CHARS:
         return {"url": final_url, "success": False, "status": "document_too_large",
                 "reason": "Document exceeds the bounded extraction limit; content was not silently truncated"}
