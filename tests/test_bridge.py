@@ -550,6 +550,78 @@ class BridgeTests(unittest.TestCase):
                     self.module.web_search(**({"query": "public info"} | options))
                 client.assert_not_called()
 
+    def test_category_filter_requires_enabled_config_before_search(self):
+        paths = []
+        original = httpx.Client
+        def handler(request):
+            paths.append(request.url.path)
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": [
+                    {"name": "yahoo", "enabled": True,
+                     "categories": ["general", "web"]},
+                    {"name": "bing images", "enabled": True,
+                     "categories": ["images", "web"]},
+                    {"name": "disabled news", "enabled": False,
+                     "categories": ["news"]},
+                    {"name": "naver (KO)", "enabled": True,
+                     "categories": ["general"]},
+                ]})
+            return httpx.Response(200, json={"results": [
+                {"url": "https://example.org/image", "title": "Allowed",
+                 "content": "", "engine": "bing images"}
+            ]})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler),
+                            trust_env=False)
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            for categories in ("imgaes", "images,imgaes", "news"):
+                with self.subTest(categories=categories):
+                    with self.assertRaisesRegex(ValueError,
+                                                "category is unknown"):
+                        self.module.web_search(
+                            "category probe", categories=categories, fresh=True)
+            result = self.module.web_search(
+                "category probe", categories="images,web", fresh=True)
+        self.assertEqual(result[0]["engine"], "bing images")
+        self.assertEqual(paths, ["/config"] * 4 + ["/search"])
+        self.assertFalse(self.module.request_cache._CACHE)
+
+    def test_category_filter_unavailable_or_invalid_config_never_searches(self):
+        original = httpx.Client
+        cases = [
+            httpx.Response(503, json={"detail": "backend unavailable"}),
+            httpx.Response(200, json={"engines": "wrong"}),
+            httpx.Response(200, json={"engines": [
+                {"name": "bing images", "enabled": True}]}),
+            httpx.Response(200, json={"engines": [
+                {"name": "bing images", "enabled": True,
+                 "categories": ["images", None]}]}),
+            httpx.Response(200, content=b"x" *
+                           (self.module.MAX_SEARCH_CONFIG_BYTES + 1)),
+        ]
+        for response in cases:
+            with self.subTest(response=response.status_code):
+                paths = []
+                def handler(request):
+                    paths.append(request.url.path)
+                    return response
+                def client(**kwargs):
+                    return original(transport=httpx.MockTransport(handler),
+                                    trust_env=False)
+                with patch.object(self.module.httpx, "Client", side_effect=client):
+                    value = self.module.web_search(
+                        "category inventory", categories="images", fresh=True)
+                self.assertEqual(value["status"], "invalid_response")
+                self.assertEqual(paths, ["/config"])
+
+    def test_category_bangs_rejected_without_contacting_backend(self):
+        for query in ("!google private query", "normal !images content"):
+            with self.subTest(query=query), patch.object(
+                    self.module.httpx, "Client") as client:
+                with self.assertRaisesRegex(ValueError, "bang"):
+                    self.module.web_search(query, categories="images")
+                client.assert_not_called()
+
     def test_engine_filter_requires_enabled_config_before_search(self):
         paths = []
         original = httpx.Client
@@ -679,7 +751,7 @@ class BridgeTests(unittest.TestCase):
         def handler(request):
             if request.url.path == "/config":
                 return httpx.Response(200, json={"engines": [
-                    {"name": "qwant", "enabled": True, "categories": ["general"]}
+                    {"name": "qwant", "enabled": True, "categories": ["general", "news"]}
                 ]})
             seen.append(dict(request.url.params))
             return httpx.Response(200, json={"results": [
