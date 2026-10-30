@@ -346,12 +346,14 @@ def web_search_capabilities() -> dict:
         # Reject malformed/control-bearing records, but do not let benign
         # unselectable names — even on disabled engines — hide Yahoo et al.
         if (not isinstance(name, str) or not 1 <= len(name) <= 80
-                or not name.isprintable() or name != name.strip()
+                or not name.isprintable() or "\\" in name
+                or name != name.strip()
                 or name.casefold() in seen
                 or type(row.get("enabled")) is not bool
                 or not isinstance(group, list) or not 1 <= len(group) <= 16
                 or any(not isinstance(cat, str) or not 1 <= len(cat) <= 40
-                       or not cat.isprintable() or cat != cat.strip()
+                       or not cat.isprintable() or "\\" in cat
+                       or cat != cat.strip()
                        for cat in group)):
             return failure
         seen.add(name.casefold())
