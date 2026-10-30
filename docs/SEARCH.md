@@ -283,6 +283,8 @@ The batch runs at most **two** searches concurrently and at most **8** returned
 results per query. An invalid query or category/engine combination rejects
 the entire batch **before** any search request. Search terms must be distinct
 case-insensitively; no automatic query expansion or additional providers.
+SearXNG bang provider shortcuts (`!engine`) are rejected in this new batch
+mode, including when no explicit category/engine filter was supplied.
 
 The new response contains `success` (all queries succeeded), `query_count`,
 and ordered `results` entries each containing `query`, `success` and either
