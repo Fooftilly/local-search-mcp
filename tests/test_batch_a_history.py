@@ -21,13 +21,16 @@ class SectionHistoryTests(unittest.TestCase):
                  "text": "SECRET_PAGE", "page_count": 4},
                 {"kind": "page", "action": "find", "status": "success",
                  "document_id": "ANOTHER_SECRET"},
+                {"kind": "page", "action": "links_page", "status": "success",
+                 "link_id": "LINK_PRIVATE"},
                 {"kind": "page", "action": "=HYPERLINK('bad')", "status": "success",
                  "document_id": "SECRET"},
             ]) + "\n", encoding="utf-8")
             parsed = list(history_cli.events(path))
             self.assertEqual(parsed[0]["action"], "section")
             self.assertEqual(parsed[1]["action"], "find")
-            self.assertNotIn("action", parsed[2])
+            self.assertEqual(parsed[2]["action"], "links_page")
+            self.assertNotIn("action", parsed[3])
             self.assertNotIn("SECRET", str(parsed))
             for format_flag in ("--json", "--csv"):
                 with (patch.object(history_cli, "history_path", return_value=path),
@@ -38,6 +41,7 @@ class SectionHistoryTests(unittest.TestCase):
                         self.assertEqual(history_cli.main(), 0)
                     exported = stdout.getvalue()
                     self.assertIn("section", exported)
+                    self.assertIn("links_page", exported)
                     self.assertNotIn("SECRET", exported)
                     self.assertNotIn("HYPERLINK", exported)
 
