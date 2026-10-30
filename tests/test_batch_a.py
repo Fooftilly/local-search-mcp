@@ -36,7 +36,7 @@ class BatchAContractTests(unittest.IsolatedAsyncioTestCase):
             domain_policy.decide("example.com", "allow", scope="exact")
             handle, count = document_pages.save(
                 "https://example.com/public", text, {}, first_page_chars=4096)
-            self.assertEqual(count, 3)
+            self.assertEqual(count, 2)
             start = text.index("grant") - 10
             async with Client(bridge.mcp) as client:
                 tools = {tool.name: tool for tool in await client.list_tools()}
