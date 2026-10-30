@@ -179,8 +179,25 @@ def live_snapshot(query='', view='policy', history_filters=None):
             'decided_html': ''.join(row_html(r) for r in decisions)
                 or '<tr><td colspan="4">No matching domains.</td></tr>',
             'audit_html': decision_audit_rows(query),
+            'activity_html': history_items_html(show_queries=False),
+            'service_rows_html': service_overview_rows(),
             'pending_domains': domains,
         }
+
+
+def _overview_history_metrics():
+    try:
+        return history_index.summarize_history(hours=24)
+    except (OSError, ValueError, sqlite3.Error):
+        return []
+
+
+def service_overview_rows():
+    """Bounded local TCP-only view, not proof of service health."""
+    return ''.join(
+        '<tr><td>' + esc(item['service']) + '</td><td>' +
+        esc(item['status']) + '</td><td>' + esc(item['source']) +
+        '</td></tr>' for item in service_status.probe_services())
 
 
 def row_html(r):
@@ -219,27 +236,56 @@ def row_html(r):
                 + controls +
                 f'<button class="{cls}" type="submit" name="action" value="{name}">'
                 f'{label}</button></form>')
-    # Only pending requests offer a contextual one-use control. The opaque
-    # request ID protects against accepting a stale browser tab.
-    once = (
-        f'<form method="post" action="/once">'
+    # A pending request can be decided with one deliberate click. Default
+    # selections are bounded to one hour and the exact host; permanent and
+    # subdomain-wide rules require an operator to change a visible selector.
+    # Never default to the indefinite ("0") permission from policy.decide().
+    quick = (
+        f'<form class="quick-decision" method="post" action="/domain">'
         f'<input type="hidden" name="csrf" value="{token}">'
         f'<input type="hidden" name="domain" value="{dom}">'
         f'<input type="hidden" name="request_id" value="{esc(r.get("request_id") or "")}">'
-        '<label class="small">One-use scope <select name="scope">'
-        '<option value="exact">Exact host</option>'
+        '<label class="small">Scope <select name="scope" aria-label="Rule scope">'
+        '<option value="exact" selected>Exact host</option>'
+        '<option value="subdomains">Host + subdomains</option></select></label>'
+        '<label class="small">Duration <select name="expires_minutes" '
+        'aria-label="Rule duration" required>'
+        '<option value="60" selected>1 hour</option>'
+        '<option value="1440">24 hours</option>'
+        '<option value="10080">7 days</option>'
+        '<option value="0">Permanent</option></select></label>'
+        '<button class="allow" type="submit" name="action" value="allow">'
+        'Allow</button>'
+        '<button class="deny" type="submit" name="action" value="deny">'
+        'Deny</button>'
+        '<details class="inline-options"><summary>Note (optional)</summary>'
+        '<label class="small">Reason '
+        '<input name="reason" maxlength="160" '
+        'placeholder="Short local note"></label></details></form>'
+        if r['status'] == 'pending' and r.get('request_id') else ''
+    )
+    # One-use grants retain the stale-request ID check, are exact-host and
+    # one hour by default, and never become durable permission rules.
+    once = (
+        f'<form class="once-action" method="post" action="/once">'
+        f'<input type="hidden" name="csrf" value="{token}">'
+        f'<input type="hidden" name="domain" value="{dom}">'
+        f'<input type="hidden" name="request_id" value="{esc(r.get("request_id") or "")}">'
+        '<button class="allow" name="action" value="stage">Allow once</button>'
+        '<details class="inline-options"><summary>One-use options</summary>'
+        '<label class="small">Scope <select name="scope">'
+        '<option value="exact" selected>Exact host</option>'
         '<option value="subdomains">Host + subdomains</option></select></label>'
         '<label class="small">Valid for <select name="expires_minutes">'
-        '<option value="60">1 hour</option><option value="1440">24 hours</option>'
+        '<option value="60" selected>1 hour</option>'
+        '<option value="1440">24 hours</option>'
         '<option value="10080">7 days</option></select></label>'
         '<label class="small">Reason (optional) '
-        '<input name="reason" maxlength="160" placeholder="Short local note"></label>'
-        '<button class="allow" name="action" value="stage">Allow once</button></form>'
+        '<input name="reason" maxlength="160" placeholder="Short local note">'
+        '</label></details></form>'
         if r['status'] == 'pending' and not r.get('explicit_rule') and r.get('request_id')
         else ''
     )
-    actions = (action('allow', 'Allow', 'allow') +
-               action('deny', 'Deny', 'deny') + action('delete', 'Remove', 'delete') + once)
     edit = (f'<form method="post" action="/domain">'
             f'<input type="hidden" name="csrf" value="{token}">'
             f'<input type="hidden" name="domain" value="{dom}">'
@@ -253,12 +299,20 @@ def row_html(r):
               f'value="{dom}|{esc(r.get("request_id") or "")}"> Bulk</label> '
               if (r['status'] == 'pending' and not r.get('explicit_rule')
                   and r.get('request_id')) else '')
+    # Keep rare rule maintenance out of the fast review path without
+    # removing or changing any POST endpoints and their CSRF protection.
+    maintenance = (
+        '<details class="secondary-actions"><summary>More actions</summary>' +
+        (action('allow', 'Allow', 'allow') +
+         action('deny', 'Deny', 'deny')
+         if r['status'] != 'pending' else '') +
+        action('delete', 'Remove', 'delete') + edit + '</details>'
+    )
+    actions = quick + once + maintenance
     return (f'<tr><td class="domain">{select}{dom}</td>'
             f'<td><span class="pill {stat}">{stat}</span>{limits}</td>'
             f'<td>{int(r["request_count"])}{request_meta}</td>'
-            f'<td class="actions">{actions}'
-            f'<div style="margin-top:7px">{edit}</div></td></tr>')
-
+            f'<td class="actions">{actions}</td></tr>')
 
 def decision_audit_rows(search=""):
     """Render escaped, filtered decision rows for initial and live views."""
@@ -382,11 +436,18 @@ def render(query='', message='', kind='success'):
     audit_html = decision_audit_html(query)
     once_html = once_grants_html(query)
     once_log = once_audit_html(query)
+    # Reuse the existing privacy-preserving history index. The overview
+    # never opts into stored query or requested-page path disclosure.
+    activity_html = history_items_html(show_queries=False)
+    activity_summary = history_summary_html(_overview_history_metrics())
+    service_rows = service_overview_rows()
     return render_template(
         "policy",
         alert=alert, pending_count=c["pending"], allowed_count=c["allowed"],
         denied_count=c["denied"], dashboard_port=PORT, csrf=esc(CSRF),
         once_html=once_html, once_log=once_log,
+        activity_html=activity_html, activity_summary=activity_summary,
+        service_rows=service_rows,
         max_pending_total=policy.MAX_PENDING_TOTAL,
         max_pending_global_hour=policy.MAX_NEW_PENDING_GLOBAL_PER_HOUR,
         max_pending_per_site=policy.MAX_PENDING_PER_SITE,
@@ -970,7 +1031,8 @@ class Handler(BaseHTTPRequestHandler):
             policy.decide(val('domain'), action, val('new_domain'),
                           scope=val('scope') or 'subdomains',
                           expires_minutes=int(duration) if action in ('allow', 'deny') else 0,
-                          reason=val('reason'))
+                          reason=val('reason'),
+                          expected_request_id=val('request_id') or None)
             msg=f"Decision updated for {val('domain')[:253]}"
             return self._respond(200,render(message=msg))
         except (ValueError,sqlite3.IntegrityError) as exc:

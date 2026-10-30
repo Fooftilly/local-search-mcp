@@ -788,13 +788,18 @@ def expired_grant_without_active_fallback(domain: str) -> bool:
 
 def decide(domain: str, action: str, new_domain: str = "",
            *, scope: str = "subdomains", expires_minutes: int = 0,
-           reason: str = ""):
+           reason: str = "", expected_request_id: str | None = None):
     """Only the dashboard can write explicit decisions and their limits.
 
     0 minutes means permanent. Allowed finite durations are deliberately
     bounded to avoid arbitrary, malformed or never-ending timestamps.
     """
     domain = normalize_domain(domain)
+    if expected_request_id is not None:
+        if (action not in ('allow', 'deny')
+                or not isinstance(expected_request_id, str)
+                or not re.fullmatch(r"[a-f0-9]{24}", expected_request_id)):
+            raise ValueError("Invalid pending request reference")
     if action not in ('allow','deny','delete','rename'):
         raise ValueError('Unrecognized domain action')
     if action == 'rename':
@@ -817,6 +822,11 @@ def decide(domain: str, action: str, new_domain: str = "",
         try:
             existing = conn.execute("SELECT * FROM domains WHERE domain=?",
                                     (domain,)).fetchone()
+            if expected_request_id is not None:
+                if (existing is None or existing["status"] != "pending"
+                        or existing["explicit_rule"] != 0
+                        or existing["request_id"] != expected_request_id):
+                    raise ValueError("Request is stale; refresh the dashboard")
             request_id = (existing["request_id"] if existing and existing["request_id"]
                           else secrets.token_hex(12))
             snapshot_url = (safe_request_origin(existing["last_requested_url"])
