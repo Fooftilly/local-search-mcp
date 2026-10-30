@@ -130,7 +130,8 @@ class DashboardTemplateTests(unittest.TestCase):
             snapshot = admin_ui.live_snapshot(view="policy")
         self.assertIn("example.org", snapshot["activity_html"])
         self.assertNotIn("PRIVATE SEARCH", snapshot["activity_html"])
-        self.assertIn("activity_summary_html", snapshot)
+        self.assertNotIn("activity_summary_html", snapshot)
+        self.assertIn("service_rows_html", snapshot)
         self.assertEqual(history_read.call_args.kwargs["reveal_queries"], False)
 
     def test_history_filters_remain_html_escaped(self):
