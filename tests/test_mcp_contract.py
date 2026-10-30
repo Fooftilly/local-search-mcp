@@ -122,6 +122,56 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("safe text", audit)
         self.assertEqual(sum(x["url"] == "https://example.com/article" for x in events), 2)
 
+    async def test_image_metadata_opt_in_over_real_mcp_and_private_history(self):
+        calls = []
+        original = httpx.Client
+        def handler(request):
+            calls.append(request.url.path)
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": [
+                    {"name": "bing images", "enabled": True,
+                     "categories": ["images"]},
+                ]})
+            return httpx.Response(200, json={"results": [
+                {"url": "https://example.com/photo", "title": "Landscape",
+                 "category": "images", "engine": "bing images",
+                 "img_src": "https://cdn.example.com/private-image.jpg",
+                 "thumbnail_src": "https://thumb.example.com/view.jpg",
+                 "resolution": "640x480"}
+            ]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler),
+                            trust_env=False)
+        with patch.object(bridge.httpx, "Client", side_effect=factory):
+            async with Client(bridge.mcp) as client:
+                tool = next(t for t in await client.list_tools()
+                            if t.name == "web_search")
+                self.assertEqual(
+                    tool.inputSchema["properties"]["include_image_metadata"]["default"],
+                    False)
+                standard = await client.call_tool("web_search", {
+                    "query": "public landscape image", "categories": "images",
+                })
+                enriched = await client.call_tool("web_search", {
+                    "query": "public landscape image", "categories": "images",
+                    "include_image_metadata": True,
+                })
+        self.assertFalse(standard.is_error)
+        self.assertFalse(enriched.is_error)
+        self.assertEqual(set(standard.data[0]), {"title", "url", "snippet", "engine"})
+        self.assertEqual(enriched.data[0]["image_url"],
+                         "https://cdn.example.com/private-image.jpg")
+        self.assertEqual(enriched.data[0]["thumbnail_url"],
+                         "https://thumb.example.com/view.jpg")
+        self.assertEqual(enriched.data[0]["source_page_url"],
+                         "https://example.com/photo")
+        self.assertEqual(enriched.data[0]["image_width"], 640)
+        self.assertEqual(calls, ["/config", "/search"] * 2)
+        audit = (Path(self.tmp.name) / "history.jsonl").read_text()
+        self.assertNotIn("private-image", audit)
+        self.assertNotIn("thumb.example", audit)
+        self.assertNotIn("include_image_metadata", audit)
+
     async def test_search_published_date_opt_in_over_actual_mcp(self):
         seen = []
         original = httpx.Client

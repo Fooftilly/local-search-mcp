@@ -241,6 +241,7 @@ def _run_search(params: dict, max_results: int, *,
                 ranking: str = "searxng",
                 include_published_date: bool = False,
                 include_search_status: bool = False,
+                include_image_metadata: bool = False,
                 allowed_result_domains: tuple[tuple[str, bool], ...] = ()) -> list[dict] | dict:
     try:
         with on_demand.lease("searxng"):
@@ -248,6 +249,7 @@ def _run_search(params: dict, max_results: int, *,
                                        ranking=ranking,
                                        include_published_date=include_published_date,
                                        include_search_status=include_search_status,
+                                       include_image_metadata=include_image_metadata,
                                        allowed_result_domains=allowed_result_domains)
     except on_demand.BackendUnavailable:
         return {"success": False, "status": "upstream_unavailable",
@@ -400,6 +402,7 @@ def _run_search_network(params: dict, max_results: int, *,
                         ranking: str = "searxng",
                         include_published_date: bool = False,
                         include_search_status: bool = False,
+                        include_image_metadata: bool = False,
                         allowed_result_domains: tuple[tuple[str, bool], ...] = ()) -> list[dict] | dict:
     with httpx.Client(timeout=upstream_settings.effective_timeout("searxng_seconds"),
                       trust_env=False) as client:
@@ -484,6 +487,7 @@ def _run_search_network(params: dict, max_results: int, *,
     result = enrich_search_results(
         valid_rows, max_results, deduplicate=deduplicate, ranking=ranking,
         include_published_date=include_published_date,
+        include_image_metadata=include_image_metadata,
     )
     if include_search_status:
         diagnostic = _search_failure_status(payload)
@@ -506,7 +510,8 @@ def web_search(query: str, max_results: int = 8, language: str = "",
                ranking: Literal["searxng", "source_count"] = "searxng",
                include_published_date: bool = False,
                include_search_status: bool = False,
-               allowed_result_domains: str = "") -> list[dict] | dict:
+               allowed_result_domains: str = "",
+               include_image_metadata: bool = False) -> list[dict] | dict:
     """Search SearXNG, with optional URL deduplication and source attribution.
 
     Defaults preserve SearXNG order and the historic four-field result shape.
@@ -519,6 +524,9 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     Set include_search_status=true for an uncached diagnostic wrapper with
     bounded SearXNG-reported unresponsive provider names; absent failure
     reports do not prove exhaustive coverage. No extra provider requests.
+    Set include_image_metadata=true for validated, HTTPS-only image and
+    thumbnail candidates from upstream image results; no downloads or
+    crawler approvals. This does not verify image content or licenses.
     allowed_result_domains filters only already-returned results:
     "gov.me" matches only that host, "*.gov.me" matches child hosts only.
     It never changes provider selection or domain approvals.
@@ -534,6 +542,8 @@ def web_search(query: str, max_results: int = 8, language: str = "",
         raise ValueError("include_published_date must be a boolean")
     if not isinstance(include_search_status, bool):
         raise ValueError("include_search_status must be a boolean")
+    if not isinstance(include_image_metadata, bool):
+        raise ValueError("include_image_metadata must be a boolean")
     if not isinstance(ranking, str) or ranking not in ("searxng", "source_count"):
         raise ValueError("ranking must be searxng or source_count")
     if ranking == "source_count" and not deduplicate:
@@ -552,13 +562,14 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     key = None if private or include_search_status else (
         "search", SEARXNG_URL, tuple(sorted(params.items())),
         max_results, deduplicate, ranking, include_published_date,
-        allowed_hosts,
+        include_image_metadata, allowed_hosts,
     )
     return request_cache.run(
         "search", key, lambda: _run_search(
             params, max_results, deduplicate=deduplicate, ranking=ranking,
             include_published_date=include_published_date,
             include_search_status=include_search_status,
+            include_image_metadata=include_image_metadata,
             allowed_result_domains=allowed_hosts),
         ttl=lambda: cache_settings.effective_ttl('search_seconds'), fresh=fresh, should_store=lambda r: isinstance(r, list),
     )

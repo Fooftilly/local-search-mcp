@@ -14,6 +14,7 @@ The MCP tool remains compatible with existing `web_search(query, max_results=8)`
 | `deduplicate` | `false` | Boolean | Local opt-in result processing |
 | `ranking` | `searxng` | `searxng` or `source_count` (requires `deduplicate=true`) | Local stable ordering |
 | `include_published_date` | `false` | Boolean | Local opt-in upstream date-only metadata |
+| `include_image_metadata` | `false` | Boolean | Opt-in, validated image/thumbnail URL metadata from image-category results |
 | `include_search_status` | `false` | Boolean | Local opt-in provider-failure status (not forwarded) |
 | `allowed_result_domains` | Empty | Up to 8 comma-separated exact public hosts or `*.host` for subdomains only | Local post-result filtering (not forwarded) |
 
@@ -28,6 +29,54 @@ This does **not** replace the operator's `./setup.sh --search-engines` workflow 
 ```bash
 fastmcp call http://127.0.0.1:8790/mcp web_search query='recent science' max_results=5 language=en categories=science time_range=month --auth none
 fastmcp call http://127.0.0.1:8790/mcp web_search query='linux' max_results=8 engines=qwant page=2 --auth none
+```
+
+## Optional image URLs and thumbnails
+
+The operator's 2026-10-30 read-only SearXNG `/search?categories=images&format=json`
+sample confirmed `img_src`, `thumbnail_src`, `resolution`, and `source` are
+present as **strings** in Bing Images and Pinterest records. It did not establish
+actual dimension values, stable licensing metadata or DuckDuckGo's raw field
+availability. This feature is deliberately limited to validated image URLs and
+strictly parsed dimensions, not image retrieval or image analysis.
+
+Set `include_image_metadata=true` on `web_search(categories="images")`
+(or a deliberately selected image engine) to add these optional fields **only**
+to upstream results marked `category="images"`:
+
+- `image_url`: the validated upstream `img_src` image candidate
+- `thumbnail_url`: the validated upstream `thumbnail_src` candidate
+- `source_page_url`: the validated HTTPS source-page `url` from that **same**
+  result, separate from the existing `url` field
+- `image_width` / `image_height`: positive integers only when the same
+  result reports an exact `WxH` `resolution` (both 1–20,000 pixels)
+
+Each image/thumbnail candidate must be an at-most-2,048-character ASCII
+HTTPS URL with a public-looking DNS hostname, no credentials, local/IP host,
+nonstandard port, ambiguous IDN, control/whitespace, raw backslash or encoded
+control characters. Missing, invalid or ambiguous fields are **omitted**,
+never guessed. A valid source-page alias is only added when at least one
+validated image or thumbnail candidate exists. Ordinary non-image hits
+never acquire image metadata merely because a search filter requests images.
+Other upstream image fields (e.g. `source`, `img_format`, `thumbnail`,
+`metadata`) are not copied or treated as license evidence.
+
+When `deduplicate=true`, image URL metadata belongs **only to the primary
+first-seen result**. Later duplicate search results never add or replace image
+URLs, thumbnails or dimensions for another provider. With the flag omitted,
+the established four-field response and prior optional search outputs remain
+unchanged. The opt-in has its own in-memory cache variant and is not sent to
+SearXNG as an API parameter or recorded in private history.
+
+**Security boundary:** These are untrusted, provider-reported URL *strings*.
+Listing them neither verifies that an image exists or is copyright-cleared
+nor downloads, crawls, approves, DNS-resolves or follows them. If a later
+operation needs to fetch the source, it must separately pass existing
+operator domain-approval, redirect, and guarded crawler security checks.
+The image candidate URLs do **not** grant permission for image downloads.
+
+```bash
+fastmcp call http://127.0.0.1:8790/mcp web_search query='Montenegro mountain landscape photography' categories=images include_image_metadata=true --auth none
 ```
 
 ## Optional upstream publication-date metadata

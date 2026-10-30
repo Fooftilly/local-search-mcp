@@ -536,6 +536,85 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn("published_date", dated[1])
 
 
+    def test_opt_in_image_metadata_has_separate_cache_and_no_extra_requests(self):
+        paths = []
+        original = httpx.Client
+        def handler(request):
+            paths.append(request.url.path)
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": [
+                    {"name": "bing images", "enabled": True,
+                     "categories": ["images", "web"]},
+                ]})
+            return httpx.Response(200, json={"results": [{
+                "title": "Public photo", "url": "https://example.com/gallery",
+                "content": "", "engine": "bing images", "category": "images",
+                "img_src": "https://cdn.example.com/photo.jpg",
+                "thumbnail_src": "https://thumb.example.com/small.jpg",
+                "resolution": "1280x720",
+            }]})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler),
+                            trust_env=False)
+        with patch.object(self.module.httpx, "Client", side_effect=client):
+            plain = self.module.web_search("public image data", categories="images")
+            image = self.module.web_search("public image data",
+                                           categories="images",
+                                           include_image_metadata=True)
+            cached = self.module.web_search("public image data",
+                                            categories="images",
+                                            include_image_metadata=True)
+            again = self.module.web_search("public image data", categories="images")
+            with self.assertRaisesRegex(ValueError, "include_image_metadata"):
+                self.module.web_search("image data", include_image_metadata=1)
+        self.assertEqual(set(plain[0]), {"title", "url", "snippet", "engine"})
+        self.assertEqual(plain, again)
+        self.assertEqual(image, cached)
+        self.assertEqual(image[0]["image_url"], "https://cdn.example.com/photo.jpg")
+        self.assertEqual(image[0]["source_page_url"],
+                         "https://example.com/gallery")
+        self.assertEqual(image[0]["image_height"], 720)
+        self.assertEqual(paths, ["/config", "/search"] * 2)
+        self.assertEqual(len(self.module.request_cache._CACHE), 2)
+
+    def test_opt_in_image_metadata_in_search_status_and_domain_filter(self):
+        original = httpx.Client
+        calls = []
+        def handler(request):
+            calls.append(request.url.path)
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": [
+                    {"name": "pinterest", "enabled": True,
+                     "categories": ["images"]},
+                ]})
+            return httpx.Response(200, json={"results": [
+                {"url": "https://images.example.org/gallery", "title": "Image",
+                 "engine": "pinterest", "category": "images",
+                 "img_src": "https://cdn.example.net/a.jpg",
+                 "thumbnail_src": "https://thumb.example.net/a.jpg"},
+                {"url": "https://outside.example.com/gallery", "title": "Other",
+                 "engine": "pinterest", "category": "images",
+                 "img_src": "https://cdn.example.net/b.jpg"},
+            ], "unresponsive_engines": []})
+        def client(**kwargs):
+            return original(transport=httpx.MockTransport(handler),
+                            trust_env=False)
+        with (patch.object(self.module.httpx, "Client", side_effect=client),
+              patch.object(self.module.domain_policy, "request",
+                           side_effect=AssertionError("no approval writes")),
+              patch.object(self.module.domain_policy.socket, "getaddrinfo",
+                           side_effect=AssertionError("no DNS"))):
+            response = self.module.web_search(
+                "public non-google photography", categories="images",
+                include_image_metadata=True, include_search_status=True,
+                allowed_result_domains="images.example.org")
+        self.assertTrue(response["success"])
+        self.assertEqual(response["status"], "ok")
+        self.assertEqual(len(response["results"]), 1)
+        self.assertEqual(response["results"][0]["image_url"],
+                         "https://cdn.example.net/a.jpg")
+        self.assertEqual(calls, ["/config", "/search"])
+
     def test_mixed_category_and_engine_selectors_fail_before_upstream(self):
         cases = [
             {"categories": "images", "engines": "bing images"},
