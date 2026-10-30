@@ -173,7 +173,10 @@ returns an actionable error instead of silently cancelling.
 
 A confirmed wake is **not** a settings change. You must still separately
 type `APPLY` to edit the managed engine block and perform its scoped
-restart. A wake may leave SearXNG running until ordinary managed idle or
+restart. Safe parenthesized upstream engine names are retained by the
+wizard and serialized as quoted YAML values; unrepresentable Google-named
+inventory rows cause a no-change error instead of a misleading claim that
+every Google engine was excluded. A wake may leave SearXNG running until ordinary managed idle or
 an attended stop; the wizard does not force an immediate shutdown, since
 another MCP client may now be using it. No engine selection alters domain
 approvals or intentionally enables Google providers.
