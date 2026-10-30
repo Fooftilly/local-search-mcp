@@ -37,7 +37,7 @@ Notification.permission = "granted";
 Notification.requestPermission = async () => "granted";
 
 function createTab(initialDomains, view = "policy", query = "", activeFilter,
-                   activePage) {
+                   activePage, activeSort) {
   const state = { domains: [...initialDomains], timers: [], handlers: {},
                   nextSnapshotUs: null, nextSnapshotRun: null, pendingOverride: null,
                   historyRows: "history: before", historyBars: "bars: before",
@@ -83,7 +83,8 @@ function createTab(initialDomains, view = "policy", query = "", activeFilter,
     documentElement: { dataset: {
       liveView: view,
       ...(activeFilter === undefined ? {} : { reviewQuery: activeFilter }),
-      ...(activePage === undefined ? {} : { reviewPage: activePage })
+      ...(activePage === undefined ? {} : { reviewPage: activePage }),
+      ...(activeSort === undefined ? {} : { reviewSort: activeSort })
     } },
     activeElement: null,
     getElementById: element
@@ -437,6 +438,22 @@ async function main() {
   assert.equal(pageThree.state.lastEndpoint,
                "/live?view=policy&q=example.net&page=2");
   pageThree.close();
+
+  // Page, domain filter, and triage order must all survive POST-like views
+  // and live polling, without granting or denying access.
+  const orderedTab = createTab([], "policy", "", "example.net", "2", "frequent");
+  await settle();
+  assert.equal(orderedTab.state.lastEndpoint,
+               "/live?view=policy&q=example.net&page=2&sort=frequent");
+  await poll(orderedTab, 429000);
+  assert.equal(orderedTab.state.lastEndpoint,
+               "/live?view=policy&q=example.net&page=2&sort=frequent");
+  orderedTab.close();
+  const oldestTab = createTab([], "policy", "", "example.net", "1", "oldest");
+  await settle();
+  assert.equal(oldestTab.state.lastEndpoint,
+               "/live?view=policy&q=example.net&sort=oldest");
+  oldestTab.close();
 
   // Simulate an unclean browser exit: a tab never receives pagehide and
   // leaves an orphaned presence key behind. Explicitly disabling from a
