@@ -8,7 +8,13 @@
 <p class="subtle" role="status" id="live-status">Live updates starting · manual refresh works without JavaScript.</p>
 <p class="subtle">Showing at most 200 pending entries (use the filter under Rules to narrow by host). Agent-created queue entries are limited to ${max_pending_total} total, ${max_pending_global_hour} globally per hour, ${max_pending_per_site} per registrable domain and ${max_pending_site_hour} new hosts per site per hour. Manual allow/deny remains available even when the queue is full. Existing entries are never silently removed.</p>
 <div class="panel compact-bulk"><h3>Batch decisions</h3>
-<p>Select up to ${max_bulk_decisions} pending rows below. Decisions are atomic: any stale request invalidates the whole selection. Explicit child exceptions are preserved; scope and duration apply to every selection.</p>
+<p>Select up to ${max_bulk_decisions} pending rows below. Shortcuts never approve domains.</p>
+<div id="bulk-selection-tools" class="bulk-selection-tools" data-max="${max_bulk_decisions}" hidden>
+<button id="bulk-select-visible" type="button">Select first ${max_bulk_decisions} visible</button>
+<button id="bulk-clear-selection" type="button">Clear selection</button>
+<span id="bulk-selection-count" role="status" aria-live="polite" aria-atomic="true">0 selected</span>
+</div>
+<p> Decisions are atomic: any stale request invalidates the whole selection. Explicit child exceptions are preserved; scope and duration apply to every selection.</p>
 <form id="bulk-form" method="post" action="/bulk">
 <input type="hidden" name="csrf" value="${csrf}">
 <label>Scope <select name="scope" required><option value="exact" selected>Exact host only</option><option value="subdomains">Host + subdomains</option></select></label>

@@ -47,6 +47,24 @@ class DashboardTemplateTests(unittest.TestCase):
         self.assertIn('<select name="expires_minutes" required>', new_domain)
         self.assertIn('<option value="" selected disabled>Choose duration</option>', new_domain)
 
+    def test_bulk_shortcuts_are_opt_in_and_leave_the_bulk_post_explicit(self):
+        with (patch.object(admin_ui.policy, "counts",
+                           return_value={"pending": 0, "allowed": 0, "denied": 0}),
+              patch.object(admin_ui.policy, "entries", return_value=[])):
+            page = admin_ui.render()
+        self.assertIn('id="bulk-selection-tools"', page)
+        self.assertIn('data-max="25" hidden', page)
+        self.assertIn('id="bulk-select-visible" type="button"', page)
+        self.assertIn('id="bulk-clear-selection" type="button"', page)
+        self.assertIn('id="bulk-selection-count" role="status" aria-live="polite"', page)
+        self.assertIn('id="bulk-form" method="post" action="/bulk"', page)
+        self.assertIn('name="csrf"', page)
+        self.assertIn('name="action" value="allow"', page)
+        self.assertIn('name="action" value="deny"', page)
+        self.assertIn('<option value="exact" selected>', page)
+        self.assertIn('<option value="60" selected>', page)
+        self.assertNotIn('<script>', page)
+
     def test_pending_row_has_bounded_one_click_decisions_and_advanced_options(self):
         row = {
             "domain": "example.org", "status": "pending", "request_count": 3,
