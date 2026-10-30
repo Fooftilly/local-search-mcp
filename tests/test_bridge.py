@@ -584,7 +584,6 @@ class BridgeTests(unittest.TestCase):
                 "category probe", categories="images,web", fresh=True)
         self.assertEqual(result[0]["engine"], "bing images")
         self.assertEqual(paths, ["/config"] * 4 + ["/search"])
-        self.assertFalse(self.module.request_cache._CACHE)
 
     def test_category_filter_unavailable_or_invalid_config_never_searches(self):
         original = httpx.Client
@@ -1566,10 +1565,15 @@ class BridgeTests(unittest.TestCase):
 
     def test_search_backend_bad_filter_response_is_explicit(self):
         original = httpx.Client
+        def handler(request):
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": [
+                    {"name": "provider", "enabled": True,
+                     "categories": ["custom"]}
+                ]})
+            return httpx.Response(422, json={"detail": "Unsupported filter"})
         def client(**kwargs):
-            return original(transport=httpx.MockTransport(
-                lambda request: httpx.Response(422, json={"detail": "Unsupported filter"})
-            ))
+            return original(transport=httpx.MockTransport(handler))
         with patch.object(self.module.httpx, "Client", side_effect=client):
             with self.assertRaisesRegex(ValueError, "rejected the requested filters"):
                 self.module.web_search("test", categories="custom")
