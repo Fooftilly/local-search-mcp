@@ -190,7 +190,7 @@ def live_snapshot(query='', view='policy', history_filters=None,
         }
         if include_overview:
             result['operations_html'] = operations_overview_html(overview)
-            result['activity_summary_html'] = history_summary_html(overview or [])
+            result['activity_summary_html'] = overview_summary_html(overview)
         return result
 
 
@@ -199,6 +199,13 @@ def _overview_history_metrics():
         return history_index.summarize_history(hours=24)
     except (OSError, ValueError, sqlite3.Error):
         return None
+
+
+def overview_summary_html(metrics):
+    if metrics is None:
+        return ('<tr><td colspan="5">Operational history unavailable; '
+                'check local configuration.</td></tr>')
+    return history_summary_html(metrics)
 
 
 def operations_overview_html(metrics):
@@ -475,7 +482,7 @@ def render(query='', message='', kind='success'):
     # never opts into stored query or requested-page path disclosure.
     activity_html = history_items_html(show_queries=False)
     overview = _overview_history_metrics()
-    activity_summary = history_summary_html(overview or [])
+    activity_summary = overview_summary_html(overview)
     operations_html = operations_overview_html(overview)
     service_rows = service_overview_rows()
     return render_template(
