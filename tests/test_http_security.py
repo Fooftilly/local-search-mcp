@@ -493,9 +493,11 @@ class DashboardHTTPTests(unittest.TestCase):
 
         # A history page beyond the pending dashboard's 20-page cap must
         # still be accepted by the same-origin live endpoint.
-        with patch.object(admin_ui.history_index, "summarize_history",
-                          return_value=[{"kind": "fetch", "status": "success",
-                                         "count": 526, "avg_duration_ms": 1}]), \
+        with patch.object(admin_ui.history_index, "dashboard_history_snapshot",
+                          return_value={"metrics": [
+                              {"kind": "fetch", "status": "success",
+                               "count": 526, "avg_duration_ms": 1}],
+                              "rows": [], "page": 21, "total": 526}), \
              patch.object(admin_ui, "history_items_html",
                           return_value="<tr><td>page 21</td></tr>"):
             code, body, _ = self.exchange(
