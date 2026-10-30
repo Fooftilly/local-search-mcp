@@ -182,6 +182,7 @@ class BatchAContractTests(unittest.IsolatedAsyncioTestCase):
                 for invalid in (
                     {"queries": ["alpha", "ALPHA"], "engines": "yahoo"},
                     {"queries": ["valid", "!google unsafe"], "engines": "yahoo"},
+                    {"queries": ["!google unsafe"]},
                     {"queries": ["a", "b", "c", "d", "e"]},
                     {"queries": ["a"], "engines": "yahoo", "categories": "images"},
                     {"queries": ["a"], "max_results": 9},
