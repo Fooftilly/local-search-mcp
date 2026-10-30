@@ -426,7 +426,7 @@ def section_with_security_context(
     with _LOCK:
         _purge_expired(time.monotonic())
         item = _CACHE.get(token)
-        if item is None:
+        if item is None or item[7] is not None:
             return ({"success": False, "status": "expired_or_unknown",
                      "reason": "Temporary document not found or expired; fetch the approved URL again."},
                     None, None)
