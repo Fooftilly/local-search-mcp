@@ -143,6 +143,7 @@ class DashboardTests(unittest.TestCase):
         with urlopen(base + "/?q=one.example.net", timeout=3) as response:
             filtered = response.read().decode("utf-8")
         self.assertIn('name="review_query" value="one.example.net"', filtered)
+        self.assertIn('data-review-query="one.example.net"', filtered)
         self.assertIn('name="q" value="one.example.net"', filtered)
         self.assertNotIn('aria-label="Select other.example.net"', filtered)
         first = next(x for x in policy.entries(status="pending")
@@ -153,6 +154,7 @@ class DashboardTests(unittest.TestCase):
         code, page = submit("/domain", fields)
         self.assertEqual(code, 200)
         self.assertIn('name="q" value="one.example.net"', page)
+        self.assertIn('data-review-query="one.example.net"', page)
         self.assertIn('one.example.net', page)
         self.assertNotIn('aria-label="Select other.example.net"', page)
         self.assertEqual(next(x["status"] for x in policy.entries()
@@ -170,7 +172,15 @@ class DashboardTests(unittest.TestCase):
             "review_query": "once.example.net"})
         self.assertEqual(code, 200)
         self.assertIn('name="q" value="once.example.net"', page)
+        self.assertIn('name="review_query" value="once.example.net"', page)
         self.assertNotIn('aria-label="Select other.example.net"', page)
+        # The grant-revocation form must also retain the active filter.
+        self.assertIn('name="action" value="revoke"', page)
+        code, page = submit("/once", {
+            "domain": once["domain"], "action": "revoke",
+            "review_query": "once.example.net"})
+        self.assertEqual(code, 200)
+        self.assertIn('name="q" value="once.example.net"', page)
 
         bulk = next(x for x in policy.entries(status="pending")
                     if x["domain"] == "bulk.example.net")
