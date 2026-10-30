@@ -144,7 +144,8 @@ def _history_filters(query, *, validate_text=True):
     return values
 
 
-def live_snapshot(query='', view='policy', history_filters=None):
+def live_snapshot(query='', view='policy', history_filters=None,
+                  include_overview=False):
     """Order loopback snapshots across threads, including out-of-order delivery.
 
     Each policy snapshot has a strictly increasing, safely representable
@@ -161,6 +162,10 @@ def live_snapshot(query='', view='policy', history_filters=None):
             metrics = []
         return {'history_html': history_items_html(**filters),
                 'history_summary_html': history_summary_html(metrics)}
+    # Aggregate history is read only on an explicit, less-frequent overview
+    # poll. Avoid repeating a full history sync on every ten-second refresh.
+    overview = (_overview_history_metrics()
+                if include_overview else None)
     global _LAST_LIVE_SNAPSHOT_US
     with _LIVE_SNAPSHOT_LOCK:
         pending_rows = policy.entries(query, limit=200, status='pending')
@@ -170,7 +175,7 @@ def live_snapshot(query='', view='policy', history_filters=None):
         counts = policy.counts()
         _LAST_LIVE_SNAPSHOT_US = max(
             time.time_ns() // 1000, _LAST_LIVE_SNAPSHOT_US + 1)
-        return {
+        result = {
             'snapshot_run': _LIVE_SNAPSHOT_RUN,
             'snapshot_us': _LAST_LIVE_SNAPSHOT_US,
             'counts': counts,
@@ -183,13 +188,45 @@ def live_snapshot(query='', view='policy', history_filters=None):
             'service_rows_html': service_overview_rows(),
             'pending_domains': domains,
         }
+        if include_overview:
+            result['operations_html'] = operations_overview_html(overview)
+            result['activity_summary_html'] = overview_summary_html(overview)
+        return result
 
 
 def _overview_history_metrics():
     try:
         return history_index.summarize_history(hours=24)
     except (OSError, ValueError, sqlite3.Error):
-        return []
+        return None
+
+
+def overview_summary_html(metrics):
+    if metrics is None:
+        return ('<tr><td colspan="5">Operational history unavailable; '
+                'check local configuration.</td></tr>')
+    return history_summary_html(metrics)
+
+
+def operations_overview_html(metrics):
+    """Aggregate, redacted 24h counts only; no URLs, domains or queries."""
+    if metrics is None:
+        return ('<p class="subtle" role="status">Operational history is '
+                'unavailable. Existing permissions and recent activity '
+                'remain accessible.</p>')
+    totals = {
+        'Operations': sum(int(x['count']) for x in metrics),
+        'Searches': sum(int(x['count']) for x in metrics
+                        if x['kind'] == 'search'),
+        'Fetches': sum(int(x['count']) for x in metrics
+                       if x['kind'] == 'fetch'),
+        'Non-success outcomes': sum(int(x['count']) for x in metrics
+                                    if x['status'] != 'success'),
+    }
+    return ''.join(
+        '<div class="stat"><span>' + label +
+        '</span><b>' + str(value) + '</b></div>'
+        for label, value in totals.items())
 
 
 def service_overview_rows():
@@ -444,7 +481,9 @@ def render(query='', message='', kind='success'):
     # Reuse the existing privacy-preserving history index. The overview
     # never opts into stored query or requested-page path disclosure.
     activity_html = history_items_html(show_queries=False)
-    activity_summary = history_summary_html(_overview_history_metrics())
+    overview = _overview_history_metrics()
+    activity_summary = overview_summary_html(overview)
+    operations_html = operations_overview_html(overview)
     service_rows = service_overview_rows()
     return render_template(
         "policy",
@@ -452,7 +491,7 @@ def render(query='', message='', kind='success'):
         denied_count=c["denied"], dashboard_port=PORT, csrf=esc(CSRF),
         once_html=once_html, once_log=once_log,
         activity_html=activity_html, activity_summary=activity_summary,
-        service_rows=service_rows,
+        operations_html=operations_html, service_rows=service_rows,
         max_pending_total=policy.MAX_PENDING_TOTAL,
         max_pending_global_hour=policy.MAX_NEW_PENDING_GLOBAL_PER_HOUR,
         max_pending_per_site=policy.MAX_PENDING_PER_SITE,
@@ -756,11 +795,17 @@ class Handler(BaseHTTPRequestHandler):
             view=query.get('view',['policy'])[0]
             if view not in ('policy','history'):return self._respond(400,'Invalid view')
             q=query.get('q',[''])[0][:100]
+            overview_flag = query.get('overview', ['0'])
+            if (len(overview_flag) != 1
+                    or overview_flag[0] not in ('0', '1')
+                    or (view == 'history' and overview_flag[0] != '0')):
+                return self._respond(400, 'Invalid operational overview option')
             try:
                 filters = _history_filters(query) if view == 'history' else None
             except ValueError:
                 return self._respond(400, 'Invalid history filter')
-            return self._respond(200,json.dumps(live_snapshot(q,view,filters)),
+            return self._respond(200,json.dumps(live_snapshot(
+                q, view, filters, include_overview=overview_flag[0] == '1')),
                                  'application/json; charset=utf-8')
         if path.path=='/settings':
             if not self._read_origin_valid():return self._respond(403,'Forbidden')

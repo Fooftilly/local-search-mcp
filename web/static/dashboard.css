@@ -42,3 +42,10 @@ h3{font-size:15px;margin:0 0 12px}
 .bulk-selection-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0 12px}
 .bulk-selection-tools button:disabled{cursor:not-allowed;opacity:.55}
 #bulk-selection-count{font-size:12px;color:#c5d4e4}
+
+/* Historical operation totals are separate from domain permission counts. */
+.operations-overview{padding:12px 16px}
+.operations-overview h2{margin:0}
+.operations-overview .compact-stats{margin:8px 0 0;gap:8px}
+.operations-overview .compact-stats .stat{padding:10px 14px;min-width:125px}
+.operations-overview .compact-stats .stat b{font-size:20px;margin-top:4px}

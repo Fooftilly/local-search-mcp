@@ -2,6 +2,11 @@
 <header><div class="brand">LOCAL SEARCH MCP</div><nav aria-label="Operator workspace"><a href="#review">Review</a><a href="#decisions">Rules</a><a href="#activity">Activity</a><a href="#configuration">Tools &amp; settings</a><a href="/status">Diagnostics</a></nav></header>
 <main><h1 id="review">Operator workspace</h1><p>Review new requests, inspect recent local activity, and manage domain rules from one screen. Only this loopback dashboard can approve domains; the MCP tools cannot grant permissions.</p>${alert}
 <section class="stats" aria-label="Domain decision totals"><div class="stat"><span>Awaiting review</span><b id="live-count-pending">${pending_count}</b></div><div class="stat"><span>Allowed</span><b id="live-count-allowed">${allowed_count}</b></div><div class="stat"><span>Denied</span><b id="live-count-denied">${denied_count}</b></div></section>
+<section class="panel operations-overview" aria-label="24 hour operational activity">
+<div class="row section-heading"><h2>Operations · last 24 hours</h2><a href="/history?hours=24">Explore history</a></div>
+<p class="subtle">Read-only counts from locally retained history. All outcomes are included in totals; non-success includes blocked, pending, and errors. No queries, fetched URL paths, or hostnames are displayed.</p>
+<div class="stats compact-stats" id="live-operations">${operations_html}</div>
+</section>
 <section class="panel service-overview" aria-label="Loopback service overview"><div class="row section-heading"><h2>Services</h2><a href="/status">Full diagnostics</a></div><p class="subtle">Read-only TCP reachability, not proof of backend health. Checking service status never starts Docker.</p><div class="scroll"><table><thead><tr><th>Service</th><th>Transport</th><th>Source</th></tr></thead><tbody id="live-services">${service_rows}</tbody></table></div></section>
 <section aria-label="Pending approval queue">
 <div class="row" style="justify-content:space-between"><h2>Pending requests</h2><div><form method="get" action="/"><input name="q" value="${query_escaped}" placeholder="Filter domains" aria-label="Filter pending and saved domains"><button type="submit">Filter</button></form> <button type="button" id="notification-toggle">Enable desktop notifications</button> <a href="${refresh_href}">Refresh</a></div></div>
@@ -36,7 +41,7 @@ ${table_head}<tbody id="live-decided">${other_rows}</tbody></table></div>
 <div class="row section-heading"><h2>Recent MCP activity</h2><a href="/history">All history &amp; filters</a></div>
 <p class="subtle">The latest 25 indexed operations; domains and outcomes only. Search terms and fetched URL paths stay hidden here, even when a separate history page is set to reveal them.</p>
 <div class="scroll"><table><thead><tr><th>UTC time</th><th>Operation</th><th>Status</th><th>Domain</th><th>Duration (ms)</th></tr></thead><tbody id="live-activity">${activity_html}</tbody></table></div>
-<details class="panel"><summary>Activity breakdown · past 24 hours (page-load snapshot)</summary><div class="scroll"><table><thead><tr><th>Operation</th><th>Outcome</th><th>Relative volume</th><th>Count</th><th>Average ms</th></tr></thead><tbody id="live-activity-summary">${activity_summary}</tbody></table></div></details>
+<details class="panel"><summary>Activity breakdown · past 24 hours (refreshes about once a minute)</summary><div class="scroll"><table><thead><tr><th>Operation</th><th>Outcome</th><th>Relative volume</th><th>Count</th><th>Average ms</th></tr></thead><tbody id="live-activity-summary">${activity_summary}</tbody></table></div></details>
 <details class="panel"><summary>Recent local rule decisions</summary><h2>Recent local decisions</h2>
 <p class="subtle">Only the most recent 25 actions; no page bodies or URL query strings.</p>
 ${audit_html}

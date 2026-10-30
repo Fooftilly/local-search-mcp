@@ -105,6 +105,34 @@ class DashboardHTTPTests(unittest.TestCase):
             ).fetchall()]
         self.assertEqual(actions, ["allow", "deny", "rename", "delete"])
 
+    def test_optional_24h_overview_is_read_only_bounded_and_private(self):
+        policy.request("queued.example.org", "https://queued.example.org/SECRET")
+        baseline = {r["domain"]: r["status"] for r in policy.entries()}
+        for invalid in ("unexpected", "true", "-1", "1%26overview=0"):
+            with self.subTest(invalid=invalid):
+                self.assertEqual(self.exchange(
+                    "GET", "/live?view=policy&overview=" + invalid)[0], 400)
+        self.assertEqual(self.exchange(
+            "GET", "/live?view=policy&overview=1&overview=0")[0], 400)
+        self.assertEqual(self.exchange(
+            "GET", "/live?view=history&overview=1")[0], 400)
+        self.assertEqual(self.exchange(
+            "GET", "/live?view=policy&overview=1",
+            headers={"Origin": "http://other.example"})[0], 403)
+        default_status, default_bytes, _ = self.exchange("GET", "/live?view=policy")
+        self.assertEqual(default_status, 200)
+        default = json.loads(default_bytes)
+        self.assertNotIn("operations_html", default)
+        self.assertNotIn("activity_summary_html", default)
+        status, body, _ = self.exchange("GET", "/live?view=policy&overview=1")
+        self.assertEqual(status, 200)
+        overview = json.loads(body)
+        self.assertIn("Operations", overview["operations_html"])
+        self.assertIn("activity_summary_html", overview)
+        self.assertNotIn("SECRET", repr(overview))
+        self.assertEqual(
+            {r["domain"]: r["status"] for r in policy.entries()}, baseline)
+
     def test_host_origin_referer_fetch_metadata_and_csrf_fail_closed(self):
         """A forged browser request must not grant a domain approval."""
         origin = f"http://127.0.0.1:{self.port}"

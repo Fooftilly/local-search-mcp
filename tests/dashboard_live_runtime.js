@@ -41,6 +41,8 @@ function createTab(initialDomains, view = "policy", query = "", activeFilter) {
                   nextSnapshotUs: null, nextSnapshotRun: null, pendingOverride: null,
                   historyRows: "history: before", historyBars: "bars: before",
                   activityRows: "activity: before", serviceRows: "services: before",
+                  operationsRows: "operations: before", summaryRows: "summary: before",
+                  skipOverview: false,
                   bulkBoxes: [], nextBulkBoxes: null, lastEndpoint: null };
   const targets = new Map();
   function element(id) {
@@ -112,7 +114,11 @@ function createTab(initialDomains, view = "policy", query = "", activeFilter) {
         history_html: state.historyRows,
         history_summary_html: state.historyBars,
         activity_html: state.activityRows,
-        service_rows_html: state.serviceRows
+        service_rows_html: state.serviceRows,
+        ...(endpoint.includes("&overview=1") && !state.skipOverview ? {
+          operations_html: state.operationsRows,
+          activity_summary_html: state.summaryRows
+        } : {})
       })
     };
   };
@@ -154,6 +160,8 @@ async function main() {
   assert.equal(notifications.length, 0, "existing backlog must not alert");
   assert.equal(tab.element("live-activity").innerHTML, "activity: before");
   assert.equal(tab.element("live-services").innerHTML, "services: before");
+  assert.equal(tab.element("live-operations").innerHTML, "server-rendered");
+  assert.equal(tab.element("live-activity-summary").innerHTML, "server-rendered");
   // The optional selection helpers must not submit or authorize anything.
   // They preserve the existing server-validated bulk form and its 25 cap.
   const select = tab.element("bulk-select-visible");
@@ -219,11 +227,24 @@ async function main() {
   let owed = JSON.parse(storage.get("local-search-mcp.notification-owed.v1"));
   assert.equal(owed.length, 1, "a delayed alert is retained");
 
-  for (const at of [130000, 140000, 150000, 160000]) {
+  for (const at of [130000, 140000, 150000]) {
     await poll(tab, at);
     assert.equal(notifications.length, 1, "no premature duplicate");
+    assert.doesNotMatch(tab.state.lastEndpoint, /&overview=1$/);
   }
+  tab.state.operationsRows = "operations: new 24h counts";
+  tab.state.summaryRows = "summary: new outcome breakdown";
+  await poll(tab, 160000);
+  assert.equal(notifications.length, 1, "no premature duplicate");
+  assert.match(tab.state.lastEndpoint, /&overview=1$/,
+               "24h summary requested on a slower minute cadence");
   await poll(tab, 170000);
+  assert.doesNotMatch(tab.state.lastEndpoint, /&overview=1$/,
+                      "successful overview refresh restarts the minute window");
+  assert.equal(tab.element("live-operations").innerHTML,
+               "operations: new 24h counts");
+  assert.equal(tab.element("live-activity-summary").innerHTML,
+               "summary: new outcome breakdown");
   assert.equal(notifications.length, 2, "owed alert must fire without new arrivals");
   owed = JSON.parse(storage.get("local-search-mcp.notification-owed.v1"));
   assert.equal(owed.length, 0);
@@ -232,6 +253,8 @@ async function main() {
   // produce a misleading notification about something no longer pending.
   tab.state.domains.push("approved.example");
   await poll(tab, 180000);
+  assert.doesNotMatch(tab.state.lastEndpoint, /&overview=1$/,
+                      "ten-second requests omit expensive history grouping");
   assert.equal(JSON.parse(storage.get("local-search-mcp.notification-owed.v1")).length, 1);
   tab.state.domains = tab.state.domains.filter(x => x !== "approved.example");
   await poll(tab, 190000);
