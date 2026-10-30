@@ -107,13 +107,8 @@ def _link_score(item: dict) -> int:
     return score
 
 
-def _select_links(raw: dict, base: str, *, budget: int = MAX_OUTPUT_BYTES) -> tuple[list[dict], int]:
-    """Deduplicate bounded crawl links before selecting a useful 24-item mix.
-
-    Preserve original order for <=24 unique URLs. On overflow, sort by an
-    explainable content-link heuristic, preserve source-order ties and reserve
-    at most two external candidates. A listing is never an approval or fetch.
-    """
+def _collect_link_candidates(raw: dict, base: str) -> list[dict]:
+    """Normalize/dedupe the same bounded upstream rows used by initial links."""
     candidates: list[dict] = []
     seen: dict[str, int] = {}
     for kind in ("internal", "external"):
@@ -142,6 +137,17 @@ def _select_links(raw: dict, base: str, *, budget: int = MAX_OUTPUT_BYTES) -> tu
             seen[target] = len(candidates)
             candidates.append(item)
 
+    return candidates
+
+
+def _select_links(raw: dict, base: str, *, budget: int = MAX_OUTPUT_BYTES) -> tuple[list[dict], int]:
+    """Deduplicate bounded crawl links before selecting a useful 24-item mix.
+
+    Preserve original order for <=24 unique URLs. On overflow, sort by an
+    explainable content-link heuristic, preserve source-order ties and reserve
+    at most two external candidates. A listing is never an approval or fetch.
+    """
+    candidates = _collect_link_candidates(raw, base)
     indexed = list(enumerate(candidates))
     overflowing = len(candidates) > MAX_LINKS
     if overflowing:
@@ -168,6 +174,55 @@ def _select_links(raw: dict, base: str, *, budget: int = MAX_OUTPUT_BYTES) -> tu
         chosen.sort(key=lambda pair: (-_link_score(pair[1]), pair[0]))
     return [row for _, row in chosen], len(candidates)
 
+
+
+MAX_RETAINED_LINKS = 96
+MAX_RETAINED_LINK_BYTES = 96_000
+
+
+def prepare_link_continuation(page: dict, base: str,
+                              already_returned: list[dict]) -> dict | None:
+    """Retain unseen, normalized links from the SAME approved crawl only.
+
+    The first response's 24 selections remain exactly as before. Continuation
+    orders remaining candidates by the established content-link score, with
+    original source order as a deterministic tie breaker.
+    """
+    raw = page.get("links")
+    if not isinstance(raw, dict):
+        return None
+    candidates = _collect_link_candidates(raw, base)
+    shown = {row.get("url") for row in already_returned if isinstance(row, dict)}
+    remaining = [(index, row) for index, row in enumerate(candidates)
+                 if row["url"] not in shown]
+    if not remaining:
+        return None
+    if len(candidates) > MAX_LINKS:
+        remaining.sort(key=lambda pair: (-_link_score(pair[1]), pair[0]))
+    entries = []
+    size = 0
+    for _, row in remaining:
+        weight = _size(row)
+        if len(entries) >= MAX_RETAINED_LINKS:
+            break
+        if size + weight > MAX_RETAINED_LINK_BYTES:
+            # An oversized higher-ranked link must not prevent later short
+            # valid candidates from filling the remaining bounded budget.
+            continue
+        entries.append(row)
+        size += weight
+    if not entries:
+        return None
+    capped = any(isinstance(raw.get(kind), list) and len(raw[kind]) > 100
+                 for kind in ("internal", "external"))
+    return {
+        "kind": "links",
+        "entries": entries,
+        "size_bytes": size,
+        "source_links_observed": len(candidates),
+        "retained_truncated": len(entries) < len(remaining) or capped,
+        "input_scan_capped": capped,
+    }
 
 
 # The RFC Editor info page exposes plain text, HTML and PDF under one
