@@ -39,7 +39,9 @@ Notification.requestPermission = async () => "granted";
 function createTab(initialDomains, view = "policy", query = "") {
   const state = { domains: [...initialDomains], timers: [], handlers: {},
                   nextSnapshotUs: null, nextSnapshotRun: null, pendingOverride: null,
-                  historyRows: "history: before", historyBars: "bars: before", lastEndpoint: null };
+                  historyRows: "history: before", historyBars: "bars: before",
+                  activityRows: "activity: before", activityBars: "counts: before",
+                  lastEndpoint: null };
   const targets = new Map();
   function element(id) {
     if (!targets.has(id)) {
@@ -88,7 +90,9 @@ function createTab(initialDomains, view = "policy", query = "") {
         pending_html: state.pendingOverride ?? "pending: " + domains.join(","),
         decided_html: "decided: " + domains.join(","),
         history_html: state.historyRows,
-        history_summary_html: state.historyBars
+        history_summary_html: state.historyBars,
+        activity_html: state.activityRows,
+        activity_summary_html: state.activityBars
       })
     };
   };
@@ -128,9 +132,15 @@ async function main() {
   const tab = createTab(["existing.example"]);
   await settle();
   assert.equal(notifications.length, 0, "existing backlog must not alert");
+  assert.equal(tab.element("live-activity").innerHTML, "activity: before");
+  assert.equal(tab.element("live-activity-summary").innerHTML, "counts: before");
+  tab.state.activityRows = "activity: refreshed";
+  tab.state.activityBars = "counts: refreshed";
 
   tab.state.domains.push("new.example");
   await poll(tab, 110000);
+  assert.equal(tab.element("live-activity").innerHTML, "activity: refreshed");
+  assert.equal(tab.element("live-activity-summary").innerHTML, "counts: refreshed");
   assert.equal(notifications.length, 1, "new request notifies immediately; " +
     JSON.stringify({ storage: [...storage.entries()],
                      status: tab.element("live-status").textContent }));
