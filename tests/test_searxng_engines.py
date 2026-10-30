@@ -547,6 +547,62 @@ class EngineChooserTests(unittest.TestCase):
                 "inventory is unavailable" if target.running
                 else "on-demand mode is disabled", err.getvalue())
 
+    def test_recommended_preset_rejects_unverified_running_inventory(self):
+        running = Target("searxng", "a" * 64, True, "no")
+        # An unreadable /config, or an inventory with no general provider,
+        # must not silently become the offline preset and reach APPLY.
+        image_only = [{"name": "bing images", "enabled": True,
+                       "categories": ("images",)}]
+        for rows, failure, expected in (
+            ([], None, "inventory is unavailable"),
+            (image_only, None, "Yahoo is not in"),
+            ([], e.EngineSetupError("PRIVATE_CONFIGURATION_ERROR"),
+             "inventory is unavailable"),
+        ):
+            with (self.subTest(rows=rows, failure=failure),
+                  patch.object(e.on_demand_docker, "_safe_target",
+                               return_value=running),
+                  patch.object(e, "_check_bind_mount"),
+                  patch.object(e, "live_engines", return_value=rows,
+                               side_effect=failure),
+                  patch.object(e, "_wake_for_engine_inventory",
+                               side_effect=AssertionError("must not wake")),
+                  patch.object(e, "apply",
+                               side_effect=AssertionError("must not mutate")),
+                  patch.object(e.os, "geteuid", return_value=1000),
+                  patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
+                  patch("builtins.input", side_effect=["1", "APPLY"]),
+                  contextlib.redirect_stdout(io.StringIO()),
+                  contextlib.redirect_stderr(io.StringIO()) as errors):
+                self.assertEqual(e.main(), 1)
+            self.assertIn(expected, errors.getvalue())
+            self.assertNotIn("PRIVATE_CONFIGURATION_ERROR", errors.getvalue())
+            self.assertEqual(self.file.read_text(), self.original)
+
+    def test_sleeping_recommended_preset_keeps_explicit_offline_fallback(self):
+        stopped = Target("searxng", "a" * 64, False, "no")
+        recorded = []
+        with (patch.object(e.on_demand_docker, "_safe_target",
+                           return_value=stopped),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e, "live_engines",
+                           side_effect=AssertionError("must remain asleep")),
+              patch.object(e, "_wake_for_engine_inventory",
+                           side_effect=AssertionError("must not wake")),
+              patch.object(e, "apply",
+                           side_effect=lambda selected, controlled:
+                               recorded.append((selected, controlled)) or "applied"),
+              patch.object(e.os, "geteuid", return_value=1000),
+              patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
+              patch("builtins.input", side_effect=["1", "APPLY"]),
+              contextlib.redirect_stdout(io.StringIO()) as output):
+            self.assertEqual(e.main(), 0)
+        self.assertEqual(recorded,
+                         [(e.PRESET, tuple(dict.fromkeys(
+                             (*e.PRESET, *e.KNOWN_UNRELIABLE))))])
+        self.assertIn("Backend asleep/unavailable", output.getvalue())
+        self.assertEqual(self.file.read_text(), self.original)
+
     def test_verified_wake_rechecks_target_ownership_and_never_writes_settings(self):
         stopped = Target("searxng", "a" * 64, False, "no")
         running = Target("searxng", "a" * 64, True, "no")
