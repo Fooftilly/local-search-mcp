@@ -12,7 +12,7 @@ import sqlite3
 import threading
 import time
 import unicodedata
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 import domain_policy as policy
 import policy_transfer
@@ -461,6 +461,7 @@ def render(query='', message='', kind='success'):
         pending_rows=pending or '<tr><td colspan="4">No pending requests.</td></tr>',
         max_bulk_decisions=policy.MAX_BULK_DECISIONS,
         query_escaped=query_escaped,
+        refresh_href=esc('/?q=' + quote(query[:100], safe='') if query else '/'),
         other_rows=other or '<tr><td colspan="4">No matching domains.</td></tr>',
         audit_html=audit_html,
         database_path=esc(policy.database_path()),
