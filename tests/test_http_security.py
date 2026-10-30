@@ -400,6 +400,92 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertNotIn("https://docs.example.org", str(cont))
         self.assertNotIn("document_id", str(cont))
 
+    def test_history_pagination_filters_visibility_and_rotation_safety(self):
+        from history_log import append_history, history_path
+        from datetime import datetime, timezone
+        import json
+        when = datetime.now(timezone.utc).isoformat()
+        for i in range(61):
+            if i % 2:
+                append_history({"time_utc": when, "kind": "fetch",
+                                "status": "success", "duration_ms": 7,
+                                "url": f"https://docs.example.org/private-page/{i:02d}"
+                                       "?token=DO_NOT_LEAK"})
+            else:
+                append_history({"time_utc": when, "kind": "search",
+                                "status": "success", "duration_ms": 10,
+                                "query": f"PRIVATE-SEARCH-{i:02d}"})
+        code, page, _ = self.exchange(
+            "GET", "/history?kind=fetch&show_queries=1")
+        self.assertEqual(code, 200)
+        self.assertIn(b'Showing 1', page)
+        self.assertIn(b'31 matching history events', page)
+        self.assertIn(b'Next 25</a>', page)
+        self.assertIn(b'/private-page/', page)
+        self.assertNotIn(b'token=DO_NOT_LEAK', page)
+        self.assertIn(b'show_queries=1', page)
+        status, hidden, _ = self.exchange(
+            "GET", "/history?kind=fetch&page=2")
+        self.assertEqual(status, 200)
+        self.assertIn(b'Showing 26', hidden)
+        self.assertNotIn(b'/private-page/', hidden)
+        self.assertIn(b'docs.example.org', hidden)
+        self.assertIn(b'Previous 25</a>', hidden)
+        status, revealed, _ = self.exchange(
+            "GET", "/history?kind=fetch&page=2&show_queries=1")
+        self.assertEqual(status, 200)
+        self.assertIn(b'/private-page/', revealed)
+        self.assertNotIn(b'token=DO_NOT_LEAK', revealed)
+        self.assertIn(b'page=1', revealed)
+        self.assertIn(b'show_queries=1', revealed)
+
+        status, data, _ = self.exchange(
+            "GET", "/live?view=history&kind=fetch&page=2&show_queries=1")
+        self.assertEqual(status, 200)
+        live = json.loads(data)
+        self.assertEqual(live["history_page"], 2)
+        self.assertEqual(live["history_html"].count("<tr>"), 6)
+        self.assertIn("page 2 of 2", live["history_pages_html"])
+        self.assertIn("https://docs.example.org/private-page/",
+                      live["history_html"])
+        self.assertNotIn("DO_NOT_LEAK", repr(live))
+
+        all_history = json.loads(self.exchange(
+            "GET", "/live?view=history&page=3")[1])
+        self.assertEqual(all_history["history_page"], 3)
+        self.assertEqual(all_history["history_html"].count("<tr>"), 11)
+        self.assertIn("page 3 of 3", all_history["history_pages_html"])
+        self.assertNotIn("PRIVATE-SEARCH", repr(all_history))
+        with self.subTest("pagination after rotation"):
+            self.assertEqual(self.exchange("GET", "/history?page=4")[0], 200)
+            # Incoming page 4 is clamped to the last valid page.
+            self.assertIn(b'data-history-page="3"',
+                          self.exchange("GET", "/history?page=4")[1])
+            source = history_path()
+            source.rename(source.with_name(source.name + ".1"))
+            append_history({"time_utc": when, "kind": "fetch",
+                            "status": "success", "duration_ms": 1,
+                            "url": "https://other.example.org/new-page"})
+            # Old records are still indexed while retained rotation exists.
+            self.assertIn(b'data-history-page="3"',
+                          self.exchange("GET", "/history?page=4")[1])
+            source.with_name(source.name + ".1").unlink()
+            after = json.loads(self.exchange(
+                "GET", "/live?view=history&page=3&show_queries=1")[1])
+            self.assertEqual(after["history_page"], 1)
+            self.assertNotIn("PRIVATE-SEARCH", repr(after))
+            self.assertNotIn("/private-page/", repr(after))
+
+        for invalid in ("0", "-1", "4001", "hello", "1%20OR%201", ""):
+            with self.subTest(page=invalid):
+                self.assertEqual(self.exchange(
+                    "GET", "/history?page=" + invalid)[0], 400)
+                self.assertEqual(self.exchange(
+                    "GET", "/live?view=history&page=" + invalid)[0], 400)
+        for url in ("/history?page=1&page=2",
+                    "/live?view=history&page=1&page=2"):
+            self.assertEqual(self.exchange("GET", url)[0], 400)
+
     def test_history_window_filters_and_live_summary_bars_are_safe(self):
         from datetime import timedelta
         from history_log import append_history
