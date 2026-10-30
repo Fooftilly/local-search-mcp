@@ -227,15 +227,20 @@ async function main() {
   let owed = JSON.parse(storage.get("local-search-mcp.notification-owed.v1"));
   assert.equal(owed.length, 1, "a delayed alert is retained");
 
-  for (const at of [130000, 140000, 150000, 160000]) {
+  for (const at of [130000, 140000, 150000]) {
     await poll(tab, at);
     assert.equal(notifications.length, 1, "no premature duplicate");
+    assert.doesNotMatch(tab.state.lastEndpoint, /&overview=1$/);
   }
   tab.state.operationsRows = "operations: new 24h counts";
   tab.state.summaryRows = "summary: new outcome breakdown";
-  await poll(tab, 170000);
+  await poll(tab, 160000);
+  assert.equal(notifications.length, 1, "no premature duplicate");
   assert.match(tab.state.lastEndpoint, /&overview=1$/,
                "24h summary requested on a slower minute cadence");
+  await poll(tab, 170000);
+  assert.doesNotMatch(tab.state.lastEndpoint, /&overview=1$/,
+                      "successful overview refresh restarts the minute window");
   assert.equal(tab.element("live-operations").innerHTML,
                "operations: new 24h counts");
   assert.equal(tab.element("live-activity-summary").innerHTML,
