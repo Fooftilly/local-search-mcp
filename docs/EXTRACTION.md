@@ -219,3 +219,29 @@ Opt-in structured results bypass the existing Markdown-only response cache,
 preventing response-shape confusion. Long-document continuation handles
 still contain only Markdown and metadata, not another stored link/table index.
 The same redirect, permissions and epoch checks gate any returned content.
+
+
+### Precise bounded passage extraction (opt-in)
+
+For an existing `document_id` returned by `web_fetch` (including
+`compact_chars` fetches), call
+`web_extract_section(document_id, start_offset, max_chars=3072)`.
+This returns an exact **1–8,000 character** Unicode slice from the same
+normalized Markdown already held temporarily in the bridge. Unlike
+`web_fetch_page`, a requested span can cross page boundaries, and the
+response need not return an entire 24K-character continuation page.
+
+The response includes `text`, `start_offset`, `end_offset`,
+`next_offset` (or null at end), `page` (containing the slice's starting
+position), `page_count`, `total_chars`, and source `url`.
+Character offsets are zero-based Python Unicode code-point positions
+in the normalized Markdown, matching `web_find` and heading outline
+offsets; they are not source HTML positions or UTF-8 bytes.
+
+The tool never recrawls, follows links, accesses files or creates a durable
+index. It uses the **same live authorization/revocation checks** as
+`web_fetch_page` and `web_find`: original and final domains,
+one-use proof, epoch change, TTL and eviction. Handle names, passage text
+and query text are absent from the private audit trail; reads are marked as
+`page` kind with `action=section`. A token expires after at most 15
+minutes and may be evicted sooner. No change to the original fetch defaults.

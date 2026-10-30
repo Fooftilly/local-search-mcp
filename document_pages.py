@@ -372,7 +372,7 @@ def find_with_security_context(
     with _LOCK:
         _purge_expired(time.monotonic())
         item = _CACHE.get(token)
-        if item is None:
+        if item is None or item[7] is not None:
             return ({"success": False, "status": "expired_or_unknown",
                      "reason": "Temporary document not found or expired; fetch the approved URL again."},
                     None, None)
@@ -401,6 +401,49 @@ def find_with_security_context(
                   "page_count": count, "matches": matches,
                   "match_count": len(matches), "has_more": has_more,
                   "next_offset": next_from if has_more else None}
+        return result, source_url, once_proof
+
+
+
+MAX_SECTION_CHARS = 8_000
+DEFAULT_SECTION_CHARS = 3_072
+
+
+def section_with_security_context(
+        token: str, start_offset: int, max_chars: int = DEFAULT_SECTION_CHARS
+) -> tuple[dict, str | None, tuple[str, str] | None]:
+    """Read an exact bounded Unicode span of an existing authorized document.
+
+    Return the private source and one-use context to the same bridge release
+    gate used for web_fetch_page/web_find. This never fetches or persists text.
+    """
+    if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
+        raise ValueError("Invalid document handle")
+    if type(start_offset) is not int or not 0 <= start_offset <= MAX_DOCUMENT_CHARS:
+        raise ValueError("start_offset must be from 0 to 1000000")
+    if type(max_chars) is not int or not 1 <= max_chars <= MAX_SECTION_CHARS:
+        raise ValueError("max_chars must be from 1 to 8000")
+    with _LOCK:
+        _purge_expired(time.monotonic())
+        item = _CACHE.get(token)
+        if item is None or item[7] is not None:
+            return ({"success": False, "status": "expired_or_unknown",
+                     "reason": "Temporary document not found or expired; fetch the approved URL again."},
+                    None, None)
+        expires_at, url, markdown, metadata, source_url, once_proof, first_page_chars, _tables = item
+        if start_offset > len(markdown):
+            raise ValueError("start_offset exceeds the document length")
+        end_offset = min(len(markdown), start_offset + max_chars)
+        result = {
+            "success": True, "url": url, "document_id": token,
+            "text": markdown[start_offset:end_offset],
+            "start_offset": start_offset, "end_offset": end_offset,
+            "next_offset": end_offset if end_offset < len(markdown) else None,
+            "page": page_for_offset(min(start_offset, max(0, len(markdown) - 1)),
+                                    first_page_chars),
+            "page_count": _page_count(len(markdown), first_page_chars),
+            "total_chars": len(markdown),
+        }
         return result, source_url, once_proof
 
 

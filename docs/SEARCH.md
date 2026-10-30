@@ -270,3 +270,48 @@ explicit-engine fail-closed preflight remain unchanged.
 **Operator configuration:** SearXNG needs `search.formats: [html, json]` (or equivalent) enabled. Search categories and engines are defined by the local instance's `settings.yml`, may differ by installation, and some individual engines do not support language, pagination or time filters. Prefer selecting only engines visibly enabled on the local SearXNG preferences page. Results are not re-fetched by the optional deduplication and ranking features; the original default remains unmodified. Check the [official SearXNG Search API](https://docs.searxng.org/dev/search_api.html) for parameters and capabilities.
 
 Search queries, effective page numbers, supplied filters and limited result metadata are logged in private local JSONL history; avoid including secrets in queries or filters.
+
+
+## Bounded multi-query search (opt-in)
+
+Use `web_search_batch(queries=["first query","second query"], max_results=5)`
+to compare **1–4 distinct public queries** in one MCP call. Each query is
+validated before any network activity and receives its own existing
+`web_search` invocation, including the ordinary cache, on-demand lease,
+provider security preflight, per-query private audit, and bounded retry logic.
+The batch runs at most **two** searches concurrently and at most **8** returned
+results per query. An invalid query or category/engine combination rejects
+the entire batch **before** any search request. Search terms must be distinct
+case-insensitively; no automatic query expansion or additional providers.
+SearXNG bang provider shortcuts (`!engine`) are rejected in this new batch
+mode, including when no explicit category/engine filter was supplied.
+
+The new response contains `success` (all queries succeeded), `query_count`,
+and ordered `results` entries each containing `query`, `success` and either
+`results`/`result_count` or a sanitized `status`/`reason`. A failure of
+one provider/search does not discard successful sibling queries. The tool
+supports shared `language`, `categories`, `time_range`, `engines`, and
+`fresh` selectors; `categories` and `engines` remain mutually exclusive.
+Each underlying individual search is already audited through the existing
+private search history; no aggregate list of query text is persisted.
+
+A cancelled batch skips queued work but cannot forcibly terminate a
+synchronous search already running in a worker thread. The normal
+`web_search` tool and its default four-field results are unchanged.
+
+## Compact read-only capabilities (opt-in)
+
+`web_search_capabilities()` with no arguments still returns its exact prior
+full inventory shape. Optional `category="images"` or `engine="yahoo"`
+filters the **currently enabled and selectable** engine list, never
+enabling a provider. `max_engines=5` caps returned entries; `0` means
+all (the default). `summary_only=true` omits individual engine entries
+while preserving bounded category/count metadata.
+
+Opted-in responses add `matching_engine_count`,
+`returned_engine_count`, `details_omitted`, `truncated` and a `filter`
+object. `enabled_engine_count` remains the **total** enabled-selectable
+count, not the filtered count. A disabled/unknown exact filter returns
+`status=not_enabled`; a sleeping/unavailable backend returns the
+original bounded `unavailable` response. This discovery does not wake
+Docker, contact providers, alter engine settings or approve domains.
