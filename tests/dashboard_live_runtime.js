@@ -40,7 +40,7 @@ function createTab(initialDomains, view = "policy", query = "") {
   const state = { domains: [...initialDomains], timers: [], handlers: {},
                   nextSnapshotUs: null, nextSnapshotRun: null, pendingOverride: null,
                   historyRows: "history: before", historyBars: "bars: before",
-                  activityRows: "activity: before", activityBars: "counts: before",
+                  activityRows: "activity: before", serviceRows: "services: before",
                   lastEndpoint: null };
   const targets = new Map();
   function element(id) {
@@ -92,7 +92,7 @@ function createTab(initialDomains, view = "policy", query = "") {
         history_html: state.historyRows,
         history_summary_html: state.historyBars,
         activity_html: state.activityRows,
-        activity_summary_html: state.activityBars
+        service_rows_html: state.serviceRows
       })
     };
   };
@@ -133,14 +133,14 @@ async function main() {
   await settle();
   assert.equal(notifications.length, 0, "existing backlog must not alert");
   assert.equal(tab.element("live-activity").innerHTML, "activity: before");
-  assert.equal(tab.element("live-activity-summary").innerHTML, "counts: before");
+  assert.equal(tab.element("live-services").innerHTML, "services: before");
   tab.state.activityRows = "activity: refreshed";
-  tab.state.activityBars = "counts: refreshed";
+  tab.state.serviceRows = "services: refreshed";
 
   tab.state.domains.push("new.example");
   await poll(tab, 110000);
   assert.equal(tab.element("live-activity").innerHTML, "activity: refreshed");
-  assert.equal(tab.element("live-activity-summary").innerHTML, "counts: refreshed");
+  assert.equal(tab.element("live-services").innerHTML, "services: refreshed");
   assert.equal(notifications.length, 1, "new request notifies immediately; " +
     JSON.stringify({ storage: [...storage.entries()],
                      status: tab.element("live-status").textContent }));
