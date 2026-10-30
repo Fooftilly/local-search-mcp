@@ -254,7 +254,7 @@ def row_html(r):
         '<label class="small">Reason '
         '<input name="reason" maxlength="160" '
         'placeholder="Short local note"></label></details></form>'
-        if r['status'] == 'pending' else ''
+        if r['status'] == 'pending' and r.get('request_id') else ''
     )
     # One-use grants retain the stale-request ID check, are exact-host and
     # one hour by default, and never become durable permission rules.
