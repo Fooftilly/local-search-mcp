@@ -270,7 +270,7 @@ def _verify_explicit_search_selection(client: httpx.Client, params: dict) -> dic
     if not names and not categories:
         return None
     failure = {"success": False, "status": "invalid_response", "backend": "searxng",
-               "reason": "Could not validate active search engines; no search was sent."}
+               "reason": "Could not validate selected search engines/categories; no search was sent."}
     try:
         with client.stream("GET", f"{SEARXNG_URL}/config") as response:
             if response.status_code != 200:
