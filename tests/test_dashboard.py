@@ -75,6 +75,116 @@ class DashboardTests(unittest.TestCase):
         self.assertNotIn('<td class="domain">blocked.example.org</td>', filtered)
         self.assertNotIn('aria-label="Select r0.flood-example.org"', filtered)
 
+    def test_triage_sort_is_bounded_stable_and_does_not_modify_permissions(self):
+        with policy._db() as db:
+            db.executemany("""INSERT INTO domains
+                (domain,status,created_at,updated_at,request_count,request_id)
+                VALUES (?,'pending',?,?,?,?)""", [
+                (f"s{i:03d}.queue-example.org",
+                 f"2026-01-01T00:{i // 60:02d}:{i % 60:02d}Z",
+                 f"2026-02-01T00:{i // 60:02d}:{i % 60:02d}Z",
+                 500 if i == 51 else 1,
+                 f"{i:024x}")
+                for i in range(207)
+            ])
+            db.commit()
+        recent = policy.entries(status="pending", limit=200)
+        oldest = policy.entries(status="pending", limit=200,
+                                pending_sort="oldest")
+        frequent = policy.entries(status="pending", limit=200,
+                                  pending_sort="frequent")
+        self.assertEqual(recent[0]["domain"], "s206.queue-example.org")
+        self.assertEqual(oldest[0]["domain"], "s000.queue-example.org")
+        self.assertEqual(frequent[0]["domain"], "s051.queue-example.org")
+        for mode in policy.PENDING_SORT_MODES:
+            first = policy.entries(status="pending", limit=200,
+                                   pending_sort=mode)
+            last = policy.entries(status="pending", limit=200, offset=200,
+                                  pending_sort=mode)
+            self.assertEqual((len(first), len(last)), (200, 7))
+            self.assertEqual(len({x["domain"] for x in first + last}), 207)
+        for bad in ("DROP TABLE domains", "", "RECENT", "oldest;--", None):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                policy.entries(status="pending", pending_sort=bad)
+        with self.assertRaises(ValueError):
+            policy.entries(status="decided", pending_sort="frequent")
+        self.assertEqual(policy.pending_match_count(), 207)
+        self.assertEqual(policy.counts()["pending"], 207)
+
+    def test_triage_sort_survives_page_post_and_live_refresh(self):
+        with policy._db() as db:
+            now = policy.utcnow()
+            db.executemany("""INSERT INTO domains
+                (domain,status,created_at,updated_at,request_count,request_id)
+                VALUES (?,'pending',?,?,?,?)""", [
+                (f"t{i:03d}.queue-example.org", now, now,
+                 999 if i == 51 else 1, f"{i:024x}")
+                for i in range(205)
+            ])
+            db.commit()
+        root = f"http://127.0.0.1:{self.server_port}"
+        def request(path, fields=None):
+            data = urlencode(fields).encode() if fields is not None else None
+            try:
+                with urlopen(Request(root + path, data=data,
+                                     method="POST" if data else "GET"),
+                             timeout=4) as response:
+                    return response.status, response.read().decode()
+            except HTTPError as exc:
+                return exc.code, exc.read().decode()
+        status, body = request("/?sort=frequent")
+        self.assertEqual(status, 200)
+        self.assertIn('data-review-sort="frequent"', body)
+        self.assertIn('<option value="frequent" selected>', body)
+        self.assertIn('name="review_sort" value="frequent"', body)
+        self.assertIn('href="/?q=&amp;page=2&amp;sort=frequent"', body)
+        self.assertLess(body.index('aria-label="Select t051.queue-example.org"'),
+                        body.index('aria-label="Select t000.queue-example.org"'))
+        status, body = request("/?sort=oldest&q=t0")
+        self.assertEqual(status, 200)
+        self.assertIn('<option value="oldest" selected>', body)
+        self.assertIn('data-review-sort="oldest"', body)
+        status, raw = request("/live?view=policy&sort=frequent&page=2")
+        self.assertEqual(status, 200)
+        import json
+        snapshot = json.loads(raw)
+        self.assertIn('page 2 of 2', snapshot["pending_pages_html"])
+        self.assertIn('&amp;sort=frequent', snapshot["pending_pages_html"])
+        tail = policy.entries(status="pending", limit=200, offset=200,
+                              pending_sort="frequent")
+        self.assertIn(tail[0]["domain"], snapshot["pending_html"])
+        picked = tail[0]
+        status, result = request("/domain", {
+            "csrf": admin_ui.CSRF, "domain": picked["domain"],
+            "request_id": picked["request_id"], "action": "deny",
+            "scope": "exact", "expires_minutes": "60",
+            "review_query": "t", "review_page": "2",
+            "review_sort": "frequent"})
+        self.assertEqual(status, 200)
+        self.assertIn('data-review-page="2"', result)
+        self.assertIn('data-review-sort="frequent"', result)
+        self.assertIn('href="/?q=t&amp;page=2&amp;sort=frequent">Refresh</a>',
+                      result)
+        self.assertIn('name="review_sort" value="frequent"', result)
+        self.assertEqual(next(x["status"] for x in policy.entries()
+                              if x["domain"] == picked["domain"]), "denied")
+        status, result = request("/domain", {
+            "csrf": admin_ui.CSRF, "domain": picked["domain"],
+            "request_id": picked["request_id"], "action": "allow",
+            "scope": "exact", "expires_minutes": "60",
+            "review_page": "2", "review_sort": "frequent"})
+        self.assertEqual(status, 400)
+        self.assertIn('data-review-sort="frequent"', result)
+        self.assertEqual(next(x["status"] for x in policy.entries()
+                              if x["domain"] == picked["domain"]), "denied")
+        for invalid in ("random", "frequent;--", "MOST", "x" * 101):
+            with self.subTest(invalid=invalid):
+                self.assertEqual(request("/?sort=" + invalid)[0], 400)
+                self.assertEqual(request(
+                    "/live?view=policy&sort=" + invalid)[0], 400)
+        self.assertEqual(request(
+            "/?sort=oldest&sort=frequent")[0], 400)
+
     def test_pending_pagination_exposes_later_rows_without_moving_decisions(self):
         with policy._db() as db:
             now = policy.utcnow()
