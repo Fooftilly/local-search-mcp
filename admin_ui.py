@@ -895,7 +895,7 @@ class Handler(BaseHTTPRequestHandler):
         # search behavior consistent with the bounded GET filter.
         review_raw = val('review_query')
         review_query = (review_raw if len(review_raw) <= 100 and
-                        all(32 <= ord(ch) != 127 for ch in review_raw) else '')
+                        all(ch.isprintable() for ch in review_raw) else '')
         if self.path == '/pending/clear':
             if val('confirm') != 'CLEAR':
                 return self._respond(400, render(query=review_query, message='Type CLEAR to confirm removal.', kind='error'))
