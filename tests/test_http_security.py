@@ -434,6 +434,7 @@ class DashboardHTTPTests(unittest.TestCase):
             code, rendered, _ = self.exchange("GET", "/history?kind=fetch")
             self.assertEqual(code, 200)
             self.assertIn(b"Indexed history is unavailable", rendered)
+            self.assertIn(b'<tbody id="live-history">', rendered)
             self.assertIn(b"History pages unavailable", rendered)
             self.assertNotIn(b"1 matching history events", rendered)
             code, data, _ = self.exchange(
