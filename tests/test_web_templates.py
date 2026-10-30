@@ -37,6 +37,55 @@ class DashboardTemplateTests(unittest.TestCase):
         self.assertIn('value="&lt;script&gt;alert(1)&lt;/script&gt;"', page)
         self.assertIn('name="csrf"', page)
 
+    def test_24h_operational_cards_use_only_aggregates(self):
+        metrics = [
+            {"kind": "search", "status": "success", "count": 7,
+             "avg_duration_ms": 350},
+            {"kind": "fetch", "status": "success", "count": 4,
+             "avg_duration_ms": 1200},
+            {"kind": "fetch", "status": "http_error", "count": 2,
+             "avg_duration_ms": 800},
+            {"kind": "page", "status": "expired_or_unknown", "count": 1,
+             "avg_duration_ms": 0},
+            {"kind": "<secret-host>", "status": "Bearer SECRET",
+             "count": 1, "avg_duration_ms": 0},
+        ]
+        rendered = admin_ui.operations_overview_html(metrics)
+        for part in ("Operations</span><b>15</b>",
+                     "Searches</span><b>7</b>",
+                     "Fetches</span><b>6</b>",
+                     "Non-success outcomes</span><b>4</b>"):
+            self.assertIn(part, rendered)
+        self.assertNotIn("secret-host", rendered)
+        self.assertNotIn("Bearer", rendered)
+        unavailable = admin_ui.operations_overview_html(None)
+        self.assertIn("history is unavailable", unavailable)
+        self.assertNotIn("<b>0</b>", unavailable)
+        self.assertIn("Operations</span><b>0</b>",
+                      admin_ui.operations_overview_html([]))
+
+    def test_overview_metric_refresh_is_explicit_and_leaves_default_poll_cheap(self):
+        metrics = [{"kind": "search", "status": "success", "count": 3,
+                    "avg_duration_ms": 100}]
+        with (patch.object(admin_ui.policy, "entries", return_value=[]),
+              patch.object(admin_ui.policy, "counts",
+                           return_value={"pending": 0, "allowed": 0, "denied": 0}),
+              patch.object(admin_ui, "history_items_html",
+                           return_value="<tr><td>safe</td></tr>"),
+              patch.object(admin_ui, "service_overview_rows",
+                           return_value="<tr><td>ok</td></tr>"),
+              patch.object(admin_ui, "_overview_history_metrics",
+                           return_value=metrics) as overview):
+            ordinary = admin_ui.live_snapshot()
+            overview.assert_not_called()
+            self.assertNotIn("operations_html", ordinary)
+            self.assertNotIn("activity_summary_html", ordinary)
+            detailed = admin_ui.live_snapshot(include_overview=True)
+            overview.assert_called_once_with()
+        self.assertIn("Searches</span><b>3</b>", detailed["operations_html"])
+        self.assertIn("search", detailed["activity_summary_html"])
+        self.assertNotIn("domain", detailed["operations_html"])
+
     def test_new_domain_rule_requires_explicit_duration_selection(self):
         with (patch.object(admin_ui.policy, "counts",
                            return_value={"pending": 0, "allowed": 0, "denied": 0}),
