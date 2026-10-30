@@ -178,6 +178,8 @@ class EngineChooserTests(unittest.TestCase):
             {"name": "google\\images", "enabled": True, "categories": ["images"]},
             {"name": "google images", "enabled": True, "categories": ["images:unsafe"]},
             {"name": "google images", "enabled": True, "categories": []},
+            {"name": "google images", "enabled": "true", "categories": ["images"]},
+            {"name": "google images", "categories": ["images"]},
         ):
             with self.subTest(bad=bad):
                 reply = Mock(status=200)
