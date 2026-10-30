@@ -96,6 +96,35 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(policy.request("trusted.example.net",
                                         "https://trusted.example.net/")[0], "allowed")
 
+    def test_quick_review_uses_current_pending_request_and_bounded_scope(self):
+        domain = "reviewed.example.net"
+        policy.request(domain, "https://reviewed.example.net/some/path")
+        record = next(r for r in policy.entries(status="pending")
+                      if r["domain"] == domain)
+        url = f"http://127.0.0.1:{self.server_port}/domain"
+        def submit(request_id, action):
+            data = urlencode({
+                "csrf": admin_ui.CSRF, "domain": domain,
+                "request_id": request_id, "action": action,
+                "scope": "exact", "expires_minutes": "60",
+            }).encode()
+            try:
+                with urlopen(Request(url, data=data, method="POST"), timeout=3) as reply:
+                    return reply.status
+            except HTTPError as exc:
+                return exc.code
+        self.assertEqual(submit(record["request_id"], "allow"), 200)
+        saved = next(r for r in policy.entries(status="decided")
+                     if r["domain"] == domain)
+        self.assertEqual(saved["status"], "allowed")
+        self.assertEqual(saved["match_scope"], "exact")
+        self.assertTrue(saved["expires_at"])
+        self.assertEqual(submit(record["request_id"], "deny"), 400)
+        self.assertEqual(submit("f" * 24, "deny"), 400)
+        final = next(r for r in policy.entries(status="decided")
+                     if r["domain"] == domain)
+        self.assertEqual(final["status"], "allowed")
+
     def test_reject_csrf(self):
         self.assertEqual(self.post(csrf='bad'),403)
 
