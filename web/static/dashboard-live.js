@@ -7,7 +7,7 @@
   const auditBody = document.getElementById("live-audit");
   const historyBody = document.getElementById("live-history");
   const activityBody = document.getElementById("live-activity");
-  const activitySummaryBody = document.getElementById("live-activity-summary");
+  const serviceBody = document.getElementById("live-services");
   const historySummaryBody = document.getElementById("live-history-summary");
   const status = document.getElementById("live-status");
   const notice = document.getElementById("notification-toggle");
@@ -383,7 +383,7 @@
         updateTable(decidedBody, data.decided_html);
         updateTable(auditBody, data.audit_html);
         updateTable(activityBody, data.activity_html);
-        updateTable(activitySummaryBody, data.activity_summary_html);
+        updateTable(serviceBody, data.service_rows_html);
         for (const type of ["pending", "allowed", "denied"]) {
           const count = document.getElementById("live-count-" + type);
           if (count) count.textContent = String(data.counts[type]);
