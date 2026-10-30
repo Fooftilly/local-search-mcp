@@ -419,7 +419,7 @@ class DashboardHTTPTests(unittest.TestCase):
             "GET", "/history?kind=fetch&show_queries=1")
         self.assertEqual(code, 200)
         self.assertIn(b'Showing 1', page)
-        self.assertIn(b'31 matching history events', page)
+        self.assertIn(b'30 matching history events', page)
         self.assertIn(b'Next 25</a>', page)
         self.assertIn(b'/private-page/', page)
         self.assertNotIn(b'token=DO_NOT_LEAK', page)
@@ -444,7 +444,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertEqual(status, 200)
         live = json.loads(data)
         self.assertEqual(live["history_page"], 2)
-        self.assertEqual(live["history_html"].count("<tr>"), 6)
+        self.assertEqual(live["history_html"].count("<tr>"), 5)
         self.assertIn("page 2 of 2", live["history_pages_html"])
         self.assertIn("https://docs.example.org/private-page/",
                       live["history_html"])
@@ -475,6 +475,21 @@ class DashboardHTTPTests(unittest.TestCase):
             self.assertEqual(after["history_page"], 1)
             self.assertNotIn("PRIVATE-SEARCH", repr(after))
             self.assertNotIn("/private-page/", repr(after))
+
+        # A history page beyond the pending dashboard's 20-page cap must
+        # still be accepted by the same-origin live endpoint.
+        with patch.object(admin_ui.history_index, "summarize_history",
+                          return_value=[{"kind": "fetch", "status": "success",
+                                         "count": 526, "avg_duration_ms": 1}]), \
+             patch.object(admin_ui, "history_items_html",
+                          return_value="<tr><td>page 21</td></tr>"):
+            code, body, _ = self.exchange(
+                "GET", "/live?view=history&kind=fetch&page=21")
+        self.assertEqual(code, 200)
+        historical = json.loads(body)
+        self.assertEqual(historical["history_page"], 21)
+        self.assertIn("page 21 of 22", historical["history_pages_html"])
+        self.assertIn("page 21", historical["history_html"])
 
         for invalid in ("0", "-1", "4001", "hello", "1%20OR%201", ""):
             with self.subTest(page=invalid):
