@@ -67,13 +67,103 @@ class DashboardTests(unittest.TestCase):
         page = admin_ui.render()
         self.assertIn("trusted.example.net", page)
         self.assertIn("blocked.example.org", page)
-        self.assertIn("Showing at most 200 pending entries", page)
+        self.assertIn("Showing 200 pending requests per page", page)
         self.assertEqual(page.count('form="bulk-form" aria-label="Select r'), 200)
         filtered = admin_ui.render("trusted.example.net")
         self.assertIn('name="q" value="trusted.example.net"', filtered)
         self.assertIn('<td class="domain">trusted.example.net</td>', filtered)
         self.assertNotIn('<td class="domain">blocked.example.org</td>', filtered)
         self.assertNotIn('aria-label="Select r0.flood-example.org"', filtered)
+
+    def test_pending_pagination_exposes_later_rows_without_moving_decisions(self):
+        with policy._db() as db:
+            now = policy.utcnow()
+            db.executemany("""INSERT INTO domains
+                (domain,status,created_at,updated_at,request_id)
+                VALUES (?,'pending',?,?,?)""", [
+                (f"q{i:03d}.queue-example.org", now, now, f"{i:024x}")
+                for i in range(425)
+            ])
+            db.commit()
+        first = policy.entries(limit=200, status="pending")
+        second = policy.entries(limit=200, status="pending", offset=200)
+        third = policy.entries(limit=200, status="pending", offset=400)
+        self.assertEqual((len(first), len(second), len(third)), (200, 200, 25))
+        self.assertEqual(len({r["domain"] for r in first+second+third}), 425)
+        page1 = admin_ui.render(page=1)
+        page2 = admin_ui.render(page=2)
+        page3 = admin_ui.render(page=3)
+        self.assertIn('href="/?q=&amp;page=2"', page1)
+        self.assertNotIn('rel="prev"', page1)
+        self.assertIn('Showing 201–400 of 425', page2)
+        self.assertIn('href="/?q=&amp;page=3"', page2)
+        self.assertIn('Showing 401–425 of 425', page3)
+        self.assertNotIn('rel="next"', page3)
+        self.assertIn('data-review-page="2"', page2)
+        self.assertIn('name="review_page" value="2"', page2)
+        self.assertIn('aria-label="Select q200.queue-example.org"', page2)
+        self.assertNotIn('aria-label="Select q000.queue-example.org"', page2)
+        filtered = admin_ui.render("q2", page=1)
+        self.assertIn('page 1 of 1', filtered)
+        self.assertNotIn('rel="next"', filtered)
+        self.assertEqual({r["domain"] for r in policy.entries(status="decided")},
+                         {"example.com"})
+
+    def test_review_page_survives_post_and_live_poll(self):
+        with policy._db() as db:
+            now = policy.utcnow()
+            db.executemany("""INSERT INTO domains
+                (domain,status,created_at,updated_at,request_id)
+                VALUES (?,'pending',?,?,?)""", [
+                (f"z{i:03d}.queue-example.org", now, now, f"{i:024x}")
+                for i in range(210)
+            ])
+            db.commit()
+        row = policy.entries(limit=200, status="pending", offset=200)[0]
+        root = f"http://127.0.0.1:{self.server_port}"
+        def req(path, data=None):
+            request = Request(root + path,
+                              data=urlencode(data).encode() if data is not None else None,
+                              method="POST" if data is not None else "GET")
+            try:
+                with urlopen(request, timeout=4) as result:
+                    return result.status, result.read().decode()
+            except HTTPError as exc:
+                return exc.code, exc.read().decode()
+        code, page = req("/?page=2")
+        self.assertEqual(code, 200)
+        self.assertIn('data-review-page="2"', page)
+        code, raw = req("/live?view=policy&q=&page=2")
+        self.assertEqual(code, 200)
+        import json
+        live = json.loads(raw)
+        self.assertIn('page 2 of 2', live["pending_pages_html"])
+        self.assertIn(row["domain"], live["pending_html"])
+        self.assertNotIn("z000.queue-example.org", live["pending_html"])
+        code, page = req("/domain", {
+            "csrf": admin_ui.CSRF, "domain": row["domain"],
+            "request_id": row["request_id"], "action": "allow",
+            "scope": "exact", "expires_minutes": "60",
+            "review_page": "2"})
+        self.assertEqual(code, 200)
+        self.assertIn('data-review-page="2"', page)
+        self.assertIn('name="review_page" value="2"', page)
+        self.assertIn('href="/?q=&amp;page=2">Refresh</a>', page)
+        self.assertEqual(next(r["status"] for r in policy.entries()
+                              if r["domain"] == row["domain"]), "allowed")
+        for invalid in ("0", "21", "-1", "5000", "2x", "True"):
+            with self.subTest(invalid=invalid):
+                self.assertEqual(req("/?page="+invalid)[0], 400)
+                self.assertEqual(req("/live?view=policy&page="+invalid)[0], 400)
+        code, page = req("/domain", {
+            "csrf": admin_ui.CSRF, "domain": row["domain"],
+            "request_id": row["request_id"], "action": "deny",
+            "scope": "exact", "expires_minutes": "60",
+            "review_page": "999"})
+        self.assertEqual(code, 400)
+        self.assertIn('data-review-page="1"', page)
+        self.assertEqual(next(r["status"] for r in policy.entries()
+                              if r["domain"] == row["domain"]), "allowed")
 
     def test_clear_pending_requires_confirmation_and_preserves_decisions(self):
         policy.decide("trusted.example.net", "allow")
