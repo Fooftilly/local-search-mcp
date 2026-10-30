@@ -436,6 +436,52 @@ def summarize_history(*, kind: str = "", status: str = "",
             " GROUP BY kind,status ORDER BY count DESC,kind,status", args)]
 
 
+def dashboard_history_snapshot(*, kind: str = "", status: str = "",
+                               domain: str = "", hours: int = 0,
+                               page: int = 1, reveal_queries: bool = False,
+                               page_size: int = 25) -> dict:
+    """Consistent, bounded dashboard rows and aggregates after one sync.
+
+    Both SQL reads use one SQLite read transaction: page bounds cannot
+    describe a different generation of indexed rows. Opt-in sensitive text
+    is separately validated against the *original* JSONL after this read.
+    No query text, URL paths or source coordinates are persisted in SQLite.
+    """
+    if (type(page_size) is not int or not 1 <= page_size <= MAX_QUERY_RESULTS
+            or MAX_HISTORY_ROWS % page_size != 0):
+        raise ValueError("Invalid history dashboard page size")
+    if (type(page) is not int or not 1 <= page <= MAX_HISTORY_ROWS // page_size):
+        raise ValueError("Invalid history dashboard page")
+    if type(reveal_queries) is not bool:
+        raise ValueError("Invalid query visibility setting")
+    suffix, args = _history_filter(kind, status, domain, hours)
+    sync_history()
+    columns = ("generation_id,byte_offset," if reveal_queries else "") + (
+        "at_ms,kind,status,domain,duration_ms,backend")
+    with closing(sqlite3.connect(index_path(), timeout=10)) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN")
+        metrics = [dict(r) for r in conn.execute(
+            """SELECT kind,status,count(*) AS count,
+               round(avg(duration_ms),1) AS avg_duration_ms
+               FROM history""" + suffix +
+            " GROUP BY kind,status ORDER BY count DESC,kind,status", args)]
+        total = sum(int(x["count"]) for x in metrics)
+        final = max(1, (total + page_size - 1) // page_size)
+        page = min(page, final)
+        rows = [dict(r) for r in conn.execute(
+            "SELECT " + columns + " FROM history" +
+            suffix + " ORDER BY at_ms DESC,rowid DESC LIMIT ? OFFSET ?",
+            (*args, page_size, (page - 1) * page_size))]
+        conn.rollback()
+    if reveal_queries:
+        _reveal_history_queries(rows)
+        for row in rows:
+            row.pop("generation_id", None)
+            row.pop("byte_offset", None)
+    return {"metrics": metrics, "rows": rows, "page": page, "total": total}
+
+
 def operational_metrics(hours: int = 24) -> dict:
     """Aggregate retained events only; never expose domains or private text.
 
