@@ -6,6 +6,7 @@ Stable operator and feature guides live in this folder. Start with the [project 
 
 - [Configuration and private settings](CONFIGURATION.md)
 - [Systemd supervision](SYSTEMD.md)
+- [Attended cold-boot and failure-recovery acceptance](ON-DEMAND-COLD-BOOT-ACCEPTANCE.md)
 - [Stopping project-owned components safely](STOP.md)
 - [Crawler Compose deployment](CRAWLER-COMPOSE.md)
 - [SearXNG Compose overlay](SEARXNG-COMPOSE.md)
