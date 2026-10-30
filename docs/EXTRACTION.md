@@ -140,6 +140,35 @@ This is process-local, temporary continuation storage, not a durable archive. It
 To inspect continuation activity without exposing handles or page content, use `python history_cli.py --kind page --last 50` or `python history_cli.py --kind page --csv --last 500`. CSV includes page number and total page count when available.
 
 
+## Source-advertised alternate document formats
+
+Use `web_fetch(url, include_alternatives=true)` or
+`web_fetch_batch(urls, include_alternatives=true)` to inspect **explicitly
+advertised format links in the same already-approved HTML crawl**. This is
+disabled by default and does not affect the normal fetch response shape or
+the short-page cache. `alternatives` is empty when evidence is absent.
+
+The deliberately narrow initial rule recognizes a Markdown `View as:`
+group with explicit labelled `Plain Text`, `HTML` / `Compact HTML`, and
+`PDF` links for the **same literal path stem** with `.txt`, `.html` and
+`.pdf` extensions. RFC Editor's RFC 9110 info page advertises these three
+formats together. A generic navigation label such as `Alternative
+Implementations` is not sufficient evidence. Other publisher schemas
+are intentionally not guessed or treated as verified equivalence.
+
+Each record has `format` (`txt`, `html`, `pdf`), a bounded normalized
+`url`, and `evidence="source_labeled_view_as"`. Up to three records share
+the same 20 KB structured-data budget with optional links and tables.
+`structured_info.alternatives.format_verified=false` means the target's
+content type, equivalence, copyright and accessibility are **unverified**.
+
+Only safely normalized public-looking HTTP(S) URLs are reported; data,
+local/IP-literal, credential-bearing, unsafe-port and ambiguous-IDN
+destinations are rejected. **Listing is not approval**: any later fetch
+still requires the full operator-domain authorization, DNS, redirect,
+once-grant and isolated-crawler checks. No discovered destination is
+fetched automatically, and this is not a PDF extraction workaround.
+
 ## Optional structured links and tables
 
 Use `web_fetch(url, include_links=true, include_tables=true)` to return

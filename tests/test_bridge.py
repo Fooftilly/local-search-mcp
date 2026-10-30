@@ -158,6 +158,51 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(all(x["urls"] == ["https://example.com/articles/index"]
                             for x in posted))
 
+    def test_advertised_formats_opt_in_without_link_fetch(self):
+        paths = []
+        original = httpx.Client
+        url = "https://example.com/info/rfc9110"
+        markdown = ("View as:\n"
+                    "[Plain Text](https://example.com/rfc/rfc9110.txt)\n"
+                    "[Compact HTML](https://example.com/rfc/rfc9110.html)\n"
+                    "[PDF](https://example.com/rfc/rfc9110.pdf)\n\n"
+                    "# RFC 9110: HTTP Semantics\n")
+
+        def handler(request):
+            paths.append(request.url.path)
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            self.assertEqual(request.url.path, "/crawl")
+            self.assertEqual(json.loads(request.content)["urls"], [url])
+            return httpx.Response(200, json={"results": [{
+                "url": url, "success": True, "markdown": {
+                    "raw_markdown": markdown,
+                    "fit_markdown": "Short fit summary",
+                },
+            }]})
+
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+
+        domain_policy.decide("example.com", "allow", scope="exact")
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=factory)):
+            normal = self.module.web_fetch(url, fresh=True)
+            discovered = self.module.web_fetch(
+                url, fresh=True, include_alternatives=True)
+            fitted = self.module.web_fetch(
+                url, mode="fit", fresh=True, include_alternatives=True)
+            with self.assertRaises(ValueError):
+                self.module.web_fetch(url, include_alternatives="true")
+        self.assertNotIn("alternatives", normal)
+        self.assertNotIn("structured_info", normal)
+        self.assertEqual([a["format"] for a in discovered["alternatives"]],
+                         ["txt", "html", "pdf"])
+        self.assertEqual(fitted["alternatives"], discovered["alternatives"])
+        self.assertEqual(fitted["markdown"], "Short fit summary")
+        self.assertEqual(paths.count("/crawl"), 3)
+        self.assertEqual(discovered["markdown"], normal["markdown"])
+
     def test_opt_in_outline_single_batch_and_default_cache_separation(self):
         from collections import OrderedDict
         content = ("# Intro 🧭\n" + "a" * 24000 +
