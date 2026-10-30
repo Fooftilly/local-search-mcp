@@ -1,9 +1,10 @@
 # Live dashboard updates and optional desktop notifications
 
 **Pending triage order:** The dashboard's domain-filter form also offers
-**Newest activity** (unchanged default), **Oldest waiting** (creation time,
-oldest first), and **Most requests** (descending request count, then latest
-activity). Ordering affects only the visible pending queue, not persisted
+**Recently updated** (unchanged row-update-time default),
+**Oldest waiting** (creation time, oldest first), and **Most requests**
+(descending request count, then actual last-request time; legacy rows without
+that timestamp fall back to row-update time). Ordering affects only the visible pending queue, not persisted
 permissions, explicit rule order, saved history, or alert baselines. Every mode
 uses a deterministic hostname tie-breaker across pages. The chosen order is
 preserved through filtered page navigation, single/bulk/once POST feedback,
