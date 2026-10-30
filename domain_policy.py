@@ -299,10 +299,13 @@ def initialize():
         _seed(conn)
 
 
-def entries(search: str = "", limit: int = 1000, status: str | None = None):
+def entries(search: str = "", limit: int = 1000, status: str | None = None,
+            offset: int = 0):
     """Show pending requests and explicit decisions independently."""
     if status not in (None, "pending", "decided"):
         raise ValueError("Invalid domain entry filter")
+    if type(offset) is not int or not 0 <= offset <= 3800:
+        raise ValueError("Invalid domain entry offset")
     with _db() as conn:
         _seed(conn)
         clauses = []
@@ -318,13 +321,28 @@ def entries(search: str = "", limit: int = 1000, status: str | None = None):
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         rows = conn.execute(
             "SELECT * FROM domains" + where +
-            " ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'allowed' THEN 1 ELSE 2 END, updated_at DESC LIMIT ?",
-            (*args, limit),
+            " ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'allowed' THEN 1 ELSE 2 END, updated_at DESC, domain ASC LIMIT ? OFFSET ?",
+            (*args, limit, offset),
         ).fetchall()
         now = utcnow()
         return [dict(r) | {"expired": bool(
             r["explicit_rule"] and r["expires_at"] and r["expires_at"] <= now)}
             for r in rows]
+
+def pending_match_count(search: str = "") -> int:
+    """Count searchable pending rows for bounded dashboard pagination."""
+    if type(search) is not str or len(search) > 100:
+        raise ValueError("Invalid pending domain filter")
+    with _db() as conn:
+        _seed(conn)
+        if not search:
+            return conn.execute(
+                "SELECT count(*) FROM domains WHERE status='pending'").fetchone()[0]
+        pattern = "%" + search.lower().replace("%", "\\%").replace("_", "\\_") + "%"
+        return conn.execute(
+            "SELECT count(*) FROM domains WHERE status='pending' "
+            "AND domain LIKE ? ESCAPE '\\'", (pattern,)).fetchone()[0]
+
 
 def counts():
     with _db() as conn:
