@@ -101,16 +101,18 @@ def live_engines() -> list[dict]:
             raise EngineSetupError("SearXNG engine list is too large")
         data = json.loads(raw)
         engines = data.get("engines") if isinstance(data, dict) else None
-        if not isinstance(engines, list):
-            raise EngineSetupError("SearXNG did not return an engine list")
+        if not isinstance(engines, list) or not 1 <= len(engines) <= 512:
+            raise EngineSetupError("SearXNG did not return a bounded engine list")
         found = {}
         for row in engines:
-            if not isinstance(row, dict):
-                continue
-            name = row.get("name")
+            # An unidentified row could be a provider which choice 3
+            # promises to exclude. Never treat a partial inventory as
+            # complete merely because other entries were parseable.
+            if not isinstance(row, dict) or not isinstance(row.get("name"), str):
+                raise EngineSetupError(
+                    "SearXNG engine inventory incomplete; no settings changed")
+            name = row["name"]
             categories = row.get("categories", [])
-            if not isinstance(name, str):
-                continue
             # The cross-category "exclude Google" choice must never claim
             # completion after silently dropping a Google-named engine.
             # Fail without changing settings if its name or categories
@@ -300,7 +302,21 @@ def _restart_verified(target: on_demand_docker.Target) -> None:
         raise EngineSetupError("Verified SearXNG restart failed")
 
 
-def apply(selected: tuple[str, ...], controlled: tuple[str, ...]) -> str:
+def _verify_google_inventory(rows: list[dict], expected: tuple[str, ...], *,
+                             require_disabled: bool = False) -> None:
+    """Refuse a stale or incomplete cross-category Google exclusion."""
+    google = [row for row in rows
+              if row["name"].casefold().startswith("google")]
+    if {row["name"] for row in google} != set(expected):
+        raise EngineSetupError(
+            "Google engine inventory changed; no exclusion can be confirmed")
+    if require_disabled and any(row["enabled"] for row in google):
+        raise EngineSetupError(
+            "A Google engine remained enabled after restart")
+
+
+def apply(selected: tuple[str, ...], controlled: tuple[str, ...], *,
+          exclude_google: bool = False) -> str:
     """One confirmed config change, serialized with project-owned Docker."""
     if os.geteuid() == 0:
         raise EngineSetupError("Run setup as the normal user")
@@ -311,6 +327,18 @@ def apply(selected: tuple[str, ...], controlled: tuple[str, ...]) -> str:
         if _recovery_path(path).exists():
             raise EngineSetupError("Interrupted edit detected; recover through the setup menu first")
         original = _read_settings(path)
+        if exclude_google:
+            # The wizard's global Google exclusion must be based on the
+            # current owned, running backend, not a stale menu snapshot.
+            # The cross-process lock serializes our managed Docker actions,
+            # but does not prevent an independent SearXNG config edit.
+            if selected or not all(name.casefold().startswith("google")
+                                   for name in controlled):
+                raise EngineSetupError("Invalid global Google exclusion")
+            if not target.running:
+                raise EngineSetupError(
+                    "Google exclusion requires verified running SearXNG")
+            _verify_google_inventory(live_engines(), controlled)
         updated = render(original, selected, controlled)
         if updated == original:
             return "Engine selection already configured; no change"
@@ -325,11 +353,20 @@ def apply(selected: tuple[str, ...], controlled: tuple[str, ...]) -> str:
                 for _ in range(30):
                     try:
                         check = live_engines()
-                        enabled = {row["name"] for row in check if row["enabled"]}
-                        if all((name in enabled) == (name in selected) for name in controlled):
-                            break
                     except EngineSetupError:
+                        # Transient /config failure during startup: retry.
                         pass
+                    else:
+                        # A changed inventory is not a transient startup
+                        # failure: roll back instead of declaring that all
+                        # newly introduced Google providers were excluded.
+                        if exclude_google:
+                            _verify_google_inventory(
+                                check, controlled, require_disabled=True)
+                        enabled = {row["name"] for row in check if row["enabled"]}
+                        if all((name in enabled) == (name in selected)
+                               for name in controlled):
+                            break
                     time.sleep(0.5)
                 else:
                     raise EngineSetupError("Engine selection not verified after restart")
@@ -584,7 +621,10 @@ def main() -> int:
         if input("Type APPLY to change settings, anything else cancels: ").strip() != "APPLY":
             print("Cancelled; no changes made")
             return 0
-        print(apply(selected, controlled))
+        if choice == "3":
+            print(apply(selected, controlled, exclude_google=True))
+        else:
+            print(apply(selected, controlled))
         return 0
     except (EngineSetupError, on_demand_docker.LifecycleError, OSError, EOFError,
             KeyboardInterrupt, ValueError) as exc:
