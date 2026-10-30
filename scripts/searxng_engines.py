@@ -549,11 +549,14 @@ def main() -> int:
         choice = input("Choose: ").strip()
         if choice == "0":
             return 0
+        # A running backend with a failed /config read is not the same as
+        # intentional on-demand sleep. Never infer its installed providers
+        # from the offline preset, even for the recommended option.
+        if target.running and not engines and choice in ("1", "2", "3", "4"):
+            raise EngineSetupError(
+                "Running SearXNG engine inventory is unavailable; verify "
+                "127.0.0.1:8888/config and retry. No settings changed")
         if choice in ("2", "3", "4") and not engines:
-            if target.running:
-                raise EngineSetupError(
-                    "Running SearXNG engine inventory is unavailable; verify "
-                    "127.0.0.1:8888/config and retry. No settings changed")
             if on_demand_settings.read()["enabled"] is not True:
                 raise EngineSetupError(
                     "SearXNG is stopped and on-demand mode is disabled. "
@@ -571,7 +574,7 @@ def main() -> int:
             general = _category_engines(engines, "general")
             names = tuple(row["name"] for row in general)
         if choice == "1":
-            if names and "yahoo" not in names:
+            if target.running and "yahoo" not in names:
                 raise EngineSetupError("Yahoo is not in the running SearXNG general engine list")
             controlled = names if names else tuple(dict.fromkeys((*PRESET, *KNOWN_UNRELIABLE)))
             selected = PRESET
