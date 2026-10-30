@@ -245,3 +245,25 @@ one-use proof, epoch change, TTL and eviction. Handle names, passage text
 and query text are absent from the private audit trail; reads are marked as
 `page` kind with `action=section`. A token expires after at most 15
 minutes and may be evicted sooner. No change to the original fetch defaults.
+
+## Empty extraction and possible access-gate diagnostics
+
+A successful Crawl4AI pipeline is **not** evidence that readable page text was
+extracted. When a normally successful `web_fetch` has empty or whitespace-only
+raw/fit Markdown, the bridge now returns `success=false` with
+`status="empty_extraction"` instead of a misleading successful empty document.
+
+The bridge may additionally supply `possible_access_gate` with
+`confidence="heuristic"` and an **evidence category only**, when the verified
+final URL ends in a recognized login/challenge path or the already-returned
+short document title exactly matches a small known challenge/login title.
+These hints are **not verified proof** of a CAPTCHA, paywall or access block.
+General mentions of login/CAPTCHA in ordinary article content do not trigger
+them; no extra HTTP requests, HTML/body disclosure or challenge-bypass
+attempts occur.
+
+Confirmed HTTP 4xx/5xx still return `http_error`; Crawl4AI-reported failure
+still returns `crawl_failed`, even if the upstream supplies partial Markdown.
+`mode="fit"` with no fit Markdown retains `unavailable_extraction`.
+No raw upstream error messages, page bodies or secret metadata appear in
+these failures. Existing successful nonempty Markdown output is unchanged.
