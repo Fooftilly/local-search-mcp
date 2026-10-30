@@ -93,8 +93,9 @@ def _search_params(query: str, max_results: int, language: str,
     if selected_engines and selected_categories:
         raise ValueError("Choose categories or engines, not both; SearXNG combines them")
     # Internal/external !bangs take precedence over explicit engine selection.
-    if selected_engines and re.search(r"(?<!\S)![^\s]+", query):
-        raise ValueError("Engine filters cannot be combined with !bang search syntax")
+    if (selected_engines or selected_categories) and re.search(
+            r"(?<!\S)![^\s]+", query):
+        raise ValueError("Explicit engine/category filters cannot be combined with !bang search syntax")
     params = {"q": query.strip(), "format": "json"}
     if language:
         params["language"] = language
@@ -257,18 +258,19 @@ def _run_search(params: dict, max_results: int, *,
 MAX_SEARCH_CONFIG_BYTES = 512 * 1024
 
 
-def _verify_explicit_search_engines(client: httpx.Client, params: dict) -> dict | None:
-    """Fail closed before /search if SearXNG might fall back to defaults.
+def _verify_explicit_search_selection(client: httpx.Client, params: dict) -> dict | None:
+    """Fail closed if explicitly selected engines/categories are unavailable.
 
-    Unknown engine names silently trigger the default engines upstream.
-    Inspect only the existing loopback /config endpoint while the on-demand
-    backend lease is held. Never turn disabled engines back on.
+    SearXNG silently ignores unknown engine/category names; an empty valid
+    selection can fall back to default providers. Use only its existing
+    bounded loopback /config read while the on-demand lease is held.
     """
     names = params.get("engines")
-    if not names:
+    categories = params.get("categories")
+    if not names and not categories:
         return None
     failure = {"success": False, "status": "invalid_response", "backend": "searxng",
-               "reason": "Could not validate active search engines; no search was sent."}
+               "reason": "Could not validate selected search engines/categories; no search was sent."}
     try:
         with client.stream("GET", f"{SEARXNG_URL}/config") as response:
             if response.status_code != 200:
@@ -285,19 +287,30 @@ def _verify_explicit_search_engines(client: httpx.Client, params: dict) -> dict 
     if not isinstance(engines, list) or len(engines) > 512:
         return failure
     active = set()
+    active_categories = set()
     for row in engines:
         if not isinstance(row, dict):
             return failure
         name = row.get("name")
-        if (not isinstance(name, str) or len(name) > 80 or
+        if (not isinstance(name, str) or not 1 <= len(name) <= 80 or
                 type(row.get("enabled")) is not bool):
             return failure
         if row["enabled"]:
             active.add(name)
+            if categories:
+                groups = row.get("categories")
+                if (not isinstance(groups, list) or not 1 <= len(groups) <= 16
+                        or any(not isinstance(cat, str) or
+                               not 1 <= len(cat) <= 80 or
+                               not cat.isprintable() for cat in groups)):
+                    return failure
+                active_categories.update(groups)
     if not active:
         return failure
-    if not set(names.split(",")).issubset(active):
+    if names and not set(names.split(",")).issubset(active):
         raise ValueError("Requested search engine is unknown or disabled in SearXNG")
+    if categories and not set(categories.split(",")).issubset(active_categories):
+        raise ValueError("Requested search category is unknown or has no enabled engines in SearXNG")
     return None
 
 
@@ -390,7 +403,7 @@ def _run_search_network(params: dict, max_results: int, *,
                         allowed_result_domains: tuple[tuple[str, bool], ...] = ()) -> list[dict] | dict:
     with httpx.Client(timeout=upstream_settings.effective_timeout("searxng_seconds"),
                       trust_env=False) as client:
-        selection_failure = _verify_explicit_search_engines(client, params)
+        selection_failure = _verify_explicit_search_selection(client, params)
         if selection_failure is not None:
             return selection_failure
         response = _retry_request(lambda: client.get(
@@ -510,8 +523,8 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     "gov.me" matches only that host, "*.gov.me" matches child hosts only.
     It never changes provider selection or domain approvals.
     Choose categories OR engines: SearXNG combines both into a union.
-    Engine-only calls require a verified enabled provider in local /config;
-    unsupported names fail closed without searching default providers.
+    Explicit engine/category calls require locally verified enabled providers
+    in /config; unsupported selectors fail closed before provider searches.
     """
     if not isinstance(fresh, bool):
         raise ValueError("fresh must be a boolean")
