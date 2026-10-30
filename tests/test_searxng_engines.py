@@ -155,7 +155,7 @@ class EngineChooserTests(unittest.TestCase):
         with (patch.object(e.on_demand_docker, "_safe_target", return_value=target),
               patch.object(e, "_check_bind_mount"),
               patch.object(e, "live_engines", return_value=inventory),
-              patch.object(e, "apply", side_effect=lambda selected, controlled:
+              patch.object(e, "apply", side_effect=lambda selected, controlled, **kwargs:
                            captured.append((selected, controlled)) or "applied"),
               patch.object(e.os, "geteuid", return_value=1000),
               patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
@@ -175,7 +175,7 @@ class EngineChooserTests(unittest.TestCase):
         # falsely report an exhaustive exclusion across all categories.
         for bad in (
             {"name": "google [images]", "enabled": True, "categories": ["images"]},
-            {"name": "google\\\\images", "enabled": True, "categories": ["images"]},
+            {"name": "google\\images", "enabled": True, "categories": ["images"]},
             {"name": "google images", "enabled": True, "categories": ["images:unsafe"]},
             {"name": "google images", "enabled": True, "categories": []},
         ):
@@ -192,6 +192,105 @@ class EngineChooserTests(unittest.TestCase):
                             e.EngineSetupError, "Cannot safely identify every Google engine"):
                         e.live_engines()
                 self.assertEqual(self.file.read_text(), self.original)
+
+    def test_unidentified_engine_records_reject_partial_inventory(self):
+        # A missing or non-string engine name cannot safely be classified
+        # as a non-Google engine for the global exclusion option.
+        for bad in ({}, {"name": None}, {"name": 123}, "bad-row", []):
+            with self.subTest(bad=bad):
+                conn = Mock()
+                conn.getresponse.return_value = Mock(
+                    status=200,
+                    read=Mock(return_value=json.dumps({"engines": [
+                        {"name": "yahoo", "categories": ["general"], "enabled": True},
+                        bad,
+                    ]}).encode()))
+                with patch.object(e, "HTTPConnection", return_value=conn):
+                    with self.assertRaisesRegex(
+                            e.EngineSetupError, "inventory incomplete"):
+                        e.live_engines()
+                self.assertEqual(self.file.read_text(), self.original)
+
+    def test_global_google_inventory_stale_at_apply_does_not_write(self):
+        target = Target("searxng", "a" * 64, True, "no")
+        initial = [
+            {"name": "yahoo", "enabled": True, "categories": ("general",)},
+            {"name": "google images", "enabled": True, "categories": ("images",)},
+        ]
+        new_google = initial + [
+            {"name": "google new", "enabled": True, "categories": ("images",)}
+        ]
+        with (patch.object(e.on_demand_docker, "_safe_target",
+                           return_value=target),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e, "live_engines",
+                           side_effect=[initial, new_google]) as read,
+              patch.object(e, "_restart_verified",
+                           side_effect=AssertionError("must not restart")) as restart,
+              patch.object(e.os, "geteuid", return_value=1000),
+              patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
+              patch("builtins.input", side_effect=["3", "APPLY"]),
+              contextlib.redirect_stdout(io.StringIO()),
+              contextlib.redirect_stderr(io.StringIO()) as errors):
+            self.assertEqual(e.main(), 1)
+        self.assertEqual(read.call_count, 2)
+        restart.assert_not_called()
+        self.assertEqual(self.file.read_text(), self.original)
+        self.assertFalse(e._recovery_path(self.file).exists())
+        self.assertIn("Google engine inventory changed", errors.getvalue())
+
+    def test_global_google_inventory_changed_after_restart_rolls_back(self):
+        target = Target("searxng", "a" * 64, True, "no")
+        initial = [
+            {"name": "yahoo", "enabled": True, "categories": ("general",)},
+            {"name": "google images", "enabled": True, "categories": ("images",)},
+        ]
+        for after in (
+            initial + [{"name": "google new", "enabled": True}],
+            # Even with no new provider, a still-enabled Google result must
+            # not be reported as an excluded engine.
+            initial,
+        ):
+            with self.subTest(after=after):
+                restarted = []
+                with (patch.object(e.on_demand_docker, "_safe_target",
+                                   return_value=target),
+                      patch.object(e, "_check_bind_mount"),
+                      patch.object(e, "live_engines", side_effect=[initial, after]),
+                      patch.object(e, "_restart_verified",
+                                   side_effect=lambda arg: restarted.append(arg)),
+                      patch.object(e.time, "sleep",
+                                   side_effect=AssertionError("should fail immediately"))):
+                    with self.assertRaisesRegex(
+                            e.EngineSetupError, "previous settings restored"):
+                        e.apply((), ("google images",), exclude_google=True)
+                self.assertEqual(restarted, [target, target])
+                self.assertEqual(self.file.read_text(), self.original)
+                self.assertFalse(e._recovery_path(self.file).exists())
+
+    def test_global_google_inventory_verified_after_restart(self):
+        target = Target("searxng", "a" * 64, True, "no")
+        before = [
+            {"name": "yahoo", "enabled": True},
+            {"name": "google images", "enabled": True},
+        ]
+        after = [
+            {"name": "yahoo", "enabled": True},
+            {"name": "google images", "enabled": False},
+        ]
+        restarts = []
+        with (patch.object(e.on_demand_docker, "_safe_target",
+                           return_value=target),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e, "live_engines", side_effect=[before, after]),
+              patch.object(e, "_restart_verified",
+                           side_effect=lambda arg: restarts.append(arg))):
+            result = e.apply((), ("google images",), exclude_google=True)
+        self.assertIn("restarted successfully", result)
+        self.assertEqual(restarts, [target])
+        self.assertIn('  - name: "google images"\n    disabled: true',
+                      self.file.read_text())
+        self.assertFalse(e._recovery_path(self.file).exists())
 
     def test_managed_general_selection_survives_image_google_exclusion(self):
         initial = e.render(self.original, ("yahoo",), ("yahoo", "brave"))
@@ -224,7 +323,7 @@ class EngineChooserTests(unittest.TestCase):
         with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
               patch.object(e, "_check_bind_mount"),
               patch.object(e, "live_engines", return_value=inventory),
-              patch.object(e, "apply", side_effect=lambda selected, controlled:
+              patch.object(e, "apply", side_effect=lambda selected, controlled, **kwargs:
                            captured.append((selected, controlled)) or "applied"),
               patch.object(e.os, "geteuid", return_value=1000),
               patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
@@ -248,7 +347,7 @@ class EngineChooserTests(unittest.TestCase):
         with (patch.object(e.on_demand_docker, "_safe_target", return_value=fake),
               patch.object(e, "_check_bind_mount"),
               patch.object(e, "live_engines", return_value=inventory),
-              patch.object(e, "apply", side_effect=lambda selected, controlled:
+              patch.object(e, "apply", side_effect=lambda selected, controlled, **kwargs:
                            captured.append((selected, controlled)) or "applied"),
               patch.object(e.os, "geteuid", return_value=1000),
               patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
@@ -331,7 +430,7 @@ class EngineChooserTests(unittest.TestCase):
                   {"name": "yahoo", "enabled": False, "categories": ("general",)},
                   {"name": "bing", "enabled": True, "categories": ("general",)},
                   {"name": "brave", "enabled": True, "categories": ("general",)}]),
-              patch.object(e, "apply", side_effect=lambda selected, controlled:
+              patch.object(e, "apply", side_effect=lambda selected, controlled, **kwargs:
                            captured.append((selected, controlled)) or "applied"),
               patch.object(e.os, "geteuid", return_value=1000),
               patch.object(e.sys, "stdin", Mock(isatty=lambda: True)),
