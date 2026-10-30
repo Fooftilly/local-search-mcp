@@ -30,7 +30,10 @@ END = "# END local-search-mcp managed engine selection"
 RECOMMENDED = ("yahoo", "mojeek", "startpage", "qwant")
 KNOWN_UNRELIABLE = ("brave", "duckduckgo", "google cse", "wikipedia")
 PRESET = ("yahoo",)
-NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9 ._-]{0,79}\Z")
+# Names are YAML-quoted with json.dumps by render(); safe parentheses also
+# occur in SearXNG configuration labels. Do not accept control characters,
+# backslashes or YAML syntax (colon, quotes, brackets) as engine identifiers.
+NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9 ._()\-]{0,79}\Z")
 DEFAULT = re.compile(r"(?m)^use_default_settings:[ \t]*true[ \t]*(?:#.*)?$")
 ANY_ENGINES = re.compile(r"""(?m)^[ \t]*(?:engines|"engines"|'engines')[ \t]*:""")
 MAX_BYTES = 128 * 1024
@@ -106,12 +109,25 @@ def live_engines() -> list[dict]:
                 continue
             name = row.get("name")
             categories = row.get("categories", [])
-            if not isinstance(name, str) or not NAME.fullmatch(name):
+            if not isinstance(name, str):
+                continue
+            # The cross-category "exclude Google" choice must never claim
+            # completion after silently dropping a Google-named engine.
+            # Fail without changing settings if its name or categories
+            # cannot be represented by the conservative managed YAML editor.
+            google_named = name.casefold().startswith("google")
+            if not NAME.fullmatch(name):
+                if google_named:
+                    raise EngineSetupError(
+                        "Cannot safely identify every Google engine; no settings changed")
                 continue
             if (not isinstance(categories, list) or not categories
                     or len(categories) > 16
                     or any(not isinstance(cat, str) or not NAME.fullmatch(cat)
                            for cat in categories)):
+                if google_named:
+                    raise EngineSetupError(
+                        "Cannot safely identify every Google engine; no settings changed")
                 continue
             if name in found or len(found) >= 512:
                 raise EngineSetupError("SearXNG returned duplicate or excessive engines")
