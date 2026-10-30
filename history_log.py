@@ -138,6 +138,7 @@ def logged_tool(kind: str):
                         event["page"] = requested_page
                 else:
                     event["action"] = ("table_page" if "table_index" in sig.parameters
+                                       else "links_page" if "link_id" in sig.parameters
                                        else "section" if "max_chars" in sig.parameters
                                        else "find")
             else:

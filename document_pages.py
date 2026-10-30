@@ -184,7 +184,8 @@ def table_handle_exists(token: str) -> bool:
     with _LOCK:
         _purge_expired(time.monotonic())
         item = _CACHE.get(token)
-        return item is not None and item[7] is not None
+        return (item is not None and item[7] is not None
+                and item[7].get("kind") != "links")
 
 
 def read_table_with_security_context(
@@ -208,7 +209,7 @@ def read_table_with_security_context(
     with _LOCK:
         _purge_expired(time.monotonic())
         item = _CACHE.get(token)
-        if item is None or item[7] is None:
+        if item is None or item[7] is None or item[7].get("kind") == "links":
             return ({"success": False, "status": "expired_or_unknown",
                      "reason": "Temporary table not found or expired; fetch the approved URL again."},
                     None, None)
@@ -264,6 +265,105 @@ def read_table_with_security_context(
                      "reason": "One row exceeds the response limit."},
                     source_url, once_proof)
         return response, source_url, once_proof
+
+
+MAX_LINK_PAGE_ITEMS = 10
+MAX_LINK_PAGE_BYTES = 20_000
+
+
+def save_links(url: str, payload: dict, *, source_url: str,
+               once_proof: tuple[str, str] | None = None) -> str:
+    """Store bounded normalized link rows using the existing temporary cache."""
+    if (not isinstance(payload, dict) or payload.get("kind") != "links"
+            or type(payload.get("size_bytes")) is not int
+            or not 0 < payload["size_bytes"] <= 96_000
+            or not isinstance(payload.get("entries"), list)
+            or not 1 <= len(payload["entries"]) <= 96):
+        raise ValueError("Invalid bounded link payload")
+    try:
+        source, target = urlsplit(source_url), urlsplit(url)
+        if any(part.scheme not in ("http", "https") or not part.hostname
+               or part.username is not None or part.password is not None
+               for part in (source, target)):
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Only approved public URLs may be saved") from exc
+    if once_proof is not None and (
+            not isinstance(once_proof, tuple) or len(once_proof) != 2
+            or not all(isinstance(v, str) for v in once_proof)
+            or not re.fullmatch(r"[a-f0-9]{32}", once_proof[1])):
+        raise ValueError("Invalid private authorization context")
+    now = time.monotonic()
+    with _LOCK:
+        _purge_expired(now)
+        while _CACHE and (len(_CACHE) >= MAX_DOCUMENTS or
+                          sum(_entry_weight(doc) for doc in _CACHE.values())
+                          + payload["size_bytes"] > MAX_TOTAL_CHARS):
+            _CACHE.popitem(last=False)
+        token = secrets.token_urlsafe(24)
+        while token in _CACHE:
+            token = secrets.token_urlsafe(24)
+        _CACHE[token] = (now + TTL_SECONDS, url, "", {}, source_url,
+                         once_proof, PAGE_CHARS, payload)
+    return token
+
+
+
+def link_handle_exists(token: str) -> bool:
+    """Private existence check for batch finalization, no content disclosure."""
+    if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
+        return False
+    with _LOCK:
+        _purge_expired(time.monotonic())
+        item = _CACHE.get(token)
+        return (item is not None and item[7] is not None
+                and item[7].get("kind") == "links")
+
+
+def read_links_with_security_context(
+        token: str, offset: int = 0, max_links: int = MAX_LINK_PAGE_ITEMS
+) -> tuple[dict, str | None, tuple[str, str] | None]:
+    """Read retained link metadata only; bridge must reauthorize before release."""
+    if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
+        raise ValueError("Invalid link handle")
+    if type(offset) is not int or not 0 <= offset <= 96:
+        raise ValueError("offset must be between 0 and 96")
+    if type(max_links) is not int or not 1 <= max_links <= MAX_LINK_PAGE_ITEMS:
+        raise ValueError("max_links must be between 1 and 10")
+    with _LOCK:
+        _purge_expired(time.monotonic())
+        item = _CACHE.get(token)
+        if item is None or item[7] is None or item[7].get("kind") != "links":
+            return ({"success": False, "status": "expired_or_unknown",
+                     "reason": "Temporary links not found or expired; fetch the approved URL again."},
+                    None, None)
+        _, url, _, _, source_url, once_proof, _, payload = item
+        entries = payload["entries"]
+        if offset > len(entries):
+            raise ValueError("offset exceeds retained links")
+        rows = entries[offset:offset + max_links]
+        result = {
+            "success": True, "url": url, "link_id": token,
+            "links": list(rows), "offset": offset,
+            "retained_links": len(entries),
+            "source_links_observed": payload["source_links_observed"],
+            "retained_truncated": payload["retained_truncated"],
+            "input_scan_capped": payload["input_scan_capped"],
+            "source_completeness": "unknown",
+            "has_more": offset + len(rows) < len(entries),
+            "next_offset": offset + len(rows) if offset + len(rows) < len(entries) else None,
+        }
+        while (result["links"] and
+               len(json.dumps(result, ensure_ascii=True).encode("utf-8")) > MAX_LINK_PAGE_BYTES):
+            result["links"].pop()
+            following = offset + len(result["links"])
+            result["has_more"] = following < len(entries)
+            result["next_offset"] = following if result["has_more"] else None
+        if offset < len(entries) and not result["links"]:
+            return ({"success": False, "status": "link_page_too_large",
+                     "reason": "One retained link exceeds the page response limit."},
+                    source_url, once_proof)
+        return result, source_url, once_proof
 
 
 MAX_OUTLINE_HEADINGS = 40
