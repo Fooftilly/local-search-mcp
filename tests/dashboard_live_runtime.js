@@ -41,12 +41,22 @@ function createTab(initialDomains, view = "policy", query = "") {
                   nextSnapshotUs: null, nextSnapshotRun: null, pendingOverride: null,
                   historyRows: "history: before", historyBars: "bars: before",
                   activityRows: "activity: before", serviceRows: "services: before",
-                  bulkBoxes: [], lastEndpoint: null };
+                  bulkBoxes: [], nextBulkBoxes: null, lastEndpoint: null };
   const targets = new Map();
   function element(id) {
     if (!targets.has(id)) {
       targets.set(id, {
-        textContent: "", innerHTML: "server-rendered", disabled: false,
+        textContent: "", _html: "server-rendered", disabled: false,
+        get innerHTML() { return this._html; },
+        set innerHTML(value) {
+          this._html = value;
+          // Model replacement of checkbox DOM nodes, unlike a plain string
+          // mock that retained old node state across table re-renders.
+          if (id === "live-pending" && state.nextBulkBoxes !== null) {
+            state.bulkBoxes = state.nextBulkBoxes;
+            state.nextBulkBoxes = null;
+          }
+        },
         dataset: id === "bulk-selection-tools" ? { max: "25" } : {},
         hidden: id === "bulk-selection-tools",
         focusChild: null, bulkSelected: false,
@@ -147,7 +157,7 @@ async function main() {
   const clear = tab.element("bulk-clear-selection");
   const tools = tab.element("bulk-selection-tools");
   const summary = tab.element("bulk-selection-count");
-  const pending = tab.element("live-pending");
+  const bulkPendingBody = tab.element("live-pending");
   assert.equal(tools.hidden, false, "JS progressively enables selection tools");
   tab.state.bulkBoxes = Array.from({ length: 28 }, () =>
     ({ checked: false, disabled: false }));
@@ -161,17 +171,33 @@ async function main() {
   assert.equal(tab.state.bulkBoxes.filter(x => x.disabled).length, 0);
   assert.equal(clear.disabled, true);
   tab.state.bulkBoxes[0].checked = true;
-  pending.onchange({ target: tab.state.bulkBoxes[0] });
+  bulkPendingBody.onchange({ target: tab.state.bulkBoxes[0] });
   assert.match(summary.textContent, /1 selected/);
   select.onclick();
   assert.equal(tab.state.bulkBoxes.filter(x => x.checked).length, 25);
   // Unexpected over-selection (for example a synthetic change) is reverted.
   tab.state.bulkBoxes[25].checked = true;
-  pending.onchange({ target: tab.state.bulkBoxes[25] });
+  bulkPendingBody.onchange({ target: tab.state.bulkBoxes[25] });
   assert.equal(tab.state.bulkBoxes[25].checked, false);
   assert.match(summary.textContent, /Selection limit: 25/);
+  const beforeSelectedPoll = bulkPendingBody.innerHTML;
+  tab.state.pendingOverride = "pending: changed while 25 selected";
+  await poll(tab, 105000);
+  assert.equal(bulkPendingBody.innerHTML, beforeSelectedPoll,
+               "poll cannot overwrite deliberate checkbox selections");
+  assert.equal(tab.state.bulkBoxes.filter(x => x.checked).length, 25);
+  assert.match(summary.textContent, /25 selected/);
   clear.onclick();
-  tab.state.bulkBoxes = [];
+  // On the next successful snapshot, model a new set of DOM checkboxes.
+  tab.state.nextBulkBoxes = Array.from({ length: 3 }, () =>
+    ({ checked: false, disabled: false }));
+  await poll(tab, 106000);
+  assert.equal(bulkPendingBody.innerHTML, "pending: changed while 25 selected");
+  assert.equal(tab.state.bulkBoxes.length, 3);
+  assert.equal(clear.disabled, true);
+  assert.equal(select.disabled, false);
+  assert.match(summary.textContent, /0 selected/);
+  tab.state.pendingOverride = null;
   tab.state.activityRows = "activity: refreshed";
   tab.state.serviceRows = "services: refreshed";
 
