@@ -164,10 +164,10 @@ class EngineChooserTests(unittest.TestCase):
             self.assertEqual(e.main(), 0)
         self.assertEqual(captured, [((), ("google (images)",))])
         managed = e.render(self.original, *captured[0])
-        self.assertIn('  - name: "google (images)"\\n    disabled: true', managed)
+        self.assertIn('  - name: "google (images)"\n    disabled: true', managed)
         updated = e.render(managed, ("yahoo",), ("yahoo", "naver (KO)"))
-        self.assertIn('  - name: "naver (KO)"\\n    disabled: true', updated)
-        self.assertIn('  - name: "google (images)"\\n    disabled: true', updated)
+        self.assertIn('  - name: "naver (KO)"\n    disabled: true', updated)
+        self.assertIn('  - name: "google (images)"\n    disabled: true', updated)
         self.assertEqual(e.render(updated, ("yahoo",), ("yahoo",)), updated)
 
     def test_unsafe_google_named_engine_fails_closed_not_silently_skipped(self):
