@@ -978,7 +978,7 @@ class Handler(BaseHTTPRequestHandler):
                     "hostname (not a URL), and a supported operation/status."))
             return self._respond(200,history_page(**filters))
         if path.path!='/':return self._respond(404,'Not found')
-        query = parse_qs(path.query)
+        query = parse_qs(path.query, keep_blank_values=True)
         q=query.get('q',[''])[0][:100]
         try:
             page = _pending_page(query.get('page', ['1'])[0])
