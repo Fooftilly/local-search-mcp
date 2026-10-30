@@ -190,7 +190,8 @@ class DashboardTests(unittest.TestCase):
         for injected, expected in (
             ('<img src=x onerror=alert(1)>', '&lt;img src=x onerror=alert(1)&gt;'),
             ('x' * 101, None),
-            ('bad\\nfilter', None),
+            ('bad' + chr(10) + 'filter', None),
+            ('bad' + chr(0x202e) + 'filter', None),
         ):
             with self.subTest(injected=injected):
                 data = urlencode({
