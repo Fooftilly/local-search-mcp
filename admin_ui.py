@@ -123,14 +123,15 @@ def history_pagination_html(filters, page, total):
 
 
 def history_items_html(kind="", status="", domain="", hours=0,
-                       show_queries=False, page=1):
-    try:
-        items = history_index.search_history(kind=kind, status=status,
-                                              domain=domain, hours=hours,
-                                              reveal_queries=show_queries,
-                                              offset=(page - 1) * HISTORY_PAGE_SIZE)
-    except (OSError, ValueError, sqlite3.Error):
-        return '<tr><td colspan="5">Indexed history is unavailable; check local configuration.</td></tr>'
+                       show_queries=False, page=1, items=None):
+    if items is None:
+        try:
+            items = history_index.search_history(kind=kind, status=status,
+                                                  domain=domain, hours=hours,
+                                                  reveal_queries=show_queries,
+                                                  offset=(page - 1) * HISTORY_PAGE_SIZE)
+        except (OSError, ValueError, sqlite3.Error):
+            return '<tr><td colspan="5">Indexed history is unavailable; check local configuration.</td></tr>'
     out = []
     for event in items:
         stamp = datetime.fromtimestamp(
@@ -152,14 +153,14 @@ def history_items_html(kind="", status="", domain="", hours=0,
 
 
 def recent_rows(kind="", status="", domain="", hours=0, show_queries=False,
-                page=1):
+                page=1, items=None):
     column = "Search query / page URL / domain" if show_queries else "Domain"
     return ('<div class="scroll"><table><thead><tr><th>UTC time</th>'
             '<th>Operation</th><th>Status</th><th>' + column + '</th>'
             '<th>Duration (ms)</th></tr></thead>'
             '<tbody id="live-history">' +
             history_items_html(kind, status, domain, hours, show_queries,
-                               page=page) +
+                               page=page, items=items) +
             '</tbody></table></div>')
 
 
@@ -269,19 +270,27 @@ def live_snapshot(query='', view='policy', history_filters=None,
     if view == 'history':
         filters = history_filters or {}
         try:
-            metrics = history_index.summarize_history(**{
-                k: filters[k] for k in ('kind', 'status', 'domain', 'hours')
-                if k in filters})
+            snapshot = history_index.dashboard_history_snapshot(
+                **{k: filters[k] for k in ('kind', 'status', 'domain', 'hours')
+                   if k in filters},
+                page=filters.get('page', 1),
+                reveal_queries=filters.get('show_queries', False),
+                page_size=HISTORY_PAGE_SIZE)
         except (OSError, ValueError, sqlite3.Error):
-            metrics = []
-        total = sum(int(x['count']) for x in metrics)
-        page = min(filters.get('page', 1), _history_last_page(total))
-        return {'history_html': history_items_html(
-                    **{**filters, 'page': page}),
-                'history_summary_html': history_summary_html(metrics),
+            # A corrupt/unavailable index must not masquerade as zero events.
+            return {
+                'history_html': '<tr><td colspan="5">Indexed history is '
+                                'unavailable; check local configuration.</td></tr>',
+                'history_summary_html': '<tr><td colspan="5">Indexed history '
+                                        'is unavailable.</td></tr>',
+                'history_pages_html': '<p class="subtle" role="status">'
+                                      'History pages unavailable.</p>',
+                'history_page': filters.get('page', 1)}
+        return {'history_html': history_items_html(items=snapshot['rows']),
+                'history_summary_html': history_summary_html(snapshot['metrics']),
                 'history_pages_html': history_pagination_html(
-                    filters, page, total),
-                'history_page': page}
+                    filters, snapshot['page'], snapshot['total']),
+                'history_page': snapshot['page']}
     # Aggregate history is read only on an explicit, less-frequent overview
     # poll. Avoid repeating a full history sync on every ten-second refresh.
     overview = (_overview_history_metrics()
@@ -847,27 +856,38 @@ def status_page():
 def history_page(kind="", status="", domain="", hours=0, show_queries=False,
                  filter_error="", page=1):
     filters = {"kind": kind, "status": status, "domain": domain, "hours": hours}
+    snapshot = None
+    history_unavailable = False
     try:
         retention_label = str(history_index._retention_days())
-        metrics = (history_index.summarize_history(**filters)
-                   if not filter_error else [])
+        if not filter_error:
+            snapshot = history_index.dashboard_history_snapshot(
+                **filters, page=page, reveal_queries=show_queries,
+                page_size=HISTORY_PAGE_SIZE)
     except (OSError, ValueError, sqlite3.Error):
         retention_label = "configured"
-        metrics = []
+        history_unavailable = not bool(filter_error)
+    metrics = snapshot['metrics'] if snapshot is not None else []
     warning = (f'<p class="alert error" role="alert">{esc(filter_error)}</p>'
                if filter_error else '')
     invalid_kind_option = (
         f'<option value="{esc(kind)}" selected disabled>'
         f'Unsupported operation: {esc(kind)}</option>'
         if filter_error and kind not in ("", "search", "fetch", "page") else '')
-    total = sum(int(x['count']) for x in metrics)
-    page = min(page, _history_last_page(total))
+    total = snapshot['total'] if snapshot is not None else 0
+    page = snapshot['page'] if snapshot is not None else page
     full_filters = {**filters, 'show_queries': show_queries}
     pages_html = (history_pagination_html(full_filters, page, total)
-                  if not filter_error else '')
-    rows = (recent_rows(**filters, show_queries=show_queries, page=page)
-            if not filter_error
-            else '<p class="subtle">Correct the filters above to view history.</p>')
+                  if snapshot is not None else
+                  '<p class="subtle" role="status">History pages unavailable.</p>'
+                  if history_unavailable else '')
+    rows = (recent_rows(**filters, show_queries=show_queries, page=page,
+                        items=snapshot['rows'])
+            if snapshot is not None else
+            '<div class="scroll"><table><tbody><tr><td>Indexed history is '
+            'unavailable; check local configuration.</td></tr></tbody></table></div>'
+            if history_unavailable else
+            '<p class="subtle">Correct the filters above to view history.</p>')
     options = ''.join(
         f'<option value="{n}"{" selected" if hours == n else ""}>{label}</option>'
         for n, label in ((0, "All retained"), (1, "Last hour"),
@@ -882,7 +902,8 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=False,
         query_checked=' checked' if show_queries else '',
         warning=warning, rows=rows,
         page=page, pages_html=pages_html,
-        summary_html=history_summary_html(metrics),
+        summary_html=('<tr><td colspan="5">Indexed history is unavailable.</td></tr>'
+                      if history_unavailable else history_summary_html(metrics)),
         retention_label=esc(retention_label),
     )
 
