@@ -523,8 +523,8 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     "gov.me" matches only that host, "*.gov.me" matches child hosts only.
     It never changes provider selection or domain approvals.
     Choose categories OR engines: SearXNG combines both into a union.
-    Engine-only calls require a verified enabled provider in local /config;
-    unsupported names fail closed without searching default providers.
+    Explicit engine/category calls require locally verified enabled providers
+    in /config; unsupported selectors fail closed before provider searches.
     """
     if not isinstance(fresh, bool):
         raise ValueError("fresh must be a boolean")
