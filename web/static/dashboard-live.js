@@ -22,6 +22,65 @@
   const fingerprintSaltKey = "local-search-mcp.notification-salt.v1";
   const notificationLock = "local-search-mcp.notification-lock.v1";
   const lastTableHtml = new WeakMap();
+  let syncBulkSelection = () => {};
+
+  function setupBulkSelection() {
+    // Enhances the existing server-side, stale-ID-validated /bulk form only.
+    // Without JavaScript the per-row checkboxes still work normally.
+    if (isHistory || !pendingBody ||
+        typeof pendingBody.querySelectorAll !== "function") return;
+    const toolbar = document.getElementById("bulk-selection-tools");
+    const select = document.getElementById("bulk-select-visible");
+    const clear = document.getElementById("bulk-clear-selection");
+    const label = document.getElementById("bulk-selection-count");
+    if (!toolbar || !select || !clear || !label) return;
+    const max = Number(toolbar.dataset.max);
+    if (!Number.isSafeInteger(max) || max < 1 || max > 25) return;
+
+    const boxes = () => Array.from(
+      pendingBody.querySelectorAll('input[name="selected"][form="bulk-form"]'));
+    const count = () => boxes().filter(box => box.checked).length;
+    const update = (notice = "") => {
+      const all = boxes();
+      const selected = count();
+      const rest = Math.max(0, max - selected);
+      label.textContent = notice ||
+        `${selected} selected · max ${max}`;
+      select.disabled = !rest || !all.some(box => !box.checked);
+      clear.disabled = selected === 0;
+      // Prevent the browser from selecting above the server's hard cap,
+      // but never override or submit the operator's existing selections.
+      for (const box of all) box.disabled = !box.checked && rest === 0;
+    };
+    toolbar.hidden = false;
+    select.addEventListener("click", () => {
+      let remaining = Math.max(0, max - count());
+      for (const box of boxes()) {
+        if (!remaining) break;
+        if (!box.checked && !box.disabled) {
+          box.checked = true;
+          remaining--;
+        }
+      }
+      update();
+    });
+    clear.addEventListener("click", () => {
+      for (const box of boxes()) box.checked = false;
+      update();
+    });
+    pendingBody.addEventListener("change", event => {
+      const all = boxes();
+      if (!all.includes(event.target)) return;
+      if (count() > max) {
+        event.target.checked = false;
+        update(`Selection limit: ${max} requests. No decisions sent.`);
+      } else {
+        update();
+      }
+    });
+    syncBulkSelection = update;
+    update();
+  }
 
   function updateTable(body, html) {
     if (!body || lastTableHtml.get(body) === html) return;
@@ -380,6 +439,7 @@
         updateTable(historySummaryBody, data.history_summary_html);
       } else {
         updateTable(pendingBody, data.pending_html);
+        syncBulkSelection();
         updateTable(decidedBody, data.decided_html);
         updateTable(auditBody, data.audit_html);
         updateTable(activityBody, data.activity_html);
@@ -426,5 +486,6 @@
       startRefresh();
     }
   });
+  setupBulkSelection();
   startRefresh();
 })();
