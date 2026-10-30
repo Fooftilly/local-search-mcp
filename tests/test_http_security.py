@@ -470,9 +470,24 @@ class DashboardHTTPTests(unittest.TestCase):
             self.assertIn(b'data-history-page="3"',
                           self.exchange("GET", "/history?page=4")[1])
             source.with_name(source.name + ".1").unlink()
+            # The index intentionally retains redacted metadata from absent
+            # sources until retention expires; original secrets fail closed.
+            absent_source = json.loads(self.exchange(
+                "GET", "/live?view=history&page=3&show_queries=1")[1])
+            self.assertEqual(absent_source["history_page"], 3)
+            self.assertNotIn("PRIVATE-SEARCH", repr(absent_source))
+            self.assertNotIn("/private-page/", repr(absent_source))
+            # Simulate retention expiry of the old indexed rows separately.
+            # The remaining new event must clamp a formerly valid page 3.
+            import sqlite3
+            import history_index
+            with sqlite3.connect(history_index.index_path()) as db:
+                db.execute("DELETE FROM history WHERE domain != ?",
+                           ("other.example.org",))
             after = json.loads(self.exchange(
                 "GET", "/live?view=history&page=3&show_queries=1")[1])
             self.assertEqual(after["history_page"], 1)
+            self.assertIn("other.example.org", after["history_html"])
             self.assertNotIn("PRIVATE-SEARCH", repr(after))
             self.assertNotIn("/private-page/", repr(after))
 
