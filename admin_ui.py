@@ -156,9 +156,14 @@ def _pending_page(value):
     return page
 
 
+def _last_pending_page(total):
+    return min(MAX_PENDING_PAGE, max(
+        1, (total + PENDING_PAGE_SIZE - 1) // PENDING_PAGE_SIZE))
+
+
 def pending_pagination_html(query, page, total):
     """Accessible navigation over bounded pending rows; never alters rules."""
-    pages = max(1, (total + PENDING_PAGE_SIZE - 1) // PENDING_PAGE_SIZE)
+    pages = _last_pending_page(total)
     first = (page - 1) * PENDING_PAGE_SIZE + 1 if total and page <= pages else 0
     last = min(page * PENDING_PAGE_SIZE, total) if first else 0
 
@@ -204,6 +209,7 @@ def live_snapshot(query='', view='policy', history_filters=None,
     global _LAST_LIVE_SNAPSHOT_US
     with _LIVE_SNAPSHOT_LOCK:
         pending_total = policy.pending_match_count(query)
+        pending_page = min(pending_page, _last_pending_page(pending_total))
         pending_rows = policy.entries(
             query, limit=PENDING_PAGE_SIZE, status='pending',
             offset=(pending_page - 1) * PENDING_PAGE_SIZE)
@@ -229,6 +235,7 @@ def live_snapshot(query='', view='policy', history_filters=None,
             'pending_domains': domains,
             'pending_pages_html': pending_pagination_html(
                 query, pending_page, pending_total),
+            'pending_page': pending_page,
         }
         if include_overview:
             result['operations_html'] = operations_overview_html(overview)
@@ -517,6 +524,7 @@ def render(query='', message='', kind='success', page=1):
     # Pending rows have independent pages; explicit decisions are never hidden
     # by a large pending queue.
     pending_total = policy.pending_match_count(query)
+    page = min(page, _last_pending_page(pending_total))
     pending=''.join(row_html(r, query=query, page=page) for r in policy.entries(
         query, limit=PENDING_PAGE_SIZE, status='pending',
         offset=(page - 1) * PENDING_PAGE_SIZE))
