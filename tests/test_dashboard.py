@@ -144,6 +144,7 @@ class DashboardTests(unittest.TestCase):
             filtered = response.read().decode("utf-8")
         self.assertIn('name="review_query" value="one.example.net"', filtered)
         self.assertIn('data-review-query="one.example.net"', filtered)
+        self.assertIn('href="/?q=one.example.net">Refresh</a>', filtered)
         self.assertIn('name="q" value="one.example.net"', filtered)
         self.assertNotIn('aria-label="Select other.example.net"', filtered)
         first = next(x for x in policy.entries(status="pending")
