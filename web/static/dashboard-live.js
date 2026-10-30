@@ -8,6 +8,8 @@
   const historyBody = document.getElementById("live-history");
   const activityBody = document.getElementById("live-activity");
   const serviceBody = document.getElementById("live-services");
+  const operationsBody = document.getElementById("live-operations");
+  const activitySummaryBody = document.getElementById("live-activity-summary");
   const historySummaryBody = document.getElementById("live-history-summary");
   const status = document.getElementById("live-status");
   const notice = document.getElementById("notification-toggle");
@@ -97,6 +99,9 @@
     lastTableHtml.set(body, html);
   }
   const interval = 10000;
+  // Expensive retained-history summaries are requested no more than once
+  // per minute. A failed request retries on the next normal poll.
+  let nextOverviewAt = Date.now() + 60000;
   const minNotificationGap = 60000;
   let notifyEnabled = false;
   let stopped = false;
@@ -415,9 +420,11 @@
     const activeFilter = document.documentElement.dataset.reviewQuery;
     const query = (typeof activeFilter === "string" ? activeFilter :
       new URLSearchParams(window.location.search).get("q") || "");
+    const wantsOverview = !isHistory && Date.now() >= nextOverviewAt;
     const endpoint = isHistory ?
       "/live?view=history&" + new URLSearchParams(window.location.search).toString() :
-      "/live?view=policy&q=" + encodeURIComponent(query.slice(0, 100));
+      "/live?view=policy&q=" + encodeURIComponent(query.slice(0, 100)) +
+      (wantsOverview ? "&overview=1" : "");
     try {
       const controller = new AbortController();
       activeController = controller;
@@ -451,6 +458,13 @@
         updateTable(auditBody, data.audit_html);
         updateTable(activityBody, data.activity_html);
         updateTable(serviceBody, data.service_rows_html);
+        if (wantsOverview &&
+            typeof data.operations_html === "string" &&
+            typeof data.activity_summary_html === "string") {
+          updateTable(operationsBody, data.operations_html);
+          updateTable(activitySummaryBody, data.activity_summary_html);
+          nextOverviewAt = Date.now() + 60000;
+        }
         for (const type of ["pending", "allowed", "denied"]) {
           const count = document.getElementById("live-count-" + type);
           if (count) count.textContent = String(data.counts[type]);
