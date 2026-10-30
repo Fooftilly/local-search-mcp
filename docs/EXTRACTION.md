@@ -221,6 +221,35 @@ still contain only Markdown and metadata, not another stored link/table index.
 The same redirect, permissions and epoch checks gate any returned content.
 
 
+### Bounded link continuation (opt-in)
+
+`web_fetch(url, include_links=true)` continues to return at most 24
+normalized, deduplicated links with its existing scoring and source-order
+behavior. When the *same approved Crawl4AI response* contains additional
+eligible candidates, the opt-in response now includes
+`link_continuation.link_id` and bounded retention metadata.
+
+`web_links_page(link_id, offset=0, max_links=10)` retrieves the unshown
+retained link candidates in deterministic content-score/source order, up to
+10 per call and a 20 KB response budget. Follow `next_offset` until
+`has_more=false`. The ephemeral handle retains at most **96** additional
+links and **96 KB** of normalized link records across the first 100
+internal and first 100 external upstream rows. `retained_truncated`,
+`input_scan_capped` and `source_completeness="unknown"` prevent
+claims of full source coverage.
+
+Both the initial link selection and continuation use exactly the same safe
+URL normalization. The continuation is valid for at most **15 minutes**
+(and may be evicted sooner by the existing shared memory bounds).
+Every read checks the currently approved original and final host and any
+private one-use proof, using the existing authorization release gate.
+A link entry is **not** an authorization to fetch that link; following any
+entry still requires `web_fetch` and normal approval/DNS/egress checks.
+No new crawl, DNS lookup, script execution, auto-approval, persistent URL
+index or audit of bearer handles is introduced. Default
+`web_fetch(url)` output remains unchanged.
+
+
 ### Precise bounded passage extraction (opt-in)
 
 For an existing `document_id` returned by `web_fetch` (including
