@@ -16,6 +16,9 @@ class ComparisonBenchmarkDesignTests(unittest.TestCase):
                 self.assertEqual(result["changes"] == 0, name == "unchanged")
                 self.assertLessEqual(len(left), benchmark.MAX_CHARS_PER_SIDE)
                 self.assertLessEqual(len(right), benchmark.MAX_CHARS_PER_SIDE)
+                if name == "interleaved_repetition":
+                    # A single full replacement would not test alignment.
+                    self.assertGreater(result["changes"], 20)
 
     def test_input_limits_are_explicit_and_not_silent_truncation(self):
         with self.assertRaises(ValueError):
