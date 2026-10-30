@@ -299,13 +299,19 @@ def initialize():
         _seed(conn)
 
 
+PENDING_SORT_MODES = ("recent", "oldest", "frequent")
+
+
 def entries(search: str = "", limit: int = 1000, status: str | None = None,
-            offset: int = 0):
+            offset: int = 0, pending_sort: str = "recent"):
     """Show pending requests and explicit decisions independently."""
     if status not in (None, "pending", "decided"):
         raise ValueError("Invalid domain entry filter")
     if type(offset) is not int or not 0 <= offset <= 3800:
         raise ValueError("Invalid domain entry offset")
+    if pending_sort not in PENDING_SORT_MODES or (
+            pending_sort != "recent" and status != "pending"):
+        raise ValueError("Invalid pending sort order")
     with _db() as conn:
         _seed(conn)
         clauses = []
@@ -319,9 +325,23 @@ def entries(search: str = "", limit: int = 1000, status: str | None = None,
             clauses.append("domain LIKE ? ESCAPE '\\'")
             args.append(s)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        # Strictly allowlisted ORDER BY fragments; never interpolate user
+        # strings into SQL. Domain breaks ties across page boundaries.
+        pending_orders = {
+            "recent": "updated_at DESC, domain ASC",
+            "oldest": "created_at ASC, domain ASC",
+            # request() changes last_requested_at, not updated_at. Legacy
+            # rows with no request timestamp sort by their row update time.
+            "frequent": ("request_count DESC, "
+                         "COALESCE(NULLIF(last_requested_at,''), updated_at) "
+                         "DESC, domain ASC"),
+        }
+        order = (pending_orders[pending_sort] if status == "pending" else
+                 "CASE status WHEN 'pending' THEN 0 "
+                 "WHEN 'allowed' THEN 1 ELSE 2 END, updated_at DESC, domain ASC")
         rows = conn.execute(
             "SELECT * FROM domains" + where +
-            " ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'allowed' THEN 1 ELSE 2 END, updated_at DESC, domain ASC LIMIT ? OFFSET ?",
+            " ORDER BY " + order + " LIMIT ? OFFSET ?",
             (*args, limit, offset),
         ).fetchall()
         now = utcnow()
