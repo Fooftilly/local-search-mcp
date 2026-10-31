@@ -317,17 +317,36 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(self.bridge_requests, [])
 
-    async def test_guard_preflight_failure_never_binds_origin(self):
+    async def test_missing_authenticated_gateway_never_binds_origin(self):
         from remote_agent_cloudflare_origin import serve
         with (patch("remote_agent_cloudflare_origin.read_private_hostname",
                     return_value=self.hostname),
               patch("remote_agent_cloudflare_origin.check_portal_grant"),
-              patch("remote_agent_cloudflare_origin.preflight_local",
-                    new_callable=AsyncMock, side_effect=StartupRefused("guard")),
+              patch("remote_agent_cloudflare_origin.socket.create_connection",
+                    side_effect=OSError("synthetic unavailable")),
               patch("remote_agent_cloudflare_origin.uvicorn.Server",
                     side_effect=AssertionError("server cannot start"))):
-            with self.assertRaises(StartupRefused):
+            with self.assertRaisesRegex(
+                    StartupRefused, "Authenticated loopback gateway"):
                 await serve(Path("/does/not/matter"))
+
+    async def test_adapter_startup_does_not_run_privileged_guard_preflight(self):
+        """The no-new-privileges adapter relies on the gateway's guard checks."""
+        from remote_agent_cloudflare_origin import serve
+        with (patch("remote_agent_cloudflare_origin.read_private_hostname",
+                    return_value=self.hostname),
+              patch("remote_agent_cloudflare_origin.check_portal_grant"),
+              patch("remote_agent_cloudflare_origin.socket.create_connection")
+                    as gateway_socket,
+              patch("remote_agent_prerequisites.fixed_root_tunnel_gate",
+                    side_effect=AssertionError("adapter must not run sudo")),
+              patch("remote_agent_cloudflare_origin.uvicorn.Server")
+                    as server):
+            server.return_value.serve = AsyncMock(return_value=None)
+            await serve(Path("/does/not/matter"))
+            gateway_socket.assert_called_once_with(("127.0.0.1", 18790),
+                                                   timeout=2)
+            server.return_value.serve.assert_awaited_once()
 
     async def test_adapter_recovers_when_gateway_restarts_without_rebinding(self):
         attempts = []
