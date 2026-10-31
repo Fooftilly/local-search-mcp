@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -21,9 +22,9 @@ MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_EVENT_BYTES = 65_536
 MAX_EVENTS = 20_000
 MAX_GROUPS = 24
-_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}\Z")
+_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 () ._-]{0,39}\Z")
 _SECRET_WORDS = re.compile(r"(?i)(?:token|password|secret|bearer|cookie|apikey|api_key)")
-_CATEGORIES = frozenset(("general", "images", "news", "videos", "music",
+_CATEGORIES = frozenset(("general", "web", "images", "news", "videos", "music",
                          "files", "it", "science", "social media", "books",
                          "maps", "other"))
 
@@ -69,6 +70,37 @@ def _read_tail(path: Path) -> tuple[list[bytes], bool]:
         os.close(fd)
 
 
+
+def _source_snapshot(files: list[Path]) -> tuple[list[tuple[list[bytes], bool]], bool]:
+    """Read all source tails under the writer's EXISTING history lock.
+
+    Do not create or chmod the lock, history files, a database, or a sidecar.
+    If older/manual history has no lock file, return a best-effort sample
+    marked as non-atomic rather than falsely certifying consistency.
+    """
+    lock = files[0].parent / ".history.lock"
+    fd = None
+    try:
+        try:
+            fd = os.open(lock, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except FileNotFoundError:
+            pass
+        if fd is not None:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError("Invalid private history lock")
+            fcntl.flock(fd, fcntl.LOCK_SH)
+        snapshot = []
+        for source in files:
+            try:
+                snapshot.append(_read_tail(source))
+            except FileNotFoundError:
+                continue
+        return snapshot, fd is not None
+    finally:
+        if fd is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
 def _rollup(values: dict[str, list[float | None]]) -> list[dict]:
     top = sorted(values.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     result = []
@@ -99,14 +131,12 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
     malformed = scanned = scanned_files = 0
     limited = False
     files = [path] + [path.with_name(path.name + f".{i}") for i in (1, 2, 3)]
-    existing = 0
-    for source in files:
-        try:
-            rows, truncated = _read_tail(source)
-        except FileNotFoundError:
-            continue
-        existing += 1
-        scanned_files += 1
+    batches, snapshot_locked = _source_snapshot(files)
+    existing = len(batches)
+    scanned_files = existing
+    if existing and not snapshot_locked:
+        limited = True
+    for rows, truncated in batches:
         limited |= truncated
         for raw in reversed(rows):
             if scanned >= MAX_EVENTS:
@@ -135,8 +165,8 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
                 duration = None
             categories = item.get("categories")
             group_names = set()
-            if isinstance(categories, str) and len(categories) <= 160:
-                group_names.update(n for value in categories.split(",")[:4]
+            if isinstance(categories, str) and len(categories) <= 320:
+                group_names.update(n for value in categories.split(",")[:8]
                                    if (n := _label(value.strip().lower())) in _CATEGORIES)
             if not group_names:
                 group_names = {"unspecified"}
@@ -158,8 +188,10 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
                 unattributed += 1
         if scanned >= MAX_EVENTS:
             break
+    limited |= malformed > 0
     return {
         "available": existing > 0,
+        "source_snapshot_lock_acquired": snapshot_locked,
         "hours": hours,
         "sampled_search_calls": calls,
         "non_success_search_calls": errors,
