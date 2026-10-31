@@ -161,6 +161,7 @@ class JSONLDUnitTests(unittest.TestCase):
         result = ld.extract({"html": html_script(nested_context_page)})
         self.assertEqual(result["jsonld"], [])
         self.assertEqual(result["jsonld_info"]["status"], "none_found")
+        self.assertTrue(result["jsonld_info"]["limits_applied"])
 
     def test_many_graph_nodes_and_scripts_return_only_bounded_records(self):
         node = {"@context": "https://schema.org", "@type": "Event",
