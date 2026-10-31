@@ -56,17 +56,22 @@ Do not implement multiple competing public gateways. Select one authenticator an
 
 ## Acceptance matrix / exact gates
 
+The twelve checks below are independent acceptance gates. **All are pending**; a passing design-document CI run is not proof that any live public endpoint is secure.
+
 | Gate | Evidence required | State |
 | --- | --- | --- |
-| Confirm Grok API bearer propagation and HTTPS Streamable HTTP | Actual remote client request accepted by authenticated test gateway, with secrets redacted | Not tested |
-| Confirm Grok.com custom connector auth options and callback/OAuth support | Actual connector UI flow and endpoint request, no speculative assumptions | Not tested |
-| Pin owned provider hostname and authentication mode | Operator-approved URL, tunnel account and per-client auth choice | Not selected |
-| Loopback boundary and HTTP Host/Origin integrity | Unauthorized public and invalid Host/Origin requests rejected; bridge still accepts only loopback | Not tested |
-| Rejected public traffic does **not** wake Docker | Test missing, expired, revoked, wrong-audience tokens; no change to lease/container count | Not tested |
-| Authenticated `tools/list`, read-only capabilities, bounded search/fetch | Same 12 application tools as #215; denied/private-IP and unknown-domain flow unaffected | Not tested |
-| Statefulness, SSE, streaming cancellation, rate/body/timeout caps | Live client and chaos-free synthetic tests with precise limits | Not tested |
-| Guard outage and endpoint outage fail closed | Isolated unit/integration tests; attended guard evidence without destructive firewall change | Not tested |
-| Credential rotation/revocation, clean rollback | Fresh connection denied after revocation; public URL disabled without touching OpenAI tunnel | Not tested |
+| G01 — xAI API bearer propagation and HTTPS Streamable HTTP | An actual API client forwards the Authorization header to a local test gateway over authenticated HTTPS, with secrets redacted; MCP initialization succeeds | Not tested |
+| G02 — Grok.com connector authentication | Operator verifies the custom connector's real OAuth/credential, callback, and refresh behavior; do not assume API bearer semantics also apply to Grok web | Not tested |
+| G03 — Operator-owned ingress selection | Operator approves the specific stable hostname, tunnel account, credential/auth model, and rollback plan before provisioning | Not selected |
+| G04 — Route and upstream isolation | Both unauthenticated **and authenticated** requests to non-`/mcp` routes, alternate upstreams, operator dashboard, crawler, search and diagnostics fail without forwarding; no open proxy | Not tested |
+| G05 — Host/Origin and loopback integrity | Reject invalid external SNI/Host/Origin and spoofed forwarding headers; verify upstream Host stays loopback-only and existing bridge Host/Origin protections remain enabled | Not tested |
+| G06 — Rejected requests cannot wake backends | Missing, invalid, expired, revoked, wrong-client and wrong-audience credentials fail **before** proxying; on-demand Docker state and lease counters remain unchanged | Not tested |
+| G07 — Authorized MCP behavior and policy enforcement | Authenticated `initialize` / `tools/list` and bounded search/fetch return the existing 12 tools; private-IP rejection and operator-only domain approval stay enforced | Not tested |
+| G08 — MCP sessions and streaming | POST/GET/DELETE lifecycle, session IDs, SSE/event streams, cancellation and client disconnect work with authentication checked on every request; session IDs alone grant nothing | Not tested |
+| G09 — Request/resource limits | Bounded header/body sizes, per-client rates, concurrency, active sessions, stream lifetimes and deadlines reject excess work safely; test slow and malformed clients | Not tested |
+| G10 — Guard and upstream failure modes | Missing/mismatched root egress guard, failed preflight/live probe, absent bridge and tunnel restarts fail closed in isolated tests; attended host check without destructive firewall changes | Not tested |
+| G11 — Credential lifecycle and rollback | Independent client identity, rotation and revocation block **new and existing** sessions as designed; disabling public ingress leaves existing OpenAI tunnel and local MCP unaffected | Not tested |
+| G12 — Audit and secret confidentiality | Authorized/rejected requests produce bounded client-identity/status audit events without bearer tokens, MCP session IDs, private queries, URLs or response bodies; errors and health pages leak no secrets | Not tested |
 
 ### Deployment decision
 
