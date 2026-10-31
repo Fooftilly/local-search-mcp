@@ -76,6 +76,34 @@ class ServiceInstallerTests(unittest.TestCase):
         self.assertIn("AF_NETLINK", gateway)
         self.assertIn("NoNewPrivileges=true", origin)
 
+    def test_cloudflare_services_do_not_remap_host_root_or_break_sudo_guard(self):
+        """Unprivileged systemd mount namespaces map / and /home to nobody.
+
+        The strict private-file parent validator must continue to reject
+        UID 65534; service templates avoid that remapping instead. The
+        gateway must still be able to invoke its host sudo NOPASSWD guard.
+        """
+        units = installer.unit_files(
+            "/usr/bin/python3", installer.ROOT, cloudflare_portal=True)
+        gateway = units["local-search-mcp-remote-gateway.service"]
+        adapter = units["local-search-mcp-cloudflare-origin.service"]
+        for name, unit in units.items():
+            with self.subTest(name=name):
+                for setting in (
+                        "PrivateTmp=false", "ProtectSystem=false",
+                        "ProtectHome=false", "UMask=0077",
+                        "RestrictAddressFamilies="):
+                    self.assertIn(setting, unit)
+                for unsafe in (
+                        "PrivateTmp=true", "ProtectSystem=strict",
+                        "ProtectHome=read-only", "PrivateUsers=true"):
+                    self.assertNotIn(unsafe, unit)
+                self.assertNotIn("0.0.0.0", unit)
+        self.assertIn("NoNewPrivileges=false", gateway)
+        self.assertIn("AF_NETLINK", gateway)
+        self.assertIn("NoNewPrivileges=true", adapter)
+        self.assertNotIn("AF_NETLINK", adapter)
+
     def test_optional_install_uses_private_project_python_not_system_python(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
