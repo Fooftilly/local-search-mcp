@@ -20,7 +20,7 @@ For organized operator documentation, see the [documentation index](docs/README.
 
 ## Requirements
 
-- Linux with Python 3.11+, **libpsl** (Arch: `sudo pacman -S libpsl`) and `python-venv` support.
+- Linux with Python 3.14 or newer (3.14 is the currently tested deployment runtime; older Python versions are unsupported), **libpsl** (Arch: `sudo pacman -S libpsl`) and `python-venv` support.
 - SearXNG running at `http://127.0.0.1:8888` with JSON search enabled.
 - **Crawl4AI Docker server 0.9.5 or newer (stable)** at `http://127.0.0.1:11235`, with a locally configured API token and normal hardened settings. This bridge rejects older/unknown versions, but **does not itself enforce network isolation**: read [SECURITY.md](SECURITY.md).
 - Optional: OpenAI Secure MCP Tunnel and the account permissions to create and use a tunnel.

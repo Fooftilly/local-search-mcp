@@ -36,7 +36,7 @@ For each client record library/client version, transport type, discovery snapsho
 
 ### Compatibility decision
 
-- [ ] CI baseline tests pass on both repository Python versions.
+- [ ] CI baseline tests pass on the deployed Python 3.14 runtime.
 - [ ] Local FastMCP CLI discovers the **deployed revision**, including newly merged tools, and invokes read-only capabilities.
 - [ ] ChatGPT discovery, optional argument behavior and structured-result decoding pass on that same revision.
 - [ ] One separate connected client passes the same criteria or a reproducible mismatch is captured.

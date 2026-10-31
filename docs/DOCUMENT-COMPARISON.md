@@ -53,14 +53,16 @@ The 64,000-character/1,024-line limits bound work, but process-specific
 runtime bounds require actual profiling before treating the tool as a
 production service-level latency promise.
 
-The existing synthetic corpus in
-`scripts/document_compare_benchmark.py` covers unchanged, inserts,
-reorders, repeated navigation, shifted/interleaved repeats, Unicode and
-full replacement. In this development session a Python 3.13.5 local
-profiling run on the equivalent corpus showed 3.5–47.2 ms and
-approximately 80–284 KiB traced peak allocations depending on case;
-these are **not** measured operator-host timings or Python 3.11/3.14
-performance evidence. In-process FastMCP and synthetic tests run in the
-project CI matrix. Remaining acceptance includes live installed MCP
-client interoperability and the operator host's own benchmark before
-closing issue #213.
+The synthetic corpus in `scripts/document_compare_benchmark.py` covers
+unchanged, inserted, replaced, reordered, repeated/shifted/interleaved,
+Unicode and full-replacement input. On the operator's actual Arch host
+with **Python 3.14.8**, all nine benchmark cases completed; the slowest
+(interleaved repetition) took **15.084 ms** and the largest traced Python
+allocation was **283,484 bytes (~277 KiB)**. These were single-run offline
+measurements, not a proof of production latency, memory RSS, or a maximum
+execution time. The installed ChatGPT MCP also passed live equal and
+different approved-document comparisons, with the source/size safeguards.
+The maintainer explicitly dropped the former Python 3.11 benchmark requirement
+because 3.14+ is the only supported deployment target; issue #213 was closed
+on 2026-10-31. Cross-client protocol acceptance remains separately tracked
+by issue #215.

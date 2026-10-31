@@ -1,6 +1,6 @@
 # Document comparison — design and benchmark gate (#213)
 
-**Status: historical design gate, followed by the bounded candidate implementation in [Document comparison](DOCUMENT-COMPARISON.md).** The design below records the original proposals and required acceptance conditions; do not interpret unchecked operator-host benchmarks or client acceptance as completed. The candidate uses two existing authorized temporary handles (including opt-in short-page handles from `retain_for_evidence=true`) and no additional fetching.
+**Status: historical design gate, completed in the bounded implementation in [Document comparison](DOCUMENT-COMPARISON.md) and closed issue #213.** The design below records the original proposals and required acceptance conditions; do not interpret unchecked operator-host benchmarks or client acceptance as completed. The candidate uses two existing authorized temporary handles (including opt-in short-page handles from `retain_for_evidence=true`) and no additional fetching.
 
 ## Current constraints and evidence
 
@@ -50,7 +50,7 @@ Record interpreter version, synthetic character counts, peak traced Python memor
 
 ## Acceptance decisions before feature code
 
-- [ ] Run the offline corpus on Python 3.11 and 3.14; record measurements and acceptable upper bounds, including repetitive input.
+- [x] Run the offline corpus on the operator's supported Python 3.14.8 (all nine cases; worst 15.084 ms, 283,484 bytes traced). The maintainer explicitly waived the previously requested Python 3.11 benchmark when dropping support for Python older than 3.14.
 - [ ] Decide whether `difflib.SequenceMatcher` is sufficiently bounded or whether a strictly linear fingerprint/line-hash summary is safer for untrusted text.
 - [ ] Approve the UX for short documents. It must require explicit opt-in and reuse the existing document-cache budget.
 - [ ] Specify two-handle atomic permission/revocation semantics and one-use handling; add tests for epoch changes during comparison, redirects and stale handles.
@@ -59,6 +59,8 @@ Record interpreter version, synthetic character counts, peak traced Python memor
 - [ ] Add real in-process FastMCP tests and user-agent cross-client acceptance *after* the design gate.
 - [ ] Leave #213 open until the gated production feature is implemented and accepted.
 
-**Review finding addressed:** The initial aligned repeated-navigation corpus did not capture shifted or interleaved repetitive cases. Both are now included as distinct synthetic cases. A green CI run establishes functional bounded-input behavior, *not* a measured runtime guarantee on the operator host. Algorithm choice and timing/memory thresholds remain an explicit pending design decision.
+**Historical checklist note:** Remaining unchecked design-review items below do not reopen closed #213; the actual implementation and bounded tests are documented in DOCUMENT-COMPARISON.md, while independent-client discovery belongs to #215.
+
+**Review finding addressed:** The initial aligned repeated-navigation corpus did not capture shifted or interleaved repetitive cases. Both are now included as distinct synthetic cases. A green CI run establishes functional bounded-input behavior, *not* a measured runtime guarantee on the operator host. The chosen 64K-character/1,024-line algorithm bounds and the operator's 3.14.8 synthetic performance results were accepted for the personal deployment; they are not a real-time execution guarantee.
 
 **Out of scope:** PDF parser work (#141), screenshot/pixel diffs, crawling links, automatic price watching, source archive, periodic polling, change notifications, approvals or Docker management.

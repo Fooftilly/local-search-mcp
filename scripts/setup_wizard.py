@@ -331,7 +331,7 @@ def check_report() -> dict:
                  for row in dependencies["packages"]}
     result = {
         "mode": "read-only",
-        "python_compatible": sys.version_info >= (3, 11),
+        "python_compatible": sys.version_info >= (3, 14),
         "dependency_versions_in_project_venv": dependencies,
         "project_venv_present": project_python() is not None,
         "configuration": configured_sources(),
