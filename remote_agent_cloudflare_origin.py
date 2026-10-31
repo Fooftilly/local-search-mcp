@@ -32,10 +32,9 @@ from remote_agent_gateway import (
     MAX_RESPONSE_SECONDS, MAX_RESPONSE_START_SECONDS, _BEARER, _reply,
 )
 from remote_agent_prerequisites import (
-    CredentialStoreError, _check_parent_chain, _unique_keys, fixed_root_tunnel_gate,
-    load_client_grants,
+    CredentialStoreError, _check_parent_chain, _unique_keys, load_client_grants,
 )
-from remote_agent_server import StartupRefused, preflight_local
+from remote_agent_server import StartupRefused
 
 ORIGIN_HOST = "127.0.0.1"
 ORIGIN_PORT = 18791
@@ -366,10 +365,14 @@ def build_config(app) -> uvicorn.Config:
 
 
 async def serve(path: Path) -> None:
-    """No listener before grants, root guard, and all 12 tools pass preflight."""
+    """Only expose the private adapter after config and gateway availability.
+
+    The authenticated gateway owns the host-root sudo guard: it validates
+    guard readiness at startup and on every authorized request. This adapter
+    remains NoNewPrivileges=true and must never execute sudo itself.
+    """
     hostname = read_private_hostname(path)
     check_portal_grant()
-    await preflight_local(default_store_path(), guard_probe=fixed_root_tunnel_gate)
     try:
         with socket.create_connection(("127.0.0.1", 18790), timeout=2):
             pass
