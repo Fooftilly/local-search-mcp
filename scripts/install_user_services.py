@@ -37,6 +37,19 @@ def quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
 
 
+def working_directory(value: Path) -> str:
+    """Systemd WorkingDirectory is a path, not an ExecStart command word.
+
+    Quoted paths are interpreted with literal quote characters by systemd.
+    Escape path whitespace and specifiers, without adding outer quotes.
+    """
+    if not value.is_absolute():
+        raise ValueError("Systemd working directory must be absolute")
+    return (str(value).replace("\\", r"\x5c")
+            .replace(" ", r"\x20").replace("\t", r"\x09")
+            .replace('"', r"\x22").replace("%", "%%"))
+
+
 def _render_unit(name: str, substitutions: dict[str, str]) -> str:
     """Install a reviewed repository template, filling only local paths."""
     path = TEMPLATE_DIR / name
@@ -60,7 +73,7 @@ def unit_files(python: str, root: Path, *,
     if cloudflare_portal and guard_probe:
         raise ValueError("Choose one optional service family")
     if cloudflare_portal:
-        fields["ROOT"] = quote(str(root))
+        fields["ROOT"] = working_directory(root)
         names = CLOUDFLARE_NAMES
     else:
         names = (*NAMES, GUARD_PROBE, GUARD_PREFLIGHT) if guard_probe else NAMES
