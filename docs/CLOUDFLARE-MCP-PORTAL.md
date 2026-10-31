@@ -63,15 +63,18 @@ All steps are run on your own Linux machine as its **unprivileged** owner.
    ./.venv/bin/python -m remote_agent_credentials create cloudflare-portal --apply
    ```
 
-   The grant expires (default 24 h; maximum 720 h). Rotate using
-   `... rotate cloudflare-portal --apply`; Cloudflare's upstream bearer
-   must be changed to match before the old token is revoked by the rotation,
-   or there will be a brief intentional denial. For zero-downtime rotation,
-   use a separately named temporary grant only with an explicitly reviewed
-   cutover; do not expose simultaneous permanent credentials. Revoking via
-   `... revoke cloudflare-portal --apply` immediately denies subsequent
-   gateway requests; current streams are interrupted by the gateway's
-   revocation polling.
+   The grant expires (default 24 h; maximum 720 h). Rotation is
+   **break-before-make**: the adapter accepts only the active
+   `cloudflare-portal` client grant; another client ID cannot serve as an
+   overlapping temporary grant. At an attended maintenance window, run
+   `./.venv/bin/python -m remote_agent_credentials rotate cloudflare-portal --apply`,
+   transfer the new credential through Cloudflare's protected upstream
+   credential form, then verify MCP tool calls. Requests with the old token
+   fail between rotation and Cloudflare activation of the new token.
+   Zero-downtime rotation is **not supported** by this adapter. Revoking
+   `cloudflare-portal` denies new requests immediately, and the existing
+   gateway interrupts active streams using revocation polling. Never put
+   the token in arguments, shell history, URLs, logs or GitHub.
 
 3. Configure a **private** hostname and two **disabled** user-unit files:
 
@@ -89,6 +92,7 @@ All steps are run on your own Linux machine as its **unprivileged** owner.
 
    ```sh
    ./setup.sh --cloudflare-portal-preview
+   ./setup.sh --cloudflare-portal-status
    python3 scripts/install_user_services.py --cloudflare-portal
    ./.venv/bin/python -m remote_agent_cloudflare_origin
    ./.venv/bin/python -m remote_agent_server --preflight
@@ -103,6 +107,11 @@ All steps are run on your own Linux machine as its **unprivileged** owner.
    systemctl --user status local-search-mcp-remote-gateway.service
    systemctl --user status local-search-mcp-cloudflare-origin.service
    ```
+
+   After starting, re-run `./setup.sh --cloudflare-portal-status`.
+   This checks the optional systemd unit states and whether fixed loopback
+   TCP ports accept connections. It does not prove peer identity, MCP
+   authentication, Cloudflare private routing or Grok acceptance.
 
    Both services use the project `.venv` Python and fail closed if grants,
    root guard or mandatory MCP tools are not ready. They do not configure the
