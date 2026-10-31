@@ -971,7 +971,7 @@ def provider_observations_page(hours: int = 24) -> str:
          result["reported_unknown_provider_calls"]),
         ("Opted-in calls with no failures reported",
          result["reported_no_failures_calls"]),
-        ("Suppressed unsafe provider labels", result["provider_labels_suppressed"]),
+        ("Provider names rejected or unparsed (bounded)", result["provider_labels_suppressed"]),
         ("Failure label table truncated", "Yes" if result["provider_failure_groups_truncated"] else "No"),
         ("Per-engine failure coverage", "Only explicit opted-in upstream reports"),
         ("Per-engine network latency", "Not measured"),
