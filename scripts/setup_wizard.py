@@ -11,6 +11,7 @@ from http.client import HTTPConnection
 import json
 import math
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -528,6 +529,114 @@ def dry_run() -> dict:
         ],
         "limitations": "Optional on-demand backend sleep/wake is implemented and off by default; reboot/fault-recovery still requires host validation",
     }
+
+
+def cloudflare_portal_preview() -> dict:
+    """Read-only LOCAL status; no Cloudflare API, DNS, tunnel or service changes."""
+    report = {
+        "mode": "read-only",
+        "provider": "Cloudflare MCP Server Portal",
+        "cloudflared_installed": shutil.which("cloudflared") is not None,
+        "credential": "not verified",
+        "private_hostname_config": "not verified",
+        "private_route": "unverified",
+        "gateway": "127.0.0.1:18790 (not probed)",
+        "adapter": "127.0.0.1:18791 (not probed)",
+        "cloudflare_mutations": False,
+        "service_mutations": False,
+    }
+    try:
+        from remote_agent_cloudflare_origin import (
+            check_portal_grant, read_private_hostname, default_config_path,
+            StartupRefused,
+        )
+        try:
+            check_portal_grant()
+            report["credential"] = "dedicated cloudflare-portal grant active"
+        except StartupRefused:
+            report["credential"] = "missing, expired or unsafe"
+        try:
+            read_private_hostname(default_config_path())
+            report["private_hostname_config"] = "owner-only configuration valid"
+        except StartupRefused:
+            report["private_hostname_config"] = "missing or unsafe"
+    except (ImportError, RuntimeError, OSError):
+        report["note"] = "Install the project Python dependencies first"
+    return report
+
+
+def cloudflare_portal_prepare() -> int:
+    """Attended local configuration and disabled optional user units only."""
+    if os.geteuid() == 0 or project_python() is None:
+        print("Cloudflare preparation requires the normal user and project .venv",
+              file=sys.stderr)
+        return 1
+    print("Installs private origin hostname config and two DISABLED user unit files.")
+    print("Does NOT start services, change Cloudflare, open ports or modify tunnels.")
+    print("First issue the upstream bearer securely with:")
+    print("  ./.venv/bin/python -m remote_agent_credentials create cloudflare-portal --apply")
+    if not confirm("PREPARE"):
+        return 0
+    try:
+        command = subprocess.run(
+            [str(project_python()), "-m", "remote_agent_cloudflare_origin",
+             "--install-config"], cwd=ROOT, check=False)
+        if command.returncode:
+            return 1
+        from scripts import install_user_services
+        return install_user_services.main(["--install", "--cloudflare-portal"])
+    except (OSError, ValueError):
+        print("Local preparation incomplete; inspect optional units and private config",
+              file=sys.stderr)
+        return 1
+
+
+def cloudflare_portal_rollback() -> int:
+    """Stop/remove only owned optional units and local hostname config."""
+    from scripts import install_user_services
+    from remote_agent_cloudflare_origin import (
+        default_config_path, remove_private_hostname, StartupRefused,
+    )
+    if os.geteuid() == 0:
+        print("Rollback requires the normal user", file=sys.stderr)
+        return 1
+    folder = install_user_services.destination()
+    for name in install_user_services.CLOUDFLARE_NAMES:
+        unit = folder / name
+        if (unit.is_symlink() or (unit.exists() and
+                not unit.read_text(encoding="utf-8").startswith(
+                    install_user_services.MARKER))):
+            print("Unmanaged optional unit; refusing rollback", file=sys.stderr)
+            return 1
+    print("Stops and removes only the optional Cloudflare adapter/gateway units")
+    print("and local hostname config. Does not change Cloudflare routes or grants.")
+    if not confirm("REMOVE"):
+        return 0
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "disable", "--now",
+             *install_user_services.CLOUDFLARE_NAMES],
+            capture_output=True, check=False, timeout=20)
+        if result.returncode:
+            print("Optional services were not confirmed stopped", file=sys.stderr)
+            return 1
+        path = default_config_path()
+        if path.exists() or path.is_symlink():
+            remove_private_hostname(path)
+        install_user_services.main(["--remove", "--cloudflare-portal"])
+        result = subprocess.run(
+            ["systemctl", "--user", "daemon-reload"],
+            capture_output=True, check=False, timeout=10)
+        if result.returncode:
+            print("Local files removed but systemd reload failed", file=sys.stderr)
+            return 1
+        print("Optional local Cloudflare units removed. Revoke the separate")
+        print("cloudflare-portal grant and remove private Cloudflare routes manually.")
+        return 0
+    except (OSError, ValueError, StartupRefused, subprocess.TimeoutExpired):
+        print("Local rollback incomplete; inspect optional units and config",
+              file=sys.stderr)
+        return 1
 
 
 def confirm(word: str) -> bool:
