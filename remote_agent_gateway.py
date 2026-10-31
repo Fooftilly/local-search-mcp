@@ -29,6 +29,7 @@ MAX_TOTAL_ACTIVE = 8
 MAX_PER_CLIENT_PER_MINUTE = 30
 MAX_RESPONSE_SECONDS = 120
 MAX_BODY_SECONDS = 15
+MAX_GUARD_SECONDS = 32
 REVOCATION_POLL_SECONDS = 0.25
 _BEARER = re.compile(r"Bearer ([A-Za-z0-9_-]{32,128})\Z", re.ASCII | re.IGNORECASE)
 _LOCAL_HOST = re.compile(r"(?:localhost|127\.0\.0\.1|\[::1\])(?::(?P<port>[1-9][0-9]{0,4}))?\Z", re.ASCII)
@@ -148,6 +149,10 @@ class LoopbackMCPGateway:
         self._clock = clock
         self._rate_clock = rate_clock
         self._budget = ClientRequestBudget()
+        # Serializes expensive root guard checks. No cached attestation:
+        # every authorized request must pass a fresh host read/probe.
+        self._guard_slot = asyncio.Lock()
+        self._guard_inflight: asyncio.Task[bool] | None = None
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -227,14 +232,6 @@ class LoopbackMCPGateway:
         if client_id is None:
             await _reply(send, 401)
             return
-        # Guard failures must never reach the upstream or create a Docker lease.
-        try:
-            if self._guard_ready() is not True:
-                await _reply(send, 503)
-                return
-        except Exception:
-            await _reply(send, 503)
-            return
         if not self._budget.reserve(client_id, self._rate_clock()):
             await _reply(send, 429)
             return
@@ -256,6 +253,40 @@ class LoopbackMCPGateway:
                 hmac.compare_digest(digest, item.token_sha256) and
                 item.client_id == client_id and item.expires_at > now
                 for item in current)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _consume_guard_task_outcome(task: asyncio.Task) -> None:
+        """Avoid unobserved exceptions from probes completing after timeout."""
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            pass
+
+    async def _fresh_guard_ok(self) -> bool:
+        """No concurrent root probe, including after caller timeout/cancel.
+
+        Once a probe times out, it still owns the sole worker slot until the
+        underlying thread completes. A later request is denied rather than
+        starting overlapping Docker/nftables operations. Completed probes
+        are never reused as permission to forward a later request.
+        """
+        try:
+            # The deadline starts before acquiring the lock: a queued
+            # request must not wait behind multiple 30-second guard probes.
+            async with asyncio.timeout(MAX_GUARD_SECONDS):
+                async with self._guard_slot:
+                    if (self._guard_inflight is not None and
+                            not self._guard_inflight.done()):
+                        return False
+                    probe = asyncio.create_task(
+                        asyncio.to_thread(self._guard_ready))
+                    probe.add_done_callback(self._consume_guard_task_outcome)
+                    self._guard_inflight = probe
+                    # Shield keeps the underlying worker tracked after the
+                    # caller's deadline/cancellation releases the lock.
+                    return await asyncio.shield(probe) is True
         except Exception:
             return False
 
@@ -303,6 +334,14 @@ class LoopbackMCPGateway:
                     return
                 if values:
                     safe_headers[name.decode("ascii")] = values[0].decode("latin1")
+
+            # After authorization and validation, verify the installed
+            # guard without blocking the event loop or overlapping a probe
+            # that has already timed out or whose caller disconnected.
+            if not await self._fresh_guard_ok():
+                await _reply(send, 503)
+                return
+
             # This gateway *never* forwards Authorization, Cookie, Host,
             # Forwarded, Origin, X-Forwarded-*, or arbitrary client headers.
             async with self._upstream.stream(
