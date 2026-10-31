@@ -72,6 +72,28 @@ class ProviderObservationsTests(unittest.TestCase):
                        "private.example", "PrivateKeyword", "timeout"):
             self.assertNotIn(marker, repr(answer))
 
+    def test_parenthesized_engine_and_all_eight_requested_categories(self):
+        self.add(categories="general,web,images,news,videos,music,files,it",
+                 results=[{"engine": "naver (KO)"}])
+        result = provider.observations(1, now=self.now)
+        self.assertEqual(result["search_calls_with_observed_sources"], 1)
+        self.assertEqual(result["search_calls_without_observed_sources"], 0)
+        self.assertEqual(result["observed_result_engines"][0]["name"],
+                         "naver (KO)")
+        self.assertEqual({x["name"] for x in result["requested_categories"]},
+                         {"general", "web", "images", "news",
+                          "videos", "music", "files", "it"})
+
+    def test_existing_history_lock_is_used_for_atomic_file_snapshot(self):
+        import fcntl
+        self.add(results=[{"engine": "yahoo"}])
+        with patch.object(provider.fcntl, "flock", wraps=fcntl.flock) as lock:
+            result = provider.observations(24, now=self.now)
+        self.assertTrue(result["source_snapshot_lock_acquired"])
+        modes = [x.args[1] for x in lock.call_args_list]
+        self.assertIn(fcntl.LOCK_SH, modes)
+        self.assertIn(fcntl.LOCK_UN, modes)
+
     def test_rotated_history_truncation_and_missing_timing(self):
         self.add(minutes=4, duration_ms=None, results=[{"engine": "yahoo"}])
         archive = self.path.with_name(self.path.name + ".1")
@@ -96,6 +118,7 @@ class ProviderObservationsTests(unittest.TestCase):
             fp.write(b"x" * (provider.MAX_EVENT_BYTES + 1) + b"\n")
         answer = provider.observations(24, now=self.now)
         self.assertEqual(answer["malformed_records_ignored"], 2)
+        self.assertTrue(answer["retention_or_scan_limited"])
         self.assertEqual(answer["sampled_search_calls"], 1)
         self.assertEqual(answer["observed_result_engines"], [])
         self.assertRaises(ValueError, provider.observations, 0)
