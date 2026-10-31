@@ -78,7 +78,7 @@ class PrivateOriginConfigTests(unittest.TestCase):
             private.mkdir(mode=0o700)
             path = private / "cloudflare-portal-origin.json"
             with (patch("remote_agent_cloudflare_origin.os.geteuid",
-                        return_value=1000),
+                        return_value=__import__("os").getuid()),
                   patch("remote_agent_cloudflare_origin.default_config_path",
                         return_value=path),
                   patch("remote_agent_cloudflare_origin._tty_input",
@@ -89,7 +89,7 @@ class PrivateOriginConfigTests(unittest.TestCase):
             tty.assert_called_once()
             install_private_hostname(path, "origin.private.internal")
             with (patch("remote_agent_cloudflare_origin.os.geteuid",
-                        return_value=1000),
+                        return_value=__import__("os").getuid()),
                   patch("remote_agent_cloudflare_origin.default_config_path",
                         return_value=path),
                   patch("remote_agent_cloudflare_origin._tty_input",
@@ -107,7 +107,7 @@ class PrivateOriginConfigTests(unittest.TestCase):
             config = private / "cloudflare-portal-origin.json"
             config.symlink_to(actual)
             with (patch("remote_agent_cloudflare_origin.os.geteuid",
-                        return_value=1000),
+                        return_value=__import__("os").getuid()),
                   patch("remote_agent_cloudflare_origin.default_config_path",
                         return_value=config),
                   patch("remote_agent_cloudflare_origin._tty_input",
