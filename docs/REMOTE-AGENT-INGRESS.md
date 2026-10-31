@@ -73,6 +73,18 @@ The twelve checks below are independent acceptance gates. **All are pending**; a
 | G11 — Credential lifecycle and rollback | Independent client identity, rotation and revocation block **new and existing** sessions as designed; disabling public ingress leaves existing OpenAI tunnel and local MCP unaffected | Not tested |
 | G12 — Audit and secret confidentiality | Authorized/rejected requests produce bounded client-identity/status audit events without bearer tokens, MCP session IDs, private queries, URLs or response bodies; errors and health pages leak no secrets | Not tested |
 
+### Import-only loopback gateway proof (#230)
+
+The next development slice adds `remote_agent_gateway.py` and `tests/test_remote_agent_gateway.py`. This is **only a testable ASGI class**, not a production or exposed ingress. It has no listener, CLI, systemd service, configuration file, provisioned tunnel or credentials. No third-party agent can connect to it as delivered.
+
+```sh
+./.venv/bin/python -m unittest -v tests.test_remote_agent_gateway
+```
+
+Using httpx's in-memory ASGI and mock upstream transports, the tests exercise synthetically hashed/expiring bearer credentials, missing and duplicate Authorization headers, rotation, route and Host/Origin restrictions, public-HTTP headers stripped at the MCP hop, size/method limits, GET streaming, session DELETE, redirect rejection, unavailable upstream, and injected guard unavailability. The gateway forwards only fixed `/mcp` to `127.0.0.1:8790`; it does **not** itself certify the host's installed nftables or integrate a real external provider.
+
+**Known incomplete gates, preventing deployment:** the credential/guard callbacks are intentionally test-injected (not yet tied to a secure operator-owned secret store or root-owned guard probe); no per-client rate/concurrency/session limits, no enforced stream-lifetime cap, no test of revocation of **active** streams, no actual external TLS/tunnel authentication, OAuth or client audience validation, and no deployment/rollback service. Do not wrap this class with a public tunnel, add a production `uvicorn` launcher, or declare #230 complete until those remain safe and tested. Host bind must remain loopback-only.
+
 ### Deployment decision
 
 **Do not deploy or expose any new ingress based on this document alone.** The next technical work in #230 is a provider-neutral gateway proof of concept exercised entirely on loopback (synthetic credentials, isolated temporary ports) plus fault/Host/Origin/streaming tests. After the operator chooses an authenticated tunnel provider and verifies which Grok client authentication mode is available, add an explicit opt-in installation/rollback workflow. #231 tracks actual Grok acceptance; #215 is already closed for ordinary MCP-client protocol compatibility.
