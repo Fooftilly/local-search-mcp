@@ -19,10 +19,12 @@ import subprocess
 import sys
 import tempfile
 
+ROOT = Path(__file__).resolve().parents[1]
+if __package__ in (None, ""):
+    sys.path.insert(0, str(ROOT))
+
 from remote_agent_credentials import default_store_path
 from remote_agent_server import StartupRefused, preflight_local
-
-ROOT = Path(__file__).resolve().parents[1]
 GATEWAY = "http://127.0.0.1:18790"
 BEGIN = "  # BEGIN local-search-mcp managed authenticated route\n"
 END = "  # END local-search-mcp managed authenticated route\n"
@@ -30,7 +32,7 @@ MAX_BYTES = 128 * 1024
 HOSTNAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\Z")
 INGRESS = re.compile(r"(?m)^ingress:\s*$")
 CATCHALL = re.compile(r"(?m)^  - service: http_status:404[ \t]*$")
-HOST_RULE = re.compile(r"(?m)^[ \t]+hostname:\s*['\"]?([^'\"\s#]+)['\"]?[ \t]*(?:#.*)?$")
+HOST_RULE = re.compile(r"(?m)^[ \t]+(?:-\s*)?hostname:\s*['\"]?([^'\"\s#]+)['\"]?[ \t]*(?:#.*)?$")
 SAFE_TAIL = re.compile(r"\A(?:[ \t]*\n|[ \t]*#[^\n]*\n?)*\Z")
 
 
@@ -84,6 +86,9 @@ def _render(raw: bytes, hostname: str, *, remove: bool = False) -> bytes:
         raise RouteError("Incomplete managed route markers; no change")
     if not content.endswith("\n") or len(list(INGRESS.finditer(content))) != 1:
         raise RouteError("Unsupported ambiguous tunnel YAML layout")
+    if (len(re.findall(r"(?m)^tunnel:[^\n]+$", content)) != 1
+            or len(re.findall(r"(?m)^credentials-file:[^\n]+$", content)) != 1):
+        raise RouteError("Expected one locally managed named tunnel and credential-file")
     if remove:
         if content.count(BEGIN) != 1 or content.count(END) != 1:
             raise RouteError("No unique managed route available to remove")
@@ -167,7 +172,8 @@ def _atomic_update(path: Path, before: bytes, info: os.stat_result,
                 or current_info.st_dev != info.st_dev
                 or current_info.st_mtime_ns != info.st_mtime_ns):
             raise RouteError("Cloudflare config changed during validation; retry")
-        backup = path.with_name(path.name + ".before-local-search-mcp.bak")
+        original_hash = hashlib.sha256(before).hexdigest()[:20]
+        backup = path.with_name(path.name + ".before-mcp-" + original_hash + ".bak")
         try:
             fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
                          os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
