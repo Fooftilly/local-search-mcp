@@ -134,6 +134,7 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
     engine_samples: dict[str, list[float | None]] = defaultdict(list)
     category_samples: dict[str, list[float | None]] = defaultdict(list)
     reported_failures: dict[str, int] = defaultdict(int)
+    display_labels: dict[str, str] = {}
     reported_diagnostic_calls = partial_diagnostic_calls = unknown_diagnostic_calls = 0
     no_failures_reported_calls = omitted_diagnostic_names = 0
     calls = errors = seen_sources = unattributed = 0
@@ -182,14 +183,19 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
                         no_failures_reported_calls += 1
                     names = diag.get("unresponsive_engines")
                     distinct = set()
+                    suppressed = diag.get("suppressed_or_unparsed_names")
+                    if type(suppressed) is int and 0 <= suppressed <= 144:
+                        omitted_diagnostic_names += suppressed
                     if coverage == "partial" and isinstance(names, list):
                         for name in names[:16]:
                             safe = _label(name)
                             if not safe:
                                 omitted_diagnostic_names += 1
                             elif safe.casefold() not in distinct:
-                                distinct.add(safe.casefold())
-                                reported_failures[safe] += 1
+                                key = safe.casefold()
+                                distinct.add(key)
+                                display_labels.setdefault(key, safe)
+                                reported_failures[key] += 1
                     if diag.get("truncated") is True:
                         limited = True
             if item.get("status") != "success":
@@ -246,7 +252,7 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
         "reported_no_failures_calls": no_failures_reported_calls,
         "provider_labels_suppressed": omitted_diagnostic_names,
         "reported_unresponsive_engines": [
-            {"name": name, "reported_unresponsive_calls": count}
+            {"name": display_labels[name], "reported_unresponsive_calls": count}
             for name, count in sorted(
                 reported_failures.items(), key=lambda row: (-row[1], row[0])
             )[:MAX_GROUPS]
