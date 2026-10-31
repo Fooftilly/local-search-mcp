@@ -355,7 +355,12 @@ def _advertised_w3c_style_alternatives(markdown: str, base: str, *,
     for marker_index, marker in enumerate(_W3C_ALT_MARKER.finditer(bounded)):
         if marker_index >= 8:
             break
-        paragraph = bounded[marker.end():marker.end() + 900].split("\n\n", 1)[0]
+        # Treat a blank line containing spaces/tabs (and CRLF) as a true
+        # paragraph boundary. Unrelated later attachments are not format
+        # evidence for this publisher's advertised group.
+        paragraph = re.split(r"\r?\n[ \t]*\r?\n",
+                             bounded[marker.end():marker.end() + 900],
+                             maxsplit=1)[0]
         options: dict[str, tuple[str, str]] = {}
         stems: set[str] = set()
         conflicting = False
