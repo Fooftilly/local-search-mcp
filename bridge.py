@@ -222,7 +222,7 @@ def _search_failure_status(payload: dict) -> dict:
     for item in raw[:128]:
         name = item[0] if isinstance(item, (list, tuple)) and item else item
         if (not isinstance(name, str)
-                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}", name) is None):
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._()\-]{0,39}", name) is None):
             unparsed += 1
             continue
         if name.casefold() not in seen:
@@ -475,8 +475,13 @@ def _run_search_network(params: dict, max_results: int, *,
                         "backend": "searxng",
                         "reason": "SearXNG returned a result from an unselected search engine."}
     if not rows and payload.get("unresponsive_engines"):
-        return {"success": False, "status": "upstream_unavailable", "backend": "searxng",
-                "reason": "SearXNG returned no results because one or more engines were unresponsive. Retry later or choose another engine."}
+        failure = {"success": False, "status": "upstream_unavailable", "backend": "searxng",
+                   "reason": "SearXNG returned no results because one or more engines were unresponsive. Retry later or choose another engine."}
+        if include_search_status:
+            # Existing diagnostic opt-in, now useful for zero-result failures.
+            # Never persist raw SearXNG exception details or input payload.
+            failure["search_status"] = _search_failure_status(payload)
+        return failure
     # Search engines may return rows without usable web links. Returning
     # "None", javascript: URLs or invalid Unicode as clickable results makes
     # agent tools appear successful while the returned links cannot be fetched.
@@ -545,7 +550,8 @@ def web_search(query: str, max_results: int = 8, language: str = "",
                include_published_date: bool = False,
                include_search_status: bool = False,
                allowed_result_domains: str = "",
-               include_image_metadata: bool = False) -> list[dict] | dict:
+               include_image_metadata: bool = False,
+               record_provider_diagnostics: bool = False) -> list[dict] | dict:
     """Search SearXNG, with optional URL deduplication and source attribution.
 
     Defaults preserve SearXNG order and the historic four-field result shape.
@@ -558,6 +564,10 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     Set include_search_status=true for an uncached diagnostic wrapper with
     bounded SearXNG-reported unresponsive provider names; absent failure
     reports do not prove exhaustive coverage. No extra provider requests.
+    Set record_provider_diagnostics=true *together* with include_search_status
+    to opt in to private history retention of sanitized provider names and
+    coverage only for this individual call. Default history never includes
+    unresponsive provider details. Neither option measures provider uptime.
     Set include_image_metadata=true for validated, HTTPS-only image and
     thumbnail candidates from upstream image results; no downloads or
     crawler approvals. This does not verify image content or licenses.
@@ -576,6 +586,10 @@ def web_search(query: str, max_results: int = 8, language: str = "",
         raise ValueError("include_published_date must be a boolean")
     if not isinstance(include_search_status, bool):
         raise ValueError("include_search_status must be a boolean")
+    if type(record_provider_diagnostics) is not bool:
+        raise ValueError("record_provider_diagnostics must be a boolean")
+    if record_provider_diagnostics and not include_search_status:
+        raise ValueError("record_provider_diagnostics requires include_search_status=true")
     if not isinstance(include_image_metadata, bool):
         raise ValueError("include_image_metadata must be a boolean")
     if not isinstance(ranking, str) or ranking not in ("searxng", "source_count"):

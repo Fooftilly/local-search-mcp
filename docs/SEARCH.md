@@ -146,8 +146,38 @@ snapshot must not be presented as current provider health. This does not
 run more providers, issue hidden retries, wake extra backends, enable
 Google, or change default result order and engine-selection validation.
 A search that returned no results because engines failed still returns
-the existing `upstream_unavailable` error. Provider-failure metadata is
-never a verified statement about original publishers.
+`upstream_unavailable`. When `include_search_status=true`, that failure
+now also includes the bounded `search_status` field; ordinary failure
+responses stay unchanged. Provider-failure metadata is never a verified
+statement about original publishers.
+
+### Separately opt in to a private audit of reported provider failures
+
+`web_search(query, include_search_status=true,
+record_provider_diagnostics=true)` explicitly permits this **one call** to
+record bounded, sanitized SearXNG-reported unresponsive provider names in the
+existing private, rotating JSONL history. Recording is **off by default**,
+including when `include_search_status=true` is used by itself. The option
+requires diagnostic mode, returns the same opt-in response shape and does
+not add any provider search or cache layer. It is not exposed on the batch
+search tool.
+
+The stored `provider_diagnostics` contains at most 16 strictly validated
+engine labels (including parenthesized names), a declared coverage category,
+bounded counts and a truncation flag. Names containing suspicious secret
+markers, URLs, credentials, controls, and upstream exception text are
+discarded. The audit already stores normal search metadata, including
+bounded query text; this opt-in adds *provider labels* to that private record,
+not raw SearXNG errors or page content.
+
+The read-only `/provider-observations` page now groups those explicitly
+retained reports separately from the first five observed result engines
+and shows how many opt-in calls reported each engine unresponsive. **No
+failure rate or uptime percentage is valid:** the log has no per-provider
+attempt denominator; `no_failures_reported` does not prove all upstream
+engines succeeded. This is aggregate visibility into upstream-reported
+diagnostics, not independently measured provider health or latency. Historical
+calls made without the separate opt-in cannot be retroactively attributed.
 
 ```bash
 fastmcp call http://127.0.0.1:8790/mcp web_search query='public research' include_search_status=true --auth none
