@@ -68,6 +68,10 @@ class ServiceInstallerTests(unittest.TestCase):
         self.assertIn("BindsTo=local-search-mcp-remote-gateway.service", origin)
         self.assertNotIn("0.0.0.0", gateway + origin)
         self.assertNotIn("cloudflared", gateway + origin)
+        # sudo -n root-guard probe and nftables need this privilege/netlink.
+        self.assertIn("NoNewPrivileges=false", gateway)
+        self.assertIn("AF_NETLINK", gateway)
+        self.assertIn("NoNewPrivileges=true", origin)
 
     def test_cloudflare_remove_preserves_core_units(self):
         core = self.dir / installer.NAMES[0]
