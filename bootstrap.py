@@ -530,6 +530,11 @@ def run_unattended_service(component: str) -> None:
         if not profile_path().is_file():
             raise SetupError("Missing private tunnel profile; run ./start.sh --setup-only first")
         env["CONTROL_PLANE_API_KEY"] = config["CONTROL_PLANE_API_KEY"]
+        # The bridge service can be active before its MCP listener binds.
+        # Delay tunnel OAuth discovery/polling until the HTTP MCP probe can
+        # connect; otherwise a transient startup refusal can strand /readyz.
+        # Respect an explicit inherited operator override (including 0s).
+        env.setdefault("MCP_STARTUP_WAIT_TIMEOUT", "60s")
         binary = ROOT / "tunnel-client"
         if binary.is_symlink():
             raise SetupError("Refusing symlinked tunnel executable")
