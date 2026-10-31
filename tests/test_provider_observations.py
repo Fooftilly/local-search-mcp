@@ -132,6 +132,32 @@ class ProviderObservationsTests(unittest.TestCase):
         with self.assertRaises(OSError):
             provider.observations()
 
+    def test_special_fifo_input_and_writer_lock_fail_without_blocking(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("POSIX FIFO support required")
+        def check_fast():
+            captured = []
+            def worker():
+                try:
+                    provider.observations(24)
+                    captured.append("unexpected success")
+                except OSError:
+                    captured.append("refused")
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
+            thread.join(1.5)
+            self.assertFalse(thread.is_alive(), "Special history file must not block")
+            self.assertEqual(captured, ["refused"])
+
+        os.mkfifo(self.path)
+        check_fast()
+        self.path.unlink()
+        # Existing private history lock may also be replaced by a FIFO:
+        # it must never hang before stat.S_ISREG is verified.
+        self.path.write_text("{}\n")
+        os.mkfifo(Path(self.temp.name) / ".history.lock")
+        check_fast()
+
     def test_file_tail_scan_is_explicitly_limited(self):
         with self.path.open("wb") as fp:
             fp.write(b"{}\n" * (provider.MAX_FILE_BYTES // 3 + 30))
