@@ -169,9 +169,9 @@ class _ScriptCollector(HTMLParser):
         if tag != "script":
             return
         mime = next((v for k, v in attrs if k.lower() == "type"), None)
-        if not isinstance(mime, str) or mime.strip().casefold().split(";", 1)[0] != "application/ld+json":
+        if not isinstance(mime, str) or mime.strip().casefold().split(";", 1)[0].strip() != "application/ld+json":
             return
-        self.observed += 1
+        self.observed = min(self.observed + 1, MAX_SCRIPTS + 1)
         if self.observed > MAX_SCRIPTS:
             self.exceeded = True
             return
