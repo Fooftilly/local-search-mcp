@@ -27,9 +27,15 @@ result rows** contribute to engine-group counts. A single search call may
 contribute to multiple engines; these counts are not the number of provider
 requests and **cannot** be converted into provider uptime or reliability
 rates. Engines with no retained hits or failed before returning results will
-not appear in those groups. Error calls have no safe per-provider failure
-attribution under the existing audit schema; the dashboard explicitly
-reports non-success calls separately. An event with no valid duration
+not appear in those groups. Previously recorded error calls have no safe per-provider failure
+attribution. **New per-call explicit opt-in** through
+`web_search(include_search_status=true, record_provider_diagnostics=true)`
+can retain only strictly filtered SearXNG-reported unresponsive engine names
+and bounded coverage metadata in the **existing** private rotating JSONL file.
+This does not add new persistent files or change the database. Non-success
+calls remain separately counted; an opt-in zero-result search may report
+unresponsive engines, but it does not prove every attempted provider failed.
+Historical calls without this separate opt-in stay unattributed. An event with no valid duration
 contributes to sample counts but not to the duration mean.
 
 The visible duration is **the complete MCP search call duration**, not a
@@ -39,9 +45,11 @@ call duration. Requested categories are taken from up to eight explicitly select
 well-known category names (including `web`) in the old audit, not inferred
 from engine capabilities. Parenthesized result-engine names supported by
 the local SearXNG inventory are preserved after strict validation. Default searches and unrecognized user-provided categories are
-grouped under **unspecified**. Historical cache hits, per-engine failures,
-provider-specific duration and category-to-engine attribution were **not**
-retained; those data cannot be reconstructed from the current history.
+grouped under **unspecified**. Historical cache hits,
+provider-specific duration, category-to-engine attribution and provider
+attempt counts were **not** retained; those data cannot be reconstructed
+from the current history. Only newly opted-in reported unresponsive labels
+are available; their counts are **not** a provider outage ratio or uptime.
 
 The parser extracts only strictly bounded public-ish engine labels, safe
 counts and aggregate durations; it never returns query text, page titles,
@@ -60,8 +68,9 @@ files, invalid windows and actual local HTTP Host/Origin checks. This is
 repository-level acceptance only. The installed operator host and current
 history rotation have not been measured.
 
-This is a **first useful reporting slice**, not the full #211 reliability
-dashboard. Completing #211 would need a separate opt-in design for
-capturing safe provider-failure observations and reliable provider timing
-without adding queries or sensitive telemetry, plus host acceptance.
-Historical provider reliability must not be fabricated.
+This is a partial #211 reporting feature, not a provider reliability
+dashboard. The separate opt-in records only sanitized SearXNG-reported
+unresponsive names, never per-engine network timing, rate denominators or
+verified uptime. Installed-host acceptance and any future reliable
+provider-specific instrumentation are outside this PR. Historical provider
+reliability must not be fabricated.
