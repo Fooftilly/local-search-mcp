@@ -239,6 +239,45 @@ class GuardedRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, ["entered", "entered"])
         self.assertEqual(len(self.upstream_calls), 1)
 
+    async def test_guard_queue_wait_is_within_request_deadline(self):
+        entered = threading.Event()
+        release = threading.Event()
+        guard_calls = []
+
+        def slow_guard():
+            guard_calls.append("call")
+            entered.set()
+            release.wait(timeout=2)
+            return True
+
+        async with open_guarded_runtime(
+                self.path, transport=self.transport, guard_probe=slow_guard) as app:
+            async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://127.0.0.1:18790") as client:
+                try:
+                    # The first caller holds the lock with a generous
+                    # deadline, while a *later* caller gets only 30 ms.
+                    with patch("remote_agent_gateway.MAX_GUARD_SECONDS", 1.0):
+                        first = asyncio.create_task(self.post(client))
+                        for _ in range(100):
+                            if entered.is_set():
+                                break
+                            await asyncio.sleep(0.01)
+                        self.assertTrue(entered.is_set())
+                        with patch("remote_agent_gateway.MAX_GUARD_SECONDS", 0.03):
+                            second = await asyncio.wait_for(
+                                self.post(client), timeout=0.3)
+                        self.assertEqual(second.status_code, 503)
+                        self.assertEqual(guard_calls, ["call"])
+                        self.assertFalse(self.upstream_calls)
+                finally:
+                    release.set()
+                self.assertEqual(
+                    (await asyncio.wait_for(first, 2)).status_code, 200)
+        self.assertEqual(len(guard_calls), 1)
+        self.assertEqual(len(self.upstream_calls), 1)
+
     async def test_cancelled_caller_cannot_release_a_running_guard_probe(self):
         release = threading.Event()
         entered = threading.Event()
