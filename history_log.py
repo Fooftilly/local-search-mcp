@@ -131,11 +131,14 @@ def _private_provider_diagnostic(value: object) -> dict | None:
     unparsed = value.get("unparsed_count")
     if type(unparsed) is not int or not 0 <= unparsed <= 128:
         unparsed = None
+    suppressed = min(144, discarded + (unparsed or 0))
     return {
         "coverage": coverage,
         "unresponsive_engines": safe,
         "reported_count": reported,
         "unparsed_count": unparsed,
+        # A bounded count, never rejected provider text or errors.
+        "suppressed_or_unparsed_names": suppressed,
         "truncated": bool(value.get("truncated")) or discarded > 0
                      or len(raw) > 16,
     }
