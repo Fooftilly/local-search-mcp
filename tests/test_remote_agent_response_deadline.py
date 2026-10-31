@@ -106,12 +106,12 @@ class ResponseHeaderDeadlineTests(unittest.IsolatedAsyncioTestCase):
         async def slow_header_server(reader, writer):
             accepted.set()
             try:
-                await reader.readuntil(b"\\r\\n\\r\\n")
+                await reader.readuntil(b"\r\n\r\n")
                 # HTTP status arrives promptly; incomplete headers follow
                 # in tiny increments. No single read exceeds 200 ms.
-                writer.write(b"HTTP/1.1 200 OK\\r\\nContent-Type: ")
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: ")
                 await writer.drain()
-                for char in b"text/plain\\r\\nContent-Length: 0\\r\\n\\r\\n":
+                for char in b"text/plain\r\nContent-Length: 0\r\n\r\n":
                     writer.write(bytes((char,)))
                     await writer.drain()
                     await asyncio.sleep(0.025)
