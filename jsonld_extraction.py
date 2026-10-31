@@ -44,7 +44,9 @@ def _plain(value: object, limit: int = 180) -> str:
         return ""
     cleaned = _SPACE.sub(" ", _CONTROL.sub(" ", value)).strip()
     if (not cleaned or "<" in cleaned or ">" in cleaned
-            or any(s in cleaned.casefold() for s in ("javascript:", "vbscript:", "data:", "file:"))):
+            or re.search(r"(?i)(?:https?://|www\.|javascript:|vbscript:|data:|file:)", cleaned)):
+        # Scalar descriptive text can still hide a credential-bearing URL.
+        # Drop the entire affected field rather than returning partial URLs.
         return ""
     return cleaned[:limit].encode("utf-8", "replace").decode("utf-8")
 
@@ -78,11 +80,14 @@ def _offer_fields(value: object) -> dict:
     return result
 
 
-def _types(raw: object) -> list[str]:
+def _types(raw: object, *, only_absolute: bool = False) -> list[str]:
     items = raw[:4] if isinstance(raw, list) else [raw]
     names = []
     for item in items:
         if not isinstance(item, str) or len(item) > 90:
+            continue
+        is_absolute = item.startswith(("https://schema.org/", "http://schema.org/"))
+        if only_absolute and not is_absolute:
             continue
         value = item.removeprefix("https://schema.org/").removeprefix("http://schema.org/")
         if value in _ALLOWED_TYPES and value not in names:
@@ -107,15 +112,11 @@ def _trusted_schema_context(value: object) -> bool:
 
 
 def _record(node: dict, context_ok: bool) -> dict | None:
-    kinds = _types(node.get("@type"))
+    kinds = _types(node.get("@type"), only_absolute=not context_ok)
     if not kinds:
         return None
-    absolute_types = (node.get("@type") if isinstance(node.get("@type"), list)
-                      else [node.get("@type")])
-    if not context_ok and not any(
-            isinstance(v, str) and v.startswith(("https://schema.org/", "http://schema.org/"))
-            for v in absolute_types[:4]):
-        return None
+    # Without schema.org context only absolute schema.org types are evidence.
+    # Do not relabel a mixed bare "Article" / absolute "Event" record.
     kind = kinds[0]
     values = {}
     if kind == "FAQPage":
@@ -200,7 +201,7 @@ class _ScriptCollector(HTMLParser):
 def extract(page: dict) -> dict:
     """Bounded parser over CrawlResult.html; never returns raw HTML/JSON."""
     html = page.get("html")
-    if not isinstance(html, str):
+    if not isinstance(html, str) or not html.strip():
         return {"jsonld": [], "jsonld_info": {
             "status": "unavailable", "reason": "Raw HTML absent from crawler result",
             "source": "crawlresult.html", "source_completeness": "unknown"}}
@@ -224,6 +225,8 @@ def extract(page: dict) -> dict:
         except (ValueError, RecursionError, UnicodeError):
             invalid_scripts += 1
             continue
+        if isinstance(data, list) and len(data) > MAX_JSON_NODES:
+            capped = True
         roots = data[:MAX_JSON_NODES] if isinstance(data, list) else [data]
         for root in roots:
             if not isinstance(root, dict):
@@ -240,7 +243,10 @@ def extract(page: dict) -> dict:
                 examined += 1
                 if not isinstance(node, dict):
                     continue
-                row = _record(node, context_ok or _trusted_schema_context(node.get("@context")))
+                # A node's explicit context overrides the containing graph.
+                node_context = (_trusted_schema_context(node["@context"])
+                                if "@context" in node else context_ok)
+                row = _record(node, node_context)
                 if row is None:
                     continue
                 # Include only bounded records that fit the overall output.
