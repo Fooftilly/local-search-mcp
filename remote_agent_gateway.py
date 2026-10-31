@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -29,6 +30,7 @@ MAX_TOTAL_ACTIVE = 8
 MAX_PER_CLIENT_PER_MINUTE = 30
 MAX_RESPONSE_SECONDS = 120
 MAX_BODY_SECONDS = 15
+MAX_RESPONSE_START_SECONDS = 15
 MAX_GUARD_SECONDS = 32
 REVOCATION_POLL_SECONDS = 0.25
 _BEARER = re.compile(r"Bearer ([A-Za-z0-9_-]{32,128})\Z", re.ASCII | re.IGNORECASE)
@@ -73,6 +75,25 @@ async def _reply(send, code: int) -> None:
         headers.append((b"www-authenticate", b"Bearer"))
     await send({"type": "http.response.start", "status": code, "headers": headers})
     await send({"type": "http.response.body", "body": body})
+
+
+
+
+@asynccontextmanager
+async def _upstream_response(client: httpx.AsyncClient, method: str,
+                             headers: dict, content: bytes):
+    """Hard deadline for upstream response headers; not the SSE body.
+
+    HTTPX's per-read timeout alone does not bound a slow-dripping response.
+    ExitStack owns the HTTPX stream context after the opening phase, so
+    downstream disconnect, revocation and body timeouts still close it.
+    """
+    async with AsyncExitStack() as resources:
+        async with asyncio.timeout(MAX_RESPONSE_START_SECONDS):
+            response = await resources.enter_async_context(
+                client.stream(method, UPSTREAM, headers=headers,
+                              content=content, follow_redirects=False))
+        yield response
 
 
 
@@ -344,9 +365,9 @@ class LoopbackMCPGateway:
 
             # This gateway *never* forwards Authorization, Cookie, Host,
             # Forwarded, Origin, X-Forwarded-*, or arbitrary client headers.
-            async with self._upstream.stream(
-                method, UPSTREAM, headers=safe_headers, content=bytes(chunks),
-                follow_redirects=False,
+            async with _upstream_response(
+                self._upstream, method, headers=safe_headers,
+                content=bytes(chunks),
             ) as response:
                 if 300 <= response.status_code < 400:
                     await _reply(send, 502)
@@ -407,6 +428,12 @@ class LoopbackMCPGateway:
                             task.cancel()
                     await asyncio.gather(reader, watcher, revoked,
                                          return_exceptions=True)
+        except TimeoutError:
+            # A response-header stall is distinct from a failed upstream
+            # connection. Never leak its URL, request details or tokens.
+            if response_started:
+                raise
+            await _reply(send, 504)
         except (httpx.HTTPError, OSError):
             # Before headers, report a generic failure without upstream
             # details. After headers, a connection abort is safer than
