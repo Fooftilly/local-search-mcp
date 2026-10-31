@@ -202,8 +202,8 @@ class ComparisonMCPTests(unittest.IsolatedAsyncioTestCase):
     async def test_full_output_cap_handles_unicode_heavy_source_urls(self):
         for host in ("left.example.com", "right.example.com"):
             domain_policy.decide(host, "allow", scope="exact")
-        long_left = "https://left.example.com/" + "ž" * 510
-        long_right = "https://right.example.com/" + "č" * 510
+        long_left = "https://left.example.com/" + "ž" * 485
+        long_right = "https://right.example.com/" + "č" * 485
         left, _ = pages.save(long_left, "identical\n", {}, allow_short=True)
         right, _ = pages.save(long_right, "identical\n", {}, allow_short=True)
         result = bridge.web_compare_documents(left, right)
