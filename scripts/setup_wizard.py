@@ -12,6 +12,7 @@ import json
 import math
 import os
 import shutil
+import socket
 from pathlib import Path
 import subprocess
 import sys
@@ -517,7 +518,7 @@ def dry_run() -> dict:
              "action": "configure validated on-demand backends with operator confirmation"},
             {"menu": "2.3", "effect": "privileged system changes only after confirmation",
              "action": "validate dedicated backends; install fixed egress guard, restricted sudoers and protected ChatGPT tunnel"},
-            {"menu": "2.4", "effect": "read-only or explicitly confirmed local preparation/rollback",
+            {"menu": "2.4", "effect": "read-only preview/status or confirmed local preparation/rollback",
              "action": "operator-owned Cloudflare hostname and two disabled optional units; no remote Cloudflare changes"},
             {"menu": "2.2", "effect": "read-only",
              "action": "show optional local Cursor, Claude Code or Hermes HTTP MCP instructions; never edit third-party config"},
@@ -580,6 +581,70 @@ def cloudflare_portal_preview() -> dict:
         report["note"] = "Project venv readiness check unavailable or invalid"
     return report
 
+def cloudflare_local_unit_states() -> dict[str, dict]:
+    """Read only fixed optional units; never return logs, paths or arbitrary properties."""
+    from scripts.install_user_services import CLOUDFLARE_NAMES
+    report = {}
+    for name in CLOUDFLARE_NAMES:
+        try:
+            proc = subprocess.run(
+                ["systemctl", "--user", "show", name,
+                 "--property=LoadState", "--property=ActiveState",
+                 "--property=UnitFileState", "--property=FragmentPath"],
+                cwd=ROOT, capture_output=True, text=True, check=False, timeout=5,
+                env={**os.environ, "SYSTEMD_PAGER": "", "SYSTEMD_COLORS": "0"})
+            if proc.returncode or len(proc.stdout) > 2048:
+                raise ValueError("Unusable systemd state")
+            values = dict(line.split("=", 1) for line in proc.stdout.splitlines()
+                          if "=" in line)
+            if (set(values) != {"LoadState", "ActiveState",
+                                "UnitFileState", "FragmentPath"}
+                    or values["LoadState"] not in ("loaded", "not-found", "masked")
+                    or values["ActiveState"] not in (
+                        "active", "inactive", "failed", "activating",
+                        "deactivating", "reloading")
+                    or values["UnitFileState"] not in (
+                        "enabled", "disabled", "static", "masked",
+                        "not-found", "linked", "indirect", "")
+                    or len(values["FragmentPath"]) > 1024):
+                raise ValueError("Unexpected systemd fields")
+            # FragmentPath is private/local metadata; retain for internal
+            # ownership comparison only, never include it in the status JSON.
+            report[name] = values
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            report[name] = {"state": "unverified"}
+    return report
+
+
+def cloudflare_portal_status() -> dict:
+    """Local read-only service and socket evidence, NOT Cloudflare reachability."""
+    from scripts.install_user_services import CLOUDFLARE_NAMES
+    report = cloudflare_portal_preview()
+    report["mode"] = "read-only-local-status"
+    report["private_route"] = "unverified"
+    report["cloudflare_access"] = "unverified"
+    states = cloudflare_local_unit_states()
+    report["optional_user_units"] = {
+        name: {key: value for key, value in states[name].items()
+               if key in ("LoadState", "ActiveState", "UnitFileState", "state")}
+        for name in CLOUDFLARE_NAMES
+    }
+    # No bearer credentials or arbitrary HTTP requests: TCP accept proves
+    # only a listener, not the identity of the listener or MCP correctness.
+    report["loopback_tcp"] = {}
+    for label, port in (("gateway", 18790), ("adapter", 18791)):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.75):
+                pass
+            report["loopback_tcp"][label] = "accepting_connections"
+        except OSError:
+            report["loopback_tcp"][label] = "not_reachable"
+    report["note"] = ("Local service/socket status does not verify root guard, "
+                      "MCP authentication, Cloudflare private routing, Access "
+                      "policy, or Grok connectivity")
+    return report
+
+
 def cloudflare_portal_prepare() -> int:
     """Attended local configuration and disabled optional user units only."""
     if os.geteuid() == 0 or project_python() is None:
@@ -616,16 +681,31 @@ def cloudflare_portal_rollback() -> int:
         print("Rollback requires the normal user", file=sys.stderr)
         return 1
     folder = install_user_services.destination()
+    states = cloudflare_local_unit_states()
     owned = []
-    for name in install_user_services.CLOUDFLARE_NAMES:
-        unit = folder / name
-        if (unit.is_symlink() or (unit.exists() and
-                not unit.read_text(encoding="utf-8").startswith(
-                    install_user_services.MARKER))):
-            print("Unmanaged optional unit; refusing rollback", file=sys.stderr)
-            return 1
-        if unit.exists():
-            owned.append(name)
+    try:
+        for name in install_user_services.CLOUDFLARE_NAMES:
+            unit = folder / name
+            state = states[name]
+            if state.get("state") == "unverified":
+                raise ValueError("Systemd unit state unavailable")
+            if unit.is_symlink() or (unit.exists() and
+                    (not unit.is_file() or not unit.read_text(
+                        encoding="utf-8").startswith(install_user_services.MARKER))):
+                raise ValueError("Unmanaged optional unit")
+            if unit.exists():
+                owned.append(name)
+                # A unit loaded from another location is not ours to stop.
+                if (state["LoadState"] == "loaded" and
+                        state["FragmentPath"] != str(unit)):
+                    raise ValueError("Optional unit loaded from another source")
+            elif (state["LoadState"] != "not-found" or
+                  state["ActiveState"] not in ("inactive", "failed")):
+                raise ValueError("Optional unit exists outside owned files")
+    except (OSError, ValueError):
+        print("Optional unit ownership/state unverified; refusing rollback",
+              file=sys.stderr)
+        return 1
     print("Stops and removes only the optional Cloudflare adapter/gateway units")
     print("and local hostname config. Does not change Cloudflare routes or grants.")
     if not confirm("REMOVE"):
@@ -638,10 +718,19 @@ def cloudflare_portal_rollback() -> int:
             if result.returncode:
                 print("Optional services were not confirmed stopped", file=sys.stderr)
                 return 1
+            post = cloudflare_local_unit_states()
+            if any(post[name].get("ActiveState") not in ("inactive", "failed")
+                   or post[name].get("UnitFileState") not in (
+                       "disabled", "masked", "not-found")
+                   for name in owned):
+                print("Optional units were not verified disabled and stopped",
+                      file=sys.stderr)
+                return 1
         path = default_config_path()
         if path.exists() or path.is_symlink():
             remove_private_hostname(path)
-        install_user_services.main(["--remove", "--cloudflare-portal"])
+        if install_user_services.main(["--remove", "--cloudflare-portal"]):
+            return 1
         result = subprocess.run(
             ["systemctl", "--user", "daemon-reload"],
             capture_output=True, check=False, timeout=10)
@@ -902,8 +991,10 @@ def menu() -> int:
         elif choice == "18":
             print(json.dumps(cloudflare_portal_preview(), indent=2))
             try:
-                action = input("Cloudflare: PREPARE, REMOVE, or Enter to cancel: ").strip().upper()
-                if action == "PREPARE":
+                action = input("Cloudflare: STATUS, PREPARE, REMOVE, or Enter to cancel: ").strip().upper()
+                if action == "STATUS":
+                    print(json.dumps(cloudflare_portal_status(), indent=2))
+                elif action == "PREPARE":
                     print("Preparation exit:", cloudflare_portal_prepare())
                 elif action == "REMOVE":
                     print("Rollback exit:", cloudflare_portal_rollback())
@@ -982,6 +1073,8 @@ def make_parser() -> argparse.ArgumentParser:
   ./setup.sh --boot-audit          Read-only systemd, firewall-install and Docker restart-policy prerequisites
   ./setup.sh --cloudflare-portal-preview
                                   Redacted local Cloudflare Portal readiness (offline)
+  ./setup.sh --cloudflare-portal-status
+                                  Read-only local systemd and TCP status (not Cloudflare)
   ./setup.sh --cloudflare-portal-prepare
                                   Explicit attended local hostname config and disabled units
   ./setup.sh --cloudflare-portal-rollback
@@ -1037,6 +1130,8 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="read-only reboot prerequisites; no sudo, Docker mutations or firewall probes")
     choices.add_argument("--cloudflare-portal-preview", action="store_true",
                          help="read-only local Cloudflare Portal status, not route verification")
+    choices.add_argument("--cloudflare-portal-status", action="store_true",
+                         help="read-only optional unit and TCP listener status; no remote proof")
     choices.add_argument("--cloudflare-portal-prepare", action="store_true",
                          help="attended private hostname configuration and optional unit install")
     choices.add_argument("--cloudflare-portal-rollback", action="store_true",
@@ -1101,6 +1196,9 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("On-demand options require explicit enable/disable mode")
     if args.cloudflare_portal_preview:
         print(json.dumps(cloudflare_portal_preview(), indent=2))
+        return 0
+    if args.cloudflare_portal_status:
+        print(json.dumps(cloudflare_portal_status(), indent=2))
         return 0
     if args.cloudflare_portal_prepare:
         return cloudflare_portal_prepare()
