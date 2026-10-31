@@ -164,9 +164,28 @@ class EvidenceMCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(src, "https://example.com:80/article")
         self.assertTrue(stripped)
         self.assertNotIn("PRIVATE", src)
+        long_but_valid = "https://example.com:80/" + "x" * 2050
+        self.assertEqual(bridge._citation_url(long_but_valid),
+                         (long_but_valid, False))
+        oversized = "https://example.com:80/" + "x" * 8300
+        self.assertEqual(bridge._citation_url(oversized), ("", False))
         for malformed in ("https://user:pass@example.com/item", "http://example.com:bad/item",
                           "ftp://example.com/item"):
             self.assertEqual(bridge._citation_url(malformed), ("", False))
+
+        # The optional evidence is clearly unavailable for a path too long
+        # to represent under the output budget; the tool never forges a link.
+        with patch.object(document_pages, "_CACHE", OrderedDict()):
+            domain_policy.decide("example.com", "allow", scope="exact")
+            token, _ = document_pages.save(
+                oversized, "Public text", {}, source_url=oversized,
+                allow_short=True)
+            async with Client(bridge.mcp) as client:
+                result = await client.call_tool("web_extract_section", {
+                    "document_id": token, "start_offset": 0, "include_evidence": True})
+                self.assertTrue(result.data["success"])
+                self.assertFalse(result.data["evidence"]["available"])
+                self.assertNotIn("quotation", result.data["evidence"])
 
     def test_short_retention_is_explicit_ttl_bounded_and_rejects_non_text(self):
         with patch.object(document_pages, "_CACHE", OrderedDict()):
