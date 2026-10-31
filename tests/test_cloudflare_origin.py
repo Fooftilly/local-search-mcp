@@ -289,8 +289,10 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
             attempts.append(request)
             if len(attempts) == 1:
                 raise httpx.ConnectError("synthetic down", request=request)
-            return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1,
-                                              "result": {"tools": []}})
+            return httpx.Response(
+                200, headers={"content-type": "application/json"},
+                stream=httpx.ByteStream(
+                    b'{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}'))
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(upstream),
             trust_env=False) as upstream_client:
