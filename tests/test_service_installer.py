@@ -65,7 +65,8 @@ class ServiceInstallerTests(unittest.TestCase):
         self.assertIn("--serve-loopback", origin)
         self.assertIn("remote_agent_server", gateway)
         self.assertIn("remote_agent_cloudflare_origin", origin)
-        self.assertIn("BindsTo=local-search-mcp-remote-gateway.service", origin)
+        self.assertIn("Wants=local-search-mcp-remote-gateway.service", origin)
+        self.assertNotIn("BindsTo=", origin)
         self.assertNotIn("0.0.0.0", gateway + origin)
         self.assertNotIn("cloudflared", gateway + origin)
         # sudo -n root-guard probe and nftables need this privilege/netlink.
