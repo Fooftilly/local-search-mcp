@@ -54,17 +54,22 @@ def page_for_offset(offset: int, first_page_chars: int = PAGE_CHARS) -> int:
 def save(url: str, markdown: str, metadata: dict, *,
          source_url: str | None = None,
          once_proof: tuple[str, str] | None = None,
-         first_page_chars: int = PAGE_CHARS) -> tuple[str, int]:
+         first_page_chars: int = PAGE_CHARS,
+         allow_short: bool = False) -> tuple[str, int]:
     """Cache a bounded document and return an unpredictable read capability.
 
-    Ordinary short documents need no capability; the caller may also save a
-    shorter, opt-in first page for safe continuation. Nothing is persisted.
+    Ordinary short documents need no capability; an explicit evidence opt-in
+    may retain one within this same bounded 15-minute memory cache.
+    Nothing is persisted. Default short-document behavior is unchanged.
     """
     if (type(first_page_chars) is not int
             or not MIN_FIRST_PAGE_CHARS <= first_page_chars <= PAGE_CHARS):
         raise ValueError("first_page_chars must be between 2048 and 24000")
+    if type(allow_short) is not bool:
+        raise ValueError("allow_short must be a boolean")
     if (not isinstance(markdown, str)
-            or not first_page_chars < len(markdown) <= MAX_DOCUMENT_CHARS):
+            or not (0 < len(markdown) <= MAX_DOCUMENT_CHARS)
+            or (not allow_short and len(markdown) <= first_page_chars)):
         raise ValueError("Document is not eligible for temporary pagination")
     try:
         target = urlsplit(url) if isinstance(url, str) else None
