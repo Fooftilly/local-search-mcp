@@ -104,6 +104,14 @@ class ShutdownTests(unittest.TestCase):
         docker = next(i for i, c in enumerate(self.calls) if c[0] == "docker")
         self.assertLess(updater, tunnel)
         self.assertLess(tunnel, docker)
+        adapter = next(i for i, c in enumerate(self.calls)
+                       if c[:4] == ["systemctl", "--user", "disable", "--now"]
+                       and c[-1] == "local-search-mcp-cloudflare-origin.service")
+        gateway = next(i for i, c in enumerate(self.calls)
+                       if c[:4] == ["systemctl", "--user", "disable", "--now"]
+                       and c[-1] == "local-search-mcp-remote-gateway.service")
+        self.assertLess(adapter, gateway)
+        self.assertLess(gateway, tunnel)
         for ident in self.containers.values():
             u = self.calls.index(["docker", "--host", "unix:///var/run/docker.sock",
                                   "update", "--restart=no", ident])
