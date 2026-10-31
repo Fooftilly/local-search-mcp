@@ -267,7 +267,7 @@ class SetupWizardTests(unittest.TestCase):
         self.assertEqual(len(preview["actions"]), 18)
         self.assertEqual(preview["groups"],
                          ["Setup", "Connections", "Status", "Update", "Advanced"])
-        self.assertEqual(len({item["menu"] for item in preview["actions"]}), 17)
+        self.assertEqual(len({item["menu"] for item in preview["actions"]}), 18)
 
     def test_all_existing_actions_appear_once_in_five_groups(self):
         groups = wizard.MENU_GROUPS
