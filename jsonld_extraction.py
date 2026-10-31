@@ -51,12 +51,14 @@ def _plain(value: object, limit: int = 180) -> str:
     return cleaned[:limit].encode("utf-8", "replace").decode("utf-8")
 
 
-def _name(value: object) -> str:
+def _name(value: object, depth: int = 0) -> str:
+    if depth >= 4:
+        return ""
     if isinstance(value, dict):
         return _plain(value.get("name"))
     if isinstance(value, list):
         return next((candidate for item in value[:3]
-                     if (candidate := _name(item))), "")
+                     if (candidate := _name(item, depth + 1))), "")
     return _plain(value)
 
 
@@ -103,11 +105,13 @@ def _has_schema_type(raw: object, expected: str) -> bool:
                             f"http://schema.org/{expected}") for item in values)
 
 
-def _trusted_schema_context(value: object) -> bool:
+def _trusted_schema_context(value: object, depth: int = 0) -> bool:
+    if depth >= 4:
+        return False
     if isinstance(value, str):
         return value.rstrip("/") in ("https://schema.org", "http://schema.org")
     if isinstance(value, list):
-        return any(_trusted_schema_context(x) for x in value[:3])
+        return any(_trusted_schema_context(x, depth + 1) for x in value[:3])
     return False
 
 
