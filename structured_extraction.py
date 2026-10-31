@@ -372,7 +372,8 @@ def _advertised_w3c_style_alternatives(markdown: str, base: str, *,
                 target = urlsplit(value)
                 if (target.scheme != source.scheme
                         or target.hostname != source.hostname
-                        or target.port != source.port or target.query):
+                        or target.port != source.port or target.query
+                        or value.endswith("?")):
                     continue
                 if target.path.rsplit("/", 1)[0] + "/" != source_dir:
                     continue
