@@ -137,7 +137,8 @@ def logged_tool(kind: str):
                     if type(requested_page) is int:
                         event["page"] = requested_page
                 else:
-                    event["action"] = ("table_page" if "table_index" in sig.parameters
+                    event["action"] = ("compare" if "left_document_id" in sig.parameters
+                                       else "table_page" if "table_index" in sig.parameters
                                        else "links_page" if "link_id" in sig.parameters
                                        else "section" if "max_chars" in sig.parameters
                                        else "find")
