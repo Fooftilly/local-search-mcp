@@ -199,6 +199,23 @@ class ComparisonMCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "comparison_limit")
         self.assertNotIn("X" * 500, str(result))
 
+    async def test_full_output_cap_handles_unicode_heavy_source_urls(self):
+        for host in ("left.example.com", "right.example.com"):
+            domain_policy.decide(host, "allow", scope="exact")
+        long_left = "https://left.example.com/" + "ž" * 510
+        long_right = "https://right.example.com/" + "č" * 510
+        left, _ = pages.save(long_left, "identical\n", {}, allow_short=True)
+        right, _ = pages.save(long_right, "identical\n", {}, allow_short=True)
+        result = bridge.web_compare_documents(left, right)
+        self.assertTrue(result["success"])
+        self.assertTrue(result["text_equal"])
+        self.assertLessEqual(len(json.dumps(result, ensure_ascii=True).encode()),
+                             diff.MAX_OUTPUT_BYTES)
+        self.assertFalse(result["left_source_identity_available"])
+        self.assertFalse(result["right_source_identity_available"])
+        self.assertEqual(result["left_source_url"], "")
+        self.assertEqual(result["right_final_url"], "")
+
     async def test_no_fetch_or_approval_on_compare(self):
         left, right = self.allowed_pair()
         with (patch.object(bridge, "_run_fetch", side_effect=AssertionError("Crawl")),
