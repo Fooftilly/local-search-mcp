@@ -87,6 +87,16 @@ Using httpx's in-memory ASGI and mock upstream transports, the tests exercise sy
 
 **Known incomplete gates, preventing deployment:** the standalone gateway still permits test-injected callbacks, while the newer `open_guarded_runtime` factory composes the private credential reader and fixed root-owned guard probe without starting a server. No operator credentials have been provisioned or any runtime deployed. Distributed client quotas, provider identity/audience binding, production audit events, external TLS/tunnel authentication, OAuth, and deployment/rollback remain unimplemented. The gateway now imposes a hard 15-second upstream **response-header** deadline separate from its 120-second response-body/stream lifetime; a stalled response start is rejected with a generic HTTP 504. The deadline cancels an upstream that has not produced headers, without shortening legitimate SSE responses that have already begun. The response-lifetime check is a maximum duration per response rather than a throughput-aware idle timeout. Do not wrap this class with a public tunnel, add a production `uvicorn` launcher, or declare #230 complete until those remain safe and tested. Host bind must remain loopback-only.
 
+### Bounded, private client observations (#230)
+
+The loopback gateway now keeps an **in-process, read-only, last-256-event** snapshot for *verified* client identities. Events record only the validated configured `client_id`, an allowed HTTP method (`POST`/`GET`/`DELETE`), a response status (or `None` if no response started), and whether a terminal ASGI response body was successfully emitted. When SSE headers are sent but the response is interrupted, its `completed` flag is false; a status 200 alone is not counted as a fully delivered response. Quota denial (429) is attributed to the client without forwarding upstream. Unknown, unauthenticated, invalid-Host and invalid-Origin callers do not receive an audit identity and are **not** retained in this snapshot.
+
+The gateway never records bearer values, verifier digests, headers, JSON-RPC bodies, queries, results, public/private URLs, source IPs, arbitrary paths or session IDs in this record. Nothing writes audit entries to stdout, journal, disk, existing history files, HTTP routes or dashboards. A trusted same-process owner can call `gateway.audit_snapshot()`; there is **no** remotely reachable monitoring or audit API. The ring evicts older records and is lost on restart. It is process-local, includes no external authenticated tunnel identity, and is **not** yet an operator-accessible durable production audit, retention policy or audit proof for Grok. Those remain separate ingress-deployment gates.
+
+```sh
+python -m unittest -v tests.test_remote_agent_audit tests.test_remote_agent_gateway
+```
+
 ### Hard response-header deadline (#230)
 
 The authenticated gateway's `_upstream_response` helper wraps only the opening of the fixed loopback HTTPX stream in `asyncio.timeout(15)`. Once headers are received, its existing cancellation, revocation and 120-second maximum stream duration apply normally. This addresses slow-dripping upstream response **headers**, which ordinary per-read timeouts cannot reliably bound as a whole. The HTTPX stream is owned by an async exit stack through success, client disconnect, timeout and revocation, so upstream resources are closed.

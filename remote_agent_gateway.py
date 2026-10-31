@@ -25,6 +25,7 @@ MAX_HEADER_BYTES = 8192
 MAX_HEADERS = 48
 MAX_GRANTS = 8
 MAX_CACHED_IDENTITIES = 64
+MAX_AUDIT_EVENTS = 256
 MAX_PER_CLIENT_ACTIVE = 2
 MAX_TOTAL_ACTIVE = 8
 MAX_PER_CLIENT_PER_MINUTE = 30
@@ -95,6 +96,36 @@ async def _upstream_response(client: httpx.AsyncClient, method: str,
                               content=content, follow_redirects=False))
         yield response
 
+
+
+
+@dataclass(frozen=True)
+class GatewayAuditEvent:
+    """Sanitized local observation; never includes request/response bodies."""
+    client_id: str
+    method: str
+    status: int | None
+    completed: bool
+
+
+class GatewayAudit:
+    """Bounded in-process observations of verified client identities only.
+
+    This is an internal instrumentation surface, not a durable compliance
+    audit or an HTTP endpoint. A revoked client remains distinguishable from
+    another client, but never record tokens, requests, URLs or result data.
+    """
+    def __init__(self) -> None:
+        self._events: deque[GatewayAuditEvent] = deque(maxlen=MAX_AUDIT_EVENTS)
+
+    def record(self, client_id: str, method: str, status: int | None,
+               completed: bool) -> None:
+        self._events.append(GatewayAuditEvent(
+            client_id=client_id, method=method, status=status,
+            completed=completed))
+
+    def snapshot(self) -> tuple[GatewayAuditEvent, ...]:
+        return tuple(self._events)
 
 
 class ClientRequestBudget:
@@ -170,10 +201,15 @@ class LoopbackMCPGateway:
         self._clock = clock
         self._rate_clock = rate_clock
         self._budget = ClientRequestBudget()
+        self._audit = GatewayAudit()
         # Serializes expensive root guard checks. No cached attestation:
         # every authorized request must pass a fresh host read/probe.
         self._guard_slot = asyncio.Lock()
         self._guard_inflight: asyncio.Task[bool] | None = None
+
+    def audit_snapshot(self) -> tuple[GatewayAuditEvent, ...]:
+        """Read-only in-process snapshot, intentionally not routed to HTTP."""
+        return self._audit.snapshot()
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -253,13 +289,37 @@ class LoopbackMCPGateway:
         if client_id is None:
             await _reply(send, 401)
             return
+        # Observe only successfully emitted status/terminal ASGI messages.
+        # Reading a message's type/status is sufficient: headers, JSON-RPC
+        # arguments, request bytes, token digests and response data never
+        # enter the audit record. A disconnected/aborted SSE response is
+        # explicitly marked incomplete even when its headers were HTTP 200.
+        status = None
+        completed = False
+
+        async def audited_send(message):
+            nonlocal status, completed
+            await send(message)
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            elif (message["type"] == "http.response.body" and
+                  not message.get("more_body", False)):
+                completed = True
+
         if not self._budget.reserve(client_id, self._rate_clock()):
-            await _reply(send, 429)
+            try:
+                await _reply(audited_send, 429)
+            finally:
+                # A client can disconnect after 429 headers but before
+                # receiving its terminal body: retain that incomplete event.
+                self._audit.record(client_id, method, status, completed)
             return
+
         try:
             await self._forward_authenticated(
-                names, method, receive, send, digest, client_id)
+                names, method, receive, audited_send, digest, client_id)
         finally:
+            self._audit.record(client_id, method, status, completed)
             self._budget.release(client_id)
 
     def _credential_still_valid(self, digest: bytes, client_id: str) -> bool:

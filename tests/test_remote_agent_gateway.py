@@ -235,6 +235,11 @@ class RemoteGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(stream.closed.is_set())
         self.assertIn("http.response.start", seen)
         self.assertNotIn("http.response.body", seen)
+        # HTTP 200 response headers can precede a disconnected SSE body;
+        # that must not be misrepresented as a completed exchange.
+        from remote_agent_gateway import GatewayAuditEvent
+        self.assertEqual(self.gateway.audit_snapshot()[-1],
+                         GatewayAuditEvent("client-a", "GET", 200, False))
 
     async def test_actual_stateless_fastmcp_tools_list(self):
         """Verify against the real bridge, not only a permissive test mock."""
