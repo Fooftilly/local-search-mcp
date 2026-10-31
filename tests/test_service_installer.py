@@ -74,6 +74,25 @@ class ServiceInstallerTests(unittest.TestCase):
         self.assertIn("AF_NETLINK", gateway)
         self.assertIn("NoNewPrivileges=true", origin)
 
+    def test_optional_install_uses_private_project_python_not_system_python(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            venv = root / ".venv" / "bin"
+            venv.mkdir(parents=True)
+            (venv / "python").write_text("placeholder")
+            with (patch.object(installer, "ROOT", root),
+                  patch.object(installer.os, "geteuid", return_value=1000),
+                  patch.object(installer, "write_owned") as written):
+                self.assertEqual(installer.main(
+                    ["--install", "--cloudflare-portal"]), 0)
+            self.assertEqual(written.call_count, len(installer.CLOUDFLARE_NAMES))
+            expected_exe = installer.quote(str(venv / "python"))
+            for call in written.call_args_list:
+                self.assertIn(f"ExecStart={expected_exe} -m ", call.args[1])
+                self.assertIn(call.args[0].name, installer.CLOUDFLARE_NAMES)
+            self.assertFalse(any("/usr/bin/python3" in call.args[1]
+                                 for call in written.call_args_list))
+
     def test_cloudflare_remove_preserves_core_units(self):
         core = self.dir / installer.NAMES[0]
         core.write_text(installer.MARKER + "core\\n")
