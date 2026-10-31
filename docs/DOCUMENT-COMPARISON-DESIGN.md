@@ -1,6 +1,6 @@
 # Document comparison — design and benchmark gate (#213)
 
-**Status: proposal, not an implemented MCP capability.** This document intentionally does not alter `bridge.py`, authorize URLs, retain page versions or claim that documents have changed. Implement a production tool only after reviewing this gate and measured corpus results.
+**Status: historical design gate, followed by the bounded candidate implementation in [Document comparison](DOCUMENT-COMPARISON.md).** The design below records the original proposals and required acceptance conditions; do not interpret unchecked operator-host benchmarks or client acceptance as completed. The candidate uses two existing authorized temporary handles (including opt-in short-page handles from `retain_for_evidence=true`) and no additional fetching.
 
 ## Current constraints and evidence
 

@@ -21,6 +21,7 @@ import threading
 from urllib.parse import urlsplit, urlunsplit
 from history_log import logged_tool
 import document_pages
+import document_comparison
 import request_cache
 import structured_extraction
 import jsonld_extraction
@@ -1436,6 +1437,87 @@ def web_extract_section(document_id: str, start_offset: int,
         "source_completeness": "unknown",
         "retrieval_timestamp": "not_recorded_in_temporary_document",
     }}
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+@logged_tool("page")
+def web_compare_documents(left_document_id: str, right_document_id: str,
+                          max_changes: int = 12, context_chars: int = 120) -> dict:
+    """Compare exactly two already-authorized temporary Markdown snapshots.
+
+    No URL crawling, new approval, durable revision archive or background
+    watching. Both source/final permissions and one-use proofs are checked
+    independently against one policy epoch, before AND after computation.
+    No partial text or source URLs are released if either side is invalid.
+    """
+    # Validate limits before touching any private document capabilities.
+    if type(max_changes) is not int or not 1 <= max_changes <= 12:
+        raise ValueError("max_changes must be from 1 to 12")
+    if type(context_chars) is not int or not 1 <= context_chars <= 120:
+        raise ValueError("context_chars must be from 1 to 120")
+    epoch = request_cache.policy_epoch()
+    left, right = document_pages.snapshot_pair_with_security_context(
+        left_document_id, right_document_id)
+    if left is None or right is None:
+        return {"success": False, "status": "expired_or_unknown",
+                "reason": "A temporary document is unavailable; fetch both approved URLs again."}
+    denied = {"success": False, "status": "blocked",
+              "reason": "One or both temporary documents are no longer authorized."}
+
+    def both_authorized() -> bool:
+        for url, _content, source, proof in (left, right):
+            allowed = _authorized_saved_document(
+                {"success": True, "url": url}, source, proof, epoch)
+            if allowed.get("success") is not True:
+                return False
+        return request_cache.policy_epoch() == epoch
+
+    if not both_authorized():
+        return denied
+    try:
+        outcome = document_comparison.compare(
+            left[1], right[1], max_changes=max_changes,
+            context_chars=context_chars)
+    except ValueError:
+        return {"success": False, "status": "comparison_limit",
+                "reason": "The captured text exceeds the bounded comparison limits."}
+    if (not both_authorized()
+            or not document_pages.pair_handles_current(
+                left_document_id, right_document_id)
+            or request_cache.policy_epoch() != epoch):
+        return denied
+
+    # Only reference complete, query-stripped URL identities. Never silently
+    # truncate citation paths: a missing overlong label is marked unavailable.
+    refs = {}
+    for side, item in (("left", left), ("right", right)):
+        final, _content, source, _proof = item
+        src, _ = _citation_url(source or final)
+        dest, _ = _citation_url(final)
+        refs[side + "_source_url"] = src if len(src) <= 512 else ""
+        refs[side + "_final_url"] = dest if len(dest) <= 512 else ""
+        refs[side + "_source_identity_available"] = bool(
+            refs[side + "_source_url"] and refs[side + "_final_url"])
+    outcome.update(refs)
+    # The 6 KiB budget includes the entire escaped JSON object. A
+    # Unicode-heavy URL can expand sixfold in JSON; omit citation identities
+    # FIRST to retain useful diff excerpts, never truncate a valid URL path.
+    def serialized_size() -> int:
+        return len(json.dumps(outcome, ensure_ascii=True).encode("utf-8"))
+
+    if serialized_size() > document_comparison.MAX_OUTPUT_BYTES:
+        for side in ("left", "right"):
+            outcome[side + "_source_url"] = ""
+            outcome[side + "_final_url"] = ""
+            outcome[side + "_source_identity_available"] = False
+    while (serialized_size() > document_comparison.MAX_OUTPUT_BYTES
+           and outcome["changes"]):
+        outcome["changes"].pop()
+        outcome["changes_truncated"] = True
+    if not both_authorized() or not document_pages.pair_handles_current(
+            left_document_id, right_document_id):
+        return denied
+    return outcome
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})

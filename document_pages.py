@@ -561,3 +561,34 @@ def read_with_context(token: str, page: int) -> tuple[dict, str | None]:
 def read(token: str, page: int) -> dict:
     """Read only cached approved content; bridge enforces live permission."""
     return read_with_context(token, page)[0]
+
+
+def snapshot_pair_with_security_context(
+        left_token: str, right_token: str
+) -> tuple[tuple | None, tuple | None]:
+    """Take an atomic read-only snapshot of TWO temporary Markdown handles.
+
+    Both handles must exist at the same time. Nothing is fetched, renewed,
+    written to disk or returned to the caller unless *both* are valid.
+    Caller must separately authorize both source/final URLs and once proofs.
+    """
+    for token in (left_token, right_token):
+        if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
+            raise ValueError("Invalid document handle")
+    if left_token == right_token:
+        raise ValueError("Two distinct temporary document handles are required")
+    with _LOCK:
+        _purge_expired(time.monotonic())
+        entries = [_CACHE.get(left_token), _CACHE.get(right_token)]
+        if any(entry is None or entry[7] is not None or not entry[2] for entry in entries):
+            return None, None
+        return tuple((entry[1], entry[2], entry[4], entry[5]) for entry in entries)
+
+
+def pair_handles_current(left_token: str, right_token: str) -> bool:
+    """Check that both original immutable snapshots remain live at release."""
+    with _LOCK:
+        _purge_expired(time.monotonic())
+        return (left_token in _CACHE and right_token in _CACHE
+                and _CACHE[left_token][7] is None
+                and _CACHE[right_token][7] is None)
