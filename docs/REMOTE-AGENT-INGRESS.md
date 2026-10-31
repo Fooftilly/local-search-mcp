@@ -126,6 +126,27 @@ The factory owns an `httpx.AsyncClient` with `trust_env=False`, redirects disabl
 
 Run: `python -m unittest discover -s tests -p 'test_remote_agent_runtime.py' -v`.
 
+### Explicit offline credential lifecycle — no host deployment (#230)
+
+`remote_agent_credentials.py` is a standalone **opt-in operator CLI** for the existing private JSON verifier format. It is **not** a server launcher, token service, webhook, tunnel setup or automatic provisioning. `list` and mutation previews do not create files or generate tokens. `--apply` is required for creation, rotation and revocation, and must run as the unprivileged owner rather than root. The operator supplies an **absolute path** under a pre-existing private, owner-controlled directory (mode 0700), with no unsafe ancestor symlinks or third-party-writable directories. The credential file must remain mode 0600.
+
+```sh
+# Examples only. Do not enable any tunnel or listener.
+python -m remote_agent_credentials --store "$HOME/.config/local-search-mcp/private/agent-grants.json" list
+python -m remote_agent_credentials --store "$HOME/.config/local-search-mcp/private/agent-grants.json" create grok-api
+python -m remote_agent_credentials --store "$HOME/.config/local-search-mcp/private/agent-grants.json" --ttl-hours 24 --apply create grok-api
+python -m remote_agent_credentials --store "$HOME/.config/local-search-mcp/private/agent-grants.json" --ttl-hours 24 --apply rotate grok-api
+python -m remote_agent_credentials --store "$HOME/.config/local-search-mcp/private/agent-grants.json" --apply revoke grok-api
+```
+
+For **create/rotate**, a cryptographically strong random secret is presented **only through an interactive local `/dev/tty`**, never stdout, stderr, arguments, GitHub, the dashboard, history or a URL. The operator must copy it into an authorized password manager and type `COMMIT` in that TTY before its SHA-256 verifier is stored. Without a TTY or explicit confirmation, creation and rotation are refused with no verifier change. TTY scrollback itself may contain the secret; use a trusted local session, disable session logging, and avoid recording the screen.
+
+Updates use a private mode-0600 persistent file lock, serialize compliant operator CLI processes, validate both current file and parent ownership, write a mode-0600 temporary file, `fsync`, and atomically rename it over the verifier. No raw token is serialized. A missing store can be initialized only by `create`; malformed or unsafe existing files are rejected rather than overwritten. A rotation replaces the old digest and revokes the previous bearer; a revoke removes the corresponding client record. Live gateway sessions are independently checked for credential revocation by the existing runtime. This CLI does not create the private directory, enable services, install sudo rules or contact any external provider.
+
+The first planned user-visible issued token does not exist until the operator executes `--apply` locally. CI covers this flow using synthetic secrets and private temporary directories only. These credentials should **not be issued yet for Grok.com** until its exact connector authentication and public tunnel access model are verified; Grok CLI/local testing may continue to use the existing private endpoint.
+
+This does not satisfy the remaining external TLS, client OAuth support, operator audit, loopback-service deployment or live Grok acceptance gates. `#230` and `#231` remain open.
+
 ### Deployment decision
 
 **Do not deploy or expose any new ingress based on this document alone.** The next technical work in #230 is a provider-neutral gateway proof of concept exercised entirely on loopback (synthetic credentials, isolated temporary ports) plus fault/Host/Origin/streaming tests. After the operator chooses an authenticated tunnel provider and verifies which Grok client authentication mode is available, add an explicit opt-in installation/rollback workflow. #231 tracks actual Grok acceptance; #215 is already closed for ordinary MCP-client protocol compatibility.
