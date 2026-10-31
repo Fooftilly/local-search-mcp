@@ -114,6 +114,18 @@ Run isolated regression tests with `python -m unittest discover -s tests -p 'tes
 
 **Not yet solved:** public tunnel and provider authentication, secure one-time credential provisioning and protected updates, a bounded production runner, end-to-end secret/audit lifecycle, and live hosted-Grok acceptance. These adapters alone are insufficient to complete gates G01–G12 or to deploy the gateway.
 
+### Bounded, non-serving gateway runtime composition (#230)
+
+`remote_agent_runtime.open_guarded_runtime(credentials_path)` now composes the import-only gateway, strict `load_client_grants` file loader, and existing fixed `fixed_root_tunnel_gate` verifier. It **does not bind any port, launch Uvicorn, register a user service, provision credentials, or start a tunnel**. This factory must not be presented as a completed public ingress.
+
+For every authenticated, quota-admitted request, the gateway now finishes bounded input validation **before** performing a fresh root guard verification. The guard is serialized with one asyncio semaphore and moved to a worker thread, with a 32-second overall deadline; failure and timeout return HTTP 503 without starting MCP work. This prevents a root-owned Docker/nftables probe from synchronously blocking the ASGI event loop. It does **not** cache firewall success or consider any previously passing probe permanent. An admitted request still occupies a quota slot during guard verification. (Existing root guard may probe for up to 30 seconds itself.)
+
+The factory owns an `httpx.AsyncClient` with `trust_env=False`, redirects disabled, maximum eight connections and bounded connect/write/read/pool timeouts. The only upstream remains the gateway's hardcoded `http://127.0.0.1:8790/mcp`; arbitrary URLs, dashboard routes or proxy environment variables are never used. The context manager closes its client when the factory context ends. Tests use in-memory ASGI and mock HTTPX transports; a blocking fake root probe demonstrates that the event loop remains responsive while the probe runs, that concurrent probes are serialized, and that missing/invalid/expired credentials are rejected before any root subprocess or upstream work.
+
+**Important remaining boundaries:** this is still **not a runnable service**. The future opt-in server must bind exclusively to an inspected loopback address, enforce one process/worker while using in-memory quotas, implement safe credential generation and atomic rotation, and protect against clients directly addressing the unauthenticated local FastMCP endpoint. A production ingress also needs an authenticated, provider-compatible public tunnel/OAuth choice, independent client identity, bounded audit logging, no raw secrets, live guard-loss handling, deployment and rollback, and full Grok API / Grok.com acceptance. No existing OpenAI tunnel or root-owned firewall configuration was changed.
+
+Run: `python -m unittest discover -s tests -p 'test_remote_agent_runtime.py' -v`.
+
 ### Deployment decision
 
 **Do not deploy or expose any new ingress based on this document alone.** The next technical work in #230 is a provider-neutral gateway proof of concept exercised entirely on loopback (synthetic credentials, isolated temporary ports) plus fault/Host/Origin/streaming tests. After the operator chooses an authenticated tunnel provider and verifies which Grok client authentication mode is available, add an explicit opt-in installation/rollback workflow. #231 tracks actual Grok acceptance; #215 is already closed for ordinary MCP-client protocol compatibility.
