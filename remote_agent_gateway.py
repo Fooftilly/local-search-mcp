@@ -151,7 +151,8 @@ class LoopbackMCPGateway:
         self._budget = ClientRequestBudget()
         # Serializes expensive root guard checks. No cached attestation:
         # every authorized request must pass a fresh host read/probe.
-        self._guard_slot = asyncio.Semaphore(1)
+        self._guard_slot = asyncio.Lock()
+        self._guard_inflight: asyncio.Task[bool] | None = None
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -255,6 +256,34 @@ class LoopbackMCPGateway:
         except Exception:
             return False
 
+    @staticmethod
+    def _consume_guard_task_outcome(task: asyncio.Task) -> None:
+        """Avoid unobserved exceptions from probes completing after timeout."""
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            pass
+
+    async def _fresh_guard_ok(self) -> bool:
+        """No concurrent root probe, including after caller timeout/cancel.
+
+        Once a probe times out, it still owns the sole worker slot until the
+        underlying thread completes. A later request is denied rather than
+        starting overlapping Docker/nftables operations. Completed probes
+        are never reused as permission to forward a later request.
+        """
+        async with self._guard_slot:
+            if self._guard_inflight is not None and not self._guard_inflight.done():
+                return False
+            probe = asyncio.create_task(asyncio.to_thread(self._guard_ready))
+            probe.add_done_callback(self._consume_guard_task_outcome)
+            self._guard_inflight = probe
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(probe), timeout=MAX_GUARD_SECONDS) is True
+            except Exception:
+                return False
+
     async def _forward_authenticated(
             self, names, method, receive, send, digest: bytes,
             client_id: str) -> None:
@@ -300,17 +329,10 @@ class LoopbackMCPGateway:
                 if values:
                     safe_headers[name.decode("ascii")] = values[0].decode("latin1")
 
-            # Bound actual root-owned Docker/nftables probes off the ASGI
-            # event loop. This must happen after auth, quota admission, and
-            # input validation, but before any upstream request or lease.
-            try:
-                async with asyncio.timeout(MAX_GUARD_SECONDS):
-                    async with self._guard_slot:
-                        guard_ok = await asyncio.to_thread(self._guard_ready)
-                if guard_ok is not True:
-                    await _reply(send, 503)
-                    return
-            except Exception:
+            # After authorization and validation, verify the installed
+            # guard without blocking the event loop or overlapping a probe
+            # that has already timed out or whose caller disconnected.
+            if not await self._fresh_guard_ok():
                 await _reply(send, 503)
                 return
 
