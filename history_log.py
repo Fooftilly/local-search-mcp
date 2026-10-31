@@ -11,6 +11,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import safe_settings
 from pathlib import Path
 import stat
@@ -92,6 +93,52 @@ def append_history(event: dict) -> None:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
     finally:
         os.close(lock_fd)
+
+
+
+# Persist these *only* for an explicitly opted-in diagnostic invocation.
+# SearXNG's exception/error strings and provider metadata are never written.
+_PROVIDER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()\-]{0,39}\Z")
+_PROVIDER_SECRETS = re.compile(
+    r"(?i)(?:token|password|secret|bearer|cookie|api.?key|authorization)")
+
+
+def _private_provider_diagnostic(value: object) -> dict | None:
+    """Reduce an untrusted SearXNG diagnostic to safe bounded labels/counts."""
+    if not isinstance(value, dict):
+        return None
+    coverage = value.get("coverage")
+    if coverage not in ("partial", "no_failures_reported", "unverifiable"):
+        return None
+    raw = value.get("unresponsive_engines")
+    if not isinstance(raw, list):
+        return None
+    safe = []
+    seen = set()
+    discarded = 0
+    for item in raw[:16]:
+        if (not isinstance(item, str) or not _PROVIDER_NAME.fullmatch(item)
+                or _PROVIDER_SECRETS.search(item)):
+            discarded += 1
+            continue
+        key = item.casefold()
+        if key not in seen:
+            seen.add(key)
+            safe.append(item)
+    reported = value.get("reported_count")
+    if type(reported) is not int or not 0 <= reported <= 128:
+        reported = None
+    unparsed = value.get("unparsed_count")
+    if type(unparsed) is not int or not 0 <= unparsed <= 128:
+        unparsed = None
+    return {
+        "coverage": coverage,
+        "unresponsive_engines": safe,
+        "reported_count": reported,
+        "unparsed_count": unparsed,
+        "truncated": bool(value.get("truncated")) or discarded > 0
+                     or len(raw) > 16,
+    }
 
 
 def logged_tool(kind: str):
@@ -177,7 +224,16 @@ def logged_tool(kind: str):
                         event["error_type"] = output.get("status", "unknown")
                     if isinstance(output.get("http_status"), int):
                         event["http_status"] = output["http_status"]
-                elif kind == "page" and isinstance(output, dict):
+                if (kind == "search" and params.get("record_provider_diagnostics") is True
+                        and params.get("include_search_status") is True
+                        and isinstance(output, dict)):
+                    # Explicit consent is per individual call. Only bounded
+                    # provider labels survive, never details or raw payloads.
+                    diag = _private_provider_diagnostic(output.get("search_status"))
+                    if diag is not None:
+                        event["provider_diagnostics_opt_in"] = True
+                        event["provider_diagnostics"] = diag
+                if kind == "page" and isinstance(output, dict):
                     event["status"] = output.get("status", "success" if output.get("success") else "error")
                     event["page_count"] = output.get("page_count")
                 elif kind == "fetch" and isinstance(output, dict):
