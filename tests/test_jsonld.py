@@ -181,17 +181,32 @@ class JSONLDMCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("SECRET_RAW_JS", audit)
 
     async def test_missing_html_explicit_and_raw_markdown_still_available(self):
-        page = {"url": "https://example.com/item", "success": True,
-                "markdown": "Still valid Markdown"}
-        with (patch.object(bridge, "_check_public_target", return_value=None),
-              patch.object(bridge, "_run_fetch_network", return_value=page),
+        url = "https://example.com/item"
+        original = httpx.Client
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            self.assertEqual(request.url.path, "/crawl")
+            return httpx.Response(200, json={"results": [{
+                "url": url, "success": True, "markdown": "Still valid Markdown",
+                "cleaned_html": "<p>Markdown is accessible but raw HTML is not</p>",
+            }]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        domain_policy.decide("example.com", "allow", scope="exact")
+        with (patch.object(bridge.httpx, "Client", side_effect=factory),
+              patch.object(bridge, "_check_public_target", return_value=None),
+              patch.object(bridge, "CRAWLER_SECURITY_WARNING", None),
               patch.object(bridge.on_demand, "lease", side_effect=lambda _: nullcontext())):
-            domain_policy.decide("example.com", "allow", scope="exact")
-            result = bridge.web_fetch("https://example.com/item", include_jsonld=True)
-        # A partial/mock crawler result cannot promise schema.org presence.
-        self.assertTrue(result["success"])
-        self.assertNotIn("jsonld", result)
-        self.assertEqual(ld.extract(page)["jsonld_info"]["status"], "unavailable")
+            async with Client(bridge.mcp) as client:
+                response = await client.call_tool("web_fetch", {
+                    "url": url, "include_jsonld": True})
+        self.assertFalse(response.is_error)
+        self.assertTrue(response.data["success"])
+        self.assertEqual(response.data["markdown"], "Still valid Markdown")
+        self.assertEqual(response.data["jsonld"], [])
+        self.assertEqual(response.data["jsonld_info"]["status"], "unavailable")
+        self.assertNotIn("cleaned_html", str(response.data))
 
 
 if __name__ == "__main__":
