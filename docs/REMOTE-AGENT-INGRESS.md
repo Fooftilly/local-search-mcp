@@ -87,6 +87,33 @@ Using httpx's in-memory ASGI and mock upstream transports, the tests exercise sy
 
 **Known incomplete gates, preventing deployment:** the credential/guard callbacks are intentionally test-injected (not yet tied to a secure operator-owned secret store or root-owned guard probe); no distributed client quota, provider identity/audience binding, production audit events, external TLS/tunnel authentication, OAuth, or deployment/rollback service. An upstream that stalls **before response headers** still requires a separately enforced total response-start deadline at the eventual deployment boundary. The response-lifetime check is a maximum duration per response rather than a throughput-aware idle timeout. Do not wrap this class with a public tunnel, add a production `uvicorn` launcher, or declare #230 complete until those remain safe and tested. Host bind must remain loopback-only.
 
+### Read-only credential store and host-guard adapters (#230)
+
+The next slice adds `remote_agent_prerequisites.py` and `tests/test_remote_agent_prerequisites.py`. They are **library-only** components with no startup behavior or installation. They are meant to be injected into `LoopbackMCPGateway(grants=..., guard_ready=...)` by a future, explicitly opted-in loopback service runner; **no runner is implemented or enabled here**.
+
+**Credential file validation:** `load_client_grants(path)` requires an explicitly supplied **absolute path**, a private operator-owned parent directory, a single regular non-symlink mode-0600 file owned by the current effective user, one link, and a maximum of 8 KiB of well-formed UTF-8 JSON. Parent path components cannot be symlinks or untrusted writable directories. Missing, malformed, truncated, unsafe or invalid files fail closed. The strict `local-search-mcp/agent-grants/v1` format is:
+
+```json
+{
+  "schema": "local-search-mcp/agent-grants/v1",
+  "grants": [
+    {
+      "client_id": "example-client",
+      "token_sha256": "<64 lowercase hexadecimal SHA-256 characters>",
+      "expires_at": 2000000000
+    }
+  ]
+}
+```
+
+This is a **schema illustration, not an installed credential**. Never put a raw bearer token or any real verifier in this repository, an issue, a PR or an operator dashboard URL. A future installation workflow must generate cryptographically strong **per-client random tokens**, present each secret securely once to its authorized owner, store only the digest in the operator-owned file, and atomically replace the file for rotation/revocation. Each request reloads validated digests without an in-process credential cache, so revocation applies without service restart (active streams are independently rechecked by the gateway). The loader rejects duplicate JSON keys, IDs, hashes, invalid timestamps, and unknown fields.
+
+**Existing guard integration boundary:** `fixed_root_tunnel_gate()` uses only the pre-existing fixed sudoers-approved `sudo -n /usr/bin/python3 /usr/local/libexec/local-search-mcp/crawler_egress_guard.py --container crawl4ai --tunnel-gate`. It cannot install rules, modify services, or choose a target. It requires exit status zero and the expected `PASS:` result; any missing file, missing permission, timeout, mismatched guard or unsuccessful probe yields **False**. It calls a root-owned, operator-installed script, not a mutable checkout. This check is safe and non-mutating, but can be expensive (live probes), so any future ASGI runner must schedule it off the event loop with bounded concurrency, a tested request deadline, and no fail-open cache. The existing guard is **not** a continuously active firewall-loss detector.
+
+Run isolated regression tests with `python -m unittest discover -s tests -p 'test_remote_agent_prerequisites.py' -v`. Tests use a private temporary directory, synthetic digests and mocked root subprocess calls; no real sudo, Docker, nftables, public endpoint or secret changes occur.
+
+**Not yet solved:** public tunnel and provider authentication, secure one-time credential provisioning and protected updates, a bounded production runner, end-to-end secret/audit lifecycle, and live hosted-Grok acceptance. These adapters alone are insufficient to complete gates G01–G12 or to deploy the gateway.
+
 ### Deployment decision
 
 **Do not deploy or expose any new ingress based on this document alone.** The next technical work in #230 is a provider-neutral gateway proof of concept exercised entirely on loopback (synthetic credentials, isolated temporary ports) plus fault/Host/Origin/streaming tests. After the operator chooses an authenticated tunnel provider and verifies which Grok client authentication mode is available, add an explicit opt-in installation/rollback workflow. #231 tracks actual Grok acceptance; #215 is already closed for ordinary MCP-client protocol compatibility.
