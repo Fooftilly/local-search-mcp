@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     results = version_report(check_remote=args.check_remote)
     print(json.dumps({"scope": "installed-direct-dependencies",
                       "remote_requested": args.check_remote,
+                      "python_version": [sys.version_info.major, sys.version_info.minor],
                       "packages": results}, indent=2))
     return 1 if any("error" in row for row in results) else 0
 

@@ -20,7 +20,7 @@ In-memory protocol tests **do not run the browser**, exercise network egress/red
 
 `tests/test_failure_paths.py` mocks only external subprocess calls and upstream HTTP services to cover missing prepared runtime files, unsafe symlinked tunnel executables, unhealthy/obsolete Crawl4AI instances, and malformed upstream health JSON. All state/history overrides point to temporary files; integration tests never use a developer's real config or call the real Internet.
 
-The CI matrix covers Python 3.11/3.13/3.14 and includes a targeted Ruff gate for undefined names and a few unsafe code-execution patterns (`F821,F822,F823,S307,S602`). This narrow gate is **not** a comprehensive security audit.
+CI runs the operator's supported Python 3.14 runtime (also used by flaky-test detection); older Python releases are not compatibility targets. It includes a targeted Ruff gate for undefined names and a few unsafe code-execution patterns (`F821,F822,F823,S307,S602`). This narrow gate is **not** a comprehensive security audit.
 
 ## What still needs verification
 

@@ -58,6 +58,11 @@ def dependency_report() -> dict:
         if (report.get("remote_requested") is not False
                 or not isinstance(report.get("packages"), list)):
             raise ValueError("Unexpected version report")
+        python_version = report.get("python_version")
+        if (type(python_version) is not list or len(python_version) != 2
+                or any(type(n) is not int or n < 0 or n > 1000
+                       for n in python_version)):
+            raise ValueError("Invalid project interpreter version")
         names = ("fastmcp", "httpx", "idna")
         packages = report["packages"]
         if (len(packages) != len(names)
@@ -68,7 +73,8 @@ def dependency_report() -> dict:
                        for row, name in zip(packages, names))):
             raise ValueError("Unexpected dependency list")
         # Only report installed versions; checker does not query PyPI in this mode.
-        return {"state": "available", "packages": packages}
+        return {"state": "available", "packages": packages,
+                "python_version": python_version}
     except (OSError, subprocess.TimeoutExpired, ValueError, TypeError,
             AttributeError):
         # Never include subprocess stdout, stderr or private pathnames.
@@ -329,9 +335,14 @@ def check_report() -> dict:
     dependencies = dependency_report()
     installed = {row["package"]: row["installed"]
                  for row in dependencies["packages"]}
+    python_version = dependencies.get("python_version")
+    # The bridge runs .venv/bin/python, not the system Python running setup.sh.
+    compatible = (type(python_version) is list and len(python_version) == 2
+                  and all(type(n) is int and 0 <= n <= 1000 for n in python_version)
+                  and python_version >= [3, 14])
     result = {
         "mode": "read-only",
-        "python_compatible": sys.version_info >= (3, 11),
+        "python_compatible": compatible,
         "dependency_versions_in_project_venv": dependencies,
         "project_venv_present": project_python() is not None,
         "configuration": configured_sources(),

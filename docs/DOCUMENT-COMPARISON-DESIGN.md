@@ -1,6 +1,6 @@
 # Document comparison — design and benchmark gate (#213)
 
-**Status: historical design gate, followed by the bounded candidate implementation in [Document comparison](DOCUMENT-COMPARISON.md).** The design below records the original proposals and required acceptance conditions; do not interpret unchecked operator-host benchmarks or client acceptance as completed. The candidate uses two existing authorized temporary handles (including opt-in short-page handles from `retain_for_evidence=true`) and no additional fetching.
+**Status: historical design gate, completed in the bounded implementation in [Document comparison](DOCUMENT-COMPARISON.md) and closed issue #213.** The design below records the original proposals; the operator-host Python 3.14 benchmark and live ChatGPT MCP comparison are completed, while independent-client acceptance is tracked by #215. The candidate uses two existing authorized temporary handles (including opt-in short-page handles from `retain_for_evidence=true`) and no additional fetching.
 
 ## Current constraints and evidence
 
@@ -48,17 +48,19 @@ Run `python3 scripts/document_compare_benchmark.py` from the repo root. It synth
 
 Record interpreter version, synthetic character counts, peak traced Python memory, elapsed milliseconds and edit-operation counts per case. A benchmark run measures only the offline algorithm; it **does not** validate the actual MCP protocol, security, network isolation, deployment, concurrent requests or real corpus quality.
 
-## Acceptance decisions before feature code
+## Historical design decisions and acceptance status
 
-- [ ] Run the offline corpus on Python 3.11 and 3.14; record measurements and acceptable upper bounds, including repetitive input.
-- [ ] Decide whether `difflib.SequenceMatcher` is sufficiently bounded or whether a strictly linear fingerprint/line-hash summary is safer for untrusted text.
-- [ ] Approve the UX for short documents. It must require explicit opt-in and reuse the existing document-cache budget.
-- [ ] Specify two-handle atomic permission/revocation semantics and one-use handling; add tests for epoch changes during comparison, redirects and stale handles.
-- [ ] Define exact bytes/code-points output limits, truncation and the contract for equal documents with partial extraction.
-- [ ] Confirm independent publisher source identities and the difference between observed retrieval time and document publication/revision time.
-- [ ] Add real in-process FastMCP tests and user-agent cross-client acceptance *after* the design gate.
-- [ ] Leave #213 open until the gated production feature is implemented and accepted.
+- [x] Run the offline corpus on the operator's supported Python 3.14.8 (all nine cases; worst 15.084 ms, 283,484 bytes traced). The maintainer explicitly waived the previously requested Python 3.11 benchmark when dropping support for Python older than 3.14.
+- [x] Choose bounded `difflib.SequenceMatcher` with the implemented 64K-character/1,024-line input limits, 12-region output cap, and 6 KB total JSON output ceiling; this is not a real-time guarantee.
+- [x] Require explicit `retain_for_evidence=true` on short fetches, reusing existing time-limited document-cache budgets (implemented in #225).
+- [x] Implement independent authorization and atomic two-handle permission/epoch rechecks with tests for revoked/expired/evicted or one-use handles (implemented in #225).
+- [x] Define byte/code-point output limits, explicit truncation and `text_equal` semantics for normalized captured Markdown.
+- [x] Preserve approved original/final source identities and explicitly decline to verify publisher chronology or revisions.
+- [x] Add real in-process FastMCP tests and live ChatGPT MCP comparison acceptance. Independent second-client protocol checks remain in #215.
+- [x] Close #213 after merged implementation, live operator comparison, supported Python 3.14.8 benchmark, and explicit waiver of obsolete Python 3.11 benchmarking.
 
-**Review finding addressed:** The initial aligned repeated-navigation corpus did not capture shifted or interleaved repetitive cases. Both are now included as distinct synthetic cases. A green CI run establishes functional bounded-input behavior, *not* a measured runtime guarantee on the operator host. Algorithm choice and timing/memory thresholds remain an explicit pending design decision.
+**Current state:** The functionality is delivered and #213 is closed. Separate cross-client compatibility and deployment safety questions are tracked in #215 and #214, respectively.
+
+**Review finding addressed:** The initial aligned repeated-navigation corpus did not capture shifted or interleaved repetitive cases. Both are now included as distinct synthetic cases. A green CI run establishes functional bounded-input behavior, *not* a measured runtime guarantee on the operator host. The chosen 64K-character/1,024-line algorithm bounds and the operator's 3.14.8 synthetic performance results were accepted for the personal deployment; they are not a real-time execution guarantee.
 
 **Out of scope:** PDF parser work (#141), screenshot/pixel diffs, crawling links, automatic price watching, source archive, periodic polling, change notifications, approvals or Docker management.
