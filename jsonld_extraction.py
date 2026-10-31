@@ -115,6 +115,18 @@ def _trusted_schema_context(value: object, depth: int = 0) -> bool:
     return False
 
 
+def _context_was_capped(value: object) -> bool:
+    """Whether context array limits prevented complete context inspection."""
+    stack = [(value, 0)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, list):
+            if len(item) > 3 or (depth >= 3 and bool(item)):
+                return True
+            stack.extend((child, depth + 1) for child in item)
+    return False
+
+
 def _record(node: dict, context_ok: bool) -> dict | None:
     kinds = _types(node.get("@type"), only_absolute=not context_ok)
     if not kinds:
@@ -236,6 +248,8 @@ def extract(page: dict) -> dict:
             if not isinstance(root, dict):
                 continue
             context_ok = _trusted_schema_context(root.get("@context"))
+            if _context_was_capped(root.get("@context")):
+                capped = True
             graphs = root.get("@graph")
             nodes = graphs[:MAX_JSON_NODES] if isinstance(graphs, list) else [root]
             if isinstance(graphs, list) and len(graphs) > MAX_JSON_NODES:
@@ -248,6 +262,8 @@ def extract(page: dict) -> dict:
                 if not isinstance(node, dict):
                     continue
                 # A node's explicit context overrides the containing graph.
+                if "@context" in node and _context_was_capped(node["@context"]):
+                    capped = True
                 node_context = (_trusted_schema_context(node["@context"])
                                 if "@context" in node else context_ok)
                 row = _record(node, node_context)
