@@ -30,6 +30,7 @@ Stable operator and feature guides live in this folder. Start with the [project 
 - [Caching](CACHE.md)
 - [Cache lifetime settings](CACHE-SETTINGS.md)
 - [History index and metrics](HISTORY-INDEX.md)
+- [Private provider observations](PROVIDER-OBSERVATIONS.md)
 - [History retention settings](HISTORY-SETTINGS.md)
 - [Live dashboard and notifications](DASHBOARD-LIVE.md)
 
