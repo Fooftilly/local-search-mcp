@@ -205,6 +205,79 @@ class GuardedRuntimeTests(unittest.IsolatedAsyncioTestCase):
         finally:
             stop.set()
 
+    async def test_timed_out_probe_remains_single_flight_until_completion(self):
+        release = threading.Event()
+        entered = threading.Event()
+        calls = []
+
+        def blocked_guard():
+            calls.append("entered")
+            entered.set()
+            release.wait(timeout=3)
+            return True
+
+        async with open_guarded_runtime(
+                self.path, transport=self.transport, guard_probe=blocked_guard) as app:
+            async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://127.0.0.1:18790") as client:
+                try:
+                    with patch("remote_agent_gateway.MAX_GUARD_SECONDS", 0.03):
+                        self.assertEqual((await self.post(client)).status_code, 503)
+                        self.assertTrue(entered.is_set())
+                        self.assertEqual((await self.post(client)).status_code, 503)
+                        self.assertEqual(calls, ["entered"])
+                        self.assertFalse(self.upstream_calls)
+                finally:
+                    release.set()
+                for _ in range(100):
+                    if app._guard_inflight.done():
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertTrue(app._guard_inflight.done())
+                self.assertEqual((await self.post(client)).status_code, 200)
+        self.assertEqual(calls, ["entered", "entered"])
+        self.assertEqual(len(self.upstream_calls), 1)
+
+    async def test_cancelled_caller_cannot_release_a_running_guard_probe(self):
+        release = threading.Event()
+        entered = threading.Event()
+        calls = []
+
+        def blocked_guard():
+            calls.append("started")
+            entered.set()
+            release.wait(timeout=3)
+            return True
+
+        async with open_guarded_runtime(
+                self.path, transport=self.transport, guard_probe=blocked_guard) as app:
+            async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://127.0.0.1:18790") as client:
+                first = asyncio.create_task(self.post(client))
+                try:
+                    for _ in range(100):
+                        if entered.is_set():
+                            break
+                        await asyncio.sleep(0.01)
+                    self.assertTrue(entered.is_set())
+                    first.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await first
+                    self.assertEqual((await self.post(client)).status_code, 503)
+                    self.assertEqual(calls, ["started"])
+                finally:
+                    release.set()
+                for _ in range(100):
+                    if app._guard_inflight.done():
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertTrue(app._guard_inflight.done())
+                self.assertEqual((await self.post(client)).status_code, 200)
+        self.assertEqual(calls, ["started", "started"])
+        self.assertEqual(len(self.upstream_calls), 1)
+
     async def test_no_listeners_are_created_and_credentials_are_not_printed(self):
         # A factory merely builds an in-process application. No uvicorn,
         # sockets, systemd or sudo calls are required at construction.
