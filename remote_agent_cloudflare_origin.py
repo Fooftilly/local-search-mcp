@@ -34,7 +34,7 @@ from remote_agent_gateway import (
 from remote_agent_prerequisites import (
     CredentialStoreError, _check_parent_chain, _unique_keys, load_client_grants,
 )
-from remote_agent_server import StartupRefused
+from remote_agent_server import StartupRefused, verify_required_tools
 
 ORIGIN_HOST = "127.0.0.1"
 ORIGIN_PORT = 18791
@@ -378,6 +378,9 @@ async def serve(path: Path) -> None:
             pass
     except OSError:
         raise StartupRefused("Authenticated loopback gateway is not listening") from None
+    # Restore tool readiness without running sudo inside NoNewPrivileges=true.
+    # The gateway alone probes the host-root guard on startup and per request.
+    await verify_required_tools()
     async with httpx.AsyncClient(
         trust_env=False, follow_redirects=False,
         timeout=httpx.Timeout(connect=3, read=15, write=15, pool=3),
