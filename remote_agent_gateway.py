@@ -7,6 +7,7 @@ is the existing locally bound FastMCP Streamable HTTP endpoint.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -21,15 +22,13 @@ MAX_REQUEST_BYTES = 128 * 1024
 MAX_HEADER_BYTES = 8192
 MAX_HEADERS = 48
 MAX_GRANTS = 8
-_BEARER = re.compile(r"Bearer ([A-Za-z0-9_-]{32,128})\Z", re.ASCII)
-_LOCAL_HOST = re.compile(r"(?:localhost|127\.0\.0\.1)(?::([1-9][0-9]{0,4}))?\Z", re.ASCII)
+_BEARER = re.compile(r"Bearer ([A-Za-z0-9_-]{32,128})\Z", re.ASCII | re.IGNORECASE)
+_LOCAL_HOST = re.compile(r"(?:localhost|127\.0\.0\.1|\[::1\])(?::(?P<port>[1-9][0-9]{0,4}))?\Z", re.ASCII)
 _FORWARD_REQUEST_HEADERS = (
-    b"accept", b"content-type", b"mcp-session-id",
-    b"mcp-protocol-version", b"last-event-id",
+    b"accept", b"content-type", b"mcp-protocol-version",
 )
 _FORWARD_RESPONSE_HEADERS = (
-    b"content-type", b"mcp-session-id", b"mcp-protocol-version",
-    b"retry-after",
+    b"content-type", b"mcp-protocol-version", b"retry-after",
 )
 
 
@@ -120,13 +119,22 @@ class LoopbackMCPGateway:
             names.setdefault(key, []).append(value)
         hosts = names.get(b"host", [])
         try:
-            valid_host = len(hosts) == 1 and bool(_LOCAL_HOST.fullmatch(hosts[0].decode("ascii")))
-            valid_host = valid_host and (b":" not in hosts[0] or
-                                         int(hosts[0].rsplit(b":", 1)[1]) <= 65535)
+            authority = (_LOCAL_HOST.fullmatch(hosts[0].decode("ascii"))
+                         if len(hosts) == 1 else None)
+            valid_host = authority is not None and (
+                authority.group("port") is None or
+                int(authority.group("port")) <= 65535)
         except (UnicodeDecodeError, ValueError):
             valid_host = False
         if not valid_host or b"origin" in names or b"transfer-encoding" in names:
             await _reply(send, 403)
+            return
+
+        # The installed FastMCP bridge runs stateless_http=True.
+        # Client-controlled opaque session/replay identifiers must not cross
+        # client identities until an identity-bound session store exists.
+        if b"mcp-session-id" in names or b"last-event-id" in names:
+            await _reply(send, 400)
             return
 
         authorizations = names.get(b"authorization", [])
@@ -213,6 +221,11 @@ class LoopbackMCPGateway:
                 if 300 <= response.status_code < 400:
                     await _reply(send, 502)
                     return
+                if "mcp-session-id" in response.headers:
+                    # Stateful upstream sessions require a separate,
+                    # identity-bound store and revocation mechanism.
+                    await _reply(send, 502)
+                    return
                 response_headers = [
                     (key, value) for key, value in response.headers.raw
                     if key.lower() in _FORWARD_RESPONSE_HEADERS
@@ -225,14 +238,35 @@ class LoopbackMCPGateway:
                             "status": response.status_code,
                             "headers": response_headers})
                 response_started = True
-                async for body in response.aiter_bytes():
-                    # Backpressure and cancellation are delegated to the ASGI
-                    # server; httpx's stream context always closes upstream.
-                    if body:
-                        await send({"type": "http.response.body",
-                                    "body": body, "more_body": True})
-                await send({"type": "http.response.body", "body": b"",
-                            "more_body": False})
+                async def forward():
+                    async for body in response.aiter_bytes():
+                        if body:
+                            await send({"type": "http.response.body",
+                                        "body": body, "more_body": True})
+
+                async def watch_disconnect():
+                    while True:
+                        event = await receive()
+                        if event["type"] == "http.disconnect":
+                            return
+
+                # A quiet SSE stream must terminate when its client leaves.
+                reader = asyncio.create_task(forward())
+                watcher = asyncio.create_task(watch_disconnect())
+                try:
+                    completed, _ = await asyncio.wait(
+                        (reader, watcher), return_when=asyncio.FIRST_COMPLETED)
+                    if watcher in completed:
+                        return
+                    await reader
+                    await send({"type": "http.response.body", "body": b"",
+                                "more_body": False})
+                finally:
+                    for task in (reader, watcher):
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(reader, watcher,
+                                         return_exceptions=True)
         except (httpx.HTTPError, OSError):
             # Before headers, report a generic failure without upstream
             # details. After headers, a connection abort is safer than
