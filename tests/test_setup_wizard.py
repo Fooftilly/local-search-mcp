@@ -470,6 +470,76 @@ class SetupWizardTests(unittest.TestCase):
             self.assertTrue(all((path / name).exists()
                                 for name in install_user_services.CLOUDFLARE_NAMES))
 
+    def test_cloudflare_rollback_uses_project_venv_not_system_python(self):
+        from scripts import install_user_services
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            unit_names = install_user_services.CLOUDFLARE_NAMES
+            for name in unit_names:
+                (folder / name).write_text(install_user_services.MARKER)
+            before = {
+                name: {"LoadState": "loaded", "ActiveState": "active",
+                       "UnitFileState": "enabled", "FragmentPath": str(folder / name)}
+                for name in unit_names
+            }
+            after = {
+                name: {"LoadState": "loaded", "ActiveState": "inactive",
+                       "UnitFileState": "disabled", "FragmentPath": str(folder / name)}
+                for name in unit_names
+            }
+            runs = []
+            def executed(argv, **kwargs):
+                runs.append(list(argv))
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="PRIVATE")
+            with (patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch.object(install_user_services, "destination", return_value=folder),
+                  patch.object(wizard, "cloudflare_local_unit_states",
+                               side_effect=[before, after]),
+                  patch.object(wizard, "project_python",
+                               return_value=Path("/venv/python")),
+                  patch.object(wizard, "confirm", return_value=True),
+                  patch.object(wizard.subprocess, "run", side_effect=executed),
+                  contextlib.redirect_stdout(io.StringIO()) as output):
+                self.assertEqual(wizard.cloudflare_portal_rollback(), 0)
+            self.assertEqual(runs[0][:3],
+                             ["systemctl", "--user", "disable"])
+            self.assertEqual(runs[1], [
+                "/venv/python", "-m", "remote_agent_cloudflare_origin",
+                "--remove-config"])
+            self.assertEqual(runs[2], ["systemctl", "--user", "daemon-reload"])
+            self.assertNotIn("PRIVATE", output.getvalue())
+            self.assertTrue(all(not (folder / name).exists() for name in unit_names))
+
+    def test_cloudflare_rollback_does_not_delete_files_without_project_venv(self):
+        from scripts import install_user_services
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            for name in install_user_services.CLOUDFLARE_NAMES:
+                (folder / name).write_text(install_user_services.MARKER)
+            before = {
+                name: {"LoadState": "loaded", "ActiveState": "active",
+                       "UnitFileState": "enabled", "FragmentPath": str(folder / name)}
+                for name in install_user_services.CLOUDFLARE_NAMES
+            }
+            after = {
+                name: {**state, "ActiveState": "inactive", "UnitFileState": "disabled"}
+                for name, state in before.items()
+            }
+            with (patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch.object(install_user_services, "destination", return_value=folder),
+                  patch.object(wizard, "cloudflare_local_unit_states",
+                               side_effect=[before, after]),
+                  patch.object(wizard, "project_python", return_value=None),
+                  patch.object(wizard, "confirm", return_value=True),
+                  patch.object(wizard.subprocess, "run",
+                               return_value=subprocess.CompletedProcess(
+                                   [], 0, stdout="", stderr="PRIVATE")) as stopped,
+                  contextlib.redirect_stdout(io.StringIO())):
+                self.assertEqual(wizard.cloudflare_portal_rollback(), 1)
+            stopped.assert_called_once()
+            self.assertTrue(all((folder / name).exists()
+                                for name in install_user_services.CLOUDFLARE_NAMES))
+
     def test_cloudflare_prepare_requires_explicit_confirmation(self):
         with (patch.object(wizard.os, "geteuid", return_value=1000),
               patch.object(wizard, "project_python", return_value=Path("/fake/python")),
