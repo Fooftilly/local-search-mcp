@@ -10,7 +10,7 @@
 - [xAI Remote MCP Tools](https://docs.x.ai/developers/tools/remote-mcp) supports Streamable HTTP/SSE and, **for xAI API clients**, an `authorization` value forwarded in the request's Authorization header (plus optional extra headers and tool allowlisting). The Grok **website's** custom connector authorization modes/identity UX must be observed separately; do not assume the same API-level bearer/header support.
 - [Cloudflare Access Managed OAuth](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/) can adapt OAuth-capable clients, but its authentication requires a supported end-to-end token verification model. In particular, enabling Managed OAuth **without** a validating origin is not a security solution. Avoid browser-only redirect protection for machine MCP clients, which may receive unusable HTTP 302 responses.
 
-## Recommended architecture, contingent on client/auth acceptance
+**Selected transport for operator preparation:** Cloudflare Tunnel with an operator-owned HTTPS subdomain. See [Cloudflare remote MCP ingress](CLOUDFLARE-REMOTE-MCP.md) for the exact restricted local gateway route, Host rewrite, non-deploying validation, auth compatibility gates and rollback requirements. This does **not** approve DNS, credentials, a public route or service installation. The remaining authentication model must be proven against the live Grok.com connector.\n\n## Recommended architecture, contingent on client/auth acceptance
 
 ```text
         hosted Grok / remote agent
