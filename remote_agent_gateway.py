@@ -289,11 +289,6 @@ class LoopbackMCPGateway:
         if client_id is None:
             await _reply(send, 401)
             return
-        if not self._budget.reserve(client_id, self._rate_clock()):
-            await _reply(send, 429)
-            self._audit.record(client_id, method, 429, True)
-            return
-
         # Observe only successfully emitted status/terminal ASGI messages.
         # Reading a message's type/status is sufficient: headers, JSON-RPC
         # arguments, request bytes, token digests and response data never
@@ -310,6 +305,15 @@ class LoopbackMCPGateway:
             elif (message["type"] == "http.response.body" and
                   not message.get("more_body", False)):
                 completed = True
+
+        if not self._budget.reserve(client_id, self._rate_clock()):
+            try:
+                await _reply(audited_send, 429)
+            finally:
+                # A client can disconnect after 429 headers but before
+                # receiving its terminal body: retain that incomplete event.
+                self._audit.record(client_id, method, status, completed)
+            return
 
         try:
             await self._forward_authenticated(
