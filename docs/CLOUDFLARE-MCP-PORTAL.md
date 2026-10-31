@@ -191,6 +191,11 @@ disabled/stopped **before** removing any local unit files or private config,
 then reloads the user systemd manager. It intentionally leaves the existing ChatGPT secure tunnel,
 root-owned guard, baseline bridge and Docker backends alone.
 
+The low-level installer refuses `python3 scripts/install_user_services.py
+--remove --cloudflare-portal` while either optional unit is active,
+enabled, foreign or unverified; it does not stop services itself. Use the
+attended rollback workflow instead of deleting a running unit file.
+
 Finally, revoke the dedicated verifier:
 
 ```sh
