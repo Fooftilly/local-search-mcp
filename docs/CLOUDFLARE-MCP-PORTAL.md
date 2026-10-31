@@ -182,10 +182,13 @@ Official references:
 
 First disable/delete the Portal's link to the MCP server and the **specific**
 private route in Cloudflare Dashboard, leaving unrelated tunnel routes alone.
-Then run `./setup.sh --cloudflare-portal-rollback` and type `REMOVE`.
-This disables and stops **only the two optional user units**, removes their
-managed unit files, deletes the local hostname config and reloads the user
-systemd manager. It intentionally leaves the existing ChatGPT secure tunnel,
+Then run `./setup.sh --cloudflare-portal-rollback` and type
+`REMOVE` to approve stopping the optional services. A second trusted
+`/dev/tty` `REMOVE` confirmation authorizes deletion of the private
+hostname configuration using the project virtualenv. Both confirmations are
+needed. The rollback verifies that each unit is project-owned and really
+disabled/stopped **before** removing any local unit files or private config,
+then reloads the user systemd manager. It intentionally leaves the existing ChatGPT secure tunnel,
 root-owned guard, baseline bridge and Docker backends alone.
 
 Finally, revoke the dedicated verifier:
