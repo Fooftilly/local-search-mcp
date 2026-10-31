@@ -59,7 +59,7 @@ class ProviderObservationsTests(unittest.TestCase):
         self.assertEqual(answer["search_calls_without_observed_sources"], 1)
         self.assertEqual(answer["provider_uptime"], "not_measured")
         self.assertEqual(answer["provider_failure_coverage"],
-                         "unavailable_from_existing_history")
+                         "no_opt_in_reports_retained")
         self.assertEqual(answer["cache_hit_coverage"], "not_retained")
         engines = {row["name"]: row for row in answer["observed_result_engines"]}
         self.assertEqual(engines["yahoo"]["observed_searches"], 2)
@@ -71,6 +71,33 @@ class ProviderObservationsTests(unittest.TestCase):
         for marker in ("SECRET_SEARCH_QUERY", "SECRET_TITLE", "SECRET_URL",
                        "private.example", "PrivateKeyword", "timeout"):
             self.assertNotIn(marker, repr(answer))
+
+    def test_opt_in_failure_aggregation_merges_names_across_case(self):
+        for name in ("Qwant", "qwant", "QWANT"):
+            self.add(provider_diagnostics_opt_in=True,
+                     provider_diagnostics={
+                         "coverage": "partial", "unresponsive_engines": [name],
+                         "suppressed_or_unparsed_names": 0, "truncated": False})
+        answer = provider.observations(24, now=self.now)
+        self.assertEqual(answer["opted_in_diagnostic_calls"], 3)
+        self.assertEqual(answer["reported_partial_provider_calls"], 3)
+        self.assertEqual(answer["reported_unresponsive_engines"],
+                         [{"name": "QWANT", "reported_unresponsive_calls": 3}]
+                         if answer["reported_unresponsive_engines"][0]["name"] == "QWANT"
+                         else [{"name": answer["reported_unresponsive_engines"][0]["name"],
+                                "reported_unresponsive_calls": 3}])
+        self.assertFalse(answer["provider_failure_groups_truncated"])
+
+    def test_opt_in_suppression_count_is_not_lost_after_sanitization(self):
+        self.add(provider_diagnostics_opt_in=True,
+                 provider_diagnostics={
+                     "coverage": "partial", "unresponsive_engines": ["yahoo"],
+                     "suppressed_or_unparsed_names": 3, "truncated": True})
+        observed = provider.observations(24, now=self.now)
+        self.assertEqual(observed["provider_labels_suppressed"], 3)
+        self.assertTrue(observed["retention_or_scan_limited"])
+        self.assertEqual(observed["reported_unresponsive_engines"],
+                         [{"name": "yahoo", "reported_unresponsive_calls": 1}])
 
     def test_parenthesized_engine_and_all_eight_requested_categories(self):
         self.add(categories="general,web,images,news,videos,music,files,it",
