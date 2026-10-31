@@ -16,22 +16,30 @@ class RemoteGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.upstream_calls = []
         self.upstream_status = [200]
         self.upstream_error = [False]
+        self.upstream_session = [False]
+        self.silent_stream = [None]
 
         def upstream_handler(request: httpx.Request) -> httpx.Response:
             if self.upstream_error[0]:
                 raise httpx.ConnectError("upstream disconnected", request=request)
             self.upstream_calls.append(request)
+            if self.silent_stream[0] is not None:
+                return httpx.Response(
+                    200, stream=self.silent_stream[0],
+                    headers={"content-type": "text/event-stream"})
+            session_header = ({"mcp-session-id": "session-123"}
+                              if self.upstream_session[0] else {})
             if request.method == "GET":
                 return httpx.Response(
                     self.upstream_status[0],
                     content=b"event: message\ndata: ok\n\n",
                     headers={"content-type": "text/event-stream",
-                             "mcp-session-id": "session-123",
+                             **session_header,
                              "set-cookie": "private=not-for-client"})
             return httpx.Response(
                 self.upstream_status[0],
                 json={"jsonrpc": "2.0", "result": {"tools": []}, "id": 1},
-                headers={"mcp-session-id": "session-123",
+                headers={**session_header,
                          "set-cookie": "private=not-for-client"})
 
         self.upstream = httpx.AsyncClient(
@@ -41,6 +49,7 @@ class RemoteGatewayTests(unittest.IsolatedAsyncioTestCase):
             grants=lambda: tuple(self.grants),
             guard_ready=lambda: self.guard[0],
             clock=lambda: self.clock[0])
+        self.gateway = gateway
         self.proxy = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=gateway),
             base_url="http://127.0.0.1:18790", timeout=5.0)
@@ -64,7 +73,7 @@ class RemoteGatewayTests(unittest.IsolatedAsyncioTestCase):
         r = await self.call(self.auth())
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["result"]["tools"], [])
-        self.assertEqual(r.headers["mcp-session-id"], "session-123")
+        self.assertNotIn("mcp-session-id", r.headers)
         self.assertEqual(r.headers["cache-control"], "no-store")
         self.assertNotIn("set-cookie", r.headers)
         self.assertEqual(len(self.upstream_calls), 1)
@@ -137,12 +146,11 @@ class RemoteGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(get.status_code, 200)
         self.assertEqual(get.headers["content-type"], "text/event-stream")
         self.assertIn(b"event: message", get.content)
-        delete = await self.call(
-            {**self.auth(), "mcp-session-id": "session-123"},
-            method="DELETE", content=b"")
+        # A stateless MCP bridge can return its own DELETE status; the
+        # gateway forwards the method, never an arbitrary client's session.
+        delete = await self.call(self.auth(), method="DELETE", content=b"")
         self.assertEqual(delete.status_code, 200)
-        self.assertEqual(self.upstream_calls[-1].headers["mcp-session-id"],
-                         "session-123")
+        self.assertNotIn("mcp-session-id", self.upstream_calls[-1].headers)
 
     async def test_upstream_redirect_does_not_escape_fixed_target(self):
         self.upstream_status[0] = 302
@@ -154,6 +162,78 @@ class RemoteGatewayTests(unittest.IsolatedAsyncioTestCase):
         result = await self.call(self.auth())
         self.assertEqual(result.status_code, 502)
         self.assertNotIn("upstream disconnected", result.text)
+
+
+    async def test_mcp_session_and_replay_identifiers_are_rejected(self):
+        for header in ("mcp-session-id", "last-event-id"):
+            with self.subTest(header=header):
+                incoming = {**self.auth(), header: "other-client-session"}
+                self.assertEqual((await self.call(incoming)).status_code, 400)
+        self.assertFalse(self.upstream_calls)
+        self.upstream_session[0] = True
+        self.assertEqual((await self.call(self.auth())).status_code, 502)
+
+    async def test_case_insensitive_bearer_and_bracketed_ipv6_authority(self):
+        lower = self.auth()
+        lower["authorization"] = "bearer " + "a" * 48
+        self.assertEqual((await self.call(lower)).status_code, 200)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=self.gateway, client=("::1", 4271)),
+            base_url="http://[::1]:18790", timeout=5.0
+        ) as ipv6:
+            response = await ipv6.post(
+                "/mcp", headers=self.auth(),
+                content=b'{"jsonrpc":"2.0","method":"tools/list","id":2}')
+            self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self.upstream_calls), 2)
+
+    async def test_silent_sse_stream_disconnect_closes_upstream(self):
+        class SilentStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.wait = asyncio.Event()
+                self.closed = asyncio.Event()
+
+            async def __aiter__(self):
+                await self.wait.wait()
+                yield b"never"
+
+            async def aclose(self):
+                self.closed.set()
+
+        stream = SilentStream()
+        self.silent_stream[0] = stream
+        started = asyncio.Event()
+        seen = []
+
+        async def receive():
+            if not seen:
+                seen.append("body")
+                return {"type": "http.request", "body": b"",
+                        "more_body": False}
+            await started.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            seen.append(message["type"])
+            if message["type"] == "http.response.start":
+                started.set()
+
+        scope = {
+            "type": "http", "http_version": "1.1", "method": "GET",
+            "path": "/mcp", "raw_path": b"/mcp", "query_string": b"",
+            "headers": [
+                (b"host", b"127.0.0.1:18790"),
+                (b"authorization", b"Bearer " + b"a" * 48),
+                (b"accept", b"text/event-stream"),
+            ],
+            "client": ("127.0.0.1", 4567), "server": ("127.0.0.1", 18790),
+            "scheme": "http", "root_path": "",
+        }
+        await asyncio.wait_for(self.gateway(scope, receive, send), timeout=2)
+        self.assertTrue(stream.closed.is_set())
+        self.assertIn("http.response.start", seen)
+        self.assertNotIn("http.response.body", seen)
 
     async def test_no_configuration_provider_is_accepted(self):
         with self.assertRaises(ValueError):
