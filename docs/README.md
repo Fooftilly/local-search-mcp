@@ -26,6 +26,7 @@ Stable operator and feature guides live in this folder. Start with the [project 
 
 - [Search](SEARCH.md)
 - [Extraction and long documents](EXTRACTION.md)
+- [Temporary document comparison](DOCUMENT-COMPARISON.md)
 - [Batch fetching](BATCH.md)
 - [Caching](CACHE.md)
 - [Cache lifetime settings](CACHE-SETTINGS.md)
