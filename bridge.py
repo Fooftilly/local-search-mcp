@@ -19,7 +19,7 @@ from runtime_ports import MCP_PORT
 from crawler_security import local_container_warning, verify_health
 import threading
 from urllib.parse import urlsplit, urlunsplit
-from history_log import logged_tool, safe_url
+from history_log import logged_tool
 import document_pages
 import request_cache
 import structured_extraction
@@ -1350,6 +1350,28 @@ def web_find(document_id: str, query: str, max_matches: int = 10,
     return _authorized_saved_document(result, source_url, once_proof, epoch)
 
 
+def _citation_url(value: str) -> tuple[str, bool]:
+    """Remove URL userinfo, query and fragment but keep an explicit port.
+
+    Unlike private history's URL sanitizer, a source citation must not
+    silently switch an approved unusual HTTP(S) port to the scheme default.
+    Query values are never included in the returned evidence metadata.
+    """
+    try:
+        parsed = urlsplit(value)
+        if (parsed.scheme not in ("http", "https") or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None):
+            return "", False
+        host = parsed.hostname
+        if ":" in host:
+            host = f"[{host}]"  # Defensive; public-IP targets are denied upstream.
+        if parsed.port is not None:
+            host += f":{parsed.port}"
+        return urlunsplit((parsed.scheme, host, parsed.path, "", ""))[:2000], bool(parsed.query)
+    except (TypeError, ValueError, UnicodeError):
+        return "", False
+
+
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 @logged_tool("page")
 def web_extract_section(document_id: str, start_offset: int,
@@ -1374,6 +1396,8 @@ def web_extract_section(document_id: str, start_offset: int,
     quote = authorized["text"][:1200]
     final_url = authorized["url"]
     source = source_url or final_url
+    source_display, source_had_query = _citation_url(source)
+    final_display, final_had_query = _citation_url(final_url)
     return {**authorized, "evidence": {
         "quotation": quote,
         "quote_start_offset": authorized["start_offset"],
@@ -1381,9 +1405,9 @@ def web_extract_section(document_id: str, start_offset: int,
         "quote_truncated": len(quote) < len(authorized["text"]),
         "page": authorized["page"],
         "offset_units": "unicode_code_points_in_normalized_markdown",
-        "source_url": safe_url(source),
-        "final_url": safe_url(final_url),
-        "query_parameters_removed": ("?" in source or "?" in final_url),
+        "source_url": source_display,
+        "final_url": final_display,
+        "query_parameters_removed": source_had_query or final_had_query,
         "provenance": "already_authorized_crawl_markdown",
         "publisher_claims_verified": False,
         "source_completeness": "unknown",
