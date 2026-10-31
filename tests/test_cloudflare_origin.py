@@ -376,9 +376,9 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
                       "result": {"tools": [{"name": name} for name in names]}}))
         await verify_required_tools(
             transport=transport_for(sorted(REQUIRED_MCP_TOOLS)))
-        with self.assertRaisesRegex(StartupRefused, "missing or duplicated"):
+        with self.assertRaisesRegex(StartupRefused, "Loopback MCP tool discovery did not pass"):
             await verify_required_tools(transport=transport_for(["web_search"]))
-        with self.assertRaisesRegex(StartupRefused, "missing or duplicated"):
+        with self.assertRaisesRegex(StartupRefused, "Loopback MCP tool discovery did not pass"):
             await verify_required_tools(transport=transport_for(
                 [*sorted(REQUIRED_MCP_TOOLS), "web_search"]))
 
