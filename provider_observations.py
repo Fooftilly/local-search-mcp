@@ -22,7 +22,7 @@ MAX_EVENT_BYTES = 65_536
 MAX_EVENTS = 20_000
 MAX_GROUPS = 24
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}\Z")
-_SECRET_WORDS = re.compile(r"(?i)\b(?:token|password|secret|bearer|cookie|apikey|api_key)\b")
+_SECRET_WORDS = re.compile(r"(?i)(?:token|password|secret|bearer|cookie|apikey|api_key)")
 _CATEGORIES = frozenset(("general", "images", "news", "videos", "music",
                          "files", "it", "science", "social media", "books",
                          "maps", "other"))
