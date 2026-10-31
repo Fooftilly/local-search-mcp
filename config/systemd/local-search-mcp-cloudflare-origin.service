@@ -1,0 +1,22 @@
+# Managed by local-search-mcp; contains no credentials.
+[Unit]
+Description=Optional Cloudflare private-host loopback MCP adapter
+Requires=local-search-mcp-remote-gateway.service
+BindsTo=local-search-mcp-remote-gateway.service
+After=local-search-mcp-remote-gateway.service
+
+[Service]
+Type=simple
+WorkingDirectory=$ROOT
+ExecStart=$EXE -m remote_agent_cloudflare_origin --serve-loopback
+Restart=on-failure
+RestartSec=30s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target
