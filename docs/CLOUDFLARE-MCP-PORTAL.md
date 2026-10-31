@@ -123,9 +123,11 @@ All steps are run on your own Linux machine as its **unprivileged** owner.
    `ProtectHome=false`). On Arch Linux, enabling these mount restrictions
    in a systemd *user* unit remaps root-owned ancestors such as `/` and
    `/home` from UID 0 to UID 65534. Our strict private-file validator must
-   reject those owners. Moreover, the gateway and adapter both run the
-   dedicated host-root egress guard through `sudo -n`, which cannot elevate
-   to host root within that unprivileged user namespace. Do **not** widen
+   reject those owners. Moreover, the authenticated gateway's dedicated
+   host-root egress guard runs through `sudo -n`, which cannot elevate
+   to host root within that unprivileged user namespace. The adapter must
+   **not** invoke sudo: it relies on the gateway's startup and per-request
+   root-guard enforcement and retains `NoNewPrivileges=true`. Do **not** widen
    the private-file ownership allowlist, loosen 0600/0700 requirements or
    change the sudoers/egress guard to work around the failure.
 
