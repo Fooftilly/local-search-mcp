@@ -3,7 +3,7 @@
 Use `./setup.sh` for the five-group interactive menu: **1 Setup**,
 **2 Connections**, **3 Status**, **4 Update**, **5 Advanced**. Choose a group,
 then an action number within it; `0` returns to the groups, and `0` from
-the top menu exits. All 16 existing operator actions remain available, plus one guided SearXNG engine selector, and
+the top menu exits. All existing operator actions remain available, plus the guided SearXNG engine selector and an opt-in Cloudflare Portal workflow;
 the top level is no longer crowded. This changes only navigation; existing
 CLI flags and confirmations remain available, and it does not add another
 configuration authority or Docker management path. `./start.sh` and
@@ -78,6 +78,21 @@ or the local approval dashboard on `0.0.0.0`; cloud agents require a separate
 authenticated HTTPS MCP ingress. The OpenAI tunnel is not a generic ingress
 for other providers. No enrollment, credential changes, client installation
 or remote proxy setup is performed by these preview commands.
+
+## Optional Cloudflare MCP Portal private origin
+
+Connections → Cloudflare MCP Portal supports an offline redacted preview,
+attended local hostname preparation and rollback. All steps are documented in
+[docs/CLOUDFLARE-MCP-PORTAL.md](docs/CLOUDFLARE-MCP-PORTAL.md).
+It never changes a Cloudflare account, creates a public route or starts the
+two optional units automatically. Private hostname routing to loopback is
+still an unverified deployment gate; do not expose a LAN listener to bypass it.
+
+```sh
+./setup.sh --cloudflare-portal-preview
+./setup.sh --cloudflare-portal-prepare
+./setup.sh --cloudflare-portal-rollback
+```
 
 ## Choose SearXNG search engines without editing YAML (issues #137, #144)
 
