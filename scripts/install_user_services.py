@@ -66,7 +66,10 @@ def unit_files(python: str, root: Path, *,
                cloudflare_portal: bool = False) -> dict[str, str]:
     """Render only the supported project-owned units (no Git watcher)."""
     fields = {
-        "EXE": quote(str(Path(python).resolve())),
+        # Virtual environments commonly symlink python to the base binary.
+        # Resolving that symlink bypasses the venv's site-packages at runtime.
+        "EXE": quote(str(Path(python) if cloudflare_portal
+                         else Path(python).resolve())),
         "LAUNCH": quote(str(root / "bootstrap.py")),
         "HEALTH": quote(str(root / "health_cli.py")),
     }
