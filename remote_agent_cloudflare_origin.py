@@ -205,7 +205,8 @@ class CloudflarePrivateOrigin:
         for k, v in raw:
             names.setdefault(k.lower(), []).append(v)
         host = names.get(b"host", [])
-        if (host != [self.hostname.encode("ascii")]
+        if (host not in ([self.hostname.encode("ascii")],
+                         [(self.hostname + ":" + str(ORIGIN_PORT)).encode("ascii")])
                 or b"origin" in names or b"transfer-encoding" in names
                 or b"mcp-session-id" in names or b"last-event-id" in names
                 or any(k.startswith(b"x-forwarded-") or k in (
