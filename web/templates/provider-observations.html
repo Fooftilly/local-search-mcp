@@ -1,7 +1,7 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Local Search MCP — Provider observations</title><link rel="stylesheet" href="/dashboard.css"></head><body>
 <header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="/provider-observations">Provider observations</a></nav></header>
 <main><h1>Provider observations from retained history</h1>
-<p>Private, read-only summary of existing search audit metadata. Engine names are observed in the <em>first five</em> retained result rows per call, not a complete list of engines queried or contacted. A search can contribute to multiple observed source engines. Search-call duration includes the entire local call, including cache handling and upstream operations; it is <strong>not</strong> provider-specific latency. Neither provider uptime nor individual provider failures are measured.</p>
+<p>Private, read-only summary of existing search audit metadata. Engine names are observed in the <em>first five</em> retained result rows per call, not a complete list of engines queried or contacted. A search can contribute to multiple observed source engines. Search-call duration includes the entire local call, including cache handling and upstream operations; it is <strong>not</strong> provider-specific latency. Provider uptime and per-provider network latency are not measured. A separate opt-in can retain SearXNG-reported unresponsive engine labels on individual diagnostic calls; these labels do not prove provider-specific failure rates or exhaustive coverage.</p>
 <form method="get" action="/provider-observations"><label>UTC time window <select name="hours">${hour_options}</select></label><button type="submit">Recalculate privately</button></form>
 ${notice}
 <h2>Sample coverage</h2>
@@ -9,6 +9,9 @@ ${notice}
 <h2>Observed result engines</h2>
 <p class="subtle">Counts measure audited search calls featuring each source among up to five stored result rows. Average is whole-call duration, not that engine's response time. No inferred reliability or performance rankings.</p>
 <div class="scroll"><table><thead><tr><th>Result engine</th><th>Observed calls</th><th>Timed calls</th><th>Mean whole-call ms</th></tr></thead><tbody>${engine_rows}</tbody></table></div>
+<h2>Opted-in SearXNG unresponsive-engine reports</h2>
+<p class="subtle">This section uses only searches that explicitly requested <code>include_search_status=true</code> and <code>record_provider_diagnostics=true</code>. Each count is the number of opted-in search calls where SearXNG reported that engine as unresponsive—not a measured outage count, rate, latency, or total number of searches sent to that provider. An absent label is not evidence of availability; no diagnostic data may simply have been retained.</p>
+<div class="scroll"><table><thead><tr><th>Reported engine</th><th>Search calls reporting unresponsive</th></tr></thead><tbody>${reported_failure_rows}</tbody></table></div>
 <h2>Explicit requested search categories</h2>
 <p class="subtle">Categories come from explicit search request selectors, not per-engine category attribution. Unspecified includes default search requests and unrecognized private values.</p>
 <div class="scroll"><table><thead><tr><th>Requested category</th><th>Observed calls</th><th>Timed calls</th><th>Mean whole-call ms</th></tr></thead><tbody>${category_rows}</tbody></table></div>
