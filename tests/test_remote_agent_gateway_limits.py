@@ -11,7 +11,8 @@ import httpx
 
 from remote_agent_gateway import (
     ClientRequestBudget, LoopbackMCPGateway, MAX_PER_CLIENT_PER_MINUTE,
-    MAX_TOTAL_ACTIVE, MAX_PER_CLIENT_ACTIVE, synthetic_grant,
+    MAX_TOTAL_ACTIVE, MAX_PER_CLIENT_ACTIVE, MAX_CACHED_IDENTITIES,
+    MAX_GRANTS, synthetic_grant,
 )
 
 
@@ -44,6 +45,36 @@ class RequestBudgetTests(unittest.TestCase):
         b.release("a")
         self.assertEqual(set(b._calls), {"a"})
         self.assertEqual(len(b._calls["a"]), 1)
+
+    def test_grant_rotation_preserves_history_without_lockout(self):
+        b = ClientRequestBudget()
+        for i in range(MAX_GRANTS):
+            client_id = "client-" + str(i)
+            self.assertTrue(b.reserve(client_id, 100.0))
+            b.release(client_id)
+
+        # Authorized grant slot 8 can be replaced, but the previous
+        # client's recent rate history must not prevent the replacement.
+        self.assertTrue(b.reserve("replacement", 100.0))
+        b.release("replacement")
+        self.assertEqual(len(b._calls), MAX_GRANTS + 1)
+
+        # Reinstating the original identity does not reset its quota.
+        for _ in range(MAX_PER_CLIENT_PER_MINUTE - 1):
+            self.assertTrue(b.reserve("client-7", 100.0))
+            b.release("client-7")
+        self.assertFalse(b.reserve("client-7", 100.0))
+
+    def test_history_cache_has_independent_finite_cap(self):
+        b = ClientRequestBudget()
+        for i in range(MAX_CACHED_IDENTITIES):
+            key = "historical-" + str(i)
+            self.assertTrue(b.reserve(key, 100.0))
+            b.release(key)
+        self.assertFalse(b.reserve("too-many-rotations", 100.0))
+        self.assertTrue(b.reserve("too-many-rotations", 161.0))
+        b.release("too-many-rotations")
+        self.assertEqual(len(b._calls), 1)
 
     def test_invalid_release_does_not_inflate_available_slots(self):
         b = ClientRequestBudget()
