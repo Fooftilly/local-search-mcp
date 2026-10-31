@@ -33,6 +33,10 @@ class ProvisioningError(ValueError):
     """Operator-safe error without token or path content."""
 
 
+class PublicationUncertainError(ProvisioningError):
+    """Verifier may already be active, but its durability is unconfirmed."""
+
+
 def _check_path(path: Path) -> None:
     try:
         _check_parent_chain(path)
@@ -121,6 +125,7 @@ def _atomic_replace(path: Path, grants: tuple[ClientGrant, ...]) -> None:
         raise ProvisioningError("Credential store exceeds size limit")
     descriptor = None
     temp_path = None
+    published = False
     try:
         descriptor, name = tempfile.mkstemp(
             prefix=".grant-update-", dir=path.parent)
@@ -136,14 +141,20 @@ def _atomic_replace(path: Path, grants: tuple[ClientGrant, ...]) -> None:
         _check_path(path)
         _existing_grants(path, allow_missing=True)
         os.replace(temp_path, path)
+        published = True
         temp_path = None
         directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
         try:
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
-    except (OSError, CredentialStoreError, ValueError) as exc:
-        raise ProvisioningError("Credential update could not be committed") from None
+    except (OSError, CredentialStoreError, ValueError):
+        if published:
+            raise PublicationUncertainError(
+                "Credential may already be ACTIVE, but disk durability is "
+                "unconfirmed. Inspect the current grants before attempting "
+                "another rotation or revocation.") from None
+        raise ProvisioningError("Credential update was not published") from None
     finally:
         if descriptor is not None:
             os.close(descriptor)
