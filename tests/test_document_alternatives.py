@@ -211,6 +211,11 @@ class NonNormativeFormatTests(unittest.TestCase):
             "[plain text](../another/DOM2-HTML.txt), [PDF file](DOM2-HTML.pdf)",
             # A query changes representation identity; no guessing.
             "[plain text](DOM2-HTML.txt?token=private), [PDF file](DOM2-HTML.pdf)",
+            # Even an empty query delimiter may distinguish an origin resource.
+            "[plain text](DOM2-HTML.txt?), [PDF file](DOM2-HTML.pdf)",
+            "[plain text](DOM2-HTML.txt?#fragment), [PDF file](DOM2-HTML.pdf)",
+            "[plain text](https://www.w3.org/TR/2003/REC-DOM-Level-2-HTML-20030109/DOM2-HTML.txt?), "
+            "[PDF file](DOM2-HTML.pdf)",
             # URLs with credentials, unsafe ports and schemes are excluded.
             "[plain text](https://someone:password@www.w3.org/TR/2003/REC-DOM-Level-2-HTML-20030109/DOM2-HTML.txt), "
             "[PDF file](DOM2-HTML.pdf)",
