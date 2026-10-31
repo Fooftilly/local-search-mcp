@@ -101,6 +101,13 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.token = "T" * 48
         self.hostname = "mcp.example.internal"
+        self.portal_grant = synthetic_grant(
+            self.token, CLIENT_ID, time.time() + 3600)
+        self.portal_loader = patch(
+            "remote_agent_cloudflare_origin.load_client_grants",
+            return_value=(self.portal_grant,))
+        self.portal_loader.start()
+        self.addCleanup(self.portal_loader.stop)
         self.gateway_requests = []
         self.bridge_requests = []
         self.guard_calls = 0
@@ -173,6 +180,31 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code, 401)
         self.assertEqual(self.bridge_requests, [])
         self.assertEqual(self.guard_calls, 0)
+
+    async def test_other_clients_valid_gateway_grants_never_authorize_portal(self):
+        other = "X" * 48
+        self.gateway._grants = lambda: (
+            self.portal_grant, synthetic_grant(
+                other, "independent-client", time.time() + 3600))
+        response = await self.send(token=other)
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(self.gateway_requests, [])
+        self.assertEqual(self.bridge_requests, [])
+        self.assertEqual(self.guard_calls, 0)
+
+    async def test_revoked_or_unsafe_portal_grant_denies_before_gateway(self):
+        with patch("remote_agent_cloudflare_origin.load_client_grants",
+                   return_value=(synthetic_grant(
+                       self.token, CLIENT_ID, time.time() - 1),)):
+            expired = await self.send(token=self.token)
+        self.assertEqual(expired.status_code, 401)
+        with patch("remote_agent_cloudflare_origin.load_client_grants",
+                   side_effect=__import__(
+                       "remote_agent_prerequisites").CredentialStoreError):
+            invalid = await self.send(token=self.token)
+        self.assertEqual(invalid.status_code, 401)
+        self.assertEqual(self.gateway_requests, [])
+        self.assertEqual(self.bridge_requests, [])
 
     async def test_bad_host_origin_private_path_and_forward_headers_are_rejected(self):
         cases = [
