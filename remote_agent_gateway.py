@@ -1,13 +1,14 @@
 """Import-only, loopback-only *prototype* MCP authentication boundary (#230).
 
 No server/CLI/tunnel is started by importing this module. This is not ready
-for deployment: it lacks an installed secret store, rate limits, active stream
-revocation and a verified external tunnel/identity provider. Its sole upstream
+for deployment: it lacks an installed secret store, production-grade distributed quotas
+and a verified external tunnel/identity provider. Its sole upstream
 is the existing locally bound FastMCP Streamable HTTP endpoint.
 """
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -22,6 +23,13 @@ MAX_REQUEST_BYTES = 128 * 1024
 MAX_HEADER_BYTES = 8192
 MAX_HEADERS = 48
 MAX_GRANTS = 8
+MAX_CACHED_IDENTITIES = 64
+MAX_PER_CLIENT_ACTIVE = 2
+MAX_TOTAL_ACTIVE = 8
+MAX_PER_CLIENT_PER_MINUTE = 30
+MAX_RESPONSE_SECONDS = 120
+MAX_BODY_SECONDS = 15
+REVOCATION_POLL_SECONDS = 0.25
 _BEARER = re.compile(r"Bearer ([A-Za-z0-9_-]{32,128})\Z", re.ASCII | re.IGNORECASE)
 _LOCAL_HOST = re.compile(r"(?:localhost|127\.0\.0\.1|\[::1\])(?::(?P<port>[1-9][0-9]{0,4}))?\Z", re.ASCII)
 _FORWARD_REQUEST_HEADERS = (
@@ -66,6 +74,53 @@ async def _reply(send, code: int) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
+
+class ClientRequestBudget:
+    """Bounded, single-event-loop quota; never stores tokens or query content.
+
+    Reserve/release have no await points and are atomic on the gateway's ASGI
+    event loop. This does not implement cross-process distributed quotas.
+    """
+    def __init__(self):
+        self._calls = {}
+        self._active = {}
+        self._active_total = 0
+
+    def reserve(self, client_id: str, now: float) -> bool:
+        # Remove stale, inactive identities so successive rotations cannot
+        # accumulate unbounded per-client state in a long-lived gateway.
+        for key in list(self._calls):
+            recent = deque(t for t in self._calls[key] if 0 <= now - t < 60)
+            if recent or self._active.get(key, 0):
+                self._calls[key] = recent
+            else:
+                del self._calls[key]
+        if (self._active_total >= MAX_TOTAL_ACTIVE or
+                self._active.get(client_id, 0) >= MAX_PER_CLIENT_ACTIVE or
+                len(self._calls.get(client_id, ())) >= MAX_PER_CLIENT_PER_MINUTE):
+            return False
+        # Recent counters outlive grant revocation so reinstating an ID
+        # cannot reset its rate limit. A separate, bounded cache allowance
+        # permits normal rotation of the eight live grants without 429s.
+        if (client_id not in self._calls and
+                len(self._calls) >= MAX_CACHED_IDENTITIES):
+            return False
+        self._calls.setdefault(client_id, deque()).append(now)
+        self._active[client_id] = self._active.get(client_id, 0) + 1
+        self._active_total += 1
+        return True
+
+    def release(self, client_id: str) -> None:
+        current = self._active.get(client_id, 0)
+        if current <= 0:
+            raise RuntimeError("Unbalanced gateway request release")
+        if current == 1:
+            del self._active[client_id]
+        else:
+            self._active[client_id] = current - 1
+        self._active_total -= 1
+
+
 class LoopbackMCPGateway:
     """Testable ASGI forwarding boundary; not a public deployment entrypoint.
 
@@ -83,6 +138,7 @@ class LoopbackMCPGateway:
         grants: Callable[[], Sequence[ClientGrant]],
         guard_ready: Callable[[], bool],
         clock: Callable[[], float] = time.time,
+        rate_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if not callable(grants) or not callable(guard_ready):
             raise ValueError("Explicit credential and guard providers required")
@@ -90,6 +146,8 @@ class LoopbackMCPGateway:
         self._grants = grants
         self._guard_ready = guard_ready
         self._clock = clock
+        self._rate_clock = rate_clock
+        self._budget = ClientRequestBudget()
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -158,14 +216,15 @@ class LoopbackMCPGateway:
                     isinstance(item, ClientGrant) for item in current):
                 raise ValueError("Invalid grant configuration")
             now = self._clock()
-            allowed = False
+            client_id = None
             for item in current:
                 equal = hmac.compare_digest(digest, item.token_sha256)
-                allowed = bool(equal and item.expires_at > now) or allowed
+                if equal and item.expires_at > now:
+                    client_id = item.client_id
         except (ValueError, TypeError, OSError):
             await _reply(send, 503)
             return
-        if not allowed:
+        if client_id is None:
             await _reply(send, 401)
             return
         # Guard failures must never reach the upstream or create a Docker lease.
@@ -176,6 +235,33 @@ class LoopbackMCPGateway:
         except Exception:
             await _reply(send, 503)
             return
+        if not self._budget.reserve(client_id, self._rate_clock()):
+            await _reply(send, 429)
+            return
+        try:
+            await self._forward_authenticated(
+                names, method, receive, send, digest, client_id)
+        finally:
+            self._budget.release(client_id)
+
+    def _credential_still_valid(self, digest: bytes, client_id: str) -> bool:
+        """Revocation and expiration are checked throughout active streams."""
+        try:
+            current = tuple(self._grants())
+            if len(current) > MAX_GRANTS or not all(
+                    isinstance(item, ClientGrant) for item in current):
+                return False
+            now = self._clock()
+            return any(
+                hmac.compare_digest(digest, item.token_sha256) and
+                item.client_id == client_id and item.expires_at > now
+                for item in current)
+        except Exception:
+            return False
+
+    async def _forward_authenticated(
+            self, names, method, receive, send, digest: bytes,
+            client_id: str) -> None:
         response_started = False
         try:
             length = names.get(b"content-length", [])
@@ -184,20 +270,25 @@ class LoopbackMCPGateway:
                 await _reply(send, 413)
                 return
             chunks = bytearray()
-            while True:
-                incoming = await receive()
-                if incoming["type"] == "http.disconnect":
-                    return
-                if incoming["type"] != "http.request":
-                    await _reply(send, 400)
-                    return
-                chunk = incoming.get("body", b"")
-                if len(chunks) + len(chunk) > MAX_REQUEST_BYTES:
-                    await _reply(send, 413)
-                    return
-                chunks.extend(chunk)
-                if not incoming.get("more_body", False):
-                    break
+            try:
+                async with asyncio.timeout(MAX_BODY_SECONDS):
+                    while True:
+                        incoming = await receive()
+                        if incoming["type"] == "http.disconnect":
+                            return
+                        if incoming["type"] != "http.request":
+                            await _reply(send, 400)
+                            return
+                        chunk = incoming.get("body", b"")
+                        if len(chunks) + len(chunk) > MAX_REQUEST_BYTES:
+                            await _reply(send, 413)
+                            return
+                        chunks.extend(chunk)
+                        if not incoming.get("more_body", False):
+                            break
+            except TimeoutError:
+                await _reply(send, 408)
+                return
             if method != "POST" and chunks:
                 await _reply(send, 400)
                 return
@@ -250,22 +341,32 @@ class LoopbackMCPGateway:
                         if event["type"] == "http.disconnect":
                             return
 
-                # A quiet SSE stream must terminate when its client leaves.
+                async def watch_revocation():
+                    while True:
+                        await asyncio.sleep(REVOCATION_POLL_SECONDS)
+                        if not self._credential_still_valid(digest, client_id):
+                            return
+
+                # Enforce a finite response lifetime, active revocation, and
+                # downstream disconnection even if upstream SSE stays silent.
                 reader = asyncio.create_task(forward())
                 watcher = asyncio.create_task(watch_disconnect())
+                revoked = asyncio.create_task(watch_revocation())
                 try:
                     completed, _ = await asyncio.wait(
-                        (reader, watcher), return_when=asyncio.FIRST_COMPLETED)
-                    if watcher in completed:
+                        (reader, watcher, revoked),
+                        timeout=MAX_RESPONSE_SECONDS,
+                        return_when=asyncio.FIRST_COMPLETED)
+                    if not completed or watcher in completed or revoked in completed:
                         return
                     await reader
                     await send({"type": "http.response.body", "body": b"",
                                 "more_body": False})
                 finally:
-                    for task in (reader, watcher):
+                    for task in (reader, watcher, revoked):
                         if not task.done():
                             task.cancel()
-                    await asyncio.gather(reader, watcher,
+                    await asyncio.gather(reader, watcher, revoked,
                                          return_exceptions=True)
         except (httpx.HTTPError, OSError):
             # Before headers, report a generic failure without upstream
