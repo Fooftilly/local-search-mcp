@@ -535,11 +535,15 @@ def dry_run() -> dict:
 
 
 def cloudflare_portal_preview() -> dict:
-    """Read-only LOCAL status; no Cloudflare API, DNS, tunnel or service changes."""
+    """Read-only LOCAL status using the project venv, not system Python.
+
+    The status subprocess emits an exact bounded schema and never reports
+    the private hostname, credential, request URL or underlying error text.
+    """
     report = {
         "mode": "read-only",
         "provider": "Cloudflare MCP Server Portal",
-        "cloudflared_installed": shutil.which("cloudflared") is not None,
+        "cloudflared_installed_on_host": shutil.which("cloudflared") is not None,
         "credential": "not verified",
         "private_hostname_config": "not verified",
         "private_route": "unverified",
@@ -548,25 +552,33 @@ def cloudflare_portal_preview() -> dict:
         "cloudflare_mutations": False,
         "service_mutations": False,
     }
+    python = project_python()
+    if python is None:
+        report["note"] = "Project .venv is required for local readiness checks"
+        return report
     try:
-        from remote_agent_cloudflare_origin import (
-            check_portal_grant, read_private_hostname, default_config_path,
-            StartupRefused,
-        )
-        try:
-            check_portal_grant()
-            report["credential"] = "dedicated cloudflare-portal grant active"
-        except StartupRefused:
-            report["credential"] = "missing, expired or unsafe"
-        try:
-            read_private_hostname(default_config_path())
-            report["private_hostname_config"] = "owner-only configuration valid"
-        except StartupRefused:
-            report["private_hostname_config"] = "missing or unsafe"
-    except (ImportError, RuntimeError, OSError):
-        report["note"] = "Install the project Python dependencies first"
+        proc = subprocess.run(
+            [str(python), "-m", "remote_agent_cloudflare_origin",
+             "--status-json"],
+            cwd=ROOT, capture_output=True, text=True, check=False, timeout=8,
+            env={**os.environ, "PYTHONNOUSERSITE": "1"})
+        if proc.returncode or len(proc.stdout) > 2048:
+            raise ValueError("Redacted local status check failed")
+        data = json.loads(proc.stdout)
+        if (type(data) is not dict or set(data) != {
+                "schema", "credential", "private_hostname_config"}
+                or data["schema"] != "local-search-mcp/cloudflare-origin-status/v1"
+                or data["credential"] not in (
+                    "missing, expired or unsafe",
+                    "dedicated cloudflare-portal grant active")
+                or data["private_hostname_config"] not in (
+                    "missing or unsafe", "owner-only configuration valid")):
+            raise ValueError("Unexpected status response")
+        report["credential"] = data["credential"]
+        report["private_hostname_config"] = data["private_hostname_config"]
+    except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+        report["note"] = "Project venv readiness check unavailable or invalid"
     return report
-
 
 def cloudflare_portal_prepare() -> int:
     """Attended local configuration and disabled optional user units only."""
