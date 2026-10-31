@@ -1499,20 +1499,21 @@ def web_compare_documents(left_document_id: str, right_document_id: str,
         refs[side + "_source_identity_available"] = bool(
             refs[side + "_source_url"] and refs[side + "_final_url"])
     outcome.update(refs)
-    # The 6 KiB response budget applies to the ENTIRE response, not just
-    # the change list. Drop latest excerpts rather than truncating a URL.
-    while (len(json.dumps(outcome, ensure_ascii=True).encode("utf-8"))
-           > document_comparison.MAX_OUTPUT_BYTES and outcome["changes"]):
-        outcome["changes"].pop()
-        outcome["changes_truncated"] = True
-    if len(json.dumps(outcome, ensure_ascii=True).encode("utf-8")) > document_comparison.MAX_OUTPUT_BYTES:
-        # A Unicode-heavy URL path can expand sixfold in JSON escaping even
-        # when the 512-code-point label itself looks short. Omit identities
-        # instead of silently truncating them to a different resource.
+    # The 6 KiB budget includes the entire escaped JSON object. A
+    # Unicode-heavy URL can expand sixfold in JSON; omit citation identities
+    # FIRST to retain useful diff excerpts, never truncate a valid URL path.
+    def serialized_size() -> int:
+        return len(json.dumps(outcome, ensure_ascii=True).encode("utf-8"))
+
+    if serialized_size() > document_comparison.MAX_OUTPUT_BYTES:
         for side in ("left", "right"):
             outcome[side + "_source_url"] = ""
             outcome[side + "_final_url"] = ""
             outcome[side + "_source_identity_available"] = False
+    while (serialized_size() > document_comparison.MAX_OUTPUT_BYTES
+           and outcome["changes"]):
+        outcome["changes"].pop()
+        outcome["changes_truncated"] = True
     if not both_authorized() or not document_pages.pair_handles_current(
             left_document_id, right_document_id):
         return denied
