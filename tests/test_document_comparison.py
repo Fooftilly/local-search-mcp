@@ -142,6 +142,17 @@ class ComparisonMCPTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('"action": "compare"', output.getvalue())
             self.assertNotIn(l, output.getvalue())
 
+    async def test_same_handle_cannot_impersonate_second_snapshot(self):
+        left, _right = self.allowed_pair()
+        with self.assertRaisesRegex(ValueError, "distinct temporary"):
+            bridge.web_compare_documents(left, left)
+        async with Client(bridge.mcp) as client:
+            result = await client.call_tool("web_compare_documents", {
+                "left_document_id": left, "right_document_id": left})
+            self.assertTrue(result.is_error)
+            self.assertNotIn("Old date", str(result))
+            self.assertNotIn(left, str(result))
+
     async def test_single_expired_handle_and_revoked_domain_do_not_leak(self):
         left, right = self.allowed_pair()
         response = bridge.web_compare_documents(left, "Z" * 32)
