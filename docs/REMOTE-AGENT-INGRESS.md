@@ -147,9 +147,29 @@ The first planned user-visible issued token does not exist until the operator ex
 
 This does not satisfy the remaining external TLS, client OAuth support, operator audit, loopback-service deployment or live Grok acceptance gates. `#230` and `#231` remain open.
 
+### Opt-in local-only ASGI runner (#230)
+
+`remote_agent_server.py` now supplies a deliberately narrow **manual, uninstalled** runner for the authenticated gateway. Running the module with no arguments or `--check` only checks the *existing* private credential file without invoking the root guard or opening any socket. Neither mode generates a token or modifies any file.
+
+```sh
+python -m remote_agent_server --check
+# Only after an explicit local operator decision, not part of installation:
+python -m remote_agent_server --serve-loopback
+```
+
+The **only** binding is hard-coded `127.0.0.1:18790`, and neither CLI nor environment can change host, port, worker count, proxy-header trust, or TLS configuration. The runner uses a single Uvicorn worker (`workers=1`) because client quotas are in-process, disables access logs and forwarded-header trust, excludes WebSockets, constrains keepalives/backlog, and does not produce a user/systemd unit. It refuses root execution, missing/unsafe credentials, or zero unexpired grants. Before binding, it performs one fixed root-owned nftables/Crawl4AI guard check with a 32-second startup deadline; the existing gateway rechecks the guard **for every authenticated, quota-admitted request**. The loopback server is optional and never started by default. Startup checks cannot replace continuous host firewall monitoring or authenticated provider ingress testing.
+
+**Do not point a public quick tunnel at this server or `127.0.0.1:8790`.** This runner has **no HTTPS**, no public hostname, no Grok.com OAuth/token interoperability acceptance and no installer/rollback workflow. External tunnel credentials and an authenticated, owner-approved edge must be reviewed separately. The existing OpenAI Secure MCP Tunnel continues to serve only its already-configured client path. Only trusted software executing under the local OS account can reach the loopback listener; local processes also retain access to the original unauthenticated bridge, so this is not an OS-user isolation boundary.
+
+No host-side commands were executed and no actual credentials, services or tunnels were installed in this development slice. Test coverage uses ASGI/CLI mocks to prove that guard failure prevents server creation, CLI cannot choose a public bind, no server starts on read-only checks, and the explicit runner uses a fixed Uvicorn configuration. These are **repository tests**, not attended verification of the installed nftables rules, live Uvicorn bind, browser/connector authentication, or cloud tunnel.
+
+```sh
+python -m unittest discover -s tests -p 'test_remote_agent_server.py' -v
+```
+
 ### Deployment decision
 
-**Do not deploy or expose any new ingress based on this document alone.** The next technical work in #230 is a provider-neutral gateway proof of concept exercised entirely on loopback (synthetic credentials, isolated temporary ports) plus fault/Host/Origin/streaming tests. After the operator chooses an authenticated tunnel provider and verifies which Grok client authentication mode is available, add an explicit opt-in installation/rollback workflow. #231 tracks actual Grok acceptance; #215 is already closed for ordinary MCP-client protocol compatibility.
+**Do not deploy or expose any public ingress based on this document alone.** The provider-neutral gateway, its offline credential workflow, and an optional local-only runner are repository artifacts requiring further operator acceptance. No installation or public endpoint has been authorized or performed. After the operator chooses an authenticated tunnel provider and verifies which Grok client authentication mode is available, add an explicit opt-in installation/rollback workflow. #231 tracks actual Grok acceptance; #215 is already closed for ordinary MCP-client protocol compatibility.
 
 ## Source and maintenance notes
 
