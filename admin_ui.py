@@ -891,10 +891,8 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=False,
     metrics = snapshot['metrics'] if snapshot is not None else []
     warning = (f'<p class="alert error" role="alert">{esc(filter_error)}</p>'
                if filter_error else '')
-    invalid_kind_option = (
-        f'<option value="{esc(kind)}" selected disabled>'
-        f'Unsupported operation: {esc(kind)}</option>'
-        if filter_error and kind not in ("", "search", "fetch", "page") else '')
+    invalid_kind = bool(
+        filter_error and kind not in ("", "search", "fetch", "page"))
     total = snapshot['total'] if snapshot is not None else 0
     page = snapshot['page'] if snapshot is not None else page
     full_filters = {**filters, 'show_queries': show_queries}
@@ -909,10 +907,6 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=False,
                         items=[], unavailable=True)
             if history_unavailable else
             '<p class="subtle">Correct the filters above to view history.</p>')
-    options = ''.join(
-        f'<option value="{n}"{" selected" if hours == n else ""}>{label}</option>'
-        for n, label in ((0, "All retained"), (1, "Last hour"),
-                         (24, "Last 24 hours"), (168, "Last 7 days")))
     valid_kind = kind if kind in ("", "search", "fetch", "page") else ""
     return render_template(
         "history",
@@ -922,14 +916,10 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=False,
         history_time_buttons=choice_buttons("hours", "Time",
             (("0", "All retained"), ("1", "Last hour"),
              ("24", "Last 24 hours"), ("168", "Last 7 days")), str(hours)),
-        invalid_kind_option=invalid_kind_option,
         invalid_kind_notice=(
             '<span class="small" role="note">Unsupported operation: ' +
-            esc(kind) + '</span>' if invalid_kind_option else ''),
-        search_selected=" selected" if kind == "search" else "",
-        fetch_selected=" selected" if kind == "fetch" else "",
-        page_selected=" selected" if kind == "page" else "",
-        status=esc(status), domain=esc(domain), options=options,
+            esc(kind) + '</span>' if invalid_kind else ''),
+        status=esc(status), domain=esc(domain),
         query_checked=' checked' if show_queries else '',
         warning=warning, rows=rows,
         page=page, pages_html=pages_html,
@@ -943,17 +933,13 @@ def provider_observations_page(hours: int = 24) -> str:
     """Aggregate only on explicit page request, never on live dashboard polls."""
     if type(hours) is not int or hours not in provider_observations.WINDOWS:
         raise ValueError("Invalid provider-observation window")
-    choices = "".join(
-        f'<option value="{n}"{" selected" if hours == n else ""}>'
-        f'Last {n} hour{"s" if n != 1 else ""}</option>'
-        for n in provider_observations.WINDOWS)
     try:
         result = provider_observations.observations(hours)
     except (OSError, ValueError):
         # Never echo private file paths, SQLite internals, query terms, or
         # provider responses on an unsafe or corrupt audit source.
         return render_template(
-            "provider-observations", hour_options=choices,
+            "provider-observations",
             hour_buttons=choice_buttons("hours", "UTC time window",
                  (("1", "Last hour"), ("24", "Last 24 hours"),
                   ("168", "Last 7 days")), str(hours)),
@@ -1016,7 +1002,7 @@ def provider_observations_page(hours: int = 24) -> str:
               '<p role="status">Bounded sample of retained history. '
               'Not a complete provider health report.</p>')
     return render_template(
-        "provider-observations", hour_options=choices,
+        "provider-observations",
         hour_buttons=choice_buttons("hours", "UTC time window",
              (("1", "Last hour"), ("24", "Last 24 hours"),
               ("168", "Last 7 days")), str(hours)), notice=notice,
