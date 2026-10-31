@@ -84,6 +84,8 @@ class JSONLDUnitTests(unittest.TestCase):
         absent = ld.extract({"cleaned_html": "<script>SECRET</script>"})
         self.assertEqual(absent["jsonld_info"]["status"], "unavailable")
         self.assertNotIn("SECRET", str(absent))
+        self.assertEqual(ld.extract({"html": ""})["jsonld_info"]["status"], "unavailable")
+        self.assertEqual(ld.extract({"html": "   "})["jsonld_info"]["status"], "unavailable")
         invalid = ld.extract({"html": '<script type="application/ld+json">{broken</script>'})
         self.assertEqual(invalid["jsonld_info"]["status"], "none_found")
         self.assertEqual(invalid["jsonld_info"]["invalid_scripts"], 1)
@@ -97,6 +99,47 @@ class JSONLDUnitTests(unittest.TestCase):
             "x" * (ld.MAX_SCRIPT_CHARS + 1) + "</script>"})
         self.assertEqual(oversized_script["jsonld"], [])
         self.assertTrue(oversized_script["jsonld_info"]["limits_applied"])
+
+    def test_top_level_array_cap_reports_missing_later_records(self):
+        items = [{"@context": "https://schema.org", "@type": "Unrelated",
+                  "name": "Ignored"} for _ in range(ld.MAX_JSON_NODES)]
+        items.append({"@context": "https://schema.org", "@type": "Article",
+                      "headline": "Beyond the input cap"})
+        result = ld.extract({"html": html_script(items)})
+        self.assertEqual(result["jsonld"], [])
+        self.assertTrue(result["jsonld_info"]["limits_applied"])
+        self.assertEqual(result["jsonld_info"]["status"], "none_found")
+
+    def test_mixed_schema_types_respect_context_and_graph_override(self):
+        page = {"@context": "https://schema.org", "@graph": [
+            {"@context": "https://not-schema.example",
+             "@type": ["Article", "https://schema.org/Event"],
+             "headline": "Wrong headline", "name": "Public meeting"},
+            {"@context": "https://other.example",
+             "@type": "Article", "headline": "Do not accept"},
+            {"@type": "Article", "headline": "Inherited schema article"},
+        ]}
+        result = ld.extract({"html": html_script(page)})
+        self.assertEqual([item["type"] for item in result["jsonld"]],
+                         ["Event", "Article"])
+        self.assertEqual(result["jsonld"][0]["fields"]["name"], "Public meeting")
+        self.assertEqual(result["jsonld"][1]["fields"]["headline"],
+                         "Inherited schema article")
+
+    def test_unsafe_embedded_https_urls_never_leave_scalar_fields(self):
+        payload = {"@context": "https://schema.org", "@type": "Article",
+                   "headline": "Official notice",
+                   "description": "Contact https://example.com/key?token=SECRET_ACCESS",
+                   "author": {"name": "www.example.com?private=SECRET_AUTHOR"}}
+        result = ld.extract({"html": html_script(payload)})
+        self.assertEqual(result["jsonld"][0]["fields"], {"headline": "Official notice"})
+        self.assertNotIn("SECRET_", json.dumps(result))
+        product = {"@context": "https://schema.org", "@type": "Product",
+                   "name": "Safe device", "offers": {
+                       "price": "https://example.com?token=SECRET_PRICE", "priceCurrency": "EUR"}}
+        product_result = ld.extract({"html": html_script(product)})
+        self.assertEqual(product_result["jsonld"][0]["fields"]["offers"],
+                         {"priceCurrency": "EUR"})
 
     def test_many_graph_nodes_and_scripts_return_only_bounded_records(self):
         node = {"@context": "https://schema.org", "@type": "Event",
@@ -151,9 +194,14 @@ class JSONLDMCPTests(unittest.IsolatedAsyncioTestCase):
             return original(transport=httpx.MockTransport(handler), trust_env=False)
 
         domain_policy.decide("example.com", "allow", scope="exact")
+        deny_now = {"value": False}
+        def mock_policy(current_url):
+            return ({"url": current_url, "success": False, "status": "denied",
+                     "reason": "Operator denied the hostname"}
+                    if deny_now["value"] else None)
         with (patch.object(bridge.httpx, "Client", side_effect=factory),
               patch.object(bridge, "CRAWLER_SECURITY_WARNING", None),
-              patch.object(bridge, "_check_public_target", return_value=None),
+              patch.object(bridge, "_check_public_target", side_effect=mock_policy),
               patch.object(bridge.on_demand, "lease", side_effect=lambda _: nullcontext())):
             async with Client(bridge.mcp) as client:
                 tools = {x.name: x for x in await client.list_tools()}
@@ -172,6 +220,7 @@ class JSONLDMCPTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("cleaned_html", str(enhanced.data))
                 self.assertEqual(upstream, ["/health", "/crawl", "/health", "/crawl"])
                 domain_policy.decide("example.com", "deny", scope="exact")
+                deny_now["value"] = True
                 denied = await client.call_tool("web_fetch", {"url": url, "include_jsonld": True})
                 self.assertFalse(denied.data["success"])
                 self.assertNotIn("jsonld", denied.data)
