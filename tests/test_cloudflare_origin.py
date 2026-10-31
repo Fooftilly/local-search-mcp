@@ -71,6 +71,52 @@ class PrivateOriginConfigTests(unittest.TestCase):
             with self.assertRaises(StartupRefused):
                 read_private_hostname(path)
 
+    def test_remove_config_uses_trusted_tty_and_is_idempotent(self):
+        from remote_agent_cloudflare_origin import main
+        with tempfile.TemporaryDirectory() as tmp:
+            private = Path(tmp) / "private"
+            private.mkdir(mode=0o700)
+            path = private / "cloudflare-portal-origin.json"
+            with (patch("remote_agent_cloudflare_origin.os.geteuid",
+                        return_value=1000),
+                  patch("remote_agent_cloudflare_origin.default_config_path",
+                        return_value=path),
+                  patch("remote_agent_cloudflare_origin._tty_input",
+                        return_value="REMOVE") as tty,
+                  patch("remote_agent_cloudflare_origin.remove_private_hostname",
+                        side_effect=AssertionError("missing config must be a no-op"))):
+                self.assertEqual(main(["--remove-config"]), 0)
+            tty.assert_called_once()
+            install_private_hostname(path, "origin.private.internal")
+            with (patch("remote_agent_cloudflare_origin.os.geteuid",
+                        return_value=1000),
+                  patch("remote_agent_cloudflare_origin.default_config_path",
+                        return_value=path),
+                  patch("remote_agent_cloudflare_origin._tty_input",
+                        return_value="REMOVE")):
+                self.assertEqual(main(["--remove-config"]), 0)
+            self.assertFalse(path.exists())
+
+    def test_unsafe_config_is_not_removed_by_attended_rollback(self):
+        from remote_agent_cloudflare_origin import main
+        with tempfile.TemporaryDirectory() as tmp:
+            private = Path(tmp) / "private"
+            private.mkdir(mode=0o700)
+            actual = private / "original.json"
+            actual.write_text("private")
+            config = private / "cloudflare-portal-origin.json"
+            config.symlink_to(actual)
+            with (patch("remote_agent_cloudflare_origin.os.geteuid",
+                        return_value=1000),
+                  patch("remote_agent_cloudflare_origin.default_config_path",
+                        return_value=config),
+                  patch("remote_agent_cloudflare_origin._tty_input",
+                        return_value="REMOVE"),
+                  patch("sys.stderr", __import__("io").StringIO())):
+                self.assertEqual(main(["--remove-config"]), 1)
+            self.assertTrue(config.is_symlink())
+            self.assertTrue(actual.is_file())
+
     def test_requires_dedicated_active_grant(self):
         grant = synthetic_grant("z" * 48, CLIENT_ID, time.time() + 300)
         with patch("remote_agent_cloudflare_origin.load_client_grants",
