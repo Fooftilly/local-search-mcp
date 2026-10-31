@@ -127,7 +127,7 @@ def load_client_grants(path: str | Path) -> tuple[ClientGrant, ...]:
             digests.add(grant.token_sha256)
             grants.append(grant)
         return tuple(grants)
-    except (OSError, ValueError, TypeError, UnicodeError):
+    except (OSError, ValueError, TypeError, UnicodeError, OverflowError):
         raise CredentialStoreError("Invalid credential store") from None
 
 
