@@ -272,17 +272,23 @@ class LoopbackMCPGateway:
         starting overlapping Docker/nftables operations. Completed probes
         are never reused as permission to forward a later request.
         """
-        async with self._guard_slot:
-            if self._guard_inflight is not None and not self._guard_inflight.done():
-                return False
-            probe = asyncio.create_task(asyncio.to_thread(self._guard_ready))
-            probe.add_done_callback(self._consume_guard_task_outcome)
-            self._guard_inflight = probe
-            try:
-                return await asyncio.wait_for(
-                    asyncio.shield(probe), timeout=MAX_GUARD_SECONDS) is True
-            except Exception:
-                return False
+        try:
+            # The deadline starts before acquiring the lock: a queued
+            # request must not wait behind multiple 30-second guard probes.
+            async with asyncio.timeout(MAX_GUARD_SECONDS):
+                async with self._guard_slot:
+                    if (self._guard_inflight is not None and
+                            not self._guard_inflight.done()):
+                        return False
+                    probe = asyncio.create_task(
+                        asyncio.to_thread(self._guard_ready))
+                    probe.add_done_callback(self._consume_guard_task_outcome)
+                    self._guard_inflight = probe
+                    # Shield keeps the underlying worker tracked after the
+                    # caller's deadline/cancellation releases the lock.
+                    return await asyncio.shield(probe) is True
+        except Exception:
+            return False
 
     async def _forward_authenticated(
             self, names, method, receive, send, digest: bytes,
