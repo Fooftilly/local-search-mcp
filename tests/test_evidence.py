@@ -143,6 +143,31 @@ class EvidenceMCPTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(e["offset_units"],
                                  "unicode_code_points_in_normalized_markdown")
 
+    async def test_citation_preserves_explicit_ports_and_ignores_fragment_question_mark(self):
+        source = "http://example.com:443/source#section?not-a-query"
+        final = "https://example.com:80/target#part?also-not-a-query"
+        with patch.object(document_pages, "_CACHE", OrderedDict()):
+            domain_policy.decide("example.com", "allow", scope="exact")
+            token, _ = document_pages.save(
+                final, "Valid text", {}, source_url=source, allow_short=True)
+            async with Client(bridge.mcp) as client:
+                result = await client.call_tool("web_extract_section", {
+                    "document_id": token, "start_offset": 0,
+                    "include_evidence": True})
+                self.assertTrue(result.data["success"])
+                proof = result.data["evidence"]
+                self.assertEqual(proof["source_url"], "http://example.com:443/source")
+                self.assertEqual(proof["final_url"], "https://example.com:80/target")
+                self.assertFalse(proof["query_parameters_removed"])
+        src, stripped = bridge._citation_url(
+            "https://example.com:80/article?key=PRIVATE#fragment?part")
+        self.assertEqual(src, "https://example.com:80/article")
+        self.assertTrue(stripped)
+        self.assertNotIn("PRIVATE", src)
+        for malformed in ("https://user:pass@example.com/item", "http://example.com:bad/item",
+                          "ftp://example.com/item"):
+            self.assertEqual(bridge._citation_url(malformed), ("", False))
+
     def test_short_retention_is_explicit_ttl_bounded_and_rejects_non_text(self):
         with patch.object(document_pages, "_CACHE", OrderedDict()):
             with self.assertRaises(ValueError):
