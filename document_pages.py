@@ -575,6 +575,8 @@ def snapshot_pair_with_security_context(
     for token in (left_token, right_token):
         if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
             raise ValueError("Invalid document handle")
+    if left_token == right_token:
+        raise ValueError("Two distinct temporary document handles are required")
     with _LOCK:
         _purge_expired(time.monotonic())
         entries = [_CACHE.get(left_token), _CACHE.get(right_token)]
