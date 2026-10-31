@@ -96,6 +96,41 @@ class GatewayAuditIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.gateway.audit_snapshot()[-1].client_id, "client-b")
 
+    async def test_quota_reply_disconnect_after_headers_stays_in_audit(self):
+        from remote_agent_gateway import MAX_PER_CLIENT_PER_MINUTE
+        for _ in range(MAX_PER_CLIENT_PER_MINUTE):
+            self.assertEqual((await self.post("a" * 48)).status_code, 200)
+        count = len(self.upstream_calls)
+
+        # ASGITransport buffers response bodies; simulate a real downstream
+        # write failure after headers through the gateway's direct ASGI API.
+        scope = {
+            "type": "http", "http_version": "1.1", "method": "POST",
+            "path": "/mcp", "raw_path": b"/mcp", "query_string": b"",
+            "headers": [
+                (b"host", b"127.0.0.1:18790"),
+                (b"authorization", b"Bearer " + b"a" * 48),
+            ],
+            "client": ("127.0.0.1", 4567),
+            "server": ("127.0.0.1", 18790), "scheme": "http",
+        }
+        sent = []
+        async def receive():
+            return {"type": "http.request", "body": b"{}",
+                    "more_body": False}
+        async def send(message):
+            sent.append(message["type"])
+            if message["type"] == "http.response.body":
+                raise ConnectionResetError("synthetic client disconnect")
+
+        with self.assertRaises(ConnectionResetError):
+            await self.gateway(scope, receive, send)
+        self.assertEqual(sent, ["http.response.start",
+                                "http.response.body"])
+        self.assertEqual(self.gateway.audit_snapshot()[-1],
+                         GatewayAuditEvent("client-a", "POST", 429, False))
+        self.assertEqual(len(self.upstream_calls), count)
+
 
 if __name__ == "__main__":
     unittest.main()
