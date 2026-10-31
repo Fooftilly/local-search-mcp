@@ -225,7 +225,7 @@ class LoopbackMCPGateway:
                             "status": response.status_code,
                             "headers": response_headers})
                 response_started = True
-                async for body in response.aiter_raw():
+                async for body in response.aiter_bytes():
                     # Backpressure and cancellation are delegated to the ASGI
                     # server; httpx's stream context always closes upstream.
                     if body:
