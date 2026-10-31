@@ -188,13 +188,18 @@ def main(argv: list[str] | None = None) -> int:
                     else (*NAMES, *LEGACY_UPDATE_NAMES, GUARD_PROBE, GUARD_PREFLIGHT))
         if args.cloudflare_portal:
             verify_cloudflare_removal_safe(folder)
+        # Preflight the whole selected family before unlinking anything.
+        # A foreign unit in the second slot must not leave the first removed.
         for name in selected:
             path = folder / name
             if path.is_symlink():
                 raise ValueError(f"Refusing symlink: {path}")
             if path.exists():
-                if not path.read_text().startswith(MARKER):
+                if not path.is_file() or not path.read_text().startswith(MARKER):
                     raise ValueError(f"Refusing unmanaged unit: {path}")
+        for name in selected:
+            path = folder / name
+            if path.exists():
                 path.unlink()
         print("Removed requested owned user unit files. Run systemctl --user daemon-reload")
     else:
