@@ -91,27 +91,15 @@ def _verify_tool_list(body: bytes, content_type: str) -> None:
         raise StartupRefused("Loopback MCP tool discovery did not pass") from None
 
 
-async def preflight_local(
-    path: Path,
-    *,
-    guard_probe: Callable[[], bool] = fixed_root_tunnel_gate,
-    transport: httpx.AsyncBaseTransport | None = None,
-) -> int:
-    """Explicit read-only readiness: grants, root guard, then local tools/list.
+async def verify_required_tools(
+    *, transport: httpx.AsyncBaseTransport | None = None,
+) -> None:
+    """Bounded fixed-loopback MCP discovery with no sudo or other privileged I/O.
 
-    Unlike --check, this deliberately invokes the existing sudo-approved,
-    read-only root guard probe and makes one POST to the *fixed* loopback MCP
-    endpoint. It never serves, provisions, wakes search engines or runs tools.
+    Safe in the Cloudflare adapter's NoNewPrivileges=true service. The
+    authenticated gateway independently checks the root guard on startup
+    and again for every accepted request.
     """
-    active = check_local_config(path)
-    try:
-        healthy = await asyncio.wait_for(
-            asyncio.to_thread(guard_probe), STARTUP_GUARD_SECONDS)
-    except (OSError, ValueError, TimeoutError):
-        healthy = False
-    if healthy is not True:
-        raise StartupRefused("Root-owned crawler egress guard is not ready")
-
     try:
         async with asyncio.timeout(MCP_DISCOVERY_SECONDS):
             async with httpx.AsyncClient(
@@ -135,6 +123,30 @@ async def preflight_local(
                                       response.headers.get("content-type", ""))
     except (TimeoutError, httpx.HTTPError, OSError):
         raise StartupRefused("Loopback MCP discovery unavailable") from None
+
+
+async def preflight_local(
+    path: Path,
+    *,
+    guard_probe: Callable[[], bool] = fixed_root_tunnel_gate,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> int:
+    """Explicit read-only readiness: grants, root guard, then local tools/list.
+
+    Unlike --check, this deliberately invokes the existing sudo-approved,
+    read-only root guard probe and makes one POST to the *fixed* loopback MCP
+    endpoint. It never serves, provisions, wakes search engines or runs tools.
+    """
+    active = check_local_config(path)
+    try:
+        healthy = await asyncio.wait_for(
+            asyncio.to_thread(guard_probe), STARTUP_GUARD_SECONDS)
+    except (OSError, ValueError, TimeoutError):
+        healthy = False
+    if healthy is not True:
+        raise StartupRefused("Root-owned crawler egress guard is not ready")
+
+    await verify_required_tools(transport=transport)
     return active
 
 

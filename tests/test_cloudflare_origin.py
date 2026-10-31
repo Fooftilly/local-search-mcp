@@ -317,17 +317,70 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(self.bridge_requests, [])
 
-    async def test_guard_preflight_failure_never_binds_origin(self):
+    async def test_missing_authenticated_gateway_never_binds_origin(self):
         from remote_agent_cloudflare_origin import serve
         with (patch("remote_agent_cloudflare_origin.read_private_hostname",
                     return_value=self.hostname),
               patch("remote_agent_cloudflare_origin.check_portal_grant"),
-              patch("remote_agent_cloudflare_origin.preflight_local",
-                    new_callable=AsyncMock, side_effect=StartupRefused("guard")),
+              patch("remote_agent_cloudflare_origin.socket.create_connection",
+                    side_effect=OSError("synthetic unavailable")),
               patch("remote_agent_cloudflare_origin.uvicorn.Server",
                     side_effect=AssertionError("server cannot start"))):
-            with self.assertRaises(StartupRefused):
+            with self.assertRaisesRegex(
+                    StartupRefused, "Authenticated loopback gateway"):
                 await serve(Path("/does/not/matter"))
+
+    async def test_missing_required_tools_prevents_adapter_listener(self):
+        """Tool discovery is a mandatory non-privileged startup check."""
+        from remote_agent_cloudflare_origin import serve
+        with (patch("remote_agent_cloudflare_origin.read_private_hostname",
+                    return_value=self.hostname),
+              patch("remote_agent_cloudflare_origin.check_portal_grant"),
+              patch("remote_agent_cloudflare_origin.socket.create_connection"),
+              patch("remote_agent_cloudflare_origin.verify_required_tools",
+                    new_callable=AsyncMock,
+                    side_effect=StartupRefused("Expected MCP tools missing")),
+              patch("remote_agent_cloudflare_origin.uvicorn.Server",
+                    side_effect=AssertionError("server must not bind"))):
+            with self.assertRaisesRegex(StartupRefused, "Expected MCP tools"):
+                await serve(Path("/does/not/matter"))
+
+    async def test_adapter_startup_does_not_run_privileged_guard_preflight(self):
+        """The no-new-privileges adapter relies on the gateway's guard checks."""
+        from remote_agent_cloudflare_origin import serve
+        with (patch("remote_agent_cloudflare_origin.read_private_hostname",
+                    return_value=self.hostname),
+              patch("remote_agent_cloudflare_origin.check_portal_grant"),
+              patch("remote_agent_cloudflare_origin.socket.create_connection")
+                    as gateway_socket,
+              patch("remote_agent_prerequisites.fixed_root_tunnel_gate",
+                    side_effect=AssertionError("adapter must not run sudo")),
+              patch("remote_agent_cloudflare_origin.verify_required_tools",
+                    new_callable=AsyncMock) as discover,
+              patch("remote_agent_cloudflare_origin.uvicorn.Server")
+                    as server):
+            server.return_value.serve = AsyncMock(return_value=None)
+            await serve(Path("/does/not/matter"))
+            gateway_socket.assert_called_once_with(("127.0.0.1", 18790),
+                                                   timeout=2)
+            discover.assert_awaited_once_with()
+            server.return_value.serve.assert_awaited_once()
+
+    async def test_unprivileged_discovery_validates_complete_tool_inventory(self):
+        """Real bounded tools/list decoding, with no root probe or sudo."""
+        from remote_agent_server import REQUIRED_MCP_TOOLS, verify_required_tools
+        def transport_for(names):
+            return httpx.MockTransport(lambda request: httpx.Response(
+                200, headers={"content-type": "application/json"},
+                json={"jsonrpc": "2.0", "id": 1,
+                      "result": {"tools": [{"name": name} for name in names]}}))
+        await verify_required_tools(
+            transport=transport_for(sorted(REQUIRED_MCP_TOOLS)))
+        with self.assertRaisesRegex(StartupRefused, "Loopback MCP tool discovery did not pass"):
+            await verify_required_tools(transport=transport_for(["web_search"]))
+        with self.assertRaisesRegex(StartupRefused, "Loopback MCP tool discovery did not pass"):
+            await verify_required_tools(transport=transport_for(
+                [*sorted(REQUIRED_MCP_TOOLS), "web_search"]))
 
     async def test_adapter_recovers_when_gateway_restarts_without_rebinding(self):
         attempts = []

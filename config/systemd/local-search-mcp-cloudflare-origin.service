@@ -14,9 +14,14 @@ Restart=on-failure
 RestartSec=30s
 UMask=0077
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=read-only
+# The adapter validates the same strict private file ancestry. Its fixed
+# authenticated gateway alone runs the host-root guard at startup and on
+# every admitted request; this adapter must not run sudo, so it retains
+# NoNewPrivileges=true. Avoid user-service mount namespaces that remap
+# root-owned ancestors to UID 65534. Keep UMask=0077 and loopback-only ingress.
+PrivateTmp=false
+ProtectSystem=false
+ProtectHome=false
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]

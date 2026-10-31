@@ -117,6 +117,41 @@ All steps are run on your own Linux machine as its **unprivileged** owner.
    root guard or mandatory MCP tools are not ready. They do not configure the
    tunnel and do not wake sleeping backends merely by starting.
 
+   **User-service namespace compatibility:** The optional units intentionally
+   run as the existing unprivileged owner without filesystem namespace
+   directives (`PrivateTmp=false`, `ProtectSystem=false`,
+   `ProtectHome=false`). On Arch Linux, enabling these mount restrictions
+   in a systemd *user* unit remaps root-owned ancestors such as `/` and
+   `/home` from UID 0 to UID 65534. Our strict private-file validator must
+   reject those owners. Moreover, the authenticated gateway's dedicated
+   host-root egress guard runs through `sudo -n`, which cannot elevate
+   to host root within that unprivileged user namespace. The adapter must
+   **not** invoke sudo: it independently performs a bounded, unprivileged
+   twelve-tool discovery and relies on the gateway's startup and per-request
+   root-guard enforcement; it retains `NoNewPrivileges=true`. Do **not** widen
+   the private-file ownership allowlist, loosen 0600/0700 requirements or
+   change the sudoers/egress guard to work around the failure.
+
+   This is a conscious trade-off: those two optional services do **not** get
+   read-only filesystem mount isolation or a separate temporary directory.
+   They retain fixed loopback listening, strict credential/Host checks,
+   `UMask=0077`, address-family restrictions and root-guard checks; the
+   adapter additionally retains `NoNewPrivileges=true`. The gateway
+   must retain `NoNewPrivileges=false` for the guard. Future isolation
+   upgrades require a separately verified host-guard delegation design.
+
+   After pulling an update to these templates, regenerate only the two
+   optional user units (do not rerun attended hostname preparation):
+   
+   ```sh
+   python3 scripts/install_user_services.py --install --cloudflare-portal
+   systemctl --user daemon-reload
+   systemctl --user restart local-search-mcp-remote-gateway.service
+   systemctl --user restart local-search-mcp-cloudflare-origin.service
+   ./setup.sh --cloudflare-portal-status
+   ```
+
+
 ## Cloudflare dashboard: separate attended deployment gate
 
 Official references:
