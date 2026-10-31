@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -224,6 +226,24 @@ class CloudflarePrivateOrigin:
         except UnicodeDecodeError:
             allowed = False
         if not allowed:
+            await _reply(send, 401)
+            return
+        # A portal must never be able to present a different remote client's
+        # valid gateway token. Bind this adapter to its OWN verifier and re-read
+        # on every request, independently of the gateway's per-client checks.
+        try:
+            portal_grants = load_client_grants(default_store_path())
+            candidate = hashlib.sha256(
+                tokens[0].decode("ascii").split(" ", 1)[1].encode("ascii")
+            ).digest()
+            portal_valid = any(
+                g.client_id == CLIENT_ID and g.expires_at > time.time()
+                and hmac.compare_digest(g.token_sha256, candidate)
+                for g in portal_grants
+            )
+        except (CredentialStoreError, UnicodeDecodeError, ValueError):
+            portal_valid = False
+        if not portal_valid:
             await _reply(send, 401)
             return
         selected: dict[str, str] = {}
