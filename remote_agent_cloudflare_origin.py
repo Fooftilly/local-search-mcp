@@ -18,6 +18,7 @@ import re
 import socket
 import stat
 import sys
+import tempfile
 import time
 
 import httpx
@@ -29,7 +30,7 @@ from remote_agent_gateway import (
     MAX_RESPONSE_SECONDS, MAX_RESPONSE_START_SECONDS, _BEARER, _reply,
 )
 from remote_agent_prerequisites import (
-    CredentialStoreError, _check_parent_chain, fixed_root_tunnel_gate,
+    CredentialStoreError, _check_parent_chain, _unique_keys, fixed_root_tunnel_gate,
     load_client_grants,
 )
 from remote_agent_server import StartupRefused, preflight_local
@@ -72,20 +73,25 @@ def default_config_path() -> Path:
 
 
 def read_private_hostname(path: Path) -> str:
-    """Require the same private owner-only path protections as grant files."""
+    """Require an owner-only file and parent chain, without following links."""
     try:
         _check_parent_chain(path)
-        info = path.lstat()
-        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                or info.st_uid != os.geteuid()
-                or stat.S_IMODE(info.st_mode) != 0o600
-                or info.st_size > 2048):
-            raise ValueError("Unsafe private origin configuration")
-        with path.open("rb") as stream:
-            raw = stream.read(2049)
-        if len(raw) > 2048:
-            raise ValueError("Oversized private origin configuration")
-        data = json.loads(raw)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC |
+                     os.O_NONBLOCK)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_size > 2048):
+                raise ValueError("Unsafe private origin configuration")
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                raw = stream.read(2049)
+            if len(raw) > 2048:
+                raise ValueError("Oversized private origin configuration")
+        finally:
+            os.close(fd)
+        data = json.loads(raw, object_pairs_hook=_unique_keys)
         if type(data) is not dict or set(data) != {"schema", "hostname"}:
             raise ValueError("Invalid private origin configuration")
         if data["schema"] != SCHEMA:
@@ -94,6 +100,57 @@ def read_private_hostname(path: Path) -> str:
     except (OSError, ValueError, TypeError, CredentialStoreError):
         raise StartupRefused("Missing or unsafe private origin configuration") from None
 
+
+def install_private_hostname(path: Path, hostname: str) -> None:
+    """Atomic no-overwrite local config; caller must secure consent beforehand."""
+    host = validate_hostname(hostname)
+    try:
+        _check_parent_chain(path)
+        data = (json.dumps({"schema": SCHEMA, "hostname": host},
+                           sort_keys=True) + "\n").encode("utf-8")
+        fd, name = tempfile.mkstemp(prefix=".cloudflare-origin-", dir=path.parent)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.link(name, path, follow_symlinks=False)
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            os.unlink(name)
+    except (OSError, ValueError, CredentialStoreError):
+        raise StartupRefused("Cannot install private origin configuration safely") from None
+
+
+def remove_private_hostname(path: Path) -> None:
+    """Remove only a previously validated owned file; running adapter fails closed."""
+    read_private_hostname(path)
+    try:
+        path.unlink()
+    except OSError:
+        raise StartupRefused("Cannot remove private origin configuration safely") from None
+
+
+def _tty_input(prompt: str) -> str:
+    """Never accept unattended/stdin origin activation or print credentials."""
+    try:
+        with (open("/dev/tty", "r", encoding="utf-8") as tty_input,
+              open("/dev/tty", "w", encoding="utf-8") as tty_output):
+            if not tty_input.isatty() or not tty_output.isatty():
+                raise OSError("No terminal")
+            tty_output.write(prompt)
+            tty_output.flush()
+            answer = tty_input.readline()
+            if not answer:
+                raise OSError("Terminal closed")
+            return answer.strip()
+    except OSError:
+        raise StartupRefused("Interactive operator terminal required") from None
 
 def check_portal_grant() -> None:
     """No token material returned, and no implicit token is ever created."""
@@ -109,15 +166,24 @@ def check_portal_grant() -> None:
 class CloudflarePrivateOrigin:
     """Exact private-host ingress; all identity and guard decisions stay at 18790."""
 
-    def __init__(self, hostname: str, upstream: httpx.AsyncClient):
+    def __init__(self, hostname: str, upstream: httpx.AsyncClient, *,
+                 config_path: Path | None = None):
         self.hostname = validate_hostname(hostname)
         self.upstream = upstream
+        self.config_path = config_path
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             if scope["type"] == "websocket":
                 await send({"type": "websocket.close", "code": 1008})
             return
+        if self.config_path is not None:
+            try:
+                if read_private_hostname(self.config_path) != self.hostname:
+                    raise StartupRefused("Private origin route changed")
+            except StartupRefused:
+                await _reply(send, 503)
+                return
         if (scope.get("path") != "/mcp" or scope.get("raw_path", b"/mcp") != b"/mcp"
                 or scope.get("query_string", b"")):
             await _reply(send, 404)
@@ -276,18 +342,40 @@ async def serve(path: Path) -> None:
         limits=httpx.Limits(max_connections=8, max_keepalive_connections=2),
     ) as client:
         await uvicorn.Server(build_config(CloudflarePrivateOrigin(
-            hostname, client))).serve()
+            hostname, client, config_path=path))).serve()
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("--serve-loopback", action="store_true",
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--install-config", action="store_true",
+                       help="attended owner-only hostname configuration (no tunnel)")
+    modes.add_argument("--remove-config", action="store_true",
+                       help="attended removal of local hostname configuration")
+    modes.add_argument("--serve-loopback", action="store_true",
                         help="explicitly serve the private Host adapter on 127.0.0.1:18791")
     args = parser.parse_args(argv)
     try:
         if os.geteuid() == 0:
             raise StartupRefused("Run as the unprivileged account owner")
-        hostname = read_private_hostname(default_config_path())
+        path = default_config_path()
+        if args.install_config:
+            check_portal_grant()
+            hostname = _tty_input("Enter Cloudflare *private* hostname (no scheme): ")
+            validate_hostname(hostname)
+            if _tty_input("Type INSTALL to write owner-only local config: ") != "INSTALL":
+                raise StartupRefused("Cancelled; no change")
+            install_private_hostname(path, hostname)
+            print("Private origin configuration installed; no service or tunnel started.")
+            return 0
+        if args.remove_config:
+            if _tty_input("Type REMOVE to remove local origin configuration: ") != "REMOVE":
+                raise StartupRefused("Cancelled; no change")
+            remove_private_hostname(path)
+            print("Private origin configuration removed; no Cloudflare route changed. "
+                  "Stop the optional unit and revoke cloudflare-portal separately.")
+            return 0
+        read_private_hostname(path)
         check_portal_grant()
         if not args.serve_loopback:
             print("Private Cloudflare origin configuration and dedicated grant valid; "
