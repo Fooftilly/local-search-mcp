@@ -154,6 +154,24 @@ def _tty_input(prompt: str) -> str:
     except OSError:
         raise StartupRefused("Interactive operator terminal required") from None
 
+def status_local() -> dict:
+    """Redacted, offline credential/hostname readiness; never probes Cloudflare."""
+    result = {"schema": "local-search-mcp/cloudflare-origin-status/v1",
+              "credential": "missing, expired or unsafe",
+              "private_hostname_config": "missing or unsafe"}
+    try:
+        check_portal_grant()
+        result["credential"] = "dedicated cloudflare-portal grant active"
+    except StartupRefused:
+        pass
+    try:
+        read_private_hostname(default_config_path())
+        result["private_hostname_config"] = "owner-only configuration valid"
+    except StartupRefused:
+        pass
+    return result
+
+
 def check_portal_grant() -> None:
     """No token material returned, and no implicit token is ever created."""
     try:
@@ -373,6 +391,8 @@ def main(argv: list[str] | None = None) -> int:
                        help="attended owner-only hostname configuration (no tunnel)")
     modes.add_argument("--remove-config", action="store_true",
                        help="attended removal of local hostname configuration")
+    modes.add_argument("--status-json", action="store_true",
+                       help="read-only redacted local status (no service or Cloudflare contact)")
     modes.add_argument("--serve-loopback", action="store_true",
                         help="explicitly serve the private Host adapter on 127.0.0.1:18791")
     args = parser.parse_args(argv)
@@ -380,6 +400,9 @@ def main(argv: list[str] | None = None) -> int:
         if os.geteuid() == 0:
             raise StartupRefused("Run as the unprivileged account owner")
         path = default_config_path()
+        if args.status_json:
+            print(json.dumps(status_local(), sort_keys=True))
+            return 0
         if args.install_config:
             check_portal_grant()
             hostname = _tty_input("Enter Cloudflare *private* hostname (no scheme): ")
