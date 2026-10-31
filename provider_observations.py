@@ -182,7 +182,7 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
                         no_failures_reported_calls += 1
                     names = diag.get("unresponsive_engines")
                     distinct = set()
-                    if isinstance(names, list):
+                    if coverage == "partial" and isinstance(names, list):
                         for name in names[:16]:
                             safe = _label(name)
                             if not safe:
