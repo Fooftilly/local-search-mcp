@@ -168,6 +168,7 @@ class LoopbackMCPGateway:
         except Exception:
             await _reply(send, 503)
             return
+        response_started = False
         try:
             length = names.get(b"content-length", [])
             if len(length) > 1 or (length and (
@@ -223,6 +224,7 @@ class LoopbackMCPGateway:
                 await send({"type": "http.response.start",
                             "status": response.status_code,
                             "headers": response_headers})
+                response_started = True
                 async for body in response.aiter_raw():
                     # Backpressure and cancellation are delegated to the ASGI
                     # server; httpx's stream context always closes upstream.
@@ -232,7 +234,9 @@ class LoopbackMCPGateway:
                 await send({"type": "http.response.body", "body": b"",
                             "more_body": False})
         except (httpx.HTTPError, OSError):
-            # The upstream is unavailable. If streaming has already begun
-            # there is no safe way to replace status/headers with a 502, so
-            # abort the stream and let the ASGI server close the connection.
-            raise
+            # Before headers, report a generic failure without upstream
+            # details. After headers, a connection abort is safer than
+            # manufacturing an HTTP status in an active MCP/SSE stream.
+            if response_started:
+                raise
+            await _reply(send, 502)
