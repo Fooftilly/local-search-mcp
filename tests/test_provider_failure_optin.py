@@ -97,6 +97,7 @@ class OptInFailureAuditTests(unittest.TestCase):
         record = event["provider_diagnostics"]
         self.assertEqual(record["coverage"], "partial")
         self.assertEqual(record["unresponsive_engines"], ["qwant", "naver (KO)"])
+        self.assertEqual(record["suppressed_or_unparsed_names"], 3)
         self.assertTrue(record["truncated"])
         for forbidden in ("PRIVATE_EXCEPTION", "PRIVATE_SNIPPET",
                           "SECRET_PROVIDER", "https://token",
@@ -110,6 +111,7 @@ class OptInFailureAuditTests(unittest.TestCase):
                   for x in r["reported_unresponsive_engines"]}
         self.assertEqual(counts, {"naver (KO)": 1, "qwant": 1})
         self.assertEqual(r["provider_failure_coverage"], "per_call_opt_in_incomplete")
+        self.assertEqual(r["provider_labels_suppressed"], 3)
         self.assertEqual(r["provider_uptime"], "not_measured")
         self.assertTrue(r["retention_or_scan_limited"])
         for forbidden in ("PRIVATE_EXCEPTION", "PRIVATE_SNIPPET", "SECRET_PROVIDER"):
@@ -144,7 +146,7 @@ class OptInFailureAuditTests(unittest.TestCase):
         self.assertEqual(r["reported_unresponsive_engines"][0]["name"], "qwant")
         self.assertNotIn("PRIVATE_ERROR", self.path.read_text())
 
-    def test_invalid_opt_in_rejected_before_any_network_or_history_write(self):
+    def test_invalid_opt_in_rejected_before_any_network(self):
         for bad in (1, "yes", None, {}, []):
             with self.subTest(value=repr(bad)):
                 with patch.object(bridge.httpx, "Client") as transport:
