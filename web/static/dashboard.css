@@ -55,3 +55,19 @@ h3{font-size:15px;margin:0 0 12px}
 .pending-pages span{font-size:12px;color:#b6c3d2}
 .pending-pages a{padding:7px 10px;border:1px solid #45515f;border-radius:3px;text-decoration:none}
 .pending-pages a:hover,.pending-pages a:focus-visible{background:#263547;text-decoration:underline}
+
+/* Accessible segmented choices are native radio controls, not JS-driven permissions. */
+.choice-field{border:0;margin:0;padding:0;min-width:0;max-width:100%;display:inline-block;vertical-align:bottom}
+.choice-field legend{color:#b9c7d7;font-size:12px;font-weight:600;padding:0;margin:0 0 5px}
+.choice-options{display:flex;flex-wrap:wrap;align-items:center;gap:4px}
+.choice-option{position:relative;display:inline-flex;align-items:center;flex-direction:row!important;cursor:pointer;min-width:0}
+.choice-option input[type="radio"]{position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;margin:0;padding:0;min-width:0;pointer-events:none}
+.choice-text{display:inline-block;border:1px solid #506076;border-radius:4px;padding:8px 10px;line-height:1.25;color:#d8e2ed;background:#1b2532;white-space:nowrap;user-select:none}
+.choice-option:hover .choice-text{background:#34475e}
+.choice-option input:checked + .choice-text{background:#294c69;border-color:#88b7e6;color:#fff;font-weight:650}
+.choice-option input:focus-visible + .choice-text{outline:3px solid #ffcf73;outline-offset:2px}
+.choice-option input:disabled + .choice-text{opacity:.45;cursor:not-allowed}
+.quick-decision,.once-action{align-items:end}
+.quick-decision .choice-field,.once-action .choice-field{margin-right:3px}
+.quick-decision .inline-options,.once-action .inline-options{flex-basis:100%}
+@media (max-width:700px){.choice-text{padding:9px 11px}.choice-field{width:100%}.quick-decision .choice-field{width:100%}}

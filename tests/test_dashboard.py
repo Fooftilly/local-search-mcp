@@ -162,14 +162,14 @@ class DashboardTests(unittest.TestCase):
         status, body = request("/?sort=frequent")
         self.assertEqual(status, 200)
         self.assertIn('data-review-sort="frequent"', body)
-        self.assertIn('<option value="frequent" selected>', body)
+        self.assertIn('name="sort" value="frequent" checked required', body)
         self.assertIn('name="review_sort" value="frequent"', body)
         self.assertIn('href="/?q=&amp;page=2&amp;sort=frequent"', body)
         self.assertLess(body.index('aria-label="Select t051.queue-example.org"'),
                         body.index('aria-label="Select t000.queue-example.org"'))
         status, body = request("/?sort=oldest&q=t0")
         self.assertEqual(status, 200)
-        self.assertIn('<option value="oldest" selected>', body)
+        self.assertIn('name="sort" value="oldest" checked required', body)
         self.assertIn('data-review-sort="oldest"', body)
         status, raw = request("/live?view=policy&sort=frequent&page=2")
         self.assertEqual(status, 200)
@@ -357,6 +357,65 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(policy.counts()["pending"], 0)
         self.assertEqual(policy.request("trusted.example.net",
                                         "https://trusted.example.net/")[0], "allowed")
+
+    def test_dashboard_radio_choices_keep_safe_defaults_and_existing_forms(self):
+        policy.request("radio-review.example.net",
+                       "https://radio-review.example.net/section")
+        html = admin_ui.render()
+        self.assertNotIn("<select", html)
+        self.assertIn('<fieldset class="choice-field"><legend>Scope</legend>', html)
+        self.assertIn('<fieldset class="choice-field"><legend>Duration</legend>', html)
+        self.assertIn('name="sort" value="recent" checked required', html)
+        self.assertIn('name="sort" value="frequent" required', html)
+        self.assertIn('name="expires_minutes" value="0" required', html)
+        self.assertNotIn('name="expires_minutes" value="0" checked', html)
+
+        quick = html.split('<form class="quick-decision"', 1)[1].split(
+            "</form>", 1)[0]
+        self.assertIn('name="scope" value="exact" checked required', quick)
+        self.assertIn('name="scope" value="subdomains" required', quick)
+        self.assertIn('name="expires_minutes" value="60" checked required', quick)
+        self.assertIn('name="expires_minutes" value="0" required', quick)
+        self.assertIn('name="action" value="allow"', quick)
+        self.assertIn('name="action" value="deny"', quick)
+        self.assertIn('name="csrf"', quick)
+        self.assertIn('name="request_id"', quick)
+
+        once = html.split('<form class="once-action"', 1)[1].split(
+            "</form>", 1)[0]
+        self.assertIn('name="scope" value="exact" checked required', once)
+        self.assertIn('name="expires_minutes" value="60" checked required', once)
+        self.assertNotIn('name="expires_minutes" value="0"', once)
+        self.assertIn('name="action" value="stage"', once)
+
+        manual = html.split(
+            '<summary>Add a domain manually</summary>', 1)[1].split(
+            "</form>", 1)[0]
+        self.assertIn('name="scope" value="exact" checked required', manual)
+        self.assertIn('name="expires_minutes" value="60" required', manual)
+        self.assertNotIn('name="expires_minutes" value="60" checked', manual)
+        self.assertIn('name="expires_minutes" value="0" required', manual)
+        self.assertIn('name="action" value="allow"', manual)
+
+        bulk = html.split('<form id="bulk-form"', 1)[1].split(
+            "</form>", 1)[0]
+        self.assertIn('name="scope" value="exact" checked required', bulk)
+        self.assertIn('name="expires_minutes" value="60" checked required', bulk)
+
+        self.assertIn('input:checked + .choice-text',
+                      admin_ui.STYLESHEET)
+        self.assertIn('input:focus-visible + .choice-text',
+                      admin_ui.STYLESHEET)
+
+    def test_radio_helper_rejects_bad_defaults_and_escapes_labels(self):
+        with self.assertRaises(ValueError):
+            admin_ui.choice_buttons("scope", "Scope",
+                                    admin_ui.SCOPE_CHOICES, "other")
+        markup = admin_ui.choice_buttons(
+            "scope", "<Scope>", (("x", "<Unsafe>"),), "x")
+        self.assertIn("&lt;Scope&gt;", markup)
+        self.assertIn("&lt;Unsafe&gt;", markup)
+        self.assertNotIn("<Unsafe>", markup)
 
     def test_quick_review_uses_current_pending_request_and_bounded_scope(self):
         domain = "reviewed.example.net"

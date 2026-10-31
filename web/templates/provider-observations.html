@@ -2,7 +2,7 @@
 <header><div class="brand">LOCAL SEARCH MCP</div><nav><a href="/">Domain policy</a><a href="/history">Request history</a><a href="/provider-observations">Provider observations</a></nav></header>
 <main><h1>Provider observations from retained history</h1>
 <p>Private, read-only summary of existing search audit metadata. Engine names are observed in the <em>first five</em> retained result rows per call, not a complete list of engines queried or contacted. A search can contribute to multiple observed source engines. Search-call duration includes the entire local call, including cache handling and upstream operations; it is <strong>not</strong> provider-specific latency. Provider uptime and per-provider network latency are not measured. A separate opt-in can retain SearXNG-reported unresponsive engine labels on individual diagnostic calls; these labels do not prove provider-specific failure rates or exhaustive coverage.</p>
-<form method="get" action="/provider-observations"><label>UTC time window <select name="hours">${hour_options}</select></label><button type="submit">Recalculate privately</button></form>
+<form method="get" action="/provider-observations">${hour_buttons}<button type="submit">Recalculate privately</button></form>
 ${notice}
 <h2>Sample coverage</h2>
 <div class="scroll"><table><thead><tr><th>Metric</th><th>Observed value</th></tr></thead><tbody>${coverage_rows}</tbody></table></div>

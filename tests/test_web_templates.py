@@ -95,8 +95,8 @@ class DashboardTemplateTests(unittest.TestCase):
             page = admin_ui.render()
         marker = '<h2 style="margin-top:0">Add domain</h2>'
         new_domain = page.split(marker, 1)[1].split('</form>', 1)[0]
-        self.assertIn('<select name="expires_minutes" required>', new_domain)
-        self.assertIn('<option value="" selected disabled>Choose duration</option>', new_domain)
+        self.assertIn('name="expires_minutes" value="60" required', new_domain)
+        self.assertNotIn('name="expires_minutes" value="60" checked', new_domain)
 
     def test_bulk_shortcuts_are_opt_in_and_leave_the_bulk_post_explicit(self):
         with (patch.object(admin_ui.policy, "counts",
@@ -112,8 +112,8 @@ class DashboardTemplateTests(unittest.TestCase):
         self.assertIn('name="csrf"', page)
         self.assertIn('name="action" value="allow"', page)
         self.assertIn('name="action" value="deny"', page)
-        self.assertIn('<option value="exact" selected>', page)
-        self.assertIn('<option value="60" selected>', page)
+        self.assertIn('name="scope" value="exact" checked required', page)
+        self.assertIn('name="expires_minutes" value="60" checked required', page)
         self.assertNotIn('<script>', page)
 
     def test_pending_row_has_bounded_one_click_decisions_and_advanced_options(self):
@@ -128,13 +128,13 @@ class DashboardTemplateTests(unittest.TestCase):
         decision = markup.split('class="quick-decision"', 1)[1].split('</form>', 1)[0]
         self.assertIn('name="csrf"', decision)
         self.assertIn('name="domain" value="example.org"', decision)
-        self.assertIn('<option value="exact" selected>', decision)
-        self.assertIn('<option value="60" selected>', decision)
-        self.assertIn('<option value="0">Permanent', decision)
+        self.assertIn('name="scope" value="exact" checked required', decision)
+        self.assertIn('name="expires_minutes" value="60" checked required', decision)
+        self.assertIn('name="expires_minutes" value="0" required', decision)
         self.assertIn('name="action" value="allow"', decision)
         self.assertIn('name="action" value="deny"', decision)
-        self.assertLess(decision.index('value="60" selected'),
-                        decision.index('value="0">Permanent'))
+        self.assertLess(decision.index('value="60" checked required'),
+                        decision.index('value="0" required'))
         self.assertIn('name="request_id" value="' + "a" * 24, markup)
         self.assertIn('form="bulk-form"', markup)
         self.assertIn('summary>More actions</summary>', markup)
@@ -218,7 +218,7 @@ class DashboardTemplateTests(unittest.TestCase):
         self.assertIn('&lt;img src=x onerror=alert(1)&gt;', page)
         self.assertNotIn('<img src=x onerror=alert(1)>', page)
         self.assertIn("safe rows", page)
-        self.assertIn('value="search" selected', page)
+        self.assertIn('name="kind" value="search" checked required', page)
         self.assertIn('src="/dashboard-live.js"', page)
 
 
