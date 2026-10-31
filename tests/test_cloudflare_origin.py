@@ -15,7 +15,8 @@ import httpx
 from remote_agent_cloudflare_origin import (
     CLIENT_ID, CloudflarePrivateOrigin, ORIGIN_HOST, ORIGIN_PORT,
     SCHEMA, StartupRefused, build_config, check_portal_grant,
-    read_private_hostname, validate_hostname,
+    install_private_hostname, remove_private_hostname, read_private_hostname,
+    validate_hostname,
 )
 from remote_agent_gateway import LoopbackMCPGateway, synthetic_grant
 from remote_agent_prerequisites import SCHEMA as GRANTS_SCHEMA
@@ -52,6 +53,21 @@ class PrivateOriginConfigTests(unittest.TestCase):
             path.write_text(json.dumps({
                 "schema": SCHEMA, "hostname": "mcp.example.internal",
                 "Authorization": "never-accepted"}))
+            with self.assertRaises(StartupRefused):
+                read_private_hostname(path)
+
+    def test_atomic_no_overwrite_and_local_rollback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            private = Path(tmp) / "private"
+            private.mkdir(mode=0o700)
+            path = private / "cloudflare-origin.json"
+            install_private_hostname(path, "origin.private.internal")
+            self.assertEqual(read_private_hostname(path), "origin.private.internal")
+            with self.assertRaises(StartupRefused):
+                install_private_hostname(path, "other.private.internal")
+            self.assertEqual(read_private_hostname(path), "origin.private.internal")
+            remove_private_hostname(path)
+            self.assertFalse(path.exists())
             with self.assertRaises(StartupRefused):
                 read_private_hostname(path)
 
@@ -189,6 +205,51 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
                 content=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
         self.assertEqual(response.status_code, 403)
         self.assertEqual(self.gateway_requests, [])
+
+    async def test_live_config_removal_blocks_already_started_adapter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            private = Path(tmp) / "private"
+            private.mkdir(mode=0o700)
+            path = private / "origin.json"
+            install_private_hostname(path, self.hostname)
+            guarded = CloudflarePrivateOrigin(
+                self.hostname, self.gateway_client, config_path=path)
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=guarded,
+                                             client=("127.0.0.1", 3456)),
+                base_url="http://" + self.hostname, trust_env=False) as client:
+                kwargs = {"headers": {"authorization": "Bearer " + self.token},
+                          "content": b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}'}
+                allowed = await client.post("/mcp", **kwargs)
+                self.assertEqual(allowed.status_code, 200)
+                remove_private_hostname(path)
+                blocked = await client.post("/mcp", **kwargs)
+                self.assertEqual(blocked.status_code, 503)
+            self.assertEqual(len(self.bridge_requests), 1)
+
+    async def test_private_url_with_fixed_port_host_is_allowed(self):
+        response = await self.send(
+            host=self.hostname + ":" + str(ORIGIN_PORT), token=self.token)
+        self.assertEqual(response.status_code, 200)
+
+    async def test_expired_portal_grant_rejected_in_gateway(self):
+        self.gateway._grants = lambda: (
+            synthetic_grant(self.token, CLIENT_ID, time.time() - 1),)
+        response = await self.send(token=self.token)
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(self.bridge_requests, [])
+
+    async def test_guard_preflight_failure_never_binds_origin(self):
+        from remote_agent_cloudflare_origin import serve
+        with (patch("remote_agent_cloudflare_origin.read_private_hostname",
+                    return_value=self.hostname),
+              patch("remote_agent_cloudflare_origin.check_portal_grant"),
+              patch("remote_agent_cloudflare_origin.preflight_local",
+                    new_callable=AsyncMock, side_effect=StartupRefused("guard")),
+              patch("remote_agent_cloudflare_origin.uvicorn.Server",
+                    side_effect=AssertionError("server cannot start"))):
+            with self.assertRaises(StartupRefused):
+                await serve(Path("/does/not/matter"))
 
     async def test_gateway_guard_lost_blocks_authorized_request(self):
         self.gateway._guard_ready = lambda: False
