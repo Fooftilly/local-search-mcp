@@ -299,7 +299,12 @@ its own exact `quote_start_offset`/`quote_end_offset`, page number, and
 the original **requested source URL** and crawler-reported **final URL** with
 query parameters/fragments stripped. These are distinct when an authorized
 redirect occurred; `query_parameters_removed` indicates when a query was
-removed. URL paths may still be sensitive: citation metadata is returned
+removed. Explicit non-default HTTP(S) ports are preserved. Unlike the private
+audit's intentionally shortened URL field, citation URLs retain full paths
+up to 8,192 characters; if either URL exceeds that cap or cannot be parsed,
+`evidence.available=false` reports why rather than emitting a broken or
+partially truncated citation. URL paths may still be sensitive: citation
+metadata is returned
 only after the same live source/final and single-use-authorization checks as
 the existing continuation tool, and should not be pasted into public logs
 without operator review.
