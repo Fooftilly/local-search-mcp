@@ -54,6 +54,33 @@ class ServiceInstallerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "symlink"):
                 installer.main(["--remove-auto-restart"])
 
+    def test_cloudflare_optional_units_are_separate_and_loopback_only(self):
+        result = installer.unit_files(
+            "/usr/bin/python3", installer.ROOT, cloudflare_portal=True)
+        self.assertEqual(set(result), set(installer.CLOUDFLARE_NAMES))
+        self.assertFalse(set(result) & set(installer.NAMES))
+        gateway = result["local-search-mcp-remote-gateway.service"]
+        origin = result["local-search-mcp-cloudflare-origin.service"]
+        self.assertIn("--serve-loopback", gateway)
+        self.assertIn("--serve-loopback", origin)
+        self.assertIn("remote_agent_server", gateway)
+        self.assertIn("remote_agent_cloudflare_origin", origin)
+        self.assertIn("BindsTo=local-search-mcp-remote-gateway.service", origin)
+        self.assertNotIn("0.0.0.0", gateway + origin)
+        self.assertNotIn("cloudflared", gateway + origin)
+
+    def test_cloudflare_remove_preserves_core_units(self):
+        core = self.dir / installer.NAMES[0]
+        core.write_text(installer.MARKER + "core\\n")
+        for name in installer.CLOUDFLARE_NAMES:
+            (self.dir / name).write_text(installer.MARKER + "optional\\n")
+        with patch.object(installer.os, "geteuid", return_value=1000):
+            self.assertEqual(installer.main(
+                ["--remove", "--cloudflare-portal"]), 0)
+        self.assertTrue(core.exists())
+        for name in installer.CLOUDFLARE_NAMES:
+            self.assertFalse((self.dir / name).exists())
+
     def test_legacy_install_flag_is_removed(self):
         with patch.object(installer.os, "geteuid", return_value=1000):
             with self.assertRaises(SystemExit) as context:
