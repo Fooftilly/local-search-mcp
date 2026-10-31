@@ -275,6 +275,58 @@ and query text are absent from the private audit trail; reads are marked as
 `page` kind with `action=section`. A token expires after at most 15
 minutes and may be evicted sooner. No change to the original fetch defaults.
 
+### Citation-ready evidence (explicit opt-in)
+
+`web_fetch(url, retain_for_evidence=true)` retains **short as well as long**
+successful Markdown documents in the existing process-only, at-most-8-document,
+3-million-character shared handle cache. Each handle expires within **15
+minutes**, can be evicted sooner, and is never written to disk or the audit
+history. Ordinary `web_fetch(url)` remains unchanged: a short fetch does **not**
+return a handle. The opt-in bypasses ordinary fetch result caching so the
+handle always refers to text from that authorized invocation. Retrieval still
+uses the existing crawler guard and destination-domain checks; no extra fetch,
+implicit approval or link following occurs. This option is on `web_fetch`,
+not the batched fetch interface.
+
+For a document handle returned by the opted-in fetch or existing long-page
+continuation, call
+`web_extract_section(document_id, start_offset, max_chars=1200, include_evidence=true)`.
+The normal `text` and offset/page response remains unchanged. The extra
+`evidence` object contains a **literal excerpt from the exact normalized
+Markdown** (first at most **1,200 Unicode code points** of the requested span),
+its own exact `quote_start_offset`/`quote_end_offset`, page number, and
+`quote_truncated` when a larger section was requested. It also contains
+the original **requested source URL** and crawler-reported **final URL** with
+query parameters/fragments stripped. These are distinct when an authorized
+redirect occurred; `query_parameters_removed` indicates when a query was
+removed. Explicit non-default HTTP(S) ports are preserved. Unlike the private
+audit's intentionally shortened URL field, citation URLs retain full paths
+up to 8,192 characters; if either URL exceeds that cap or cannot be parsed,
+`evidence.available=false` reports why rather than emitting a broken or
+partially truncated citation. URL paths may still be sensitive: citation
+metadata is returned
+only after the same live source/final and single-use-authorization checks as
+the existing continuation tool, and should not be pasted into public logs
+without operator review.
+
+The source attribution means only **“already-authorized Crawl4AI-extracted
+Markdown”**. It is *not* a publisher-signed quotation, a verified latest
+revision, a legal citation, or proof that the URL still serves identical
+content. `source_completeness="unknown"` and
+`publisher_claims_verified=false` are explicit. Temporary document handles
+currently do not retain a validated fetch provenance timestamp, so evidence
+returns `retrieval_timestamp="not_recorded_in_temporary_document"` instead of
+inventing one. For the initial fetch, callers may independently request
+`include_retrieval_info=true` to get that invocation's retrieval/cache data;
+do not associate it with a later handle unless the caller preserves the
+correspondence. Quoted Markdown is **untrusted input** and must be escaped by
+the rendering client rather than executed as HTML.
+
+No new tool name, crawler strategy, database, external fetch, long-term page
+archive or background comparison process is introduced. All negative
+responses omit the `evidence` object; legacy callers and default output
+schemas remain unchanged.
+
 ## Empty extraction and possible access-gate diagnostics
 
 A successful Crawl4AI pipeline is **not** evidence that readable page text was
