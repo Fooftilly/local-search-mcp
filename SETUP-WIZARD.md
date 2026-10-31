@@ -84,12 +84,17 @@ or remote proxy setup is performed by these preview commands.
 Connections → Cloudflare MCP Portal supports an offline redacted preview,
 attended local hostname preparation and rollback. All steps are documented in
 [docs/CLOUDFLARE-MCP-PORTAL.md](docs/CLOUDFLARE-MCP-PORTAL.md).
+Preview verifies local redacted configuration; status also checks the two
+optional systemd units and loopback TCP listeners, but cannot prove remote
+routing or MCP authorization. Neither command changes a Cloudflare account.
+
 It never changes a Cloudflare account, creates a public route or starts the
 two optional units automatically. Private hostname routing to loopback is
 still an unverified deployment gate; do not expose a LAN listener to bypass it.
 
 ```sh
 ./setup.sh --cloudflare-portal-preview
+./setup.sh --cloudflare-portal-status
 ./setup.sh --cloudflare-portal-prepare
 ./setup.sh --cloudflare-portal-rollback
 ```
