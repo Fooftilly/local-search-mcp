@@ -85,6 +85,18 @@ class LoopbackCheckTests(unittest.TestCase):
         self.assertEqual(config.ws, "none")
         self.assertEqual(config.limit_concurrency, 16)
 
+    def test_abbreviated_flags_never_start_a_listener(self):
+        for argv in (["--serve"], ["--ser"], ["--serve-loop"],
+                     ["--che"]):
+            with self.subTest(argv=argv), \
+                    patch("sys.stderr", io.StringIO()), \
+                    patch("remote_agent_server.asyncio.run",
+                          side_effect=AssertionError("listener started")) as runner:
+                with self.assertRaises(SystemExit) as failure:
+                    main(argv)
+                self.assertEqual(failure.exception.code, 2)
+                runner.assert_not_called()
+
     def test_explicit_serve_flag_only_and_fail_closed_root(self):
         output = io.StringIO()
         with patch("remote_agent_server.default_store_path", return_value=self.path), \
