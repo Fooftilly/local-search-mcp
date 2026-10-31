@@ -91,7 +91,7 @@ class ProviderObservationsTests(unittest.TestCase):
             result = provider.observations(24, now=self.now)
         self.assertTrue(result["source_snapshot_lock_acquired"])
         modes = [x.args[1] for x in lock.call_args_list]
-        self.assertIn(fcntl.LOCK_SH, modes)
+        self.assertIn(fcntl.LOCK_SH | fcntl.LOCK_NB, modes)
         self.assertIn(fcntl.LOCK_UN, modes)
 
     def test_rotated_history_truncation_and_missing_timing(self):
