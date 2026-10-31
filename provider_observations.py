@@ -23,6 +23,9 @@ MAX_EVENTS = 20_000
 MAX_GROUPS = 24
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}\Z")
 _SECRET_WORDS = re.compile(r"(?i)\b(?:token|password|secret|bearer|cookie|apikey|api_key)\b")
+_CATEGORIES = frozenset(("general", "images", "news", "videos", "music",
+                         "files", "it", "science", "social media", "books",
+                         "maps", "other"))
 
 
 def _label(value: object) -> str:
@@ -66,12 +69,16 @@ def _read_tail(path: Path) -> tuple[list[bytes], bool]:
         os.close(fd)
 
 
-def _rollup(values: dict[str, list[float]]) -> list[dict]:
+def _rollup(values: dict[str, list[float | None]]) -> list[dict]:
     top = sorted(values.items(), key=lambda kv: (-len(kv[1]), kv[0]))
-    return [{"name": name, "observed_searches": len(samples),
-             "mean_search_call_ms": round(sum(samples) / len(samples), 1)
-             if samples else None}
-            for name, samples in top[:MAX_GROUPS]]
+    result = []
+    for name, samples in top[:MAX_GROUPS]:
+        measured = [ms for ms in samples if ms is not None]
+        result.append({"name": name, "observed_searches": len(samples),
+                       "timed_searches": len(measured),
+                       "mean_search_call_ms": round(sum(measured) / len(measured), 1)
+                       if measured else None})
+    return result
 
 
 def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
@@ -86,8 +93,8 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
     path = history_path()
     if path.parent.is_symlink():
         raise OSError("History directory is a symlink")
-    engine_samples: dict[str, list[float]] = defaultdict(list)
-    category_samples: dict[str, list[float]] = defaultdict(list)
+    engine_samples: dict[str, list[float | None]] = defaultdict(list)
+    category_samples: dict[str, list[float | None]] = defaultdict(list)
     calls = errors = seen_sources = unattributed = 0
     malformed = scanned = scanned_files = 0
     limited = False
@@ -130,12 +137,11 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
             group_names = set()
             if isinstance(categories, str) and len(categories) <= 160:
                 group_names.update(n for value in categories.split(",")[:4]
-                                   if (n := _label(value.strip())))
+                                   if (n := _label(value.strip().lower())) in _CATEGORIES)
             if not group_names:
                 group_names = {"unspecified"}
             for category in group_names:
-                if duration is not None:
-                    category_samples[category].append(duration)
+                category_samples[category].append(duration)
             result_rows = item.get("results")
             engines = set()
             if isinstance(result_rows, list):
@@ -146,9 +152,8 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
                             engines.add(name)
             if engines:
                 seen_sources += 1
-                if duration is not None:
-                    for name in engines:
-                        engine_samples[name].append(duration)
+                for name in engines:
+                    engine_samples[name].append(duration)
             else:
                 unattributed += 1
         if scanned >= MAX_EVENTS:
