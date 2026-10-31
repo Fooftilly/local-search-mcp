@@ -365,11 +365,12 @@ def build_config(app) -> uvicorn.Config:
 
 
 async def serve(path: Path) -> None:
-    """Only expose the private adapter after config and gateway availability.
+    """Only bind after private config, gateway and required tools are ready.
 
     The authenticated gateway owns the host-root sudo guard: it validates
     guard readiness at startup and on every authorized request. This adapter
-    remains NoNewPrivileges=true and must never execute sudo itself.
+    runs bounded, unprivileged tools/list discovery instead. It remains
+    NoNewPrivileges=true and must never execute sudo itself.
     """
     hostname = read_private_hostname(path)
     check_portal_grant()
