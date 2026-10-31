@@ -98,6 +98,68 @@ class ResponseHeaderDeadlineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(seen), 1)
         self.assertTrue(stream.closed)
 
+    async def test_one_byte_at_a_time_response_headers_have_total_deadline(self):
+        """Real loopback HTTP parsing: each byte arrives before read timeout."""
+        accepted = asyncio.Event()
+        closed = asyncio.Event()
+
+        async def slow_header_server(reader, writer):
+            accepted.set()
+            try:
+                await reader.readuntil(b"\\r\\n\\r\\n")
+                # HTTP status arrives promptly; incomplete headers follow
+                # in tiny increments. No single read exceeds 200 ms.
+                writer.write(b"HTTP/1.1 200 OK\\r\\nContent-Type: ")
+                await writer.drain()
+                for char in b"text/plain\\r\\nContent-Length: 0\\r\\n\\r\\n":
+                    writer.write(bytes((char,)))
+                    await writer.drain()
+                    await asyncio.sleep(0.025)
+            except (ConnectionResetError, BrokenPipeError,
+                    asyncio.IncompleteReadError):
+                pass
+            finally:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except (ConnectionResetError, BrokenPipeError):
+                    pass
+                closed.set()
+
+        server = await asyncio.start_server(
+            slow_header_server, host="127.0.0.1", port=0)
+        try:
+            port = server.sockets[0].getsockname()[1]
+            endpoint = f"http://127.0.0.1:{port}/mcp"
+            async with httpx.AsyncClient(
+                trust_env=False,
+                timeout=httpx.Timeout(2, read=0.2),
+            ) as upstream:
+                app = LoopbackMCPGateway(
+                    upstream=upstream,
+                    grants=lambda: tuple(self.grants),
+                    guard_ready=lambda: True)
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://127.0.0.1:18790",
+                    timeout=2,
+                ) as client:
+                    with patch("remote_agent_gateway.UPSTREAM", endpoint), \
+                            patch("remote_agent_gateway.MAX_RESPONSE_START_SECONDS",
+                                  0.12):
+                        result = await asyncio.wait_for(
+                            client.post("/mcp", headers=self.auth(),
+                                json={"jsonrpc": "2.0", "id": 1,
+                                      "method": "tools/list"}), timeout=2)
+            self.assertTrue(accepted.is_set())
+            self.assertEqual(result.status_code, 504)
+            self.assertEqual(result.text, "Request rejected")
+            self.assertNotIn(self.token, result.text)
+            await asyncio.wait_for(closed.wait(), timeout=2)
+        finally:
+            server.close()
+            await server.wait_closed()
+
     async def test_immediate_upstream_http_error_remains_502(self):
         async def failing(request):
             raise httpx.ConnectError("private upstream info", request=request)
