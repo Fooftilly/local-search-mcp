@@ -489,6 +489,13 @@ class SetupWizardTests(unittest.TestCase):
             }
             runs = []
             def executed(argv, **kwargs):
+                if argv[:3] == ["systemctl", "--user", "show"]:
+                    name = argv[3]
+                    return subprocess.CompletedProcess(
+                        argv, 0,
+                        stdout="".join(f"{key}={value}\n"
+                                       for key, value in after[name].items()),
+                        stderr="PRIVATE")
                 runs.append(list(argv))
                 return subprocess.CompletedProcess(argv, 0, stdout="", stderr="PRIVATE")
             with (patch.object(wizard.os, "geteuid", return_value=1000),
