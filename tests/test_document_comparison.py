@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 
 import bridge
 import document_comparison as diff
@@ -147,11 +148,11 @@ class ComparisonMCPTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "distinct temporary"):
             bridge.web_compare_documents(left, left)
         async with Client(bridge.mcp) as client:
-            result = await client.call_tool("web_compare_documents", {
-                "left_document_id": left, "right_document_id": left})
-            self.assertTrue(result.is_error)
-            self.assertNotIn("Old date", str(result))
-            self.assertNotIn(left, str(result))
+            with self.assertRaisesRegex(ToolError, "distinct temporary") as caught:
+                await client.call_tool("web_compare_documents", {
+                    "left_document_id": left, "right_document_id": left})
+            self.assertNotIn("Old date", str(caught.exception))
+            self.assertNotIn(left, str(caught.exception))
 
     async def test_single_expired_handle_and_revoked_domain_do_not_leak(self):
         left, right = self.allowed_pair()
