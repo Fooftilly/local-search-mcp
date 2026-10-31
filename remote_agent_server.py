@@ -94,7 +94,7 @@ async def run_loopback(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true",
                       help="read-only grant check; no sudo or listener (default)")
