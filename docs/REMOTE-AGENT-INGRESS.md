@@ -128,15 +128,15 @@ Run: `python -m unittest discover -s tests -p 'test_remote_agent_runtime.py' -v`
 
 ### Explicit offline credential lifecycle — no host deployment (#230)
 
-`remote_agent_credentials.py` is a standalone **opt-in operator CLI** for the existing private JSON verifier format. It is **not** a server launcher, token service, webhook, tunnel setup or automatic provisioning. `list` and mutation previews do not create files or generate tokens. `--apply` is required for creation, rotation and revocation, and must run as the unprivileged owner rather than root. The operator supplies an **absolute path** under a pre-existing private, owner-controlled directory (mode 0700), with no unsafe ancestor symlinks or third-party-writable directories. The credential file must remain mode 0600.
+`remote_agent_credentials.py` is a standalone **opt-in operator CLI** for the existing private JSON verifier format. It is **not** a server launcher, token service, webhook, tunnel setup or automatic provisioning. `list` and mutation previews do not create files or generate tokens. `--apply` is required for creation, rotation and revocation, and must run as the unprivileged owner rather than root. The CLI is pinned to the authenticated OS account's **fixed path** `~/.config/local-search-mcp/private/agent-grants.json` (resolved through the system account database, not `HOME` or caller-supplied `--store` arguments). The operator must prepare the private, account-owned parent directory (mode 0700) separately. Unsafe ancestor symlinks or third-party-writable directories are rejected. The credential file must remain mode 0600. Library functions can still accept explicit paths for isolated tests, but the operator CLI cannot select an arbitrary file.
 
 ```sh
 # Examples only. Do not enable any tunnel or listener.
-python -m remote_agent_credentials --store "$HOME/.config/local-search-mcp/private/agent-grants.json" list
-python -m remote_agent_credentials --store "$HOME/.config/local-search-mcp/private/agent-grants.json" create grok-api
-python -m remote_agent_credentials --store "$HOME/.config/local-search-mcp/private/agent-grants.json" --ttl-hours 24 --apply create grok-api
-python -m remote_agent_credentials --store "$HOME/.config/local-search-mcp/private/agent-grants.json" --ttl-hours 24 --apply rotate grok-api
-python -m remote_agent_credentials --store "$HOME/.config/local-search-mcp/private/agent-grants.json" --apply revoke grok-api
+python -m remote_agent_credentials list
+python -m remote_agent_credentials create grok-api
+python -m remote_agent_credentials --ttl-hours 24 --apply create grok-api
+python -m remote_agent_credentials --ttl-hours 24 --apply rotate grok-api
+python -m remote_agent_credentials --apply revoke grok-api
 ```
 
 For **create/rotate**, a cryptographically strong random secret is presented **only through an interactive local `/dev/tty`**, never stdout, stderr, arguments, GitHub, the dashboard, history or a URL. The operator must copy it into an authorized password manager and type `COMMIT` in that TTY before its SHA-256 verifier is stored. Without a TTY or explicit confirmation, creation and rotation are refused with no verifier change. TTY scrollback itself may contain the secret; use a trusted local session, disable session logging, and avoid recording the screen.
