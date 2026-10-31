@@ -215,6 +215,15 @@ class ComparisonMCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["right_source_identity_available"])
         self.assertEqual(result["left_source_url"], "")
         self.assertEqual(result["right_final_url"], "")
+        changed_left, _ = pages.save(long_left, "old\n", {}, allow_short=True)
+        changed_right, _ = pages.save(long_right, "new\n", {}, allow_short=True)
+        changed = bridge.web_compare_documents(changed_left, changed_right)
+        self.assertTrue(changed["success"])
+        self.assertFalse(changed["text_equal"])
+        self.assertEqual(len(changed["changes"]), 1)
+        self.assertFalse(changed["changes_truncated"])
+        self.assertLessEqual(len(json.dumps(changed, ensure_ascii=True).encode()),
+                             diff.MAX_OUTPUT_BYTES)
 
     async def test_no_fetch_or_approval_on_compare(self):
         left, right = self.allowed_pair()
