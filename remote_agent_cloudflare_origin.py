@@ -415,6 +415,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.remove_config:
             if _tty_input("Type REMOVE to remove local origin configuration: ") != "REMOVE":
                 raise StartupRefused("Cancelled; no change")
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                print("No private origin configuration to remove; Cloudflare unchanged.")
+                return 0
             remove_private_hostname(path)
             print("Private origin configuration removed; no Cloudflare route changed. "
                   "Stop the optional unit and revoke cloudflare-portal separately.")
