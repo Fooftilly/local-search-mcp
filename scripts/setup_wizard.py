@@ -604,6 +604,7 @@ def cloudflare_portal_rollback() -> int:
         print("Rollback requires the normal user", file=sys.stderr)
         return 1
     folder = install_user_services.destination()
+    owned = []
     for name in install_user_services.CLOUDFLARE_NAMES:
         unit = folder / name
         if (unit.is_symlink() or (unit.exists() and
@@ -611,18 +612,20 @@ def cloudflare_portal_rollback() -> int:
                     install_user_services.MARKER))):
             print("Unmanaged optional unit; refusing rollback", file=sys.stderr)
             return 1
+        if unit.exists():
+            owned.append(name)
     print("Stops and removes only the optional Cloudflare adapter/gateway units")
     print("and local hostname config. Does not change Cloudflare routes or grants.")
     if not confirm("REMOVE"):
         return 0
     try:
-        result = subprocess.run(
-            ["systemctl", "--user", "disable", "--now",
-             *install_user_services.CLOUDFLARE_NAMES],
-            capture_output=True, check=False, timeout=20)
-        if result.returncode:
-            print("Optional services were not confirmed stopped", file=sys.stderr)
-            return 1
+        if owned:
+            result = subprocess.run(
+                ["systemctl", "--user", "disable", "--now", *owned],
+                capture_output=True, check=False, timeout=20)
+            if result.returncode:
+                print("Optional services were not confirmed stopped", file=sys.stderr)
+                return 1
         path = default_config_path()
         if path.exists() or path.is_symlink():
             remove_private_hostname(path)
