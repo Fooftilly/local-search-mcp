@@ -674,9 +674,6 @@ def cloudflare_portal_prepare() -> int:
 def cloudflare_portal_rollback() -> int:
     """Stop/remove only owned optional units and local hostname config."""
     from scripts import install_user_services
-    from remote_agent_cloudflare_origin import (
-        default_config_path, remove_private_hostname, StartupRefused,
-    )
     if os.geteuid() == 0:
         print("Rollback requires the normal user", file=sys.stderr)
         return 1
@@ -726,9 +723,22 @@ def cloudflare_portal_rollback() -> int:
                 print("Optional units were not verified disabled and stopped",
                       file=sys.stderr)
                 return 1
-        path = default_config_path()
-        if path.exists() or path.is_symlink():
-            remove_private_hostname(path)
+        # setup.sh uses system Python, which need not have httpx/uvicorn.
+        # Invoke the existing owner-only config remover through the .venv.
+        # This local TTY confirmation is deliberately independent of unit
+        # shutdown: an interrupted run leaves the config unchanged.
+        interpreter = project_python()
+        if interpreter is None:
+            print("Project virtualenv unavailable; optional units stopped but "
+                  "local config has not been removed", file=sys.stderr)
+            return 1
+        removed = subprocess.run(
+            [str(interpreter), "-m", "remote_agent_cloudflare_origin",
+             "--remove-config"], cwd=ROOT, check=False, timeout=45)
+        if removed.returncode:
+            print("Private origin removal not verified; optional units were stopped "
+                  "but their files remain installed", file=sys.stderr)
+            return 1
         if install_user_services.main(["--remove", "--cloudflare-portal"]):
             return 1
         result = subprocess.run(
@@ -740,7 +750,7 @@ def cloudflare_portal_rollback() -> int:
         print("Optional local Cloudflare units removed. Revoke the separate")
         print("cloudflare-portal grant and remove private Cloudflare routes manually.")
         return 0
-    except (OSError, ValueError, StartupRefused, subprocess.TimeoutExpired):
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         print("Local rollback incomplete; inspect optional units and config",
               file=sys.stderr)
         return 1
