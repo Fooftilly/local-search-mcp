@@ -93,6 +93,17 @@ class ServiceInstallerTests(unittest.TestCase):
             self.assertFalse(any("/usr/bin/python3" in call.args[1]
                                  for call in written.call_args_list))
 
+    def test_cloudflare_working_directory_is_systemd_escaped_not_quoted(self):
+        root = Path('/tmp/project with % space')
+        units = installer.unit_files(
+            '/usr/bin/python3', root, cloudflare_portal=True)
+        for unit in units.values():
+            self.assertIn(r'WorkingDirectory=/tmp/project\x20with\x20%%\x20space',
+                          unit)
+            self.assertNotIn('WorkingDirectory="', unit)
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            installer.working_directory(Path("relative/private project"))
+
     def test_cloudflare_remove_preserves_core_units(self):
         core = self.dir / installer.NAMES[0]
         core.write_text(installer.MARKER + "core\\n")
