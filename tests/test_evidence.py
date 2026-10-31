@@ -112,10 +112,10 @@ class EvidenceMCPTests(unittest.IsolatedAsyncioTestCase):
                     "document_id": "Z" * 32, "start_offset": 0,
                     "include_evidence": True})
                 self.assertEqual(unknown.data["status"], "expired_or_unknown")
-                with self.assertRaises(ToolError):
-                    await client.call_tool("web_extract_section", {
-                        "document_id": handle, "start_offset": 0,
-                        "include_evidence": "yes"})
+                # Pydantic may coerce "yes" into bool at the MCP
+                # boundary; the underlying tool itself must fail closed.
+                with self.assertRaises(ValueError):
+                    bridge.web_extract_section(handle, 0, include_evidence="yes")
         audit = (Path(self.tmp.name) / "history.jsonl").read_text()
         self.assertNotIn(handle, audit)
         self.assertNotIn("DO_NOT_LOG", audit)
