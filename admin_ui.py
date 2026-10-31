@@ -44,6 +44,30 @@ _LIVE_SNAPSHOT_RUN = secrets.token_hex(16)
 
 def esc(value): return html.escape(str(value), quote=True)
 
+# Native radios remain ordinary HTML form fields without JavaScript.
+# The permission handler still validates every submitted value.
+SCOPE_CHOICES = (("exact", "Exact host"), ("subdomains", "Host + subdomains"))
+DURATION_CHOICES = (("60", "1 hour"), ("1440", "24 hours"),
+                    ("10080", "7 days"), ("0", "Permanent"))
+ONCE_DURATION_CHOICES = DURATION_CHOICES[:-1]
+
+
+def choice_buttons(name, caption, choices, selected=None, *, required=True):
+    """Accessible button-like radio group using the existing POST/GET contract."""
+    if selected is not None and selected not in {key for key, _ in choices}:
+        raise ValueError("Unknown radio choice")
+    parts = ['<fieldset class="choice-field"><legend>' + esc(caption) +
+             '</legend><div class="choice-options">']
+    for key, label in choices:
+        parts.append(
+            '<label class="choice-option"><input type="radio" name="' +
+            esc(name) + '" value="' + esc(key) + '"' +
+            (' checked' if selected == key else '') +
+            (' required' if required else '') +
+            '><span class="choice-text">' + esc(label) + '</span></label>')
+    parts.append('</div></fieldset>')
+    return ''.join(parts)
+
 
 def recent_history(n=25):
     try:
@@ -224,12 +248,12 @@ def _pending_sort(value):
     return value
 
 
-def pending_sort_options(selected):
-    labels = (("recent", "Recently updated"), ("oldest", "Oldest waiting"),
-              ("frequent", "Most requests"))
-    return ''.join('<option value="' + mode + '"' +
-                   (' selected' if mode == selected else '') + '>' +
-                   label + '</option>' for mode, label in labels)
+def pending_sort_buttons(selected):
+    return choice_buttons(
+        "sort", "Review order",
+        (("recent", "Recently updated"), ("oldest", "Oldest waiting"),
+         ("frequent", "Most requests")), selected)
+
 
 
 def _last_pending_page(total):
@@ -406,16 +430,11 @@ def row_html(r, query='', page=1, pending_sort='recent'):
         f'<div class="subtle">First request: {esc(r.get("first_requested_at") or "—")}</div>'
         f'<div class="subtle">Last: {esc(r.get("last_requested_at") or "—")}</div>'
         f'<div class="subtle">{esc(policy.safe_request_origin(r["last_requested_url"]) if r.get("last_requested_url") else "—")}</div>')
-    opts = ('<label class="small">Scope <select name="scope">'
-            + '<option value="subdomains"' + (' selected' if scope != 'exact' else '') +
-            '>Host + subdomains</option><option value="exact"' +
-            (' selected' if scope == 'exact' else '') +
-            '>Exact host only</option></select></label>'
-            '<label class="small">Duration <select name="expires_minutes" required>'
-            '<option value="" selected disabled>Choose duration</option>'
-            '<option value="0">Permanent</option><option value="60">1 hour</option>'
-            '<option value="1440">24 hours</option>'
-            '<option value="10080">7 days</option></select></label>')
+    opts = (
+        choice_buttons("scope", "Scope", SCOPE_CHOICES,
+                       "exact" if scope == "exact" else "subdomains") +
+        choice_buttons("expires_minutes", "Duration", DURATION_CHOICES)
+    )
     def action(name, label, cls=''):
         controls = ((opts if name in ('allow', 'deny') else '') +
                     '<label class="small">Reason (optional) '
@@ -435,26 +454,18 @@ def row_html(r, query='', page=1, pending_sort='recent'):
         f'<form class="quick-decision" method="post" action="/domain">'
         f'<input type="hidden" name="csrf" value="{token}">' + review_context +
         f'<input type="hidden" name="domain" value="{dom}">'
-        f'<input type="hidden" name="request_id" value="{esc(r.get("request_id") or "")}">'
-        '<label class="small">Scope <select name="scope" aria-label="Rule scope">'
-        '<option value="exact" selected>Exact host</option>'
-        '<option value="subdomains">Host + subdomains</option></select></label>'
-        '<label class="small">Duration <select name="expires_minutes" '
-        'aria-label="Rule duration" required>'
-        '<option value="60" selected>1 hour</option>'
-        '<option value="1440">24 hours</option>'
-        '<option value="10080">7 days</option>'
-        '<option value="0">Permanent</option></select></label>'
-        '<button class="allow" type="submit" name="action" value="allow">'
-        'Allow</button>'
-        '<button class="deny" type="submit" name="action" value="deny">'
-        'Deny</button>'
+        f'<input type="hidden" name="request_id" value="{esc(r.get("request_id") or "")}">' +
+        choice_buttons("scope", "Scope", SCOPE_CHOICES, "exact") +
+        choice_buttons("expires_minutes", "Duration", DURATION_CHOICES, "60") +
+        '<button class="allow" type="submit" name="action" value="allow">Allow</button>'
+        '<button class="deny" type="submit" name="action" value="deny">Deny</button>'
         '<details class="inline-options"><summary>Note (optional)</summary>'
         '<label class="small">Reason '
-        '<input name="reason" maxlength="160" '
-        'placeholder="Short local note"></label></details></form>'
+        '<input name="reason" maxlength="160" placeholder="Short local note">'
+        '</label></details></form>'
         if r['status'] == 'pending' and r.get('request_id') else ''
     )
+
     # One-use grants retain the stale-request ID check, are exact-host and
     # one hour by default, and never become durable permission rules.
     once = (
@@ -463,20 +474,16 @@ def row_html(r, query='', page=1, pending_sort='recent'):
         f'<input type="hidden" name="domain" value="{dom}">'
         f'<input type="hidden" name="request_id" value="{esc(r.get("request_id") or "")}">'
         '<button class="allow" name="action" value="stage">Allow once</button>'
-        '<details class="inline-options"><summary>One-use options</summary>'
-        '<label class="small">Scope <select name="scope">'
-        '<option value="exact" selected>Exact host</option>'
-        '<option value="subdomains">Host + subdomains</option></select></label>'
-        '<label class="small">Valid for <select name="expires_minutes">'
-        '<option value="60" selected>1 hour</option>'
-        '<option value="1440">24 hours</option>'
-        '<option value="10080">7 days</option></select></label>'
+        '<details class="inline-options"><summary>One-use options</summary>' +
+        choice_buttons("scope", "Scope", SCOPE_CHOICES, "exact") +
+        choice_buttons("expires_minutes", "Valid for", ONCE_DURATION_CHOICES, "60") +
         '<label class="small">Reason (optional) '
         '<input name="reason" maxlength="160" placeholder="Short local note">'
         '</label></details></form>'
         if r['status'] == 'pending' and not r.get('explicit_rule') and r.get('request_id')
         else ''
     )
+
     edit = (f'<form method="post" action="/domain">'
             f'<input type="hidden" name="csrf" value="{token}">' + review_context +
             f'<input type="hidden" name="domain" value="{dom}">'
@@ -664,7 +671,16 @@ def render(query='', message='', kind='success', page=1,
         max_bulk_decisions=policy.MAX_BULK_DECISIONS,
         query_escaped=query_escaped, pending_page=page,
         pending_sort=pending_sort,
-        pending_sort_options=pending_sort_options(pending_sort),
+        pending_sort_buttons=pending_sort_buttons(pending_sort),
+        bulk_scope_buttons=choice_buttons("scope", "Scope", SCOPE_CHOICES, "exact"),
+        bulk_duration_buttons=choice_buttons("expires_minutes", "Duration",
+                                             DURATION_CHOICES, "60"),
+        manual_scope_buttons=choice_buttons("scope", "Scope", SCOPE_CHOICES, "exact"),
+        manual_duration_buttons=choice_buttons("expires_minutes", "Duration",
+                                               DURATION_CHOICES),
+        stage_scope_buttons=choice_buttons("scope", "Scope", SCOPE_CHOICES, "exact"),
+        stage_duration_buttons=choice_buttons("expires_minutes", "Valid for",
+                                              ONCE_DURATION_CHOICES, "60"),
         pending_pages_html=pending_pagination_html(
             query, page, pending_total, pending_sort),
         refresh_href=esc('/?q=' + quote(query[:100], safe='') +
@@ -897,8 +913,15 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=False,
         f'<option value="{n}"{" selected" if hours == n else ""}>{label}</option>'
         for n, label in ((0, "All retained"), (1, "Last hour"),
                          (24, "Last 24 hours"), (168, "Last 7 days")))
+    valid_kind = kind if kind in ("", "search", "fetch", "page") else ""
     return render_template(
         "history",
+        history_kind_buttons=choice_buttons("kind", "Operation",
+            (("", "All"), ("search", "Search"), ("fetch", "Fetch"),
+             ("page", "Continuation")), valid_kind),
+        history_time_buttons=choice_buttons("hours", "Time",
+            (("0", "All retained"), ("1", "Last hour"),
+             ("24", "Last 24 hours"), ("168", "Last 7 days")), str(hours)),
         invalid_kind_option=invalid_kind_option,
         search_selected=" selected" if kind == "search" else "",
         fetch_selected=" selected" if kind == "fetch" else "",
@@ -928,6 +951,9 @@ def provider_observations_page(hours: int = 24) -> str:
         # provider responses on an unsafe or corrupt audit source.
         return render_template(
             "provider-observations", hour_options=choices,
+            hour_buttons=choice_buttons("hours", "UTC time window",
+                 (("1", "Last hour"), ("24", "Last 24 hours"),
+                  ("168", "Last 7 days")), str(hours)),
             notice='<p role="alert" class="alert error">Private history is unavailable. '
                    'Inspect local file permissions and history configuration.</p>',
             coverage_rows='<tr><td colspan="2">Unavailable</td></tr>',
@@ -987,7 +1013,10 @@ def provider_observations_page(hours: int = 24) -> str:
               '<p role="status">Bounded sample of retained history. '
               'Not a complete provider health report.</p>')
     return render_template(
-        "provider-observations", hour_options=choices, notice=notice,
+        "provider-observations", hour_options=choices,
+        hour_buttons=choice_buttons("hours", "UTC time window",
+             (("1", "Last hour"), ("24", "Last 24 hours"),
+              ("168", "Last 7 days")), str(hours)), notice=notice,
         coverage_rows=coverage,
         engine_rows=table_rows(result["observed_result_engines"]),
         category_rows=table_rows(result["requested_categories"]),
