@@ -148,19 +148,40 @@ advertised format links in the same already-approved HTML crawl**. This is
 disabled by default and does not affect the normal fetch response shape or
 the short-page cache. `alternatives` is empty when evidence is absent.
 
-The deliberately narrow initial rule recognizes a Markdown `View as:`
-group with explicit labelled `Plain Text`, `HTML` / `Compact HTML`, and
-`PDF` links for the **same literal path stem** with `.txt`, `.html` and
-`.pdf` extensions. RFC Editor's RFC 9110 info page advertises these three
-formats together. A generic navigation label such as `Alternative
-Implementations` is not sufficient evidence. Other publisher schemas
-are intentionally not guessed or treated as verified equivalence.
+Two **directly observed publisher patterns** are recognized, without
+guessing URLs from filenames:
+
+- **RFC Editor**: the [RFC 9110 information page](https://www.rfc-editor.org/info/rfc9110/)
+  advertises a `View as:` group containing labelled `Plain Text`,
+  `Compact HTML` and `PDF` links with the same literal path stem
+  (`rfc9110.txt`, `rfc9110.html`, `rfc9110.pdf`). Its established evidence
+  label remains `source_labeled_view_as` and its prior behavior is unchanged.
+- **W3C**: the [09 January 2003 DOM Level 2 HTML Recommendation](https://www.w3.org/TR/2003/REC-DOM-Level-2-HTML-20030109/)
+  explicitly states `This document is also available in these non-normative
+  formats:` and links `plain text`, `PDF file`, and `single HTML file`
+  beside other formats. This narrower rule accepts only sibling `.txt`,
+  `.html`, `.pdf` files in the **same directory, scheme, host and port**
+  as the approved page; all reported links share one exact case-sensitive
+  filename stem (for this document, `DOM2-HTML`). URLs containing queries,
+  conflicting duplicate links, mixed stems, or cross-publisher/cross-directory
+  alternatives are discarded. Its evidence label is
+  `source_labeled_non_normative_formats`.
+
+Both patterns require a PDF plus at least one TXT/HTML sibling in a single,
+bounded explicit format group. A generic navigation label such as
+`Alternative Implementations` is not sufficient. Markdown fenced code
+examples, unrelated paragraphs, arbitrary download links, or other publisher
+schemas are not guessed.
 
 Each record has `format` (`txt`, `html`, `pdf`), a bounded normalized
-`url`, and `evidence="source_labeled_view_as"`. Up to three records share
-the same 20 KB structured-data budget with optional links and tables.
-`structured_info.alternatives.format_verified=false` means the target's
-content type, equivalence, copyright and accessibility are **unverified**.
+`url` and the specific source-pattern `evidence`. Up to three records
+share the same 20 KB structured-data budget with optional links and tables.
+`structured_info.alternatives.evidence` identifies the pattern actually
+matched. `structured_info.alternatives.format_verified=false` means the
+advertised target's content type, equivalence, copyright and accessibility
+are **not verified**. The two source pages were inspected externally;
+an operator-host crawl rendering the exact format groups is a separate
+acceptance check.
 
 Only safely normalized public-looking HTTP(S) URLs are reported; data,
 local/IP-literal, credential-bearing, unsafe-port and ambiguous-IDN
