@@ -43,8 +43,8 @@ REQUEST_HEADERS = (b"authorization", b"accept", b"content-type",
                    b"mcp-protocol-version")
 RESPONSE_HEADERS = (b"content-type", b"mcp-protocol-version", b"retry-after")
 HOST_PATTERN = re.compile(
-    r"(?=.{4,253}\\Z)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
-    r"(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\\Z",
+    r"(?=.{4,253}\Z)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\Z",
     re.ASCII,
 )
 
