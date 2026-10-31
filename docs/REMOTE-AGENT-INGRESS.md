@@ -10,7 +10,9 @@
 - [xAI Remote MCP Tools](https://docs.x.ai/developers/tools/remote-mcp) supports Streamable HTTP/SSE and, **for xAI API clients**, an `authorization` value forwarded in the request's Authorization header (plus optional extra headers and tool allowlisting). The Grok **website's** custom connector authorization modes/identity UX must be observed separately; do not assume the same API-level bearer/header support.
 - [Cloudflare Access Managed OAuth](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/) can adapt OAuth-capable clients, but its authentication requires a supported end-to-end token verification model. In particular, enabling Managed OAuth **without** a validating origin is not a security solution. Avoid browser-only redirect protection for machine MCP clients, which may receive unusable HTTP 302 responses.
 
-**Selected transport for operator preparation:** Cloudflare Tunnel with an operator-owned HTTPS subdomain. See [Cloudflare remote MCP ingress](CLOUDFLARE-REMOTE-MCP.md) for the exact restricted local gateway route, Host rewrite, non-deploying validation, auth compatibility gates and rollback requirements. This does **not** approve DNS, credentials, a public route or service installation. The remaining authentication model must be proven against the live Grok.com connector.\n\n## Recommended architecture, contingent on client/auth acceptance
+**Optional self-hosted transport:** operators who use Cloudflare Tunnel must provision their **own** domain/subdomain, tunnel, client credentials and access policy. See [Cloudflare remote MCP ingress](CLOUDFLARE-REMOTE-MCP.md) for a generic route example, Host rewrite, validation, auth compatibility gates and rollback requirements. Never put an actual deployment hostname or credentials in this repository. This does **not** approve DNS, a public route or service installation. The authentication model must be proven against the live Grok.com connector.
+
+## Recommended architecture, contingent on client/auth acceptance
 
 ```text
         hosted Grok / remote agent
@@ -206,7 +208,7 @@ A successful local preflight only establishes host prerequisites at **that momen
 
 ### Deployment decision
 
-**Do not deploy or expose any public ingress based on this document alone.** The provider-neutral gateway, its offline credential workflow, and an optional local-only runner are repository artifacts requiring further operator acceptance. No installation or public endpoint has been authorized or performed. After the operator chooses an authenticated tunnel provider and verifies which Grok client authentication mode is available, add an explicit opt-in installation/rollback workflow. #231 tracks actual Grok acceptance; #215 is already closed for ordinary MCP-client protocol compatibility.
+**Do not deploy or expose any public ingress based on this document alone.** The provider-neutral gateway, its offline credential workflow, and an optional local-only runner are repository artifacts requiring further operator acceptance. Cloudflare Tunnel is documented as an **optional, per-installation transport**, not a shared hosted service; each deploying user supplies a separate domain, tunnel and credentials outside GitHub. No installation or endpoint has been authorized or performed. After that operator verifies Grok's supported authentication mode, approve a specific self-hosted installation/rollback workflow. #231 tracks real Grok acceptance; #215 is already closed for ordinary MCP-client protocol compatibility.
 
 Grok-specific CLI, hosted website, xAI API and sanitized client acceptance steps are tracked in [GROK-MCP-ACCEPTANCE.md](GROK-MCP-ACCEPTANCE.md) (#231). This procedure does not authorize any public endpoint or deployment.
 
