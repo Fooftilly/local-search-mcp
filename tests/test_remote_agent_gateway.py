@@ -1,5 +1,6 @@
 """Isolated gateway acceptance: no Docker, open port, tunnel, or credentials."""
 import asyncio
+import json
 import time
 import unittest
 
@@ -267,8 +268,18 @@ class RemoteGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         # The hosted-client gateway must preserve the full advertised
         # discovery contract, not merely return an HTTP 200 or two names.
-        discovered = {tool["name"]: tool for tool in
-                      response.json()["result"]["tools"]}
+        content_type = response.headers["content-type"].split(";", 1)[0]
+        if content_type == "text/event-stream":
+            # FastMCP may frame JSON-RPC results as SSE on Streamable HTTP.
+            events = [line[5:].strip() for line in response.text.splitlines()
+                      if line.startswith("data:")]
+            self.assertEqual(len(events), 1)
+            payload = json.loads(events[0])
+        else:
+            self.assertEqual(content_type, "application/json")
+            payload = response.json()
+        discovered = {tool["name"]: tool
+                      for tool in payload["result"]["tools"]}
         expected = {
             "web_search", "web_search_capabilities", "web_search_batch",
             "web_fetch", "web_fetch_batch", "web_fetch_page",
