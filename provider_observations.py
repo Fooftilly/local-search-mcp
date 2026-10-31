@@ -133,6 +133,9 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
         raise OSError("History directory is a symlink")
     engine_samples: dict[str, list[float | None]] = defaultdict(list)
     category_samples: dict[str, list[float | None]] = defaultdict(list)
+    reported_failures: dict[str, int] = defaultdict(int)
+    reported_diagnostic_calls = partial_diagnostic_calls = unknown_diagnostic_calls = 0
+    no_failures_reported_calls = omitted_diagnostic_names = 0
     calls = errors = seen_sources = unattributed = 0
     malformed = scanned = scanned_files = 0
     limited = False
@@ -163,6 +166,32 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
             if when is None or when < cutoff or when > now + timedelta(minutes=5):
                 continue
             calls += 1
+            # Old/non-opted-in events have no provider-failure evidence.
+            # These are upstream-reported labels, never a provider uptime
+            # denominator or measured provider-specific response time.
+            diag = item.get("provider_diagnostics")
+            if item.get("provider_diagnostics_opt_in") is True and isinstance(diag, dict):
+                coverage = diag.get("coverage")
+                if coverage in ("partial", "unverifiable", "no_failures_reported"):
+                    reported_diagnostic_calls += 1
+                    if coverage == "partial":
+                        partial_diagnostic_calls += 1
+                    elif coverage == "unverifiable":
+                        unknown_diagnostic_calls += 1
+                    else:
+                        no_failures_reported_calls += 1
+                    names = diag.get("unresponsive_engines")
+                    distinct = set()
+                    if isinstance(names, list):
+                        for name in names[:16]:
+                            safe = _label(name)
+                            if not safe:
+                                omitted_diagnostic_names += 1
+                            elif safe.casefold() not in distinct:
+                                distinct.add(safe.casefold())
+                                reported_failures[safe] += 1
+                    if diag.get("truncated") is True:
+                        limited = True
             if item.get("status") != "success":
                 errors += 1
                 continue
@@ -211,9 +240,22 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
         "category_groups_truncated": len(category_samples) > MAX_GROUPS,
         "observed_result_engines": _rollup(engine_samples),
         "requested_categories": _rollup(category_samples),
+        "opted_in_diagnostic_calls": reported_diagnostic_calls,
+        "reported_partial_provider_calls": partial_diagnostic_calls,
+        "reported_unknown_provider_calls": unknown_diagnostic_calls,
+        "reported_no_failures_calls": no_failures_reported_calls,
+        "provider_labels_suppressed": omitted_diagnostic_names,
+        "reported_unresponsive_engines": [
+            {"name": name, "reported_unresponsive_calls": count}
+            for name, count in sorted(
+                reported_failures.items(), key=lambda row: (-row[1], row[0])
+            )[:MAX_GROUPS]
+        ],
+        "provider_failure_groups_truncated": len(reported_failures) > MAX_GROUPS,
         "scope": "retained private audit; first five result rows per search",
         "latency_scope": "total local search tool call time, not engine latency",
-        "provider_failure_coverage": "unavailable_from_existing_history",
+        "provider_failure_coverage": ("per_call_opt_in_incomplete"
+                                      if reported_diagnostic_calls else "no_opt_in_reports_retained"),
         "provider_uptime": "not_measured",
         "per_engine_category_link": "not_retained",
         "cache_hit_coverage": "not_retained",
