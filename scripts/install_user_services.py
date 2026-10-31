@@ -26,6 +26,10 @@ LEGACY_UPDATE_NAMES = (
 )
 GUARD_PROBE = "local-search-mcp-guard-probe.service"
 GUARD_PREFLIGHT = "local-search-mcp-guard-preflight.service"
+CLOUDFLARE_NAMES = (
+    "local-search-mcp-remote-gateway.service",
+    "local-search-mcp-cloudflare-origin.service",
+)
 
 
 def quote(value: str) -> str:
@@ -45,14 +49,22 @@ def _render_unit(name: str, substitutions: dict[str, str]) -> str:
 
 
 def unit_files(python: str, root: Path, *,
-               guard_probe: bool = False) -> dict[str, str]:
+               guard_probe: bool = False,
+               cloudflare_portal: bool = False) -> dict[str, str]:
     """Render only the supported project-owned units (no Git watcher)."""
     fields = {
         "EXE": quote(str(Path(python).resolve())),
         "LAUNCH": quote(str(root / "bootstrap.py")),
         "HEALTH": quote(str(root / "health_cli.py")),
     }
-    names = (*NAMES, GUARD_PROBE, GUARD_PREFLIGHT) if guard_probe else NAMES
+    if cloudflare_portal and guard_probe:
+        raise ValueError("Choose one optional service family")
+    if cloudflare_portal:
+        fields["EXE"] = quote(str(root / ".venv" / "bin" / "python"))
+        fields["ROOT"] = quote(str(root))
+        names = CLOUDFLARE_NAMES
+    else:
+        names = (*NAMES, GUARD_PROBE, GUARD_PREFLIGHT) if guard_probe else NAMES
     return {name: _render_unit(name, fields) for name in names}
 
 
@@ -89,20 +101,29 @@ def main(argv: list[str] | None = None) -> int:
                        help="remove already-disabled legacy Git watcher unit files")
     parser.add_argument("--guard-probe", action="store_true",
                         help="include the optional fixed on-demand egress probe unit")
+    parser.add_argument("--cloudflare-portal", action="store_true",
+                        help="preview/install/remove only the two optional loopback gateway/adapter units")
     args = parser.parse_args(argv)
     if os.geteuid() == 0:
         parser.error("Run as your normal user, not root")
+    if args.cloudflare_portal and (args.guard_probe or args.remove_auto_restart):
+        parser.error("Cloudflare option cannot change guard or legacy units")
     if args.guard_probe and (args.remove or args.remove_auto_restart):
         parser.error("--guard-probe is only valid for preview or --install")
     folder = destination()
-    files = unit_files(sys.executable, ROOT, guard_probe=args.guard_probe)
+    if args.cloudflare_portal and args.install and not (
+            ROOT / ".venv" / "bin" / "python").is_file():
+        parser.error("Project .venv must be installed first")
+    files = unit_files(sys.executable, ROOT, guard_probe=args.guard_probe,
+                       cloudflare_portal=args.cloudflare_portal)
     if args.install:
         folder.mkdir(parents=True, exist_ok=True)
         for name, content in files.items():
             write_owned(folder / name, content)
         print("Installed user units. Run systemctl --user daemon-reload")
     elif args.remove or args.remove_auto_restart:
-        selected = (LEGACY_UPDATE_NAMES if args.remove_auto_restart
+        selected = (CLOUDFLARE_NAMES if args.cloudflare_portal
+                    else LEGACY_UPDATE_NAMES if args.remove_auto_restart
                     else (*NAMES, *LEGACY_UPDATE_NAMES, GUARD_PROBE, GUARD_PREFLIGHT))
         for name in selected:
             path = folder / name
