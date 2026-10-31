@@ -468,6 +468,7 @@ MENU_GROUPS = {
         ("2", "Connect ChatGPT (manual account steps)"),
         ("12", "Connect Cursor, Claude Code or Hermes (manual steps)"),
         ("11", "Install protected ChatGPT tunnel (sudo; requires SECURE)"),
+        ("18", "Cloudflare MCP Portal (preview / prepare / rollback)"),
     )),
     "3": ("Status", (
         ("1", "Check existing setup / status (read-only)"),
@@ -516,6 +517,8 @@ def dry_run() -> dict:
              "action": "configure validated on-demand backends with operator confirmation"},
             {"menu": "2.3", "effect": "privileged system changes only after confirmation",
              "action": "validate dedicated backends; install fixed egress guard, restricted sudoers and protected ChatGPT tunnel"},
+            {"menu": "2.4", "effect": "read-only or explicitly confirmed local preparation/rollback",
+             "action": "operator-owned Cloudflare hostname and two disabled optional units; no remote Cloudflare changes"},
             {"menu": "2.2", "effect": "read-only",
              "action": "show optional local Cursor, Claude Code or Hermes HTTP MCP instructions; never edit third-party config"},
             {"menu": "3.5", "effect": "read-only",
@@ -881,6 +884,18 @@ def menu() -> int:
                     print("Cancelled; no client settings changed")
             except (EOFError, KeyboardInterrupt):
                 print("Cancelled; no client settings changed")
+        elif choice == "18":
+            print(json.dumps(cloudflare_portal_preview(), indent=2))
+            try:
+                action = input("Cloudflare: PREPARE, REMOVE, or Enter to cancel: ").strip().upper()
+                if action == "PREPARE":
+                    print("Preparation exit:", cloudflare_portal_prepare())
+                elif action == "REMOVE":
+                    print("Rollback exit:", cloudflare_portal_rollback())
+                else:
+                    print("No changes made")
+            except (EOFError, KeyboardInterrupt):
+                print("Interrupted; inspect optional local configuration before retrying")
         elif choice == "11":
             if run_existing("scripts/install_secure_tunnel.py") != 0:
                 print("Read-only prerequisites were not met; no privileged installation attempted.")
@@ -950,6 +965,12 @@ def make_parser() -> argparse.ArgumentParser:
                                   Offline isolated fresh-install smoke; disposable temp files only
   ./setup.sh --on-demand-status    Read-only Docker ownership/eligibility and configured mode
   ./setup.sh --boot-audit          Read-only systemd, firewall-install and Docker restart-policy prerequisites
+  ./setup.sh --cloudflare-portal-preview
+                                  Redacted local Cloudflare Portal readiness (offline)
+  ./setup.sh --cloudflare-portal-prepare
+                                  Explicit attended local hostname config and disabled units
+  ./setup.sh --cloudflare-portal-rollback
+                                  Explicit attended stop/removal of optional local units/config
   ./setup.sh --secure-tunnel-preview
                                   Read-only preview of guarded production tunnel setup
   ./setup.sh --secure-tunnel --confirm-secure-tunnel SECURE
@@ -999,6 +1020,12 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="read-only configured on-demand and runtime state; no Docker changes")
     choices.add_argument("--boot-audit", action="store_true",
                          help="read-only reboot prerequisites; no sudo, Docker mutations or firewall probes")
+    choices.add_argument("--cloudflare-portal-preview", action="store_true",
+                         help="read-only local Cloudflare Portal status, not route verification")
+    choices.add_argument("--cloudflare-portal-prepare", action="store_true",
+                         help="attended private hostname configuration and optional unit install")
+    choices.add_argument("--cloudflare-portal-rollback", action="store_true",
+                         help="attended rollback of only locally owned optional units")
     choices.add_argument("--secure-tunnel-preview", action="store_true",
                          help="read-only preview of production firewall/tunnel setup")
     choices.add_argument("--secure-tunnel", action="store_true",
@@ -1057,6 +1084,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.wake_before_disable or args.confirm_on_demand is not None:
         raise SystemExit("On-demand options require explicit enable/disable mode")
+    if args.cloudflare_portal_preview:
+        print(json.dumps(cloudflare_portal_preview(), indent=2))
+        return 0
+    if args.cloudflare_portal_prepare:
+        return cloudflare_portal_prepare()
+    if args.cloudflare_portal_rollback:
+        return cloudflare_portal_rollback()
     if args.search_engines:
         if os.geteuid() == 0:
             raise SystemExit("Run search-engine setup as the normal user")
