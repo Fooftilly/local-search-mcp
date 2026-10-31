@@ -2,6 +2,8 @@
 
 **Status: reusable operator-managed configuration example; NOT DEPLOYED.** Cloudflare Tunnel is one supported transport option for operators who own a DNS zone in Cloudflare. Every installation uses its **own** subdomain, tunnel, Cloudflare account, credentials, grants and security policy. This project does not supply, host, publish or centrally operate an endpoint for other users. The existing OpenAI Secure MCP Tunnel is independent and stays unchanged.
 
+**Consider Cloudflare MCP Server Portals before a public-origin route.** [The portal assessment](CLOUDFLARE-MCP-PORTALS.md) documents Cloudflare Access OAuth, a private-network/Gateway upstream, static bearer credentials, namespaced tools, and deployment blockers. For hosted clients that support Cloudflare's OAuth flow, a private-origin portal may be preferable to exposing the origin's dedicated HTTPS hostname. This direct published-tunnel route remains a fallback, not the default.
+
 This is an optional *transport* choice, not a deployment instruction or permission to publish a gateway. Hosted Grok.com Custom MCP authentication remains unverified. The [ingress security decision](REMOTE-AGENT-INGRESS.md) and [Grok client acceptance](GROK-MCP-ACCEPTANCE.md) remain authoritative for fail-closed requirements.
 
 ## Required routing boundary
