@@ -152,24 +152,20 @@ class OfflineCredentialTests(unittest.TestCase):
 
     def test_cli_dry_run_list_and_apply_gate(self):
         output = io.StringIO()
-        with patch("remote_agent_credentials.os.geteuid", return_value=1000), \
-                patch("sys.stdout", output):
+        with patch("sys.stdout", output):
             self.assertEqual(main(["--store", str(self.path), "create", "grok"]), 0)
         self.assertIn("No changes made", output.getvalue())
         self.assertFalse(self.path.exists())
-        with patch("remote_agent_credentials.os.geteuid", return_value=1000), \
-                patch("remote_agent_credentials._trusted_tty_confirmation",
-                      self.confirm), patch("sys.stdout", io.StringIO()):
+        with patch("remote_agent_credentials._trusted_tty_confirmation",
+                   self.confirm), patch("sys.stdout", io.StringIO()):
             self.assertEqual(main(["--store", str(self.path), "--apply",
                                    "create", "grok"]), 0)
         output = io.StringIO()
-        with patch("remote_agent_credentials.os.geteuid", return_value=1000), \
-                patch("sys.stdout", output):
+        with patch("sys.stdout", output):
             self.assertEqual(main(["--store", str(self.path), "list"]), 0)
         self.assertIn("grok: expires at", output.getvalue())
         self.assertNotIn(self.tokens["grok"], output.getvalue())
-        with patch("remote_agent_credentials.os.geteuid", return_value=1000), \
-                patch("sys.stdout", io.StringIO()):
+        with patch("sys.stdout", io.StringIO()):
             self.assertEqual(main(["--store", str(self.path), "--apply",
                                    "revoke", "grok"]), 0)
         self.assertEqual(load_client_grants(self.path), ())
