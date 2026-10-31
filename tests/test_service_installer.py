@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -79,7 +80,9 @@ class ServiceInstallerTests(unittest.TestCase):
             root = Path(tmp)
             venv = root / ".venv" / "bin"
             venv.mkdir(parents=True)
-            (venv / "python").write_text("placeholder")
+            # Typical .venv/bin/python is a symlink to system Python.
+            # The unit MUST execute the symlink path to load site-packages.
+            (venv / "python").symlink_to(Path(sys.executable))
             with (patch.object(installer, "ROOT", root),
                   patch.object(installer.os, "geteuid", return_value=1000),
                   patch.object(installer, "write_owned") as written):
