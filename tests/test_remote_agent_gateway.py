@@ -235,6 +235,40 @@ class RemoteGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("http.response.start", seen)
         self.assertNotIn("http.response.body", seen)
 
+    async def test_actual_stateless_fastmcp_tools_list(self):
+        """Verify against the real bridge, not only a permissive test mock."""
+        import bridge
+
+        app = bridge.mcp.http_app(
+            path="/mcp", stateless_http=True,
+            host_origin_protection=True,
+            allowed_hosts=bridge.MCP_ALLOWED_HOSTS,
+            allowed_origins=bridge.MCP_ALLOWED_ORIGINS,
+        )
+        async with app.lifespan(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://127.0.0.1:8790", timeout=5,
+            ) as actual_upstream:
+                gateway = LoopbackMCPGateway(
+                    upstream=actual_upstream,
+                    grants=lambda: tuple(self.grants),
+                    guard_ready=lambda: True,
+                    clock=lambda: self.clock[0],
+                )
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=gateway),
+                    base_url="http://127.0.0.1:18790", timeout=5,
+                ) as client:
+                    response = await client.post(
+                        "/mcp", headers=self.auth(),
+                        json={"jsonrpc": "2.0", "method": "tools/list", "id": 1},
+                    )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("web_fetch", response.text)
+        self.assertIn("web_search", response.text)
+        self.assertNotIn("mcp-session-id", response.headers)
+
     async def test_no_configuration_provider_is_accepted(self):
         with self.assertRaises(ValueError):
             LoopbackMCPGateway(
