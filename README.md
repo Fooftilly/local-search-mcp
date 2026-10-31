@@ -183,6 +183,8 @@ The older Git-change auto-restart watcher is deprecated. Use the one attended `.
 
 Read `./tunnel-client help quickstart` and configure a profile referencing `http://127.0.0.1:8790/mcp`. Store runtime key outside Git. See the [official Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels). The tunnel does not expose the dashboard or native Crawl4AI endpoints.
 
+For **hosted Grok or other non-OpenAI agents**, do not reuse the OpenAI tunnel as a public MCP URL or expose port 8790 directly. The design and security/deployment gates for a separately authenticated remote ingress are in [REMOTE-AGENT-INGRESS.md](docs/REMOTE-AGENT-INGRESS.md) (#230). **No remote ingress is provisioned by this documentation.**
+
 ## Development
 
 ```bash
