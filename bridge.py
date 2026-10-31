@@ -23,6 +23,7 @@ from history_log import logged_tool
 import document_pages
 import request_cache
 import structured_extraction
+import jsonld_extraction
 import cache_settings
 import upstream_settings
 from search_results import enrich_search_results, normalized_url
@@ -741,16 +742,18 @@ def _run_fetch(url: str, mode: str, *,
                include_outline: bool = False,
                include_alternatives: bool = False,
                compact_chars: int = document_pages.PAGE_CHARS,
-               retain_for_evidence: bool = False) -> dict:
+               retain_for_evidence: bool = False,
+               include_jsonld: bool = False) -> dict:
     try:
         with on_demand.lease("crawl4ai"):
             if (include_links or include_tables or include_outline or include_alternatives
-                    or retain_for_evidence or compact_chars != document_pages.PAGE_CHARS):
+                    or retain_for_evidence or include_jsonld or compact_chars != document_pages.PAGE_CHARS):
                 return _run_fetch_network(
                     url, mode, once_proof=once_proof,
                     include_links=include_links, include_tables=include_tables,
                     include_outline=include_outline, include_alternatives=include_alternatives,
-                    compact_chars=compact_chars, retain_for_evidence=retain_for_evidence)
+                    compact_chars=compact_chars, retain_for_evidence=retain_for_evidence,
+                    include_jsonld=include_jsonld)
             return _run_fetch_network(url, mode, once_proof=once_proof)
     except on_demand.BackendUnavailable:
         return {"url": url, "success": False, "status": "upstream_unavailable",
@@ -763,7 +766,8 @@ def _run_fetch_network(url: str, mode: str, *,
                        include_outline: bool = False,
                        include_alternatives: bool = False,
                        compact_chars: int = document_pages.PAGE_CHARS,
-                       retain_for_evidence: bool = False) -> dict:
+                       retain_for_evidence: bool = False,
+                       include_jsonld: bool = False) -> dict:
     """Crawl only after the caller has passed current local policy checks."""
     headers = {"Authorization": f"Bearer {CRAWL4AI_TOKEN}"} if CRAWL4AI_TOKEN else {}
     crawler_params = {"stream": False}
@@ -921,6 +925,10 @@ def _run_fetch_network(url: str, mode: str, *,
     if include_outline:
         output.update(document_pages.build_outline(
             markdown, first_page_chars=compact_chars))
+    if include_jsonld:
+        # CrawlResult.html is already returned by THIS authorized crawl.
+        # Parse only a bounded prefix, never execute scripts or visit URLs.
+        output.update(jsonld_extraction.extract(page))
     if include_links or include_tables or include_alternatives:
         # Alternative format groups can be pruned from fit Markdown. Inspect
         # the same crawl's bounded raw text when available, without changing
@@ -996,7 +1004,8 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
               compact_chars: int = document_pages.PAGE_CHARS,
               include_retrieval_info: bool = False,
               include_alternatives: bool = False,
-              retain_for_evidence: bool = False) -> dict:
+              retain_for_evidence: bool = False,
+              include_jsonld: bool = False) -> dict:
     """Fetch an approved page; bounded memory cache for public short pages.
 
     Authorization runs before every cache hit. Fresh skips both cache and
@@ -1016,6 +1025,8 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
         raise ValueError("include_retrieval_info must be a boolean")
     if type(retain_for_evidence) is not bool:
         raise ValueError("retain_for_evidence must be a boolean")
+    if type(include_jsonld) is not bool:
+        raise ValueError("include_jsonld must be a boolean")
     before = request_cache.policy_epoch()
     once_proof = None
     # Ordinary permanent grants take precedence: a one-use grant must not be
@@ -1051,12 +1062,13 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
     if once_proof is not None:
         # One-use access never reads, stores, refreshes or coalesces a reusable
         # fetch cache entry. Proof stays local to this invocation.
-        if include_links or include_tables or include_outline or include_alternatives or retain_for_evidence or compact_chars != document_pages.PAGE_CHARS:
+        if include_links or include_tables or include_outline or include_alternatives or retain_for_evidence or include_jsonld or compact_chars != document_pages.PAGE_CHARS:
             response = _run_fetch(
                 url, mode, once_proof=once_proof,
                 include_links=include_links, include_tables=include_tables,
                 include_outline=include_outline, include_alternatives=include_alternatives,
-                compact_chars=compact_chars, retain_for_evidence=retain_for_evidence)
+                compact_chars=compact_chars, retain_for_evidence=retain_for_evidence,
+                include_jsonld=include_jsonld)
         else:
             response = _run_fetch(url, mode, once_proof=once_proof)
         if include_retrieval_info:
@@ -1066,12 +1078,13 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
         # Opt-in structured data must not reuse the legacy Markdown-only
         # cache entry or populate it with mismatched response shape.
         opt_in = (include_links or include_tables or include_outline or include_alternatives or
-                  retain_for_evidence or compact_chars != document_pages.PAGE_CHARS)
+                  retain_for_evidence or include_jsonld or compact_chars != document_pages.PAGE_CHARS)
         key = None if opt_in else request_cache.fetch_key(url, mode)
         load = (lambda: _run_fetch(
             url, mode, include_links=include_links, include_tables=include_tables,
             include_outline=include_outline, include_alternatives=include_alternatives,
-            compact_chars=compact_chars, retain_for_evidence=retain_for_evidence)
+            compact_chars=compact_chars, retain_for_evidence=retain_for_evidence,
+            include_jsonld=include_jsonld)
         ) if opt_in else (lambda: _run_fetch(url, mode))
         cached = request_cache.run(
             "fetch", key, load,

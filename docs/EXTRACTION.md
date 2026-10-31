@@ -327,6 +327,51 @@ archive or background comparison process is introduced. All negative
 responses omit the `evidence` object; legacy callers and default output
 schemas remain unchanged.
 
+## Opt-in bounded JSON-LD extraction from one approved crawl
+
+Use `web_fetch(url, include_jsonld=true)` to read recognized schema.org
+declarations embedded in **CrawlResult.html from the same approved Crawl4AI
+response**. This option does not request another webpage or parse arbitrary
+linked documents. It does not change Docker, crawler strategy, JavaScript
+settings, domain approvals or the normal `web_fetch(url)` result shape.
+
+Crawl4AI v0.9.5+ documents the raw page HTML as `CrawlResult.html`; its
+`cleaned_html` can omit scripts. The MCP intentionally uses only the former.
+Whether the *installed* operator-host crawler returns a nonempty `html`
+field must still be verified separately. If absent, opt-in output reports
+`jsonld_info.status="unavailable"`; this is not silently treated as "no
+schema.org information" and is not a reason to change crawler permissions.
+
+Parsing uses Python's standard HTML and JSON libraries, not JavaScript or
+a browser execution hook. Strict bounds: scan at most 512 Ki characters of
+existing HTML, inspect at most 8 JSON-LD script blocks (each at most 32,768
+characters), examine at most 24 records, and return at most 6 allowlisted
+records/12,000 JSON-encoded bytes. Relevant tags must be
+`<script type="application/ld+json">` and declare schema.org context or
+absolute schema.org types. Supported types are `Article`, `JobPosting`,
+`Event`, `Product`, `Offer`, and `FAQPage`. Only conservative scalar
+fields, named organizations/places/authors, limited offer price fields and
+up to 3 FAQ answers are retained. Embedded URLs, arbitrary objects, script
+code, unknown properties, remote JSON-LD `@context` references, identifiers
+and markup are **not** followed, executed, or returned.
+
+The optional response adds `jsonld` (typed, bounded records) and
+`jsonld_info` (availability, scan truncation, observed scripts, malformed
+scripts and whether caps applied). Every record is labeled
+`source="page_jsonld_unverified"`, `publisher_claims_verified=false`.
+`source_completeness="unknown"` reflects that the scanner deliberately
+does **not** claim exhaustive page coverage. Some websites' structured
+markup may be stale, spam, misleading or absent; the values are **untrusted
+source data** and must not be treated as verified price, job eligibility,
+availability, deadline or legal fact without independent corroboration.
+Receiving a JSON-LD URL or claimed type never grants permission to fetch
+that destination. The bridge does not persist raw HTML, extracted nodes,
+private query strings or scripts into its audit history.
+
+The feature is not exposed through `web_fetch_batch` initially; that keeps
+per-URL privacy, memory and cost control explicit. It is also not a substitute
+for pending guarded PDF parsing under #141.
+
 ## Empty extraction and possible access-gate diagnostics
 
 A successful Crawl4AI pipeline is **not** evidence that readable page text was
