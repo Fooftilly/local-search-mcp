@@ -13,8 +13,12 @@ The report offers bounded rolling **1-, 24-, or 168-hour** UTC windows. It
 uses at most the latest **2 MiB of each of four existing history files** and
 examines at most 20,000 events; oversized/malformed events are ignored.
 Symlinks and nonregular inputs fail closed, with no file paths disclosed in
-the UI. Source rotation, clipped file tails, malformed input and group limits
-are visibly reported. Samples may be incomplete even when no scan limit is
+the UI. The scanner obtains a shared lock on the **existing private history
+writer lock** while reading the four file tails, so rotations cannot rename a
+generation midway through a report. It never creates or modifies that lock.
+For legacy/manual history without a lock file, the report is explicitly
+marked partial/non-atomic. Source rotation, clipped file tails, malformed
+input and group limits are visibly reported. Samples may be incomplete even when no scan limit is
 triggered because older events may have rotated away. An unavailable history
 is **not** shown as a healthy/empty provider report.
 
@@ -31,9 +35,10 @@ contributes to sample counts but not to the duration mean.
 The visible duration is **the complete MCP search call duration**, not a
 measured provider latency. It may include the local cache, preflight and
 SearXNG wait time; several engine groups may display the same end-to-end
-call duration. Requested categories are taken only from explicitly selected
-well-known category names in the old audit, not inferred from engine
-capabilities. Default searches and unrecognized user-provided categories are
+call duration. Requested categories are taken from up to eight explicitly selected
+well-known category names (including `web`) in the old audit, not inferred
+from engine capabilities. Parenthesized result-engine names supported by
+the local SearXNG inventory are preserved after strict validation. Default searches and unrecognized user-provided categories are
 grouped under **unspecified**. Historical cache hits, per-engine failures,
 provider-specific duration and category-to-engine attribution were **not**
 retained; those data cannot be reconstructed from the current history.
