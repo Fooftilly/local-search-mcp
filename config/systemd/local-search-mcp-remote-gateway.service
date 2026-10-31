@@ -15,9 +15,14 @@ UMask=0077
 # before forwarding EVERY request. NoNewPrivileges would make sudo fail.
 # Keep this isolated to the privileged guard probe; never change sudoers.
 NoNewPrivileges=false
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=read-only
+# A user-service mount namespace remaps unmapped host root directories to
+# UID 65534, invalidating our strict private-file ancestor ownership checks.
+# It also prevents the gateway's narrowly authorized host-root sudo guard
+# from working. Run as the same unprivileged user *without* a user namespace.
+# Retain its UMask, fixed loopback listener, guard checks and syscall filter.
+PrivateTmp=false
+ProtectSystem=false
+ProtectHome=false
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]
