@@ -126,8 +126,9 @@ All steps are run on your own Linux machine as its **unprivileged** owner.
    reject those owners. Moreover, the authenticated gateway's dedicated
    host-root egress guard runs through `sudo -n`, which cannot elevate
    to host root within that unprivileged user namespace. The adapter must
-   **not** invoke sudo: it relies on the gateway's startup and per-request
-   root-guard enforcement and retains `NoNewPrivileges=true`. Do **not** widen
+   **not** invoke sudo: it independently performs a bounded, unprivileged
+   twelve-tool discovery and relies on the gateway's startup and per-request
+   root-guard enforcement; it retains `NoNewPrivileges=true`. Do **not** widen
    the private-file ownership allowlist, loosen 0600/0700 requirements or
    change the sudoers/egress guard to work around the failure.
 
