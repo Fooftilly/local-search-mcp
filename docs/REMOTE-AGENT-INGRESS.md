@@ -177,6 +177,8 @@ python -m unittest discover -s tests -p 'test_remote_agent_server.py' -v
 
 **Do not deploy or expose any public ingress based on this document alone.** The provider-neutral gateway, its offline credential workflow, and an optional local-only runner are repository artifacts requiring further operator acceptance. No installation or public endpoint has been authorized or performed. After the operator chooses an authenticated tunnel provider and verifies which Grok client authentication mode is available, add an explicit opt-in installation/rollback workflow. #231 tracks actual Grok acceptance; #215 is already closed for ordinary MCP-client protocol compatibility.
 
+Grok-specific CLI, hosted website, xAI API and sanitized client acceptance steps are tracked in [GROK-MCP-ACCEPTANCE.md](GROK-MCP-ACCEPTANCE.md) (#231). This procedure does not authorize any public endpoint or deployment.
+
 ## Source and maintenance notes
 
 - OpenAI private tunnel: https://developers.openai.com/api/docs/guides/secure-mcp-tunnels

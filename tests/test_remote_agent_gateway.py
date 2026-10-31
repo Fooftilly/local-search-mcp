@@ -1,5 +1,6 @@
 """Isolated gateway acceptance: no Docker, open port, tunnel, or credentials."""
 import asyncio
+import json
 import time
 import unittest
 
@@ -265,8 +266,36 @@ class RemoteGatewayTests(unittest.IsolatedAsyncioTestCase):
                         json={"jsonrpc": "2.0", "method": "tools/list", "id": 1},
                     )
         self.assertEqual(response.status_code, 200)
-        self.assertIn("web_fetch", response.text)
-        self.assertIn("web_search", response.text)
+        # The hosted-client gateway must preserve the full advertised
+        # discovery contract, not merely return an HTTP 200 or two names.
+        content_type = response.headers["content-type"].split(";", 1)[0]
+        if content_type == "text/event-stream":
+            # FastMCP may frame JSON-RPC results as SSE on Streamable HTTP.
+            events = [line[5:].strip() for line in response.text.splitlines()
+                      if line.startswith("data:")]
+            self.assertEqual(len(events), 1)
+            payload = json.loads(events[0])
+        else:
+            self.assertEqual(content_type, "application/json")
+            payload = response.json()
+        discovered = {tool["name"]: tool
+                      for tool in payload["result"]["tools"]}
+        expected = {
+            "web_search", "web_search_capabilities", "web_search_batch",
+            "web_fetch", "web_fetch_batch", "web_fetch_page",
+            "web_table_page", "web_links_page", "web_find",
+            "web_extract_section", "web_compare_documents", "web_metrics",
+        }
+        self.assertEqual(set(discovered), expected)
+        for name, tool in discovered.items():
+            with self.subTest(name=name):
+                self.assertEqual(tool["inputSchema"]["type"], "object")
+                self.assertIsInstance(
+                    tool["inputSchema"].get("properties", {}), dict)
+        self.assertIn("include_image_metadata",
+                      discovered["web_search"]["inputSchema"]["properties"])
+        self.assertIn("include_retrieval_info",
+                      discovered["web_fetch"]["inputSchema"]["properties"])
         self.assertNotIn("mcp-session-id", response.headers)
 
     async def test_no_configuration_provider_is_accepted(self):
