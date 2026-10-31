@@ -11,6 +11,7 @@ import fcntl
 import hashlib
 import json
 import os
+import pwd
 from pathlib import Path
 import secrets
 import stat
@@ -27,6 +28,18 @@ from remote_agent_prerequisites import (
 
 MAX_TTL_HOURS = 720
 _LOCK_SUFFIX = ".lock"
+
+
+def default_store_path() -> Path:
+    """One fixed private verifier path for the actual CLI.
+
+    Resolve the authenticated OS account's home through passwd, not user-
+    supplied CLI flags or the possibly spoofed HOME/XDG environment.
+    Tests may inject other paths through the library functions.
+    """
+    return (Path(pwd.getpwuid(os.geteuid()).pw_dir)
+            / ".config" / "local-search-mcp" / "private"
+            / "agent-grants.json")
 
 
 class ProvisioningError(ValueError):
@@ -240,8 +253,6 @@ def _trusted_tty_confirmation(client_id: str, token: str) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--store", type=Path, required=True,
-                        help="absolute private verifier-file path")
     parser.add_argument("--apply", action="store_true",
                         help="explicitly commit the mutation")
     parser.add_argument("--ttl-hours", type=int, default=24)
@@ -254,21 +265,22 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if os.geteuid() == 0:
             raise ProvisioningError("Run as the unprivileged service owner")
-        _check_path(args.store)
+        target = default_store_path()
+        _check_path(target)
         if args.action == "list":
             if args.apply:
                 raise ProvisioningError("--apply is not valid for list")
-            for g in _existing_grants(args.store, allow_missing=False):
+            for g in _existing_grants(target, allow_missing=False):
                 print(f"{g.client_id}: expires at {int(g.expires_at)} UTC epoch")
         elif args.apply:
             print(apply_change(
-                args.store, args.action, args.client_id,
+                target, args.action, args.client_id,
                 ttl_hours=args.ttl_hours,
                 reveal_and_confirm=_trusted_tty_confirmation))
         else:
             if args.action != "revoke":
                 _validate_ttl(args.ttl_hours)
-            print(plan_change(args.store, args.action, args.client_id))
+            print(plan_change(target, args.action, args.client_id))
         return 0
     except ProvisioningError as exc:
         print(f"Credential action refused: {exc}", file=sys.stderr)
