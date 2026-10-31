@@ -1,7 +1,8 @@
-"""Guard the systemd tunnel launch against bridge socket startup races.
+"""Verify the managed tunnel launcher forwards a bounded startup-wait setting.
 
-This exercises the actual --service launcher environment without starting a
-tunnel, opening sockets, touching operator credentials, or running Docker.
+These mocked execve tests establish only local environment propagation, not the
+upstream tunnel-client's MCP/OAuth probe timing or live /readyz behavior. Real
+cold-start readiness is an attended operator acceptance gate (docs/SYSTEMD.md).
 """
 from __future__ import annotations
 
