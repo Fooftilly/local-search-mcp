@@ -22,6 +22,7 @@ import upstream_settings
 import cache_settings
 import portable_settings
 import history_index
+import provider_observations
 from web_assets import LIVE_SCRIPT, STYLESHEET
 from web_templates import render_template
 from runtime_ports import MCP_PORT
@@ -912,6 +913,69 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=False,
     )
 
 
+def provider_observations_page(hours: int = 24) -> str:
+    """Aggregate only on explicit page request, never on live dashboard polls."""
+    if type(hours) is not int or hours not in provider_observations.WINDOWS:
+        raise ValueError("Invalid provider-observation window")
+    choices = "".join(
+        f'<option value="{n}"{" selected" if hours == n else ""}>'
+        f'Last {n} hour{"s" if n != 1 else ""}</option>'
+        for n in provider_observations.WINDOWS)
+    try:
+        result = provider_observations.observations(hours)
+    except (OSError, ValueError):
+        # Never echo private file paths, SQLite internals, query terms, or
+        # provider responses on an unsafe or corrupt audit source.
+        return render_template(
+            "provider-observations", hour_options=choices,
+            notice='<p role="alert" class="alert error">Private history is unavailable. '
+                   'Inspect local file permissions and history configuration.</p>',
+            coverage_rows='<tr><td colspan="2">Unavailable</td></tr>',
+            engine_rows='<tr><td colspan="4">Unavailable</td></tr>',
+            category_rows='<tr><td colspan="4">Unavailable</td></tr>')
+    def table_rows(items):
+        return "".join(
+            "<tr><td>" + esc(row["name"]) + "</td><td>" +
+            str(row["observed_searches"]) + "</td><td>" +
+            str(row["timed_searches"]) + "</td><td>" +
+            (str(row["mean_search_call_ms"])
+             if row["mean_search_call_ms"] is not None else "Not recorded") +
+            "</td></tr>" for row in items) or (
+            '<tr><td colspan="4">No attributable samples in this window</td></tr>')
+    labels = [
+        ("Audited search calls", result["sampled_search_calls"]),
+        ("Non-success calls (not attributable to an engine)",
+         result["non_success_search_calls"]),
+        ("Calls with a retained result engine",
+         result["search_calls_with_observed_sources"]),
+        ("Calls without a retained result engine",
+         result["search_calls_without_observed_sources"]),
+        ("Files scanned", result["source_files_scanned"]),
+        ("Records scanned", result["records_examined"]),
+        ("Malformed or oversized records ignored", result["malformed_records_ignored"]),
+        ("Scan or retention coverage limited", "Yes" if result["retention_or_scan_limited"] else "No"),
+        ("Engine group display truncated", "Yes" if result["engine_groups_truncated"] else "No"),
+        ("Category group display truncated", "Yes" if result["category_groups_truncated"] else "No"),
+        ("Per-engine failure coverage", "Unavailable"),
+        ("Per-engine network latency", "Not measured"),
+        ("Cache hits from historical calls", "Not recorded"),
+    ]
+    coverage = "".join("<tr><td>" + esc(title) + "</td><td>" +
+                       esc(value) + "</td></tr>" for title, value in labels)
+    notice = ('<p role="status">No history files currently available.</p>'
+              if not result["available"] else
+              '<p role="status">Sample is partial; historic rotation, scan bounds '
+              'or malformed entries prevent exhaustive conclusions.</p>'
+              if result["retention_or_scan_limited"] else
+              '<p role="status">Bounded sample of retained history. '
+              'Not a complete provider health report.</p>')
+    return render_template(
+        "provider-observations", hour_options=choices, notice=notice,
+        coverage_rows=coverage,
+        engine_rows=table_rows(result["observed_result_engines"]),
+        category_rows=table_rows(result["requested_categories"]))
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version='LocalSearchAdmin/1.0'
     def log_message(self, format, *args):
@@ -1065,6 +1129,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._respond(400, render(message=str(exc),kind='error'))
             return self._respond(200, document, 'application/json; charset=utf-8',
                                  download_name='domain-rules-v1.json')
+        if path.path == '/provider-observations':
+            if not self._read_origin_valid():return self._respond(403, 'Forbidden')
+            try:
+                query = parse_qs(path.query, keep_blank_values=True, max_num_fields=2)
+                if set(query) - {'hours'} or len(query.get('hours', ['24'])) != 1:
+                    raise ValueError("Unsupported report filter")
+                raw_hours = query.get('hours', ['24'])[0]
+                if raw_hours not in ('1', '24', '168'):
+                    raise ValueError("Invalid hours")
+                return self._respond(200, provider_observations_page(int(raw_hours)))
+            except ValueError:
+                return self._respond(400, 'Invalid provider-observation window')
         if path.path=='/history':
             query=parse_qs(path.query, keep_blank_values=True)
             try:
