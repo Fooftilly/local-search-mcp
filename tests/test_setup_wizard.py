@@ -344,6 +344,34 @@ class SetupWizardTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue())["private_route"],
                          "unverified")
 
+    def test_cloudflare_preview_uses_project_venv_and_redacts_untrusted_stdout(self):
+        valid = {"schema": "local-search-mcp/cloudflare-origin-status/v1",
+                 "credential": "dedicated cloudflare-portal grant active",
+                 "private_hostname_config": "owner-only configuration valid"}
+        with (patch.object(wizard, "project_python",
+                           return_value=Path("/opt/project/.venv/bin/python")),
+              patch.object(wizard.subprocess, "run",
+                           return_value=subprocess.CompletedProcess(
+                               [], 0, stdout=json.dumps(valid), stderr="PRIVATE")) as called):
+            result = wizard.cloudflare_portal_preview()
+        self.assertEqual(result["credential"], valid["credential"])
+        self.assertEqual(result["private_hostname_config"], valid["private_hostname_config"])
+        self.assertEqual(result["private_route"], "unverified")
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertEqual(
+            called.call_args.args[0][-2:],
+            ["remote_agent_cloudflare_origin", "--status-json"])
+
+        invalid = {**valid, "hostname": "PRIVATE_HOSTNAME"}
+        with (patch.object(wizard, "project_python",
+                           return_value=Path("/opt/project/.venv/bin/python")),
+              patch.object(wizard.subprocess, "run",
+                           return_value=subprocess.CompletedProcess(
+                               [], 0, stdout=json.dumps(invalid), stderr="PRIVATE"))):
+            result = wizard.cloudflare_portal_preview()
+        self.assertEqual(result["credential"], "not verified")
+        self.assertNotIn("PRIVATE", json.dumps(result))
+
     def test_cloudflare_prepare_requires_explicit_confirmation(self):
         with (patch.object(wizard.os, "geteuid", return_value=1000),
               patch.object(wizard, "project_python", return_value=Path("/fake/python")),
