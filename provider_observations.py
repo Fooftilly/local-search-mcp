@@ -48,7 +48,7 @@ def _time(value: object) -> datetime | None:
 
 def _read_tail(path: Path) -> tuple[list[bytes], bool]:
     """Fixed-size read; reject links/special files without modifying the host."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK
     fd = os.open(path, flags)
     try:
         info = os.fstat(fd)
@@ -80,15 +80,18 @@ def _source_snapshot(files: list[Path]) -> tuple[list[tuple[list[bytes], bool]],
     """
     lock = files[0].parent / ".history.lock"
     fd = None
+    locked = False
     try:
         try:
-            fd = os.open(lock, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            fd = os.open(lock, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                         | os.O_NONBLOCK)
         except FileNotFoundError:
             pass
         if fd is not None:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise OSError("Invalid private history lock")
             fcntl.flock(fd, fcntl.LOCK_SH)
+            locked = True
         snapshot = []
         for source in files:
             try:
@@ -98,8 +101,11 @@ def _source_snapshot(files: list[Path]) -> tuple[list[tuple[list[bytes], bool]],
         return snapshot, fd is not None
     finally:
         if fd is not None:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
+            try:
+                if locked:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
 
 def _rollup(values: dict[str, list[float | None]]) -> list[dict]:
     top = sorted(values.items(), key=lambda kv: (-len(kv[1]), kv[0]))
