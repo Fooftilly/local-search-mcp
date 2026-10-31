@@ -60,7 +60,6 @@ def unit_files(python: str, root: Path, *,
     if cloudflare_portal and guard_probe:
         raise ValueError("Choose one optional service family")
     if cloudflare_portal:
-        fields["EXE"] = quote(str(root / ".venv" / "bin" / "python"))
         fields["ROOT"] = quote(str(root))
         names = CLOUDFLARE_NAMES
     else:
@@ -114,7 +113,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cloudflare_portal and args.install and not (
             ROOT / ".venv" / "bin" / "python").is_file():
         parser.error("Project .venv must be installed first")
-    files = unit_files(sys.executable, ROOT, guard_probe=args.guard_probe,
+    interpreter = (str(ROOT / ".venv" / "bin" / "python")
+                   if args.cloudflare_portal else sys.executable)
+    files = unit_files(interpreter, ROOT, guard_probe=args.guard_probe,
                        cloudflare_portal=args.cloudflare_portal)
     if args.install:
         folder.mkdir(parents=True, exist_ok=True)
