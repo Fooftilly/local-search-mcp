@@ -1367,7 +1367,11 @@ def _citation_url(value: str) -> tuple[str, bool]:
             host = f"[{host}]"  # Defensive; public-IP targets are denied upstream.
         if parsed.port is not None:
             host += f":{parsed.port}"
-        return urlunsplit((parsed.scheme, host, parsed.path, "", ""))[:2000], bool(parsed.query)
+        # Never emit a truncated citation that points to another resource.
+        # An unusually long approved path makes evidence unavailable rather
+        # than silently creating an incorrect URL.
+        clean = urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+        return (clean if len(clean) <= 8192 else ""), bool(parsed.query)
     except (TypeError, ValueError, UnicodeError):
         return "", False
 
@@ -1398,6 +1402,12 @@ def web_extract_section(document_id: str, start_offset: int,
     source = source_url or final_url
     source_display, source_had_query = _citation_url(source)
     final_display, final_had_query = _citation_url(final_url)
+    if not source_display or not final_display:
+        return {**authorized, "evidence": {
+            "available": False,
+            "reason": "A source or final URL could not be represented without "
+                      "altering the source identity within the 8192-character cap.",
+        }}
     return {**authorized, "evidence": {
         "quotation": quote,
         "quote_start_offset": authorized["start_offset"],
