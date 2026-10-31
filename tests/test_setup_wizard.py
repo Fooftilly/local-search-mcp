@@ -71,7 +71,8 @@ class SetupWizardTests(unittest.TestCase):
             python = root / ".venv" / "bin" / "python"
             python.parent.mkdir(parents=True)
             python.touch()
-            payload = {"remote_requested": False, "packages": [
+            payload = {"remote_requested": False, "python_version": [3, 14],
+                       "packages": [
                 {"package": "fastmcp", "installed": "4.1.0"},
                 {"package": "httpx", "installed": "0.28.1"},
                 {"package": "idna", "installed": "3.11"},
@@ -81,6 +82,7 @@ class SetupWizardTests(unittest.TestCase):
                   patch.object(wizard.subprocess, "run", return_value=result) as invoke):
                 report = wizard.dependency_report()
             self.assertEqual(report["state"], "available")
+            self.assertEqual(report["python_version"], [3, 14])
             self.assertEqual(report["packages"][0]["installed"], "4.1.0")
             argv = invoke.call_args.args[0]
             self.assertEqual(argv, [str(python), "-I", "-B",
@@ -88,6 +90,60 @@ class SetupWizardTests(unittest.TestCase):
             self.assertEqual(invoke.call_args.kwargs["cwd"], root)
             self.assertTrue(invoke.call_args.kwargs["capture_output"])
             self.assertFalse(invoke.call_args.kwargs["check"])
+
+
+    def test_dependency_report_rejects_missing_or_malformed_interpreter_version(self):
+        # Fail closed on older scripts or malformed version-report payloads.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            python = root / ".venv" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.touch()
+            packages = [
+                {"package": "fastmcp", "installed": "4.1.0"},
+                {"package": "httpx", "installed": "0.28.1"},
+                {"package": "idna", "installed": "3.11"},
+            ]
+            for version in (None, "3.14", [3], [True, 14], [3, "14"], [-1, 14]):
+                with self.subTest(version=version):
+                    payload = {"remote_requested": False, "packages": packages}
+                    if version is not None:
+                        payload["python_version"] = version
+                    output = subprocess.CompletedProcess([], 0, stdout=json.dumps(payload))
+                    with (patch.object(wizard, "ROOT", root),
+                          patch.object(wizard.subprocess, "run", return_value=output)):
+                        report = wizard.dependency_report()
+                    self.assertEqual(report["state"], "unavailable")
+                    self.assertNotIn("python_version", report)
+
+    def test_readiness_rejects_old_venv_even_when_wizard_python_is_new(self):
+        packages = [
+            {"package": name, "installed": "1"}
+            for name in ("fastmcp", "httpx", "idna")
+        ]
+        docker = {"state": "running", "managed_running": 2,
+                  "managed_stopped": 0, "unverified_project_containers": 0,
+                  "other_published_crawlers": 0,
+                  "verified_services": {"crawl4ai": 1, "searxng": 1}}
+        runtime = {"local_health": {"status": "healthy"}, "docker_project": docker}
+        with (patch.object(wizard, "configured_sources",
+                           return_value={"available": True}),
+              patch.object(wizard, "status_report", return_value=runtime),
+              patch.object(wizard, "project_python", return_value=Path("/virtual/python"))):
+            for version, expected in (([3, 11], False), ([3, 13], False),
+                                      ([3, 14], True), ([3, 15], True)):
+                with self.subTest(version=version), patch.object(
+                    wizard, "dependency_report",
+                    return_value={"state": "available", "packages": packages,
+                                  "python_version": version}):
+                    report = wizard.check_report()
+                    self.assertEqual(report["python_compatible"], expected)
+                    self.assertEqual(report["ready"], expected)
+            with patch.object(wizard, "dependency_report",
+                              return_value={"state": "missing", "packages": []}):
+                report = wizard.check_report()
+                self.assertFalse(report["python_compatible"])
+                self.assertFalse(report["ready"])
 
     def test_missing_venv_is_not_silent_system_python_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -114,7 +170,8 @@ class SetupWizardTests(unittest.TestCase):
             self.assertNotIn("sensitive output", json.dumps(result))
 
     def test_check_uses_project_venv_report_for_readiness(self):
-        dependencies = {"state": "available", "packages": [
+        dependencies = {"state": "available", "python_version": [3, 14],
+                        "packages": [
             {"package": "fastmcp", "installed": "4.1"},
             {"package": "httpx", "installed": "0.28"},
             {"package": "idna", "installed": "3.11"},
@@ -146,7 +203,8 @@ class SetupWizardTests(unittest.TestCase):
             self.assertFalse(wizard.check_report()["ready"])
 
     def test_check_separates_shared_backend_health_from_owned_docker(self):
-        dependencies = {"state": "available", "packages": [
+        dependencies = {"state": "available", "python_version": [3, 14],
+                        "packages": [
             {"package": name, "installed": "1"} for name in
             ("fastmcp", "httpx", "idna")]}
         dedicated = {"state": "running", "managed_running": 2,
