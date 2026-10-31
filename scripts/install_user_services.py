@@ -6,6 +6,7 @@ import argparse
 import os
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 from string import Template
 
@@ -106,6 +107,49 @@ def write_owned(path: Path, content: str) -> None:
             os.unlink(temporary)
 
 
+def verify_cloudflare_removal_safe(folder: Path) -> None:
+    """Refuse to remove optional unit files while any listener could be active.
+
+    A direct installer --remove must not unlink a running systemd unit, leaving
+    the process alive yet unmanaged. Only fixed unit names and fixed properties
+    are inspected; systemd output and private paths are never printed.
+    """
+    for name in CLOUDFLARE_NAMES:
+        path = folder / name
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "show", name,
+                 "--property=LoadState", "--property=ActiveState",
+                 "--property=UnitFileState", "--property=FragmentPath"],
+                capture_output=True, text=True, check=False, timeout=5)
+            if result.returncode or len(result.stdout) > 2048:
+                raise ValueError("Unavailable systemd state")
+            properties = {}
+            for line in result.stdout.splitlines():
+                key, separator, value = line.partition("=")
+                if not separator or key in properties:
+                    raise ValueError("Malformed systemd state")
+                properties[key] = value
+            if set(properties) != {
+                    "LoadState", "ActiveState", "UnitFileState", "FragmentPath"}:
+                raise ValueError("Incomplete systemd state")
+            load = properties["LoadState"]
+            active = properties["ActiveState"]
+            enabled = properties["UnitFileState"]
+            fragment = properties["FragmentPath"]
+            if (load not in ("loaded", "not-found")
+                    or active not in ("inactive", "failed")
+                    or enabled not in ("disabled", "masked", "not-found", "")
+                    or (load == "loaded" and fragment != str(path))
+                    or (load == "not-found" and fragment)):
+                raise ValueError("Optional systemd unit not proven stopped")
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            raise ValueError(
+                "Optional Cloudflare units must be verified stopped and disabled "
+                "before removing their files; use the attended rollback workflow"
+            ) from None
+
+
 def main(argv: list[str] | None = None) -> int:
     """Preview by default; install core units or retire owned legacy files."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -142,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
         selected = (CLOUDFLARE_NAMES if args.cloudflare_portal
                     else LEGACY_UPDATE_NAMES if args.remove_auto_restart
                     else (*NAMES, *LEGACY_UPDATE_NAMES, GUARD_PROBE, GUARD_PREFLIGHT))
+        if args.cloudflare_portal:
+            verify_cloudflare_removal_safe(folder)
         for name in selected:
             path = folder / name
             if path.is_symlink():
