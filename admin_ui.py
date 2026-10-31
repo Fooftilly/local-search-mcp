@@ -923,6 +923,9 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=False,
             (("0", "All retained"), ("1", "Last hour"),
              ("24", "Last 24 hours"), ("168", "Last 7 days")), str(hours)),
         invalid_kind_option=invalid_kind_option,
+        invalid_kind_notice=(
+            '<span class="small" role="note">Unsupported operation: ' +
+            esc(kind) + '</span>' if invalid_kind_option else ''),
         search_selected=" selected" if kind == "search" else "",
         fetch_selected=" selected" if kind == "fetch" else "",
         page_selected=" selected" if kind == "page" else "",
