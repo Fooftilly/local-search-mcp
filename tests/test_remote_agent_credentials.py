@@ -10,7 +10,8 @@ import unittest
 from unittest.mock import patch
 
 from remote_agent_credentials import (
-    ProvisioningError, apply_change, main, plan_change,
+    ProvisioningError, PublicationUncertainError,
+    apply_change, main, plan_change,
     _trusted_tty_confirmation,
 )
 from remote_agent_prerequisites import SCHEMA, load_client_grants
@@ -139,6 +140,32 @@ class OfflineCredentialTests(unittest.TestCase):
                              reveal_and_confirm=self.confirm)
         self.assertEqual(self.path.read_bytes(), before)
         self.assertEqual(list(self.path.parent.glob(".grant-update-*")), [])
+
+    def test_directory_sync_failure_reports_published_indeterminate_state(self):
+        apply_change(self.path, "create", "grok", reveal_and_confirm=self.confirm)
+        previous_digest = load_client_grants(self.path)[0].token_sha256
+        # First fsync protects the replacement file; the second protects
+        # its directory entry *after* os.replace succeeds.
+        with patch("remote_agent_credentials.os.fsync",
+                   side_effect=[None, OSError("directory fsync failed")]):
+            with self.assertRaisesRegex(
+                    PublicationUncertainError, "may already be ACTIVE"):
+                apply_change(self.path, "rotate", "grok",
+                             reveal_and_confirm=self.confirm)
+        current = load_client_grants(self.path)
+        self.assertEqual(len(current), 1)
+        self.assertNotEqual(current[0].token_sha256, previous_digest)
+        self.assertEqual(current[0].token_sha256,
+                         hashlib.sha256(self.tokens["grok"].encode()).digest())
+        self.assertEqual(list(self.path.parent.glob(".grant-update-*")), [])
+
+    def test_directory_sync_failure_on_revoke_does_not_claim_rollback(self):
+        apply_change(self.path, "create", "grok", reveal_and_confirm=self.confirm)
+        with patch("remote_agent_credentials.os.fsync",
+                   side_effect=[None, OSError("directory fsync failed")]):
+            with self.assertRaises(PublicationUncertainError):
+                apply_change(self.path, "revoke", "grok")
+        self.assertEqual(load_client_grants(self.path), ())
 
     def test_multiple_clients_and_store_limit(self):
         for i in range(8):
