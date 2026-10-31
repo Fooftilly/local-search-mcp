@@ -222,7 +222,7 @@ def _search_failure_status(payload: dict) -> dict:
     for item in raw[:128]:
         name = item[0] if isinstance(item, (list, tuple)) and item else item
         if (not isinstance(name, str)
-                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}", name) is None):
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._()\-]{0,39}", name) is None):
             unparsed += 1
             continue
         if name.casefold() not in seen:
