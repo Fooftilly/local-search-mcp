@@ -264,7 +264,7 @@ class SetupWizardTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(output)["default_client"].split()[0], "ChatGPT")
         preview = json.loads(output)
-        self.assertEqual(len(preview["actions"]), 17)
+        self.assertEqual(len(preview["actions"]), 18)
         self.assertEqual(preview["groups"],
                          ["Setup", "Connections", "Status", "Update", "Advanced"])
         self.assertEqual(len({item["menu"] for item in preview["actions"]}), 17)
@@ -276,9 +276,9 @@ class SetupWizardTests(unittest.TestCase):
         paths = [(group + "." + str(i), identifier)
                  for group, (_, actions) in groups.items()
                  for i, (identifier, _) in enumerate(actions, start=1)]
-        self.assertEqual(len(paths), 17)
+        self.assertEqual(len(paths), 18)
         self.assertEqual({identifier for _, identifier in paths},
-                         {str(i) for i in range(1, 18)})
+                         {str(i) for i in range(1, 19)})
         preview = wizard.dry_run()
         self.assertEqual({row["menu"] for row in preview["actions"]},
                          {path for path, _ in paths})
@@ -317,6 +317,40 @@ class SetupWizardTests(unittest.TestCase):
         self.assertIn("Unknown group", out.getvalue())
         self.assertIn("Unknown action", out.getvalue())
         self.assertIn("0  Back", out.getvalue())
+
+    def test_cloudflare_menu_preview_is_read_only_and_no_service_change(self):
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input", side_effect=["2", "4", "", "0"]),
+              patch.object(wizard, "cloudflare_portal_preview",
+                           return_value={"private_route": "unverified"}) as preview,
+              patch.object(wizard, "cloudflare_portal_prepare",
+                           side_effect=AssertionError("install attempted")),
+              patch.object(wizard, "cloudflare_portal_rollback",
+                           side_effect=AssertionError("rollback attempted")),
+              contextlib.redirect_stdout(io.StringIO()) as output):
+            self.assertEqual(wizard.main([]), 0)
+        preview.assert_called_once()
+        self.assertIn("unverified", output.getvalue())
+
+    def test_cloudflare_cli_preview_does_not_install(self):
+        with (patch.object(wizard, "cloudflare_portal_preview",
+                           return_value={"private_route": "unverified"}) as preview,
+              patch.object(wizard, "cloudflare_portal_prepare",
+                           side_effect=AssertionError("mutation attempted")),
+              contextlib.redirect_stdout(io.StringIO()) as output):
+            self.assertEqual(wizard.main(["--cloudflare-portal-preview"]), 0)
+        preview.assert_called_once()
+        self.assertEqual(json.loads(output.getvalue())["private_route"],
+                         "unverified")
+
+    def test_cloudflare_prepare_requires_explicit_confirmation(self):
+        with (patch.object(wizard.os, "geteuid", return_value=1000),
+              patch.object(wizard, "project_python", return_value=Path("/fake/python")),
+              patch.object(wizard, "confirm", return_value=False),
+              patch.object(wizard.subprocess, "run",
+                           side_effect=AssertionError("no process allowed"))):
+            self.assertEqual(wizard.cloudflare_portal_prepare(), 0)
 
     def test_read_only_connection_and_update_are_distinct_groups(self):
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
