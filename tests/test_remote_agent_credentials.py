@@ -218,6 +218,65 @@ class OfflineCredentialTests(unittest.TestCase):
             self.assertEqual(str(default_store_path()),
                              "/home/operator/.config/local-search-mcp/private/agent-grants.json")
 
+    def test_real_nonseekable_pty_accepts_secure_confirmation(self):
+        # A controlling terminal is inherently non-seekable. This must fail
+        # if secure confirmation ever regresses to open("/dev/tty", "r+").
+        import fcntl
+        import pty
+        import select
+        import subprocess
+        import sys
+        import termios
+        import time
+
+        if os.name != "posix":
+            self.skipTest("requires a POSIX controlling terminal")
+
+        child_code = (
+            "import sys\n"
+            "from remote_agent_credentials import _trusted_tty_confirmation\n"
+            "ok = _trusted_tty_confirmation('fixture', 'synthetic-only-not-secret')\n"
+            "sys.exit(0 if ok else 1)\n"
+        )
+
+        def give_child_controlling_tty():
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+        master, slave = pty.openpty()
+        child = None
+        try:
+            child = subprocess.Popen(
+                [sys.executable, "-c", child_code],
+                stdin=slave, stdout=slave, stderr=slave,
+                cwd=Path(__file__).resolve().parents[1],
+                close_fds=True, preexec_fn=give_child_controlling_tty,
+            )
+            os.close(slave)
+            slave = None
+            output = bytearray()
+            deadline = time.monotonic() + 8
+            while b"Type COMMIT" not in output and time.monotonic() < deadline:
+                ready, _, _ = select.select(
+                    [master], [], [], max(0, deadline - time.monotonic()))
+                if ready:
+                    try:
+                        output.extend(os.read(master, 4096))
+                    except OSError:
+                        break  # child exited early; assertions below fail
+            self.assertIn(b"Type COMMIT", output,
+                          "Credential prompt was not displayed on the controlling PTY")
+            os.write(master, b"COMMIT\n")
+            self.assertEqual(child.wait(timeout=5), 0,
+                             "Credential confirmation failed on a real PTY")
+        finally:
+            if child is not None and child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+            if slave is not None:
+                os.close(slave)
+            os.close(master)
+
     def test_tty_confirmation_uses_independent_read_and_write_streams(self):
         # /dev/tty is non-seekable: opening it with "r+" raises
         # io.UnsupportedOperation on a real controlling PTY.
