@@ -31,6 +31,8 @@ UNITS = (
     "local-search-mcp-health.timer",
     "local-search-mcp-update.service",
     "local-search-mcp-health.service",
+    "local-search-mcp-cloudflare-origin.service",
+    "local-search-mcp-remote-gateway.service",
     "local-search-mcp-tunnel.service",
     "local-search-mcp-bridge.service",
     "local-search-mcp-guard-probe.service",
