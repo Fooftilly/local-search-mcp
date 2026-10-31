@@ -50,7 +50,7 @@ def events(path: Path):
                 continue
             if isinstance(event, dict):
                 if event.get("kind") == "page":
-                    safe_action = event.get("action") if event.get("action") in ("find", "section", "links_page") else None
+                    safe_action = event.get("action") if event.get("action") in ("find", "section", "links_page", "compare") else None
                     # Page handles are bearer capabilities. Even a malformed
                     # or legacy history row must not leak one through --json.
                     safe_fields = ("time_utc", "kind", "backend", "status",
@@ -118,6 +118,8 @@ def main() -> int:
                     term = "section of temporary document"
                 elif e.get("action") == "links_page":
                     term = "links of temporary document"
+                elif e.get("action") == "compare":
+                    term = "comparison of temporary documents"
                 else:
                     term = f"page {e.get('page', '?')}/{e.get('page_count') or '?'}"
             count = f" | {e['result_count']} results" if "result_count" in e else ""
