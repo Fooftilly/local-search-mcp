@@ -235,17 +235,23 @@ def _trusted_tty_confirmation(client_id: str, token: str) -> bool:
     # Deliberately never prints the token to stdout, stderr, shell command
     # history, GitHub, or a URL. The owner must have an interactive /dev/tty.
     try:
-        with open("/dev/tty", "r+", encoding="utf-8") as tty:
-            if not tty.isatty():
+        # A POSIX TTY is not seekable. Text read/write mode ("r+") attempts
+        # seekable update I/O and raises io.UnsupportedOperation on /dev/tty,
+        # even when the controlling terminal is fully functional. Open two
+        # independent text streams against the controlling TTY instead.
+        # Deliberately never fall back to stdout/stderr or the process stdin.
+        with (open("/dev/tty", "r", encoding="utf-8") as tty_input,
+              open("/dev/tty", "w", encoding="utf-8") as tty_output):
+            if not tty_input.isatty() or not tty_output.isatty():
                 raise ProvisioningError("An interactive terminal is required")
-            tty.write(
+            tty_output.write(
                 "\nNew remote MCP credential for " + client_id +
                 "\nCopy the following secret directly to a password manager.\n" +
                 "This secret is not stored in the verifier file.\n" +
                 "Token: " + token +
                 "\nType COMMIT to activate this token, anything else cancels: ")
-            tty.flush()
-            response = tty.readline()
+            tty_output.flush()
+            response = tty_input.readline()
         return response.strip() == "COMMIT"
     except OSError:
         raise ProvisioningError("Secure local terminal not available") from None
