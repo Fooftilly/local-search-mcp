@@ -147,7 +147,6 @@ class ReadonlyPreflightTests(unittest.IsolatedAsyncioTestCase):
 
 class PreflightCLIIsolationTests(unittest.TestCase):
     def test_explicit_flag_only_and_no_server(self):
-        from remote_agent_server import preflight_local as real_preflight
         output = io.StringIO()
         with patch("remote_agent_server.default_store_path",
                    return_value=Path("/tmp/not-actually-read")), \
