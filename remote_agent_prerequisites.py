@@ -54,6 +54,8 @@ def _check_parent_chain(path: Path) -> None:
         if not stat.S_ISDIR(info.st_mode):
             raise CredentialStoreError("Invalid credential store")
         mode = stat.S_IMODE(info.st_mode)
+        if info.st_uid not in (0, owner):
+            raise CredentialStoreError("Invalid credential store")
         if first:
             # The leaf directory is private to this service user.
             if info.st_uid != owner or (mode & 0o077):
