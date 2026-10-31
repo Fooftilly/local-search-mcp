@@ -179,23 +179,44 @@ class OfflineCredentialTests(unittest.TestCase):
 
     def test_cli_dry_run_list_and_apply_gate(self):
         output = io.StringIO()
-        with patch("sys.stdout", output):
-            self.assertEqual(main(["--store", str(self.path), "create", "grok"]), 0)
+        with patch("remote_agent_credentials.default_store_path",
+                   return_value=self.path), patch("sys.stdout", output):
+            self.assertEqual(main(["create", "grok"]), 0)
         self.assertIn("No changes made", output.getvalue())
         self.assertFalse(self.path.exists())
-        with patch("remote_agent_credentials._trusted_tty_confirmation",
-                   self.confirm), patch("sys.stdout", io.StringIO()):
-            self.assertEqual(main(["--store", str(self.path), "--apply",
+        with patch("remote_agent_credentials.default_store_path",
+                   return_value=self.path), patch(
+                       "remote_agent_credentials._trusted_tty_confirmation",
+                       self.confirm), patch("sys.stdout", io.StringIO()):
+            self.assertEqual(main(["--apply",
                                    "create", "grok"]), 0)
         output = io.StringIO()
-        with patch("sys.stdout", output):
-            self.assertEqual(main(["--store", str(self.path), "list"]), 0)
+        with patch("remote_agent_credentials.default_store_path",
+                   return_value=self.path), patch("sys.stdout", output):
+            self.assertEqual(main(["list"]), 0)
         self.assertIn("grok: expires at", output.getvalue())
         self.assertNotIn(self.tokens["grok"], output.getvalue())
-        with patch("sys.stdout", io.StringIO()):
-            self.assertEqual(main(["--store", str(self.path), "--apply",
+        with patch("remote_agent_credentials.default_store_path",
+                   return_value=self.path), patch("sys.stdout", io.StringIO()):
+            self.assertEqual(main(["--apply",
                                    "revoke", "grok"]), 0)
         self.assertEqual(load_client_grants(self.path), ())
+
+    def test_cli_rejects_caller_selected_credential_file(self):
+        # CLI is pinned to the authenticated OS account, not agent-supplied
+        # paths; the separate library functions retain explicit test paths.
+        import argparse
+        with patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(SystemExit) as failure:
+                main(["--store", str(self.path), "create", "grok"])
+        self.assertEqual(failure.exception.code, 2)
+        with patch("remote_agent_credentials.pwd.getpwuid") as user, \
+                patch("remote_agent_credentials.os.geteuid",
+                      return_value=1234):
+            user.return_value.pw_dir = "/home/operator"
+            from remote_agent_credentials import default_store_path
+            self.assertEqual(str(default_store_path()),
+                             "/home/operator/.config/local-search-mcp/private/agent-grants.json")
 
     def test_non_tty_refusal_and_root_protection(self):
         with patch("builtins.open", side_effect=OSError("no controlling tty")):
@@ -204,7 +225,7 @@ class OfflineCredentialTests(unittest.TestCase):
         output = io.StringIO()
         with patch("remote_agent_credentials.os.geteuid", return_value=0), \
                 patch("sys.stderr", output):
-            self.assertEqual(main(["--store", str(self.path), "list"]), 1)
+            self.assertEqual(main(["list"]), 1)
         self.assertIn("unprivileged", output.getvalue())
 
 
