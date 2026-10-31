@@ -90,7 +90,7 @@ def _source_snapshot(files: list[Path]) -> tuple[list[tuple[list[bytes], bool]],
         if fd is not None:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise OSError("Invalid private history lock")
-            fcntl.flock(fd, fcntl.LOCK_SH)
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
             locked = True
         snapshot = []
         for source in files:
