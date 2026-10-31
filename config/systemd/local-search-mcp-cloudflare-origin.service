@@ -1,0 +1,23 @@
+# Managed by local-search-mcp; contains no credentials.
+[Unit]
+Description=Optional Cloudflare private-host loopback MCP adapter
+# Keep the adapter running across gateway restarts: its fixed upstream then
+# returns 502 until the authenticated gateway is healthy again.
+Wants=local-search-mcp-remote-gateway.service
+After=local-search-mcp-remote-gateway.service
+
+[Service]
+Type=simple
+WorkingDirectory=$ROOT
+ExecStart=$EXE -m remote_agent_cloudflare_origin --serve-loopback
+Restart=on-failure
+RestartSec=30s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

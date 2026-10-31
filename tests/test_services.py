@@ -32,7 +32,7 @@ class ServiceTests(unittest.TestCase):
     def test_units_are_rendered_from_version_controlled_templates(self):
         expected = set(installer.NAMES) | {installer.GUARD_PROBE, installer.GUARD_PREFLIGHT}
         self.assertEqual({p.name for p in installer.TEMPLATE_DIR.iterdir()
-                          if p.is_file()}, expected)
+                          if p.is_file()}, expected | set(installer.CLOUDFLARE_NAMES))
         units = unit_files("/usr/bin/python3", Path("/tmp/demo"),
                            guard_probe=True)
         self.assertEqual(set(units), expected)

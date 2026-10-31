@@ -11,6 +11,8 @@ from http.client import HTTPConnection
 import json
 import math
 import os
+import shutil
+import socket
 from pathlib import Path
 import subprocess
 import sys
@@ -467,6 +469,7 @@ MENU_GROUPS = {
         ("2", "Connect ChatGPT (manual account steps)"),
         ("12", "Connect Cursor, Claude Code or Hermes (manual steps)"),
         ("11", "Install protected ChatGPT tunnel (sudo; requires SECURE)"),
+        ("18", "Cloudflare MCP Portal (preview / prepare / rollback)"),
     )),
     "3": ("Status", (
         ("1", "Check existing setup / status (read-only)"),
@@ -515,6 +518,8 @@ def dry_run() -> dict:
              "action": "configure validated on-demand backends with operator confirmation"},
             {"menu": "2.3", "effect": "privileged system changes only after confirmation",
              "action": "validate dedicated backends; install fixed egress guard, restricted sudoers and protected ChatGPT tunnel"},
+            {"menu": "2.4", "effect": "read-only preview/status or confirmed local preparation/rollback",
+             "action": "operator-owned Cloudflare hostname and two disabled optional units; no remote Cloudflare changes"},
             {"menu": "2.2", "effect": "read-only",
              "action": "show optional local Cursor, Claude Code or Hermes HTTP MCP instructions; never edit third-party config"},
             {"menu": "3.5", "effect": "read-only",
@@ -528,6 +533,227 @@ def dry_run() -> dict:
         ],
         "limitations": "Optional on-demand backend sleep/wake is implemented and off by default; reboot/fault-recovery still requires host validation",
     }
+
+
+def cloudflare_portal_preview() -> dict:
+    """Read-only LOCAL status using the project venv, not system Python.
+
+    The status subprocess emits an exact bounded schema and never reports
+    the private hostname, credential, request URL or underlying error text.
+    """
+    report = {
+        "mode": "read-only",
+        "provider": "Cloudflare MCP Server Portal",
+        "cloudflared_installed_on_host": shutil.which("cloudflared") is not None,
+        "credential": "not verified",
+        "private_hostname_config": "not verified",
+        "private_route": "unverified",
+        "gateway": "127.0.0.1:18790 (not probed)",
+        "adapter": "127.0.0.1:18791 (not probed)",
+        "cloudflare_mutations": False,
+        "service_mutations": False,
+    }
+    python = project_python()
+    if python is None:
+        report["note"] = "Project .venv is required for local readiness checks"
+        return report
+    try:
+        proc = subprocess.run(
+            [str(python), "-m", "remote_agent_cloudflare_origin",
+             "--status-json"],
+            cwd=ROOT, capture_output=True, text=True, check=False, timeout=8,
+            env={**os.environ, "PYTHONNOUSERSITE": "1"})
+        if proc.returncode or len(proc.stdout) > 2048:
+            raise ValueError("Redacted local status check failed")
+        data = json.loads(proc.stdout)
+        if (type(data) is not dict or set(data) != {
+                "schema", "credential", "private_hostname_config"}
+                or data["schema"] != "local-search-mcp/cloudflare-origin-status/v1"
+                or data["credential"] not in (
+                    "missing, expired or unsafe",
+                    "dedicated cloudflare-portal grant active")
+                or data["private_hostname_config"] not in (
+                    "missing or unsafe", "owner-only configuration valid")):
+            raise ValueError("Unexpected status response")
+        report["credential"] = data["credential"]
+        report["private_hostname_config"] = data["private_hostname_config"]
+    except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+        report["note"] = "Project venv readiness check unavailable or invalid"
+    return report
+
+def cloudflare_local_unit_states() -> dict[str, dict]:
+    """Read only fixed optional units; never return logs, paths or arbitrary properties."""
+    from scripts.install_user_services import CLOUDFLARE_NAMES
+    report = {}
+    for name in CLOUDFLARE_NAMES:
+        try:
+            proc = subprocess.run(
+                ["systemctl", "--user", "show", name,
+                 "--property=LoadState", "--property=ActiveState",
+                 "--property=UnitFileState", "--property=FragmentPath"],
+                cwd=ROOT, capture_output=True, text=True, check=False, timeout=5,
+                env={**os.environ, "SYSTEMD_PAGER": "", "SYSTEMD_COLORS": "0"})
+            if proc.returncode or len(proc.stdout) > 2048:
+                raise ValueError("Unusable systemd state")
+            values = dict(line.split("=", 1) for line in proc.stdout.splitlines()
+                          if "=" in line)
+            if (set(values) != {"LoadState", "ActiveState",
+                                "UnitFileState", "FragmentPath"}
+                    or values["LoadState"] not in ("loaded", "not-found", "masked")
+                    or values["ActiveState"] not in (
+                        "active", "inactive", "failed", "activating",
+                        "deactivating", "reloading")
+                    or values["UnitFileState"] not in (
+                        "enabled", "disabled", "static", "masked",
+                        "not-found", "linked", "indirect", "")
+                    or len(values["FragmentPath"]) > 1024):
+                raise ValueError("Unexpected systemd fields")
+            # FragmentPath is private/local metadata; retain for internal
+            # ownership comparison only, never include it in the status JSON.
+            report[name] = values
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            report[name] = {"state": "unverified"}
+    return report
+
+
+def cloudflare_portal_status() -> dict:
+    """Local read-only service and socket evidence, NOT Cloudflare reachability."""
+    from scripts.install_user_services import CLOUDFLARE_NAMES
+    report = cloudflare_portal_preview()
+    report["mode"] = "read-only-local-status"
+    report["private_route"] = "unverified"
+    report["cloudflare_access"] = "unverified"
+    states = cloudflare_local_unit_states()
+    report["optional_user_units"] = {
+        name: {key: value for key, value in states[name].items()
+               if key in ("LoadState", "ActiveState", "UnitFileState", "state")}
+        for name in CLOUDFLARE_NAMES
+    }
+    # No bearer credentials or arbitrary HTTP requests: TCP accept proves
+    # only a listener, not the identity of the listener or MCP correctness.
+    report["loopback_tcp"] = {}
+    for label, port in (("gateway", 18790), ("adapter", 18791)):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.75):
+                pass
+            report["loopback_tcp"][label] = "accepting_connections"
+        except OSError:
+            report["loopback_tcp"][label] = "not_reachable"
+    report["note"] = ("Local service/socket status does not verify root guard, "
+                      "MCP authentication, Cloudflare private routing, Access "
+                      "policy, or Grok connectivity")
+    return report
+
+
+def cloudflare_portal_prepare() -> int:
+    """Attended local configuration and disabled optional user units only."""
+    if os.geteuid() == 0 or project_python() is None:
+        print("Cloudflare preparation requires the normal user and project .venv",
+              file=sys.stderr)
+        return 1
+    print("Installs private origin hostname config and two DISABLED user unit files.")
+    print("Does NOT start services, change Cloudflare, open ports or modify tunnels.")
+    print("First issue the upstream bearer securely with:")
+    print("  ./.venv/bin/python -m remote_agent_credentials create cloudflare-portal --apply")
+    if not confirm("PREPARE"):
+        return 0
+    try:
+        command = subprocess.run(
+            [str(project_python()), "-m", "remote_agent_cloudflare_origin",
+             "--install-config"], cwd=ROOT, check=False)
+        if command.returncode:
+            return 1
+        from scripts import install_user_services
+        return install_user_services.main(["--install", "--cloudflare-portal"])
+    except (OSError, ValueError):
+        print("Local preparation incomplete; inspect optional units and private config",
+              file=sys.stderr)
+        return 1
+
+
+def cloudflare_portal_rollback() -> int:
+    """Stop/remove only owned optional units and local hostname config."""
+    from scripts import install_user_services
+    if os.geteuid() == 0:
+        print("Rollback requires the normal user", file=sys.stderr)
+        return 1
+    folder = install_user_services.destination()
+    states = cloudflare_local_unit_states()
+    owned = []
+    try:
+        for name in install_user_services.CLOUDFLARE_NAMES:
+            unit = folder / name
+            state = states[name]
+            if state.get("state") == "unverified":
+                raise ValueError("Systemd unit state unavailable")
+            if unit.is_symlink() or (unit.exists() and
+                    (not unit.is_file() or not unit.read_text(
+                        encoding="utf-8").startswith(install_user_services.MARKER))):
+                raise ValueError("Unmanaged optional unit")
+            if unit.exists():
+                owned.append(name)
+                # A unit loaded from another location is not ours to stop.
+                if (state["LoadState"] == "loaded" and
+                        state["FragmentPath"] != str(unit)):
+                    raise ValueError("Optional unit loaded from another source")
+            elif (state["LoadState"] != "not-found" or
+                  state["ActiveState"] not in ("inactive", "failed")):
+                raise ValueError("Optional unit exists outside owned files")
+    except (OSError, ValueError):
+        print("Optional unit ownership/state unverified; refusing rollback",
+              file=sys.stderr)
+        return 1
+    print("Stops and removes only the optional Cloudflare adapter/gateway units")
+    print("and local hostname config. Does not change Cloudflare routes or grants.")
+    if not confirm("REMOVE"):
+        return 0
+    try:
+        if owned:
+            result = subprocess.run(
+                ["systemctl", "--user", "disable", "--now", *owned],
+                capture_output=True, check=False, timeout=20)
+            if result.returncode:
+                print("Optional services were not confirmed stopped", file=sys.stderr)
+                return 1
+            post = cloudflare_local_unit_states()
+            if any(post[name].get("ActiveState") not in ("inactive", "failed")
+                   or post[name].get("UnitFileState") not in (
+                       "disabled", "masked", "not-found")
+                   for name in owned):
+                print("Optional units were not verified disabled and stopped",
+                      file=sys.stderr)
+                return 1
+        # setup.sh uses system Python, which need not have httpx/uvicorn.
+        # Invoke the existing owner-only config remover through the .venv.
+        # This local TTY confirmation is deliberately independent of unit
+        # shutdown: an interrupted run leaves the config unchanged.
+        interpreter = project_python()
+        if interpreter is None:
+            print("Project virtualenv unavailable; optional units stopped but "
+                  "local config has not been removed", file=sys.stderr)
+            return 1
+        removed = subprocess.run(
+            [str(interpreter), "-m", "remote_agent_cloudflare_origin",
+             "--remove-config"], cwd=ROOT, check=False, timeout=45)
+        if removed.returncode:
+            print("Private origin removal not verified; optional units were stopped "
+                  "but their files remain installed", file=sys.stderr)
+            return 1
+        if install_user_services.main(["--remove", "--cloudflare-portal"]):
+            return 1
+        result = subprocess.run(
+            ["systemctl", "--user", "daemon-reload"],
+            capture_output=True, check=False, timeout=10)
+        if result.returncode:
+            print("Local files removed but systemd reload failed", file=sys.stderr)
+            return 1
+        print("Optional local Cloudflare units removed. Revoke the separate")
+        print("cloudflare-portal grant and remove private Cloudflare routes manually.")
+        return 0
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        print("Local rollback incomplete; inspect optional units and config",
+              file=sys.stderr)
+        return 1
 
 
 def confirm(word: str) -> bool:
@@ -772,6 +998,20 @@ def menu() -> int:
                     print("Cancelled; no client settings changed")
             except (EOFError, KeyboardInterrupt):
                 print("Cancelled; no client settings changed")
+        elif choice == "18":
+            print(json.dumps(cloudflare_portal_preview(), indent=2))
+            try:
+                action = input("Cloudflare: STATUS, PREPARE, REMOVE, or Enter to cancel: ").strip().upper()
+                if action == "STATUS":
+                    print(json.dumps(cloudflare_portal_status(), indent=2))
+                elif action == "PREPARE":
+                    print("Preparation exit:", cloudflare_portal_prepare())
+                elif action == "REMOVE":
+                    print("Rollback exit:", cloudflare_portal_rollback())
+                else:
+                    print("No changes made")
+            except (EOFError, KeyboardInterrupt):
+                print("Interrupted; inspect optional local configuration before retrying")
         elif choice == "11":
             if run_existing("scripts/install_secure_tunnel.py") != 0:
                 print("Read-only prerequisites were not met; no privileged installation attempted.")
@@ -841,6 +1081,14 @@ def make_parser() -> argparse.ArgumentParser:
                                   Offline isolated fresh-install smoke; disposable temp files only
   ./setup.sh --on-demand-status    Read-only Docker ownership/eligibility and configured mode
   ./setup.sh --boot-audit          Read-only systemd, firewall-install and Docker restart-policy prerequisites
+  ./setup.sh --cloudflare-portal-preview
+                                  Redacted local Cloudflare Portal readiness (offline)
+  ./setup.sh --cloudflare-portal-status
+                                  Read-only local systemd and TCP status (not Cloudflare)
+  ./setup.sh --cloudflare-portal-prepare
+                                  Explicit attended local hostname config and disabled units
+  ./setup.sh --cloudflare-portal-rollback
+                                  Explicit attended stop/removal of optional local units/config
   ./setup.sh --secure-tunnel-preview
                                   Read-only preview of guarded production tunnel setup
   ./setup.sh --secure-tunnel --confirm-secure-tunnel SECURE
@@ -890,6 +1138,14 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="read-only configured on-demand and runtime state; no Docker changes")
     choices.add_argument("--boot-audit", action="store_true",
                          help="read-only reboot prerequisites; no sudo, Docker mutations or firewall probes")
+    choices.add_argument("--cloudflare-portal-preview", action="store_true",
+                         help="read-only local Cloudflare Portal status, not route verification")
+    choices.add_argument("--cloudflare-portal-status", action="store_true",
+                         help="read-only optional unit and TCP listener status; no remote proof")
+    choices.add_argument("--cloudflare-portal-prepare", action="store_true",
+                         help="attended private hostname configuration and optional unit install")
+    choices.add_argument("--cloudflare-portal-rollback", action="store_true",
+                         help="attended rollback of only locally owned optional units")
     choices.add_argument("--secure-tunnel-preview", action="store_true",
                          help="read-only preview of production firewall/tunnel setup")
     choices.add_argument("--secure-tunnel", action="store_true",
@@ -948,6 +1204,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.wake_before_disable or args.confirm_on_demand is not None:
         raise SystemExit("On-demand options require explicit enable/disable mode")
+    if args.cloudflare_portal_preview:
+        print(json.dumps(cloudflare_portal_preview(), indent=2))
+        return 0
+    if args.cloudflare_portal_status:
+        print(json.dumps(cloudflare_portal_status(), indent=2))
+        return 0
+    if args.cloudflare_portal_prepare:
+        return cloudflare_portal_prepare()
+    if args.cloudflare_portal_rollback:
+        return cloudflare_portal_rollback()
     if args.search_engines:
         if os.geteuid() == 0:
             raise SystemExit("Run search-engine setup as the normal user")

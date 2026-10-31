@@ -1,0 +1,24 @@
+# Managed by local-search-mcp; contains no credentials.
+[Unit]
+Description=Optional authenticated remote MCP loopback gateway
+Wants=local-search-mcp-bridge.service
+After=local-search-mcp-bridge.service
+
+[Service]
+Type=simple
+WorkingDirectory=$ROOT
+ExecStart=$EXE -m remote_agent_server --serve-loopback
+Restart=on-failure
+RestartSec=30s
+UMask=0077
+# The gateway invokes the preinstalled exact NOPASSWD root guard via sudo
+# before forwarding EVERY request. NoNewPrivileges would make sudo fail.
+# Keep this isolated to the privileged guard probe; never change sudoers.
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=default.target

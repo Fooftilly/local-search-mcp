@@ -93,6 +93,11 @@ jobs:
           folder = Path(os.environ['UNIT_DIR'])
           for name, contents in unit_files('/usr/bin/python3', Path.cwd()).items():
               (folder / name).write_text(contents)
+          # Optional Cloudflare templates are not part of the default install,
+          # but must pass the same systemd syntax checks before deployment.
+          for name, contents in unit_files(
+                  '/usr/bin/python3', Path.cwd(), cloudflare_portal=True).items():
+              (folder / name).write_text(contents)
           PY
           SYSTEMD_UNIT_PATH="$UNIT_DIR:/usr/lib/systemd/system:/lib/systemd/system" systemd-analyze verify "$UNIT_DIR"/*.service "$UNIT_DIR"/*.timer
           mkdir -p "$UNIT_DIR/local-search-mcp-tunnel.service.d"

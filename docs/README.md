@@ -46,3 +46,5 @@ The root retains files commonly expected by GitHub and contributors:
 **Additional guides retained at the repository root:** [Backup and recovery](../BACKUP.md), [setup and maintenance wizard](../SETUP-WIZARD.md), [on-demand backend preflight](../ON-DEMAND.md), and [dashboard port status](../PORT-STATUS.md). These areas are still evolving; keeping their current paths avoids unnecessary churn while leaving stable feature and operator documentation organized here.
 
 All commands in these guides are intended to run from the **repository root** unless stated otherwise; moving a Markdown file does not change its working directory.
+
+- [Cloudflare MCP Server Portal private-origin setup and security gates](CLOUDFLARE-MCP-PORTAL.md) — opt-in local Host adapter, dedicated bearer, Cloudflare Access and operator rollback.

@@ -264,10 +264,10 @@ class SetupWizardTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(output)["default_client"].split()[0], "ChatGPT")
         preview = json.loads(output)
-        self.assertEqual(len(preview["actions"]), 17)
+        self.assertEqual(len(preview["actions"]), 18)
         self.assertEqual(preview["groups"],
                          ["Setup", "Connections", "Status", "Update", "Advanced"])
-        self.assertEqual(len({item["menu"] for item in preview["actions"]}), 17)
+        self.assertEqual(len({item["menu"] for item in preview["actions"]}), 18)
 
     def test_all_existing_actions_appear_once_in_five_groups(self):
         groups = wizard.MENU_GROUPS
@@ -276,9 +276,9 @@ class SetupWizardTests(unittest.TestCase):
         paths = [(group + "." + str(i), identifier)
                  for group, (_, actions) in groups.items()
                  for i, (identifier, _) in enumerate(actions, start=1)]
-        self.assertEqual(len(paths), 17)
+        self.assertEqual(len(paths), 18)
         self.assertEqual({identifier for _, identifier in paths},
-                         {str(i) for i in range(1, 18)})
+                         {str(i) for i in range(1, 19)})
         preview = wizard.dry_run()
         self.assertEqual({row["menu"] for row in preview["actions"]},
                          {path for path, _ in paths})
@@ -317,6 +317,243 @@ class SetupWizardTests(unittest.TestCase):
         self.assertIn("Unknown group", out.getvalue())
         self.assertIn("Unknown action", out.getvalue())
         self.assertIn("0  Back", out.getvalue())
+
+    def test_cloudflare_menu_preview_is_read_only_and_no_service_change(self):
+        with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),
+              patch.object(wizard.os, "geteuid", return_value=1000),
+              patch("builtins.input", side_effect=["2", "4", "", "0"]),
+              patch.object(wizard, "cloudflare_portal_preview",
+                           return_value={"private_route": "unverified"}) as preview,
+              patch.object(wizard, "cloudflare_portal_prepare",
+                           side_effect=AssertionError("install attempted")),
+              patch.object(wizard, "cloudflare_portal_rollback",
+                           side_effect=AssertionError("rollback attempted")),
+              contextlib.redirect_stdout(io.StringIO()) as output):
+            self.assertEqual(wizard.main([]), 0)
+        preview.assert_called_once()
+        self.assertIn("unverified", output.getvalue())
+
+    def test_cloudflare_cli_preview_does_not_install(self):
+        with (patch.object(wizard, "cloudflare_portal_preview",
+                           return_value={"private_route": "unverified"}) as preview,
+              patch.object(wizard, "cloudflare_portal_prepare",
+                           side_effect=AssertionError("mutation attempted")),
+              contextlib.redirect_stdout(io.StringIO()) as output):
+            self.assertEqual(wizard.main(["--cloudflare-portal-preview"]), 0)
+        preview.assert_called_once()
+        self.assertEqual(json.loads(output.getvalue())["private_route"],
+                         "unverified")
+
+    def test_cloudflare_preview_uses_project_venv_and_redacts_untrusted_stdout(self):
+        valid = {"schema": "local-search-mcp/cloudflare-origin-status/v1",
+                 "credential": "dedicated cloudflare-portal grant active",
+                 "private_hostname_config": "owner-only configuration valid"}
+        with (patch.object(wizard, "project_python",
+                           return_value=Path("/opt/project/.venv/bin/python")),
+              patch.object(wizard.subprocess, "run",
+                           return_value=subprocess.CompletedProcess(
+                               [], 0, stdout=json.dumps(valid), stderr="PRIVATE")) as called):
+            result = wizard.cloudflare_portal_preview()
+        self.assertEqual(result["credential"], valid["credential"])
+        self.assertEqual(result["private_hostname_config"], valid["private_hostname_config"])
+        self.assertEqual(result["private_route"], "unverified")
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertEqual(
+            called.call_args.args[0][-2:],
+            ["remote_agent_cloudflare_origin", "--status-json"])
+
+        invalid = {**valid, "hostname": "PRIVATE_HOSTNAME"}
+        with (patch.object(wizard, "project_python",
+                           return_value=Path("/opt/project/.venv/bin/python")),
+              patch.object(wizard.subprocess, "run",
+                           return_value=subprocess.CompletedProcess(
+                               [], 0, stdout=json.dumps(invalid), stderr="PRIVATE"))):
+            result = wizard.cloudflare_portal_preview()
+        self.assertEqual(result["credential"], "not verified")
+        self.assertNotIn("PRIVATE", json.dumps(result))
+
+    def test_cloudflare_local_status_never_claims_remote_acceptance(self):
+        from scripts import install_user_services
+        names = install_user_services.CLOUDFLARE_NAMES
+        states = {
+            names[0]: {"LoadState": "loaded", "ActiveState": "active",
+                       "UnitFileState": "enabled", "FragmentPath": "/PRIVATE/unit"},
+            names[1]: {"state": "unverified"},
+        }
+        socket_object = Mock()
+        socket_object.__enter__ = Mock(return_value=socket_object)
+        socket_object.__exit__ = Mock(return_value=False)
+        with (patch.object(wizard, "cloudflare_portal_preview",
+                           return_value={"private_route": "unverified"}),
+              patch.object(wizard, "cloudflare_local_unit_states",
+                           return_value=states),
+              patch.object(wizard.socket, "create_connection",
+                           return_value=socket_object) as connect):
+            result = wizard.cloudflare_portal_status()
+        self.assertEqual(result["private_route"], "unverified")
+        self.assertEqual(result["cloudflare_access"], "unverified")
+        self.assertEqual(result["loopback_tcp"]["gateway"], "accepting_connections")
+        self.assertEqual(result["loopback_tcp"]["adapter"], "accepting_connections")
+        self.assertEqual(connect.call_count, 2)
+        self.assertEqual([c.args[0] for c in connect.call_args_list],
+                         [("127.0.0.1", 18790), ("127.0.0.1", 18791)])
+        self.assertNotIn("PRIVATE", json.dumps(result))
+
+    def test_cloudflare_status_cli_has_no_configuration_mutations(self):
+        with (patch.object(wizard, "cloudflare_portal_status",
+                           return_value={"private_route": "unverified"}) as status,
+              patch.object(wizard, "cloudflare_portal_prepare",
+                           side_effect=AssertionError("unexpected preparation")),
+              patch.object(wizard, "cloudflare_portal_rollback",
+                           side_effect=AssertionError("unexpected rollback"))):
+            code, output = self.call("--cloudflare-portal-status")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output)["private_route"], "unverified")
+        status.assert_called_once()
+
+    def test_optional_unit_state_rejects_malformed_or_secret_bearing_output(self):
+        from scripts import install_user_services
+        with patch.object(wizard.subprocess, "run", return_value=subprocess.CompletedProcess(
+                [], 0, stdout=(
+                    "LoadState=loaded\\nActiveState=active\\nUnitFileState=enabled\\n"
+                    "FragmentPath=/PRIVATE/unit\\nUnexpected=PRIVATE_SECRET\\n"),
+                stderr="PRIVATE_SECRET")):
+            states = wizard.cloudflare_local_unit_states()
+        self.assertEqual(set(states), set(install_user_services.CLOUDFLARE_NAMES))
+        self.assertTrue(all(v == {"state": "unverified"} for v in states.values()))
+        self.assertNotIn("PRIVATE", json.dumps(states))
+
+    def test_cloudflare_rollback_refuses_absent_but_active_unowned_unit(self):
+        from scripts import install_user_services
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            states = {
+                name: {"LoadState": "not-found", "ActiveState": "inactive",
+                       "UnitFileState": "", "FragmentPath": ""}
+                for name in install_user_services.CLOUDFLARE_NAMES
+            }
+            states[install_user_services.CLOUDFLARE_NAMES[0]] = {
+                "LoadState": "loaded", "ActiveState": "active",
+                "UnitFileState": "enabled", "FragmentPath": "/foreign/unit"}
+            with (patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch.object(install_user_services, "destination", return_value=path),
+                  patch.object(wizard, "cloudflare_local_unit_states",
+                               return_value=states),
+                  patch.object(wizard, "confirm",
+                               side_effect=AssertionError("no confirmation")),
+                  patch.object(wizard.subprocess, "run",
+                               side_effect=AssertionError("must not stop any unit"))):
+                self.assertEqual(wizard.cloudflare_portal_rollback(), 1)
+
+    def test_cloudflare_rollback_checks_verified_stop_before_deleting(self):
+        from scripts import install_user_services
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            for name in install_user_services.CLOUDFLARE_NAMES:
+                (path / name).write_text(install_user_services.MARKER)
+            states = {
+                name: {"LoadState": "loaded", "ActiveState": "active",
+                       "UnitFileState": "enabled", "FragmentPath": str(path / name)}
+                for name in install_user_services.CLOUDFLARE_NAMES
+            }
+            with (patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch.object(install_user_services, "destination", return_value=path),
+                  patch.object(wizard, "cloudflare_local_unit_states",
+                               return_value=states),
+                  patch.object(wizard, "confirm", return_value=True),
+                  patch.object(wizard.subprocess, "run", return_value=subprocess.CompletedProcess(
+                      [], 0, stdout="", stderr="SECRET")) as stopped,
+                  patch.object(install_user_services, "main",
+                               side_effect=AssertionError("unit must not be removed"))):
+                self.assertEqual(wizard.cloudflare_portal_rollback(), 1)
+            stopped.assert_called_once()
+            self.assertTrue(all((path / name).exists()
+                                for name in install_user_services.CLOUDFLARE_NAMES))
+
+    def test_cloudflare_rollback_uses_project_venv_not_system_python(self):
+        from scripts import install_user_services
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            unit_names = install_user_services.CLOUDFLARE_NAMES
+            for name in unit_names:
+                (folder / name).write_text(install_user_services.MARKER)
+            before = {
+                name: {"LoadState": "loaded", "ActiveState": "active",
+                       "UnitFileState": "enabled", "FragmentPath": str(folder / name)}
+                for name in unit_names
+            }
+            after = {
+                name: {"LoadState": "loaded", "ActiveState": "inactive",
+                       "UnitFileState": "disabled", "FragmentPath": str(folder / name)}
+                for name in unit_names
+            }
+            runs = []
+            def executed(argv, **kwargs):
+                if argv[:3] == ["systemctl", "--user", "show"]:
+                    name = argv[3]
+                    return subprocess.CompletedProcess(
+                        argv, 0,
+                        stdout="".join(f"{key}={value}\n"
+                                       for key, value in after[name].items()),
+                        stderr="PRIVATE")
+                runs.append(list(argv))
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="PRIVATE")
+            with (patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch.object(install_user_services, "destination", return_value=folder),
+                  patch.object(wizard, "cloudflare_local_unit_states",
+                               side_effect=[before, after]),
+                  patch.object(wizard, "project_python",
+                               return_value=Path("/venv/python")),
+                  patch.object(wizard, "confirm", return_value=True),
+                  patch.object(wizard.subprocess, "run", side_effect=executed),
+                  contextlib.redirect_stdout(io.StringIO()) as output):
+                self.assertEqual(wizard.cloudflare_portal_rollback(), 0)
+            self.assertEqual(runs[0][:3],
+                             ["systemctl", "--user", "disable"])
+            self.assertEqual(runs[1], [
+                "/venv/python", "-m", "remote_agent_cloudflare_origin",
+                "--remove-config"])
+            self.assertEqual(runs[2], ["systemctl", "--user", "daemon-reload"])
+            self.assertNotIn("PRIVATE", output.getvalue())
+            self.assertTrue(all(not (folder / name).exists() for name in unit_names))
+
+    def test_cloudflare_rollback_does_not_delete_files_without_project_venv(self):
+        from scripts import install_user_services
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            for name in install_user_services.CLOUDFLARE_NAMES:
+                (folder / name).write_text(install_user_services.MARKER)
+            before = {
+                name: {"LoadState": "loaded", "ActiveState": "active",
+                       "UnitFileState": "enabled", "FragmentPath": str(folder / name)}
+                for name in install_user_services.CLOUDFLARE_NAMES
+            }
+            after = {
+                name: {**state, "ActiveState": "inactive", "UnitFileState": "disabled"}
+                for name, state in before.items()
+            }
+            with (patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch.object(install_user_services, "destination", return_value=folder),
+                  patch.object(wizard, "cloudflare_local_unit_states",
+                               side_effect=[before, after]),
+                  patch.object(wizard, "project_python", return_value=None),
+                  patch.object(wizard, "confirm", return_value=True),
+                  patch.object(wizard.subprocess, "run",
+                               return_value=subprocess.CompletedProcess(
+                                   [], 0, stdout="", stderr="PRIVATE")) as stopped,
+                  contextlib.redirect_stdout(io.StringIO())):
+                self.assertEqual(wizard.cloudflare_portal_rollback(), 1)
+            stopped.assert_called_once()
+            self.assertTrue(all((folder / name).exists()
+                                for name in install_user_services.CLOUDFLARE_NAMES))
+
+    def test_cloudflare_prepare_requires_explicit_confirmation(self):
+        with (patch.object(wizard.os, "geteuid", return_value=1000),
+              patch.object(wizard, "project_python", return_value=Path("/fake/python")),
+              patch.object(wizard, "confirm", return_value=False),
+              patch.object(wizard.subprocess, "run",
+                           side_effect=AssertionError("no process allowed"))):
+            self.assertEqual(wizard.cloudflare_portal_prepare(), 0)
 
     def test_read_only_connection_and_update_are_distinct_groups(self):
         with (patch.object(wizard.sys, "stdin", Mock(isatty=lambda: True)),

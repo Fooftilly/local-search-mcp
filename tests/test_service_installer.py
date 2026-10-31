@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -53,6 +55,138 @@ class ServiceInstallerTests(unittest.TestCase):
             target.symlink_to(self.dir / "unrelated")
             with self.assertRaisesRegex(ValueError, "symlink"):
                 installer.main(["--remove-auto-restart"])
+
+    def test_cloudflare_optional_units_are_separate_and_loopback_only(self):
+        result = installer.unit_files(
+            "/usr/bin/python3", installer.ROOT, cloudflare_portal=True)
+        self.assertEqual(set(result), set(installer.CLOUDFLARE_NAMES))
+        self.assertFalse(set(result) & set(installer.NAMES))
+        gateway = result["local-search-mcp-remote-gateway.service"]
+        origin = result["local-search-mcp-cloudflare-origin.service"]
+        self.assertIn("--serve-loopback", gateway)
+        self.assertIn("--serve-loopback", origin)
+        self.assertIn("remote_agent_server", gateway)
+        self.assertIn("remote_agent_cloudflare_origin", origin)
+        self.assertIn("Wants=local-search-mcp-remote-gateway.service", origin)
+        self.assertNotIn("BindsTo=", origin)
+        self.assertNotIn("0.0.0.0", gateway + origin)
+        self.assertNotIn("cloudflared", gateway + origin)
+        # sudo -n root-guard probe and nftables need this privilege/netlink.
+        self.assertIn("NoNewPrivileges=false", gateway)
+        self.assertIn("AF_NETLINK", gateway)
+        self.assertIn("NoNewPrivileges=true", origin)
+
+    def test_optional_install_uses_private_project_python_not_system_python(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            venv = root / ".venv" / "bin"
+            venv.mkdir(parents=True)
+            # Typical .venv/bin/python is a symlink to system Python.
+            # The unit MUST execute the symlink path to load site-packages.
+            (venv / "python").symlink_to(Path(sys.executable))
+            with (patch.object(installer, "ROOT", root),
+                  patch.object(installer.os, "geteuid", return_value=1000),
+                  patch.object(installer, "write_owned") as written):
+                self.assertEqual(installer.main(
+                    ["--install", "--cloudflare-portal"]), 0)
+            self.assertEqual(written.call_count, len(installer.CLOUDFLARE_NAMES))
+            expected_exe = installer.quote(str(venv / "python"))
+            for call in written.call_args_list:
+                self.assertIn(f"ExecStart={expected_exe} -m ", call.args[1])
+                self.assertIn(call.args[0].name, installer.CLOUDFLARE_NAMES)
+            self.assertFalse(any("/usr/bin/python3" in call.args[1]
+                                 for call in written.call_args_list))
+
+    def test_cloudflare_working_directory_is_systemd_escaped_not_quoted(self):
+        root = Path('/tmp/project with % space')
+        units = installer.unit_files(
+            '/usr/bin/python3', root, cloudflare_portal=True)
+        for unit in units.values():
+            self.assertIn(r'WorkingDirectory=/tmp/project\x20with\x20%%\x20space',
+                          unit)
+            self.assertNotIn('WorkingDirectory="', unit)
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            installer.working_directory(Path("relative/private project"))
+
+    def test_cloudflare_direct_remove_refuses_running_or_enabled_units(self):
+        for active, enabled in (
+                ("active", "enabled"), ("inactive", "enabled"),
+                ("activating", "disabled"), ("failed", "enabled")):
+            with self.subTest(active=active, enabled=enabled):
+                for name in installer.CLOUDFLARE_NAMES:
+                    (self.dir / name).write_text(installer.MARKER + "optional")
+                def state(argv, **kwargs):
+                    name = argv[3]
+                    return subprocess.CompletedProcess(
+                        argv, 0,
+                        stdout=("LoadState=loaded\nActiveState=" + active +
+                                "\nUnitFileState=" + enabled +
+                                "\nFragmentPath=" + str(self.dir / name) + "\n"),
+                        stderr="PRIVATE")
+                with (patch.object(installer.os, "geteuid", return_value=1000),
+                      patch.object(installer.subprocess, "run", side_effect=state)):
+                    with self.assertRaisesRegex(ValueError, "stopped and disabled"):
+                        installer.main(["--remove", "--cloudflare-portal"])
+                self.assertTrue(all((self.dir / name).exists()
+                                    for name in installer.CLOUDFLARE_NAMES))
+
+    def test_cloudflare_remove_refuses_unverified_or_foreign_service_state(self):
+        def invalid(argv, **kwargs):
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=(
+                    "LoadState=loaded\nActiveState=inactive\n"
+                    "UnitFileState=disabled\nFragmentPath=/other/unit\n"),
+                stderr="PRIVATE")
+        for name in installer.CLOUDFLARE_NAMES:
+            (self.dir / name).write_text(installer.MARKER + "optional")
+        for response in ("foreign", "failed"):
+            with self.subTest(response=response):
+                with (patch.object(installer.os, "geteuid", return_value=1000),
+                      patch.object(installer.subprocess, "run",
+                                   side_effect=invalid if response == "foreign"
+                                   else subprocess.TimeoutExpired(["systemctl"], 5))):
+                    with self.assertRaises(ValueError):
+                        installer.main(["--remove", "--cloudflare-portal"])
+            self.assertTrue(all((self.dir / name).is_file()
+                                for name in installer.CLOUDFLARE_NAMES))
+
+    def test_cloudflare_remove_preserves_core_units(self):
+        core = self.dir / installer.NAMES[0]
+        core.write_text(installer.MARKER + "core\n")
+        for name in installer.CLOUDFLARE_NAMES:
+            (self.dir / name).write_text(installer.MARKER + "optional\n")
+        def safely_stopped(argv, **kwargs):
+            name = argv[3]
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=(
+                    "LoadState=loaded\nActiveState=inactive\n"
+                    "UnitFileState=disabled\n"
+                    "FragmentPath=" + str(self.dir / name) + "\n"), stderr="")
+        with (patch.object(installer.os, "geteuid", return_value=1000),
+              patch.object(installer.subprocess, "run", side_effect=safely_stopped)):
+            self.assertEqual(installer.main(
+                ["--remove", "--cloudflare-portal"]), 0)
+        self.assertTrue(core.exists())
+        for name in installer.CLOUDFLARE_NAMES:
+            self.assertFalse((self.dir / name).exists())
+
+    def test_cloudflare_remove_is_atomic_if_second_unit_is_unmanaged(self):
+        first, second = installer.CLOUDFLARE_NAMES
+        (self.dir / first).write_text(installer.MARKER + "optional")
+        (self.dir / second).write_text("unmanaged unit")
+        def state(argv, **kwargs):
+            name = argv[3]
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=(
+                    "LoadState=loaded\nActiveState=inactive\n"
+                    "UnitFileState=disabled\n"
+                    "FragmentPath=" + str(self.dir / name) + "\n"), stderr="")
+        with (patch.object(installer.os, "geteuid", return_value=1000),
+              patch.object(installer.subprocess, "run", side_effect=state)):
+            with self.assertRaisesRegex(ValueError, "unmanaged"):
+                installer.main(["--remove", "--cloudflare-portal"])
+        self.assertTrue((self.dir / first).exists())
+        self.assertTrue((self.dir / second).exists())
 
     def test_legacy_install_flag_is_removed(self):
         with patch.object(installer.os, "geteuid", return_value=1000):
