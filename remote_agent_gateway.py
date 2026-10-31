@@ -29,6 +29,7 @@ MAX_TOTAL_ACTIVE = 8
 MAX_PER_CLIENT_PER_MINUTE = 30
 MAX_RESPONSE_SECONDS = 120
 MAX_BODY_SECONDS = 15
+MAX_GUARD_SECONDS = 32
 REVOCATION_POLL_SECONDS = 0.25
 _BEARER = re.compile(r"Bearer ([A-Za-z0-9_-]{32,128})\Z", re.ASCII | re.IGNORECASE)
 _LOCAL_HOST = re.compile(r"(?:localhost|127\.0\.0\.1|\[::1\])(?::(?P<port>[1-9][0-9]{0,4}))?\Z", re.ASCII)
@@ -148,6 +149,9 @@ class LoopbackMCPGateway:
         self._clock = clock
         self._rate_clock = rate_clock
         self._budget = ClientRequestBudget()
+        # Serializes expensive root guard checks. No cached attestation:
+        # every authorized request must pass a fresh host read/probe.
+        self._guard_slot = asyncio.Semaphore(1)
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -227,14 +231,6 @@ class LoopbackMCPGateway:
         if client_id is None:
             await _reply(send, 401)
             return
-        # Guard failures must never reach the upstream or create a Docker lease.
-        try:
-            if self._guard_ready() is not True:
-                await _reply(send, 503)
-                return
-        except Exception:
-            await _reply(send, 503)
-            return
         if not self._budget.reserve(client_id, self._rate_clock()):
             await _reply(send, 429)
             return
@@ -303,6 +299,21 @@ class LoopbackMCPGateway:
                     return
                 if values:
                     safe_headers[name.decode("ascii")] = values[0].decode("latin1")
+
+            # Bound actual root-owned Docker/nftables probes off the ASGI
+            # event loop. This must happen after auth, quota admission, and
+            # input validation, but before any upstream request or lease.
+            try:
+                async with asyncio.timeout(MAX_GUARD_SECONDS):
+                    async with self._guard_slot:
+                        guard_ok = await asyncio.to_thread(self._guard_ready)
+                if guard_ok is not True:
+                    await _reply(send, 503)
+                    return
+            except Exception:
+                await _reply(send, 503)
+                return
+
             # This gateway *never* forwards Authorization, Cookie, Host,
             # Forwarded, Origin, X-Forwarded-*, or arbitrary client headers.
             async with self._upstream.stream(
