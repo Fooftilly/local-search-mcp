@@ -141,6 +141,27 @@ class JSONLDUnitTests(unittest.TestCase):
         self.assertEqual(product_result["jsonld"][0]["fields"]["offers"],
                          {"priceCurrency": "EUR"})
 
+    def test_deep_nested_untrusted_fields_never_abort_valid_fetch(self):
+        deep_author = "Do not extract"
+        deep_context = "https://schema.org"
+        for _ in range(550):
+            deep_author = [deep_author]
+            deep_context = [deep_context]
+        valid_context_page = {
+            "@context": "https://schema.org", "@type": "Article",
+            "headline": "Valid headline", "author": deep_author,
+        }
+        result = ld.extract({"html": html_script(valid_context_page)})
+        self.assertEqual(result["jsonld"][0]["fields"],
+                         {"headline": "Valid headline"})
+        nested_context_page = {
+            "@context": deep_context, "@type": "Article",
+            "headline": "Should not trust deeply nested context",
+        }
+        result = ld.extract({"html": html_script(nested_context_page)})
+        self.assertEqual(result["jsonld"], [])
+        self.assertEqual(result["jsonld_info"]["status"], "none_found")
+
     def test_many_graph_nodes_and_scripts_return_only_bounded_records(self):
         node = {"@context": "https://schema.org", "@type": "Event",
                 "name": "Public event", "startDate": "2026-11-01"}
