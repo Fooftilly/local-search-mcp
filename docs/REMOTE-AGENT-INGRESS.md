@@ -183,6 +183,27 @@ No host-side commands were executed and no actual credentials, services or tunne
 python -m unittest discover -s tests -p 'test_remote_agent_server.py' -v
 ```
 
+### Explicit read-only gateway readiness preflight (#230)
+
+The optional operator CLI now supports three mutually exclusive modes:
+
+```sh
+python -m remote_agent_server --check       # existing default: private grants only
+python -m remote_agent_server --preflight   # explicit read-only host prerequisites
+# Only after separate operator approval (not part of preflight):
+python -m remote_agent_server --serve-loopback
+```
+
+`--preflight` first validates the existing private `agent-grants/v1` store with at least one unexpired client, then executes **one** existing fixed root-owned, sudoers-approved `--tunnel-gate` probe (up to 32 seconds), and finally makes **one** bounded JSON-RPC `tools/list` request **only** to `http://127.0.0.1:8790/mcp`. It verifies the twelve currently required tool names from either JSON or SSE framing, allowing additive names, and caps the response to 512 KiB and the entire discovery operation to eight seconds. Any missing grant, non-PASS guard, unreachable or malformed MCP response, redirect, timeout, missing tool or excessive body causes a generic nonzero failure. The success output is only counts and readiness; it never prints grant IDs, bearer tokens, URLs from responses, request payloads or JSON-RPC results.
+
+This **deliberately** invokes the existing read-only root security probe, unlike the default `--check`. It never calls a search or fetch tool, never starts/wakes the crawler, never opens a listener, creates a secret or tunnel, installs systemd, changes DNS/firewall, or alters the existing OpenAI tunnel. The CLI uses no HTTP proxy, no redirects and no configurable target. Tests use isolated guard mocks and HTTPX transports, **not** the operator's real root guard or local MCP.
+
+```sh
+python -m unittest -v tests.test_remote_agent_preflight tests.test_remote_agent_server
+```
+
+A successful local preflight only establishes host prerequisites at **that moment**. It is **not** a secure hosted Grok connector, HTTPS ingress, service lifecycle/rollback test or proof of future runtime guard continuity. #230 and #231 remain open pending operator-selected authenticated ingress and real provider acceptance.
+
 ### Deployment decision
 
 **Do not deploy or expose any public ingress based on this document alone.** The provider-neutral gateway, its offline credential workflow, and an optional local-only runner are repository artifacts requiring further operator acceptance. No installation or public endpoint has been authorized or performed. After the operator chooses an authenticated tunnel provider and verifies which Grok client authentication mode is available, add an explicit opt-in installation/rollback workflow. #231 tracks actual Grok acceptance; #215 is already closed for ordinary MCP-client protocol compatibility.
