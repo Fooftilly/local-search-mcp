@@ -932,7 +932,8 @@ def provider_observations_page(hours: int = 24) -> str:
                    'Inspect local file permissions and history configuration.</p>',
             coverage_rows='<tr><td colspan="2">Unavailable</td></tr>',
             engine_rows='<tr><td colspan="4">Unavailable</td></tr>',
-            category_rows='<tr><td colspan="4">Unavailable</td></tr>')
+            category_rows='<tr><td colspan="4">Unavailable</td></tr>',
+            reported_failure_rows='<tr><td colspan="2">Unavailable</td></tr>')
     def table_rows(items):
         return "".join(
             "<tr><td>" + esc(row["name"]) + "</td><td>" +
@@ -942,6 +943,12 @@ def provider_observations_page(hours: int = 24) -> str:
              if row["mean_search_call_ms"] is not None else "Not recorded") +
             "</td></tr>" for row in items) or (
             '<tr><td colspan="4">No attributable samples in this window</td></tr>')
+    reported_failure_rows = "".join(
+        "<tr><td>" + esc(row["name"]) + "</td><td>" +
+        str(row["reported_unresponsive_calls"]) + "</td></tr>"
+        for row in result["reported_unresponsive_engines"]) or (
+        '<tr><td colspan="2">No opted-in reported unresponsive providers '
+        'in retained history</td></tr>')
     labels = [
         ("Audited search calls", result["sampled_search_calls"]),
         ("Non-success calls (not attributable to an engine)",
@@ -956,7 +963,17 @@ def provider_observations_page(hours: int = 24) -> str:
         ("Scan or retention coverage limited", "Yes" if result["retention_or_scan_limited"] else "No"),
         ("Engine group display truncated", "Yes" if result["engine_groups_truncated"] else "No"),
         ("Category group display truncated", "Yes" if result["category_groups_truncated"] else "No"),
-        ("Per-engine failure coverage", "Unavailable"),
+        ("Provider diagnostic calls explicitly retained",
+         result["opted_in_diagnostic_calls"]),
+        ("Opted-in calls with reported provider failures",
+         result["reported_partial_provider_calls"]),
+        ("Opted-in calls with unknown diagnostic coverage",
+         result["reported_unknown_provider_calls"]),
+        ("Opted-in calls with no failures reported",
+         result["reported_no_failures_calls"]),
+        ("Suppressed unsafe provider labels", result["provider_labels_suppressed"]),
+        ("Failure label table truncated", "Yes" if result["provider_failure_groups_truncated"] else "No"),
+        ("Per-engine failure coverage", "Only explicit opted-in upstream reports"),
         ("Per-engine network latency", "Not measured"),
         ("Cache hits from historical calls", "Not recorded"),
     ]
@@ -973,7 +990,8 @@ def provider_observations_page(hours: int = 24) -> str:
         "provider-observations", hour_options=choices, notice=notice,
         coverage_rows=coverage,
         engine_rows=table_rows(result["observed_result_engines"]),
-        category_rows=table_rows(result["requested_categories"]))
+        category_rows=table_rows(result["requested_categories"]),
+        reported_failure_rows=reported_failure_rows)
 
 
 class Handler(BaseHTTPRequestHandler):
