@@ -73,7 +73,7 @@ class ResponseHeaderDeadlineTests(unittest.IsolatedAsyncioTestCase):
 
             async def __aiter__(self):
                 await asyncio.sleep(0.06)
-                yield b"event: message\\ndata: accepted\\n\\n"
+                yield b"event: message\ndata: accepted\n\n"
 
             async def aclose(self):
                 self.closed = True
