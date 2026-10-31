@@ -218,7 +218,7 @@ class OfflineCredentialTests(unittest.TestCase):
             self.assertEqual(str(default_store_path()),
                              "/home/operator/.config/local-search-mcp/private/agent-grants.json")
 
-    def test_real_tty_uses_independent_read_and_write_streams(self):
+    def test_tty_confirmation_uses_independent_read_and_write_streams(self):
         # /dev/tty is non-seekable: opening it with "r+" raises
         # io.UnsupportedOperation on a real controlling PTY.
         class TTY(io.StringIO):
