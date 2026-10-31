@@ -283,6 +283,33 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(StartupRefused):
                 await serve(Path("/does/not/matter"))
 
+    async def test_adapter_recovers_when_gateway_restarts_without_rebinding(self):
+        attempts = []
+        def upstream(request):
+            attempts.append(request)
+            if len(attempts) == 1:
+                raise httpx.ConnectError("synthetic down", request=request)
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1,
+                                              "result": {"tools": []}})
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(upstream),
+            trust_env=False) as upstream_client:
+            app = CloudflarePrivateOrigin(self.hostname, upstream_client)
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(
+                    app=app, client=("127.0.0.1", 4444)),
+                base_url="http://" + self.hostname,
+                trust_env=False) as client:
+                headers = {"authorization": "Bearer " + self.token}
+                content = b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+                down = await client.post("/mcp", headers=headers, content=content)
+                recovered = await client.post("/mcp", headers=headers, content=content)
+        self.assertEqual(down.status_code, 502)
+        self.assertEqual(recovered.status_code, 200)
+        self.assertEqual(len(attempts), 2)
+        self.assertTrue(all(str(x.url) == "http://127.0.0.1:18790/mcp"
+                            for x in attempts))
+
     async def test_gateway_guard_lost_blocks_authorized_request(self):
         self.gateway._guard_ready = lambda: False
         response = await self.send(token=self.token)
