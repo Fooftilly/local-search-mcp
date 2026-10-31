@@ -89,6 +89,14 @@ def _types(raw: object) -> list[str]:
     return names
 
 
+
+def _has_schema_type(raw: object, expected: str) -> bool:
+    values = raw[:4] if isinstance(raw, list) else [raw]
+    return any(isinstance(item, str)
+               and item in (expected, f"https://schema.org/{expected}",
+                            f"http://schema.org/{expected}") for item in values)
+
+
 def _trusted_schema_context(value: object) -> bool:
     if isinstance(value, str):
         return value.rstrip("/") in ("https://schema.org", "http://schema.org")
@@ -115,12 +123,11 @@ def _record(node: dict, context_ok: bool) -> dict | None:
             questions = [questions] if isinstance(questions, dict) else []
         answers = []
         for q in questions[:6]:
-            if not isinstance(q, dict) or "Question" not in _types(q.get("@type")):
+            if not isinstance(q, dict) or not _has_schema_type(q.get("@type"), "Question"):
                 continue
             name = _plain(q.get("name"), 180)
             accepted = q.get("acceptedAnswer")
-            if not isinstance(accepted, dict) or "Answer" not in (
-                    str(accepted.get("@type")).rsplit("/", 1)[-1]):
+            if not isinstance(accepted, dict) or not _has_schema_type(accepted.get("@type"), "Answer"):
                 continue
             answer = _plain(accepted.get("text"), _FIELD_LIMITS["text"])
             if name and answer:
