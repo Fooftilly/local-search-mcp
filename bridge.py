@@ -1505,6 +1505,14 @@ def web_compare_documents(left_document_id: str, right_document_id: str,
            > document_comparison.MAX_OUTPUT_BYTES and outcome["changes"]):
         outcome["changes"].pop()
         outcome["changes_truncated"] = True
+    if len(json.dumps(outcome, ensure_ascii=True).encode("utf-8")) > document_comparison.MAX_OUTPUT_BYTES:
+        # A Unicode-heavy URL path can expand sixfold in JSON escaping even
+        # when the 512-code-point label itself looks short. Omit identities
+        # instead of silently truncating them to a different resource.
+        for side in ("left", "right"):
+            outcome[side + "_source_url"] = ""
+            outcome[side + "_final_url"] = ""
+            outcome[side + "_source_identity_available"] = False
     if not both_authorized() or not document_pages.pair_handles_current(
             left_document_id, right_document_id):
         return denied
