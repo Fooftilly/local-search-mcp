@@ -81,11 +81,10 @@ class ProviderObservationsTests(unittest.TestCase):
         answer = provider.observations(24, now=self.now)
         self.assertEqual(answer["opted_in_diagnostic_calls"], 3)
         self.assertEqual(answer["reported_partial_provider_calls"], 3)
-        self.assertEqual(answer["reported_unresponsive_engines"],
-                         [{"name": "QWANT", "reported_unresponsive_calls": 3}]
-                         if answer["reported_unresponsive_engines"][0]["name"] == "QWANT"
-                         else [{"name": answer["reported_unresponsive_engines"][0]["name"],
-                                "reported_unresponsive_calls": 3}])
+        self.assertEqual(len(answer["reported_unresponsive_engines"]), 1)
+        self.assertEqual(answer["reported_unresponsive_engines"][0]["name"].casefold(),
+                         "qwant")
+        self.assertEqual(answer["reported_unresponsive_engines"][0]["reported_unresponsive_calls"], 3)
         self.assertFalse(answer["provider_failure_groups_truncated"])
 
     def test_opt_in_suppression_count_is_not_lost_after_sanitization(self):
