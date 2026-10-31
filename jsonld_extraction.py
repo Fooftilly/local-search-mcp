@@ -43,7 +43,8 @@ def _plain(value: object, limit: int = 180) -> str:
     if not isinstance(value, str) or not value or len(value) > limit * 12:
         return ""
     cleaned = _SPACE.sub(" ", _CONTROL.sub(" ", value)).strip()
-    if not cleaned or "<" in cleaned or ">" in cleaned:
+    if (not cleaned or "<" in cleaned or ">" in cleaned
+            or any(s in cleaned.casefold() for s in ("javascript:", "vbscript:", "data:", "file:"))):
         return ""
     return cleaned[:limit].encode("utf-8", "replace").decode("utf-8")
 
