@@ -19,7 +19,7 @@ from runtime_ports import MCP_PORT
 from crawler_security import local_container_warning, verify_health
 import threading
 from urllib.parse import urlsplit, urlunsplit
-from history_log import logged_tool
+from history_log import logged_tool, safe_url
 import document_pages
 import request_cache
 import structured_extraction
@@ -740,16 +740,17 @@ def _run_fetch(url: str, mode: str, *,
                include_links: bool = False, include_tables: bool = False,
                include_outline: bool = False,
                include_alternatives: bool = False,
-               compact_chars: int = document_pages.PAGE_CHARS) -> dict:
+               compact_chars: int = document_pages.PAGE_CHARS,
+               retain_for_evidence: bool = False) -> dict:
     try:
         with on_demand.lease("crawl4ai"):
             if (include_links or include_tables or include_outline or include_alternatives
-                    or compact_chars != document_pages.PAGE_CHARS):
+                    or retain_for_evidence or compact_chars != document_pages.PAGE_CHARS):
                 return _run_fetch_network(
                     url, mode, once_proof=once_proof,
                     include_links=include_links, include_tables=include_tables,
                     include_outline=include_outline, include_alternatives=include_alternatives,
-                    compact_chars=compact_chars)
+                    compact_chars=compact_chars, retain_for_evidence=retain_for_evidence)
             return _run_fetch_network(url, mode, once_proof=once_proof)
     except on_demand.BackendUnavailable:
         return {"url": url, "success": False, "status": "upstream_unavailable",
@@ -761,7 +762,8 @@ def _run_fetch_network(url: str, mode: str, *,
                        include_links: bool = False, include_tables: bool = False,
                        include_outline: bool = False,
                        include_alternatives: bool = False,
-                       compact_chars: int = document_pages.PAGE_CHARS) -> dict:
+                       compact_chars: int = document_pages.PAGE_CHARS,
+                       retain_for_evidence: bool = False) -> dict:
     """Crawl only after the caller has passed current local policy checks."""
     headers = {"Authorization": f"Bearer {CRAWL4AI_TOKEN}"} if CRAWL4AI_TOKEN else {}
     crawler_params = {"stream": False}
@@ -975,6 +977,14 @@ def _run_fetch_network(url: str, mode: str, *,
     elif len(markdown) > compact_chars:
         return {"url": final_url, "success": False, "status": "crawl_failed",
                 "reason": "Crawl4AI reported failure; no incomplete document was cached"}
+    elif retain_for_evidence:
+        # Unlike ordinary short fetches, explicitly opted-in text is held
+        # temporarily under the same authorization, TTL and memory limits.
+        token, count = document_pages.save(
+            final_url, markdown, metadata, source_url=url, once_proof=once_proof,
+            first_page_chars=compact_chars, allow_short=True)
+        output.update({"document_id": token, "page": 1, "page_count": count,
+                       "retained_for_evidence": True})
     return output
 
 
@@ -985,7 +995,8 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
               include_outline: bool = False,
               compact_chars: int = document_pages.PAGE_CHARS,
               include_retrieval_info: bool = False,
-              include_alternatives: bool = False) -> dict:
+              include_alternatives: bool = False,
+              retain_for_evidence: bool = False) -> dict:
     """Fetch an approved page; bounded memory cache for public short pages.
 
     Authorization runs before every cache hit. Fresh skips both cache and
@@ -1003,6 +1014,8 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
         raise ValueError("compact_chars must be an integer between 2048 and 24000")
     if not isinstance(include_retrieval_info, bool):
         raise ValueError("include_retrieval_info must be a boolean")
+    if type(retain_for_evidence) is not bool:
+        raise ValueError("retain_for_evidence must be a boolean")
     before = request_cache.policy_epoch()
     once_proof = None
     # Ordinary permanent grants take precedence: a one-use grant must not be
@@ -1038,12 +1051,12 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
     if once_proof is not None:
         # One-use access never reads, stores, refreshes or coalesces a reusable
         # fetch cache entry. Proof stays local to this invocation.
-        if include_links or include_tables or include_outline or include_alternatives or compact_chars != document_pages.PAGE_CHARS:
+        if include_links or include_tables or include_outline or include_alternatives or retain_for_evidence or compact_chars != document_pages.PAGE_CHARS:
             response = _run_fetch(
                 url, mode, once_proof=once_proof,
                 include_links=include_links, include_tables=include_tables,
                 include_outline=include_outline, include_alternatives=include_alternatives,
-                compact_chars=compact_chars)
+                compact_chars=compact_chars, retain_for_evidence=retain_for_evidence)
         else:
             response = _run_fetch(url, mode, once_proof=once_proof)
         if include_retrieval_info:
@@ -1053,12 +1066,12 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
         # Opt-in structured data must not reuse the legacy Markdown-only
         # cache entry or populate it with mismatched response shape.
         opt_in = (include_links or include_tables or include_outline or include_alternatives or
-                  compact_chars != document_pages.PAGE_CHARS)
+                  retain_for_evidence or compact_chars != document_pages.PAGE_CHARS)
         key = None if opt_in else request_cache.fetch_key(url, mode)
         load = (lambda: _run_fetch(
             url, mode, include_links=include_links, include_tables=include_tables,
             include_outline=include_outline, include_alternatives=include_alternatives,
-            compact_chars=compact_chars)
+            compact_chars=compact_chars, retain_for_evidence=retain_for_evidence)
         ) if opt_in else (lambda: _run_fetch(url, mode))
         cached = request_cache.run(
             "fetch", key, load,
@@ -1340,16 +1353,42 @@ def web_find(document_id: str, query: str, max_matches: int = 10,
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 @logged_tool("page")
 def web_extract_section(document_id: str, start_offset: int,
-                        max_chars: int = document_pages.DEFAULT_SECTION_CHARS) -> dict:
-    """Read a bounded Unicode span from an existing authorized document.
+                        max_chars: int = document_pages.DEFAULT_SECTION_CHARS,
+                        include_evidence: bool = False) -> dict:
+    """Read bounded Markdown and optionally assemble precise citation evidence.
 
-    Recheck source/final host and one-use proof; never recrawl or persist text.
-    The passage may cross the original continuation page boundary.
+    Evidence is an unverified quote from the existing fetched Markdown, not
+    proof of publisher accuracy or current webpage contents. The source and
+    final hosts are reauthorized BEFORE evidence metadata is released.
     """
+    if type(include_evidence) is not bool:
+        raise ValueError("include_evidence must be a boolean")
     epoch = request_cache.policy_epoch()
     result, source_url, once_proof = document_pages.section_with_security_context(
         document_id, start_offset, max_chars)
-    return _authorized_saved_document(result, source_url, once_proof, epoch)
+    authorized = _authorized_saved_document(result, source_url, once_proof, epoch)
+    if not include_evidence or authorized.get("success") is not True:
+        return authorized
+    # At most 1200 code points of text are duplicated in evidence; the
+    # ordinary section result and its default 3072-character cap are intact.
+    quote = authorized["text"][:1200]
+    final_url = authorized["url"]
+    source = source_url or final_url
+    return {**authorized, "evidence": {
+        "quotation": quote,
+        "quote_start_offset": authorized["start_offset"],
+        "quote_end_offset": authorized["start_offset"] + len(quote),
+        "quote_truncated": len(quote) < len(authorized["text"]),
+        "page": authorized["page"],
+        "offset_units": "unicode_code_points_in_normalized_markdown",
+        "source_url": safe_url(source),
+        "final_url": safe_url(final_url),
+        "query_parameters_removed": ("?" in source or "?" in final_url),
+        "provenance": "already_authorized_crawl_markdown",
+        "publisher_claims_verified": False,
+        "source_completeness": "unknown",
+        "retrieval_timestamp": "not_recorded_in_temporary_document",
+    }}
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
