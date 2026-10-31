@@ -218,6 +218,126 @@ class OfflineCredentialTests(unittest.TestCase):
             self.assertEqual(str(default_store_path()),
                              "/home/operator/.config/local-search-mcp/private/agent-grants.json")
 
+    def test_real_nonseekable_pty_accepts_secure_confirmation(self):
+        # A controlling terminal is inherently non-seekable. This must fail
+        # if secure confirmation ever regresses to open("/dev/tty", "r+").
+        import fcntl
+        import pty
+        import select
+        import subprocess
+        import sys
+        import termios
+        import time
+
+        if os.name != "posix":
+            self.skipTest("requires a POSIX controlling terminal")
+
+        child_code = (
+            "import sys\n"
+            "from remote_agent_credentials import _trusted_tty_confirmation\n"
+            "ok = _trusted_tty_confirmation('fixture', 'synthetic-only-not-secret')\n"
+            "sys.exit(0 if ok else 1)\n"
+        )
+
+        def give_child_controlling_tty():
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+        master, slave = pty.openpty()
+        child = None
+        try:
+            child = subprocess.Popen(
+                [sys.executable, "-c", child_code],
+                stdin=slave, stdout=slave, stderr=slave,
+                cwd=Path(__file__).resolve().parents[1],
+                close_fds=True, preexec_fn=give_child_controlling_tty,
+            )
+            os.close(slave)
+            slave = None
+            output = bytearray()
+            deadline = time.monotonic() + 8
+            while b"Type COMMIT" not in output and time.monotonic() < deadline:
+                ready, _, _ = select.select(
+                    [master], [], [], max(0, deadline - time.monotonic()))
+                if ready:
+                    try:
+                        output.extend(os.read(master, 4096))
+                    except OSError:
+                        break  # child exited early; assertions below fail
+            self.assertIn(b"Type COMMIT", output,
+                          "Credential prompt was not displayed on the controlling PTY")
+            os.write(master, b"COMMIT\n")
+            self.assertEqual(child.wait(timeout=5), 0,
+                             "Credential confirmation failed on a real PTY")
+        finally:
+            if child is not None and child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+            if slave is not None:
+                os.close(slave)
+            os.close(master)
+
+    def test_tty_confirmation_uses_independent_read_and_write_streams(self):
+        # /dev/tty is non-seekable: opening it with "r+" raises
+        # io.UnsupportedOperation on a real controlling PTY.
+        class TTY(io.StringIO):
+            def __init__(self, initial=""):
+                super().__init__(initial)
+                self.captured = ""
+
+            def isatty(self):
+                return True
+
+            def close(self):
+                self.captured = self.getvalue()
+                super().close()
+
+        from contextlib import redirect_stdout, redirect_stderr
+
+        terminal_input = TTY("COMMIT\n")
+        terminal_output = TTY()
+        opened = []
+
+        def open_tty(path, mode, *, encoding):
+            self.assertEqual(path, "/dev/tty")
+            self.assertEqual(encoding, "utf-8")
+            opened.append(mode)
+            if mode == "r":
+                return terminal_input
+            if mode == "w":
+                return terminal_output
+            self.fail("Update-mode TTY would require seeking: " + mode)
+
+        token = "synthetic-test-credential-not-a-real-token"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (patch("builtins.open", side_effect=open_tty),
+              redirect_stdout(stdout), redirect_stderr(stderr)):
+            accepted = _trusted_tty_confirmation("test-client", token)
+
+        self.assertTrue(accepted)
+        self.assertEqual(opened, ["r", "w"])
+        self.assertIn("Token: " + token, terminal_output.captured)
+        self.assertIn("Type COMMIT", terminal_output.captured)
+        self.assertNotIn(token, stdout.getvalue() + stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_tty_denial_and_failed_open_never_accept_credential(self):
+        class FakeTTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        for response in ("\n", "CANCEL\n", "COMMIT extra\n"):
+            terminal_input = FakeTTY(response)
+            terminal_output = FakeTTY()
+            with self.subTest(response=response), patch(
+                    "builtins.open", side_effect=[terminal_input, terminal_output]):
+                self.assertFalse(_trusted_tty_confirmation("test", "test-token"))
+        with patch("builtins.open", side_effect=[
+                FakeTTY("COMMIT\n"), OSError("cannot open write-only /dev/tty")]):
+            with self.assertRaisesRegex(ProvisioningError, "Secure local terminal not available"):
+                _trusted_tty_confirmation("test", "test-token")
+
     def test_non_tty_refusal_and_root_protection(self):
         with patch("builtins.open", side_effect=OSError("no controlling tty")):
             with self.assertRaises(ProvisioningError):
