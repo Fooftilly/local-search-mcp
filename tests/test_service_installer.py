@@ -119,9 +119,9 @@ class ServiceInstallerTests(unittest.TestCase):
                     name = argv[3]
                     return subprocess.CompletedProcess(
                         argv, 0,
-                        stdout=("LoadState=loaded\\nActiveState=" + active +
-                                "\\nUnitFileState=" + enabled +
-                                "\\nFragmentPath=" + str(self.dir / name) + "\\n"),
+                        stdout=("LoadState=loaded\nActiveState=" + active +
+                                "\nUnitFileState=" + enabled +
+                                "\nFragmentPath=" + str(self.dir / name) + "\n"),
                         stderr="PRIVATE")
                 with (patch.object(installer.os, "geteuid", return_value=1000),
                       patch.object(installer.subprocess, "run", side_effect=state)):
@@ -134,8 +134,8 @@ class ServiceInstallerTests(unittest.TestCase):
         def invalid(argv, **kwargs):
             return subprocess.CompletedProcess(
                 argv, 0, stdout=(
-                    "LoadState=loaded\\nActiveState=inactive\\n"
-                    "UnitFileState=disabled\\nFragmentPath=/other/unit\\n"),
+                    "LoadState=loaded\nActiveState=inactive\n"
+                    "UnitFileState=disabled\nFragmentPath=/other/unit\n"),
                 stderr="PRIVATE")
         for name in installer.CLOUDFLARE_NAMES:
             (self.dir / name).write_text(installer.MARKER + "optional")
@@ -152,16 +152,16 @@ class ServiceInstallerTests(unittest.TestCase):
 
     def test_cloudflare_remove_preserves_core_units(self):
         core = self.dir / installer.NAMES[0]
-        core.write_text(installer.MARKER + "core\\n")
+        core.write_text(installer.MARKER + "core\n")
         for name in installer.CLOUDFLARE_NAMES:
-            (self.dir / name).write_text(installer.MARKER + "optional\\n")
+            (self.dir / name).write_text(installer.MARKER + "optional\n")
         def safely_stopped(argv, **kwargs):
             name = argv[3]
             return subprocess.CompletedProcess(
                 argv, 0, stdout=(
-                    "LoadState=loaded\\nActiveState=inactive\\n"
-                    "UnitFileState=disabled\\n"
-                    "FragmentPath=" + str(self.dir / name) + "\\n"), stderr="")
+                    "LoadState=loaded\nActiveState=inactive\n"
+                    "UnitFileState=disabled\n"
+                    "FragmentPath=" + str(self.dir / name) + "\n"), stderr="")
         with (patch.object(installer.os, "geteuid", return_value=1000),
               patch.object(installer.subprocess, "run", side_effect=safely_stopped)):
             self.assertEqual(installer.main(
@@ -178,9 +178,9 @@ class ServiceInstallerTests(unittest.TestCase):
             name = argv[3]
             return subprocess.CompletedProcess(
                 argv, 0, stdout=(
-                    "LoadState=loaded\\nActiveState=inactive\\n"
-                    "UnitFileState=disabled\\n"
-                    "FragmentPath=" + str(self.dir / name) + "\\n"), stderr="")
+                    "LoadState=loaded\nActiveState=inactive\n"
+                    "UnitFileState=disabled\n"
+                    "FragmentPath=" + str(self.dir / name) + "\n"), stderr="")
         with (patch.object(installer.os, "geteuid", return_value=1000),
               patch.object(installer.subprocess, "run", side_effect=state)):
             with self.assertRaisesRegex(ValueError, "unmanaged"):
