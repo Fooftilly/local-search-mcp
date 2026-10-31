@@ -23,6 +23,7 @@ MAX_REQUEST_BYTES = 128 * 1024
 MAX_HEADER_BYTES = 8192
 MAX_HEADERS = 48
 MAX_GRANTS = 8
+MAX_CACHED_IDENTITIES = 64
 MAX_PER_CLIENT_ACTIVE = 2
 MAX_TOTAL_ACTIVE = 8
 MAX_PER_CLIENT_PER_MINUTE = 30
@@ -98,9 +99,11 @@ class ClientRequestBudget:
                 self._active.get(client_id, 0) >= MAX_PER_CLIENT_ACTIVE or
                 len(self._calls.get(client_id, ())) >= MAX_PER_CLIENT_PER_MINUTE):
             return False
-        # A valid grant has a bounded client ID; at most the configured
-        # maximum grant identities can be active at any moment.
-        if client_id not in self._calls and len(self._calls) >= MAX_GRANTS:
+        # Recent counters outlive grant revocation so reinstating an ID
+        # cannot reset its rate limit. A separate, bounded cache allowance
+        # permits normal rotation of the eight live grants without 429s.
+        if (client_id not in self._calls and
+                len(self._calls) >= MAX_CACHED_IDENTITIES):
             return False
         self._calls.setdefault(client_id, deque()).append(now)
         self._active[client_id] = self._active.get(client_id, 0) + 1
