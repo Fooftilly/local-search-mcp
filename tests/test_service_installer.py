@@ -170,6 +170,24 @@ class ServiceInstallerTests(unittest.TestCase):
         for name in installer.CLOUDFLARE_NAMES:
             self.assertFalse((self.dir / name).exists())
 
+    def test_cloudflare_remove_is_atomic_if_second_unit_is_unmanaged(self):
+        first, second = installer.CLOUDFLARE_NAMES
+        (self.dir / first).write_text(installer.MARKER + "optional")
+        (self.dir / second).write_text("unmanaged unit")
+        def state(argv, **kwargs):
+            name = argv[3]
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=(
+                    "LoadState=loaded\\nActiveState=inactive\\n"
+                    "UnitFileState=disabled\\n"
+                    "FragmentPath=" + str(self.dir / name) + "\\n"), stderr="")
+        with (patch.object(installer.os, "geteuid", return_value=1000),
+              patch.object(installer.subprocess, "run", side_effect=state)):
+            with self.assertRaisesRegex(ValueError, "unmanaged"):
+                installer.main(["--remove", "--cloudflare-portal"])
+        self.assertTrue((self.dir / first).exists())
+        self.assertTrue((self.dir / second).exists())
+
     def test_legacy_install_flag_is_removed(self):
         with patch.object(installer.os, "geteuid", return_value=1000):
             with self.assertRaises(SystemExit) as context:
