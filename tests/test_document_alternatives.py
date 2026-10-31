@@ -255,6 +255,20 @@ class NonNormativeFormatTests(unittest.TestCase):
         unsafe = marker + "[plain text](DOM2-HTML.txt%0a), [PDF file](DOM2-HTML.pdf)\n\n"
         self.assertEqual(extract_w3c(unsafe)["alternatives"], [])
 
+    def test_whitespace_blank_lines_and_crlf_cannot_mix_unrelated_links(self):
+        marker = "This document is also available in these non-normative formats:\n"
+        for separator in ("\n \n", "\n\t \n", "\r\n  \r\n"):
+            with self.subTest(separator=repr(separator)):
+                source = (marker + "[plain text](DOM2-HTML.txt)" + separator
+                          + "Unrelated document: [PDF file](DOM2-HTML.pdf)")
+                self.assertEqual(extract_w3c(source)["alternatives"], [])
+        # A legitimate single paragraph with CRLF separators remains valid.
+        valid = ("This document is also available in these non-normative formats:\r\n"
+                 "[plain text](DOM2-HTML.txt),\r\n"
+                 "[PDF file](DOM2-HTML.pdf)\r\n\r\nNext heading")
+        names = [x["format"] for x in extract_w3c(valid)["alternatives"]]
+        self.assertEqual(names, ["txt", "pdf"])
+
     def test_strict_budget_and_default_public_output_size(self):
         item = extract_w3c(W3C_GROUP)
         self.assertLessEqual(subject._size(item), subject.MAX_OUTPUT_BYTES)
