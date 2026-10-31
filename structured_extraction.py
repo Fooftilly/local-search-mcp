@@ -322,6 +322,100 @@ def _advertised_alternatives(markdown: str, base: str, *, budget: int) -> list[d
         return results
     return []
 
+# W3C's DOM Level 2 HTML Recommendation explicitly advertises plain text,
+# PDF and a single HTML file in one non-normative-formats paragraph. Unlike the
+# RFC Editor's "View as:" list, the format links are siblings of the report's
+# directory index. The source document supplies the evidence; no link is visited.
+_W3C_ALT_MARKER = re.compile(
+    r"(?im)^[ \t]{0,3}This document is also available in these non-normative formats:[ \t]*")
+_W3C_ALT_LABELS = {
+    "plain text": "txt", "pdf file": "pdf", "single html file": "html",
+}
+
+
+def _advertised_w3c_style_alternatives(markdown: str, base: str, *,
+                                       budget: int) -> list[dict]:
+    """Conservative same-directory, same-origin explicit format pairing.
+
+    This only recognizes one literal publisher-advertised paragraph and
+    sibling .txt/.html/.pdf files sharing the same exact stem. A second
+    publisher with a distinct template needs its own observed evidence.
+    """
+    if not isinstance(markdown, str) or not markdown:
+        return []
+    try:
+        source = urlsplit(base)
+        if source.scheme not in ("http", "https") or not source.hostname:
+            return []
+        source_dir = (source.path if source.path.endswith("/") else
+                      source.path.rsplit("/", 1)[0] + "/")
+    except (TypeError, ValueError):
+        return []
+    bounded = _without_fenced_examples(markdown)
+    for marker_index, marker in enumerate(_W3C_ALT_MARKER.finditer(bounded)):
+        if marker_index >= 8:
+            break
+        # Treat a blank line containing spaces/tabs (and CRLF) as a true
+        # paragraph boundary. Unrelated later attachments are not format
+        # evidence for this publisher's advertised group.
+        paragraph = re.split(r"\r?\n[ \t]*\r?\n",
+                             bounded[marker.end():marker.end() + 900],
+                             maxsplit=1)[0]
+        options: dict[str, tuple[str, str]] = {}
+        stems: set[str] = set()
+        conflicting = False
+        for candidate in _ALT_LINK.finditer(paragraph):
+            fmt = _W3C_ALT_LABELS.get(candidate.group(1).strip().casefold())
+            if fmt is None:
+                continue
+            # Only links explicitly present in this approved page; do not
+            # derive URLs or let a query change what the format represents.
+            value = _url(candidate.group(2), base)
+            if value is None:
+                continue
+            try:
+                target = urlsplit(value)
+                if (target.scheme != source.scheme
+                        or target.hostname != source.hostname
+                        or target.port != source.port or target.query
+                        or value.endswith("?")):
+                    continue
+                if target.path.rsplit("/", 1)[0] + "/" != source_dir:
+                    continue
+                suffix = "." + fmt
+                if not target.path.casefold().endswith(suffix):
+                    continue
+                stem = target.path[:-len(suffix)]
+                if not stem or stem.endswith("/"):
+                    continue
+                stems.add(stem)
+                if fmt in options and options[fmt] != (stem, value):
+                    conflicting = True
+                    break
+                options[fmt] = (stem, value)
+            except (ValueError, TypeError):
+                continue
+        if conflicting or len(stems) != 1:
+            continue
+        if "pdf" not in options or not any(key in options for key in ("txt", "html")):
+            continue
+        stem = options["pdf"][0]
+        found = []
+        remaining = min(budget, MAX_OUTPUT_BYTES)
+        for fmt in ("txt", "html", "pdf"):
+            item = options.get(fmt)
+            if item is None or item[0] != stem:
+                continue
+            output = {"format": fmt, "url": item[1],
+                      "evidence": "source_labeled_non_normative_formats"}
+            size = _size(output)
+            if size <= remaining and len(found) < MAX_ALTERNATIVES:
+                found.append(output)
+                remaining -= size
+        return found
+    return []
+
+
 # Only already-extracted table cells are eligible for bounded continuation.
 MAX_RETAINED_TABLES = 16
 MAX_RETAINED_ROWS = 250
@@ -439,11 +533,14 @@ def extract(page: dict, base: str, *, include_links: bool, include_tables: bool,
     info = {}
     if include_alternatives:
         alternatives = _advertised_alternatives(markdown, base, budget=remaining)
+        if not alternatives:
+            alternatives = _advertised_w3c_style_alternatives(
+                markdown, base, budget=remaining)
         output["alternatives"] = alternatives
         remaining -= sum(_size(item) for item in alternatives)
         info["alternatives"] = {
             "returned": len(alternatives),
-            "evidence": "source_labeled_view_as" if alternatives else "none_observed",
+            "evidence": alternatives[0]["evidence"] if alternatives else "none_observed",
             "format_verified": False,
         }
     if include_links:
