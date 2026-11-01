@@ -46,6 +46,8 @@ grok mcp remove local-search-loopback
 
 Do not remove or overwrite any pre-existing Grok server with that name. Never create a project-scoped `.grok/config.toml` containing private credentials or publicly accessible URLs merely for this test.
 
+Operators who choose Cloudflare Tunnel must configure their **own** DNS subdomain and independently authenticated gateway, using private settings kept outside this repository. Follow [Self-hosted Cloudflare remote MCP ingress](CLOUDFLARE-REMOTE-MCP.md) before attempting Phase B. This project provides no shared tunnel or hosted endpoint; do not substitute reachability for an authenticated Grok connector.
+
 ## Phase B: hosted Grok and xAI API (blocked by #230)
 
 1. Confirm the actual `grok.com/connectors` **Custom** option and the available authentication options in the account. Business/Enterprise teams may require administrator provisioning. Observe the UI without registering a server or adding credentials yet.
