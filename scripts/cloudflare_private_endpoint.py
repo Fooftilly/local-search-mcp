@@ -18,7 +18,7 @@ PRIVATE_IP = "10.253.91.1"
 CIDR = PRIVATE_IP + "/32"
 TABLE = "lsm_cf_private_endpoint"
 MARKER = Path("/run/local-search-mcp-cloudflare-private.owned")
-INVOCATION_PATTERN = re.compile(r"[a-fA-F0-9]{32}\\Z")
+INVOCATION_PATTERN = re.compile(r"[a-fA-F0-9]{32}\Z")
 
 
 def invocation_id() -> str:
@@ -78,7 +78,7 @@ def prepare() -> None:
         # Marker is root-owned; no user-writable run-directory is trusted.
         fd = os.open(MARKER, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w", encoding="ascii") as marker:
-            marker.write(invocation + "\\n")
+            marker.write(invocation + "\n")
     except Exception:
         # Address removal precedes firewall removal: no unprotected address.
         if exists_ip():
@@ -95,7 +95,7 @@ def remove() -> None:
         raise RuntimeError("Unexpected ownership of private ingress marker")
     # ExecStopPost also runs after an unsuccessful ExecStartPre. A different
     # activation/instance must not remove another service's active ingress.
-    if MARKER.read_text(encoding="ascii") != invocation_id() + "\\n":
+    if MARKER.read_text(encoding="ascii") != invocation_id() + "\n":
         return
     # Fail closed if deleting the address fails: retain nftables protection.
     if exists_ip():
