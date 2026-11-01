@@ -117,6 +117,60 @@ class OptInFailureAuditTests(unittest.TestCase):
         for forbidden in ("PRIVATE_EXCEPTION", "PRIVATE_SNIPPET", "SECRET_PROVIDER"):
             self.assertNotIn(forbidden, repr(r))
 
+    def test_successful_recovery_retains_first_provider_failure_in_private_rollup(self):
+        first = {
+            "results": [],
+            "unresponsive_engines": [["qwant", "SECRET_FIRST_ERROR"]],
+        }
+        second = {
+            "results": [{
+                "title": "Public", "url": "https://example.org/report",
+                "engine": "duckduckgo", "content": "SECRET_SNIPPET",
+            }],
+            "unresponsive_engines": [],
+        }
+        calls, factory = self.mock_backend([first, second])
+        with (patch.object(bridge.httpx, "Client", side_effect=factory),
+              patch.object(bridge.on_demand, "lease",
+                           side_effect=lambda _: nullcontext()),
+              patch.object(bridge.time, "sleep", return_value=None)):
+            result = bridge.web_search(
+                "public recovery", include_search_status=True,
+                record_provider_diagnostics=True)
+        self.assertEqual(calls, ["/search", "/search"])
+        self.assertTrue(result["success"])
+        self.assertEqual(result["status"], "degraded")
+        self.assertEqual(result["search_status"]["coverage"], "no_failures_reported")
+        event = self.read()[0]
+        self.assertEqual(event["status"], "success")
+        self.assertEqual(event["provider_diagnostics"]["coverage"], "partial")
+        self.assertEqual(event["provider_diagnostics"]["unresponsive_engines"],
+                         ["qwant"])
+        self.assertEqual(event["provider_diagnostics"]["reported_count"], 1)
+        observed = provider_observations.observations(1)
+        self.assertEqual(observed["reported_partial_provider_calls"], 1)
+        self.assertEqual(observed["reported_unresponsive_engines"][0]["name"],
+                         "qwant")
+        self.assertNotIn("SECRET", self.path.read_text())
+
+    def test_private_recovery_rollup_unions_bounded_labels_from_both_attempts(self):
+        combined = history_log._private_search_provider_diagnostic({
+            "coverage": "partial",
+            "unresponsive_engines": ["duckduckgo"],
+            "reported_count": 1, "unparsed_count": 0, "truncated": False,
+            "recovery": {"attempted": True, "first_attempt": {
+                "coverage": "partial",
+                "unresponsive_engines": ["qwant", "PRIVATE_SECRET"],
+                "reported_count": 2, "unparsed_count": 0, "truncated": False,
+            }},
+        })
+        self.assertEqual(combined["coverage"], "partial")
+        self.assertEqual(combined["unresponsive_engines"],
+                         ["qwant", "duckduckgo"])
+        self.assertEqual(combined["reported_count"], 3)
+        self.assertGreaterEqual(combined["suppressed_or_unparsed_names"], 1)
+        self.assertNotIn("PRIVATE_SECRET", repr(combined))
+
     def test_zero_results_failure_is_diagnostic_only_when_opted_in(self):
         payload = {
             "results": [],
