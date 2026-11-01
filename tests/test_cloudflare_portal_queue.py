@@ -88,9 +88,8 @@ class PortalQueueTests(unittest.IsolatedAsyncioTestCase):
                     for _ in range(PORTAL_MAX_WAITING + 3)]
             try:
                 await self.until(lambda: self.entered == 2)
-                replies = await asyncio.wait_for(
-                    asyncio.gather(*jobs[:0]), 1)
-                self.assertEqual(replies, [])
+                await self.until(
+                    lambda: self.gateway._portal_waiters == PORTAL_MAX_WAITING)
                 await self.until(lambda: self.gateway._portal_waiters == 0)
                 self.assertEqual(self.entered, 2)
             finally:
