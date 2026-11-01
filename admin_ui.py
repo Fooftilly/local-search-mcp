@@ -556,43 +556,32 @@ def once_audit_html(search=""):
 
 
 def import_preview_html(plan: dict) -> str:
-    """Read-only validated preview with explicit, stale-state-checked apply."""
+    """Read-only rule import preview with stale-state-checked POST."""
     new = set(plan["add"])
     unchanged = set(plan["unchanged"])
-    rows = ''.join(
-        '<tr><td class="domain">' + esc(x["domain"]) + '</td><td>' +
-        esc("New" if x["domain"] in new else
-            "Unchanged" if x["domain"] in unchanged else "Conflict") +
-        '</td><td>' + esc(x["status"]) + '</td><td>' + esc(x["scope"]) +
-        '</td><td>' + esc(x["expires_at"] or "Permanent") + '</td></tr>'
+    rows = "".join(
+        render_template(
+            "import-rule-row", domain=esc(x["domain"]),
+            classification=esc("New" if x["domain"] in new else
+                               "Unchanged" if x["domain"] in unchanged
+                               else "Conflict"),
+            status=esc(x["status"]), scope=esc(x["scope"]),
+            expires_at=esc(x["expires_at"] or "Permanent"))
         for x in plan["rules"])
     conflicts = plan["conflicts"]
-    notice = (f'<p class="alert error">Conflicts with {len(conflicts)} existing '
-              'explicit rules or inherited denials (marked Conflict below); '
-              'resolve them locally before retrying. No '
-              'changes have been made.</p>' if conflicts else
-              '<p class="subtle">No changes yet. The import will add only '
-              'missing decisions and retain identical rules. A changed '
-              'policy or expired rule invalidates this preview.</p>')
-    submit = (f'<form method="post" action="/rules/apply">'
-              f'<input type="hidden" name="csrf" value="{esc(CSRF)}">'
-              f'<input type="hidden" name="state" value="{esc(plan["state"])}">'
-              f'<input type="hidden" name="ticket" value="{esc(plan["ticket"])}">'
-              f'<textarea name="rule_doc" hidden>{esc(plan["canonical"])}</textarea>'
-              '<label>Type IMPORT to apply '
-              '<input name="confirm" required pattern="IMPORT" maxlength="6"></label>'
-              '<button name="action" value="apply" class="allow">Import rules</button>'
-              '</form>' if not conflicts and plan["add"] else
-              '<p>No changes can be applied from this preview.</p>')
-    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
-            f'<meta name="referrer" content="no-referrer"><title>Rule import preview</title>'
-            f'<link rel="stylesheet" href="/dashboard.css"></head><body><main><h1>Domain rule import preview</h1>'
-            f'<p>New: {len(plan["add"])} · Unchanged: {len(plan["unchanged"])}'
-            f' · Conflicts: {len(conflicts)}</p>{notice}'
-            '<div class="scroll"><table><thead><tr><th>Domain</th><th>Preview</th>'
-            '<th>Decision</th><th>Scope</th><th>Expiration (UTC)</th></tr></thead><tbody>' +
-            rows + '</tbody></table></div>' + submit +
-            '<p><a href="/">Return without applying</a></p></main></body></html>')
+    notice = (render_template("import-rule-conflict", count=len(conflicts))
+              if conflicts else render_template("import-rule-safe"))
+    submit = (
+        render_template("import-rule-form", csrf=esc(CSRF),
+                        state=esc(plan["state"]), ticket=esc(plan["ticket"]),
+                        canonical=esc(plan["canonical"]))
+        if not conflicts and plan["add"] else
+        render_template("import-rule-no-change"))
+    return render_template(
+        "import-rule-page", new_count=len(plan["add"]),
+        unchanged_count=len(plan["unchanged"]),
+        conflict_count=len(conflicts), notice=notice,
+        rows=rows, submit=submit)
 
 
 def render(query='', message='', kind='success', page=1,
@@ -744,35 +733,15 @@ def portable_settings_page(message="", kind="success"):
 
 
 def portable_settings_preview(plan: dict, document: str) -> str:
-    """Bounded, HTML-escaped preview; submit the same text under CAS."""
-    rows = ''.join(
-        '<tr><td>' + esc(key) + '</td><td>' + esc(values["old"]) +
-        '</td><td>' + esc(values["new"]) + '</td></tr>'
-        for key, values in plan["changes"].items()
-    )
-    if not rows:
-        rows = '<tr><td colspan="3">No changes</td></tr>'
-    return (
-        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        '<meta name="referrer" content="no-referrer">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<title>Local Search MCP — Settings import preview</title>'
-        '<link rel="stylesheet" href="/dashboard.css"></head><body><main>'
-        '<h1>Nonsecret settings import preview</h1><p>Profile: ' +
-        esc(plan["profile"]) + ' (one atomic profile only)</p>'
-        '<table><thead><tr><th>Setting</th><th>Current</th><th>New</th>'
-        '</tr></thead><tbody>' + rows + '</tbody></table>'
-        '<form method="post" action="/portable-settings/apply">'
-        '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
-        '<input type="hidden" name="state" value="' + esc(plan["state"]) + '">'
-        '<textarea name="settings_doc" hidden readonly>' + esc(document) + '</textarea>'
-        '<label>Type IMPORT to confirm <input name="confirm" required '
-        'pattern="IMPORT" maxlength="6"></label>'
-        '<button type="submit">Apply validated settings</button></form>'
-        '<p>Stale or conflicting values and environment overrides refuse the '
-        'write; no secrets or service restart actions are included.</p>'
-        '<p><a href="/portable-settings">Cancel import</a></p></main></body></html>'
-    )
+    """Bounded, escaped preview; submit unchanged operator input under CAS."""
+    rows = "".join(
+        render_template("portable-preview-row", key=esc(key),
+                        old=esc(values["old"]), new=esc(values["new"]))
+        for key, values in plan["changes"].items())
+    return render_template(
+        "portable-preview-page", profile=esc(plan["profile"]),
+        rows=rows or render_template("portable-preview-empty"),
+        csrf=esc(CSRF), state=esc(plan["state"]), document=esc(document))
 
 
 def status_page():
