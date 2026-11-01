@@ -165,7 +165,7 @@ class DashboardHTTPTests(unittest.TestCase):
         routes = (
             "/domain", "/pending/clear", "/bulk", "/once",
             "/rules/preview", "/rules/apply", "/settings",
-            "/upstream-settings", "/cache-settings",
+            "/upstream-settings", "/cache-settings", "/engine-settings",
             "/portable-settings/preview", "/portable-settings/apply",
         )
         writer_targets = (
@@ -173,6 +173,7 @@ class DashboardHTTPTests(unittest.TestCase):
             (admin_ui.upstream_settings, "update_settings"),
             (admin_ui.cache_settings, "update_settings"),
             (admin_ui.portable_settings, "apply"),
+            (admin_ui.engine_dashboard.engines, "apply"),
             (admin_ui.policy_transfer, "apply_import"),
             (admin_ui.policy, "clear_pending_requests"),
             (admin_ui.policy, "_stage_once_grant"),
@@ -202,6 +203,41 @@ class DashboardHTTPTests(unittest.TestCase):
                     self.assertEqual(status, 403)
             for writer in writers:
                 writer.assert_not_called()
+
+    def test_engine_settings_get_is_read_only_and_post_is_guarded(self):
+        inventory = [
+            {"name": "duckduckgo", "enabled": True, "categories": ("general",)},
+            {"name": "brave", "enabled": True, "categories": ("general",)},
+        ]
+        with (patch.object(admin_ui.engine_dashboard, "snapshot",
+                           return_value=(inventory, ("duckduckgo", "brave"), "f" * 64)),
+              patch.object(admin_ui.engine_dashboard.engines, "apply",
+                           return_value="selection verified") as writer):
+            status, html, _ = self.exchange("GET", "/engine-settings")
+            self.assertEqual(status, 200)
+            self.assertIn(b'Search engine selection', html)
+            self.assertIn(b'duckduckgo', html)
+            self.assertNotIn(b'PRIVATE_SEARCH_QUERY', html)
+            writer.assert_not_called()
+            valid = [("csrf", admin_ui.CSRF), ("engine", "duckduckgo"),
+                     ("state", "f" * 64), ("confirm", "APPLY")]
+            self.assertEqual(self.exchange(
+                "POST", "/engine-settings", valid,
+                headers={"Sec-Fetch-Site": "cross-site"})[0], 403)
+            self.assertEqual(self.exchange(
+                "POST", "/engine-settings",
+                [("csrf", "incorrect"), *valid[1:]])[0], 403)
+            self.assertEqual(self.exchange(
+                "POST", "/engine-settings",
+                [("csrf", admin_ui.CSRF), ("engine", "duckduckgo"),
+                 ("state", "e" * 64), ("confirm", "APPLY")])[0], 400)
+            self.assertEqual(self.exchange("POST", "/engine-settings", valid)[0], 200)
+            writer.assert_called_once_with(
+                ("duckduckgo",), ("duckduckgo", "brave"), expected_state="f" * 64)
+            # The dashboard does not offer a GET-based mutation route.
+            self.assertEqual(self.exchange(
+                "GET", "/engine-settings?confirm=APPLY&engine=brave")[0], 200)
+            writer.assert_called_once()
 
     def test_health_endpoint_and_defense_headers(self):
         status, body, headers = self.exchange("GET", "/healthz")
@@ -296,7 +332,8 @@ class DashboardHTTPTests(unittest.TestCase):
             encoding="utf-8")
         history = json.loads(self.exchange("GET", "/live?view=history")[1])
         self.assertIn("&lt;script&gt;", history["history_html"])
-        # The indexed dashboard intentionally omits raw search-query text.
+        # Manually imported legacy file is not owner-verifiable, so the
+        # source-backed query must remain unavailable (not guessed).
         self.assertNotIn("<img", history["history_html"])
         self.assertNotIn("onerror", history["history_html"])
         self.assertNotIn("<script>", history["history_html"])
@@ -304,7 +341,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn(b'<tbody id="live-history">', html_page)
         self.assertIn(b'&lt;script&gt;', html_page)
 
-    def test_history_queries_require_opt_in_and_survive_live_filter_refresh(self):
+    def test_history_queries_show_by_default_and_survive_live_filter_refresh(self):
         from history_log import append_history
         long_query = ("Full Unicode café 猫 " + "x" * 240 +
                       ' <script>alert("x")</script>&' + chr(0x202e))
@@ -318,11 +355,11 @@ class DashboardHTTPTests(unittest.TestCase):
                         "url": "https://docs.example.org/private?secret=yes"})
         base_status, normal, _ = self.exchange("GET", "/history")
         self.assertEqual(base_status, 200)
-        self.assertNotIn(b"Full Unicode", normal)
+        self.assertIn(b"Full Unicode", normal)
         self.assertNotIn(b"private?secret", normal)
-        self.assertNotIn(b'checked> Show search queries', normal)
+        self.assertIn(b'checked> Show search queries', normal)
         live_normal = json.loads(self.exchange("GET", "/live?view=history")[1])
-        self.assertNotIn("Full Unicode", live_normal["history_html"])
+        self.assertIn("Full Unicode", live_normal["history_html"])
         uri = "/history?hours=24&kind=search&show_queries=1"
         code, revealed, headers = self.exchange("GET", uri)
         self.assertEqual(code, 200)
@@ -346,7 +383,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertNotIn("<script>", live["history_html"])
         self.assertNotIn("Full Unicode", live["history_summary_html"])
         no_reveal = json.loads(self.exchange(
-            "GET", "/live?view=history&kind=search&hours=24")[1])
+            "GET", "/live?view=history&kind=search&hours=24&show_queries=0")[1])
         self.assertNotIn("Full Unicode", str(no_reveal))
         fetch_only = json.loads(self.exchange(
             "GET", "/live?view=history&kind=fetch&show_queries=1")[1])
@@ -355,14 +392,14 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertNotIn("private?secret", str(fetch_only))
         self.assertNotIn("secret=yes", str(fetch_only))
         self.assertNotIn("https://docs.example.org/private",
-                         json.loads(self.exchange("GET", "/live?view=history&kind=fetch")[1])["history_html"])
+                         json.loads(self.exchange("GET", "/live?view=history&kind=fetch&show_queries=0")[1])["history_html"])
         for bad in ("2", "yes", "%3Cscript%3E", "1&show_queries=1"):
             self.assertEqual(self.exchange(
                 "GET", "/history?show_queries=" + bad)[0], 400)
             self.assertEqual(self.exchange(
                 "GET", "/live?view=history&show_queries=" + bad)[0], 400)
 
-    def test_history_fetch_urls_are_opt_in_escaped_and_live(self):
+    def test_history_fetch_urls_default_visible_escaped_and_live(self):
         from history_log import append_history
         from urllib.parse import urlencode
         target = 'https://docs.example.org/a/<script>alert("x")</script>/new?token=SECRET#fragment'
@@ -375,7 +412,7 @@ class DashboardHTTPTests(unittest.TestCase):
         code, original, _ = self.exchange("GET", "/history?kind=fetch")
         self.assertEqual(code, 200)
         self.assertIn(b"docs.example.org", original)
-        self.assertNotIn(b"/a/", original)
+        self.assertIn(b"/a/", original)
         code, reveal, headers = self.exchange(
             "GET", "/history?kind=fetch&hours=24&show_queries=1")
         self.assertEqual(code, 200)
@@ -393,7 +430,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn("https://docs.example.org/a/", rows["history_html"])
         self.assertNotIn("SECRET", str(rows))
         hidden = json.loads(self.exchange(
-            "GET", "/live?view=history&kind=fetch&hours=24")[1])
+            "GET", "/live?view=history&kind=fetch&hours=24&show_queries=0")[1])
         self.assertNotIn("https://", hidden["history_html"])
         cont = json.loads(self.exchange(
             "GET", "/live?view=history&kind=page&show_queries=1")[1])
@@ -410,7 +447,7 @@ class DashboardHTTPTests(unittest.TestCase):
         original = admin_ui.history_index.sync_history
         with patch.object(admin_ui.history_index, "sync_history",
                           wraps=original) as wrapped:
-            code, rendered, _ = self.exchange("GET", "/history?kind=fetch")
+            code, rendered, _ = self.exchange("GET", "/history?kind=fetch&show_queries=0")
             wrapped.assert_called_once_with()
         self.assertEqual(code, 200)
         self.assertIn(b"1 matching history events", rendered)
@@ -472,7 +509,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertNotIn(b'token=DO_NOT_LEAK', page)
         self.assertIn(b'show_queries=1', page)
         status, hidden, _ = self.exchange(
-            "GET", "/history?kind=fetch&page=2")
+            "GET", "/history?kind=fetch&page=2&show_queries=0")
         self.assertEqual(status, 200)
         self.assertIn(b'Showing 26', hidden)
         self.assertNotIn(b'/private-page/', hidden)
@@ -498,7 +535,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertNotIn("DO_NOT_LEAK", repr(live))
 
         all_history = json.loads(self.exchange(
-            "GET", "/live?view=history&page=3")[1])
+            "GET", "/live?view=history&page=3&show_queries=0")[1])
         self.assertEqual(all_history["history_page"], 3)
         self.assertEqual(all_history["history_html"].count("<tr>"), 11)
         self.assertIn("page 3 of 3", all_history["history_pages_html"])
@@ -579,23 +616,23 @@ class DashboardHTTPTests(unittest.TestCase):
                         "duration_ms": 10})
         append_history({"time_utc": now.isoformat(), "kind": "search",
                         "status": "success", "query": "PRIVATE_QUERY"})
-        url = "/history?hours=1&kind=fetch&domain=docs.example.org"
+        url = "/history?hours=1&kind=fetch&domain=docs.example.org&show_queries=0"
         status, page, headers = self.exchange("GET", url)
         self.assertEqual(status, 200)
         self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertIn(b'name="hours" value="1" checked required', page)
         self.assertIn(b'<tbody id="live-history-summary">', page)
         self.assertIn(b'<progress aria-label="fetch blocked count"', page)
-        self.assertIn(b'<td class="domain">docs.example.org</td><td>10.0</td>', page)
-        self.assertIn('<td class="domain">docs.example.org</td><td>10.0</td>',
+        self.assertIn('<td class="domain">docs.example.org</td><td>—</td><td>10.0</td>'.encode(), page)
+        self.assertIn('<td class="domain">docs.example.org</td><td>—</td><td>10.0</td>',
                       json.loads(self.exchange(
-                          "GET", "/live?view=history&hours=1&kind=fetch")[1]
+                          "GET", "/live?view=history&hours=1&kind=fetch&show_queries=0")[1]
                       )["history_html"])
         for secret in (b"PRIVATE_QUERY", b"SECRET", b"HIDDEN"):
             self.assertNotIn(secret, page)
 
         code, payload, _ = self.exchange(
-            "GET", "/live?view=history&hours=1&kind=fetch&domain=docs.example.org")
+            "GET", "/live?view=history&hours=1&kind=fetch&domain=docs.example.org&show_queries=0")
         self.assertEqual(code, 200)
         live = json.loads(payload)
         self.assertEqual(live["history_html"].count("<tr>"), 1)
@@ -608,7 +645,7 @@ class DashboardHTTPTests(unittest.TestCase):
             self.assertNotIn(secret, str(live))
 
         all_rows = json.loads(self.exchange(
-            "GET", "/live?view=history&hours=24&kind=fetch")[1])
+            "GET", "/live?view=history&hours=24&kind=fetch&show_queries=0")[1])
         self.assertEqual(all_rows["history_html"].count("<tr>"), 2)
         self.assertIn("fetch success", all_rows["history_summary_html"])
         for bad in ("-1", "2", "9999", "true", "24%3Cscript%3E", "xyz"):

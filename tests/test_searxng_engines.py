@@ -33,6 +33,36 @@ class EngineChooserTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
+    def test_dashboard_stale_inventory_rejected_inside_guarded_apply(self):
+        rows = [
+            {"name": "duckduckgo", "enabled": True, "categories": ("general",)},
+            {"name": "brave", "enabled": False, "categories": ("general",)},
+        ]
+        from unittest.mock import Mock
+        with (patch.object(e.os, "geteuid", return_value=1000),
+              patch.object(e.on_demand_coordination, "exclusive",
+                           return_value=contextlib.nullcontext()),
+              patch.object(e.on_demand_docker, "_safe_target",
+                           return_value=Mock(ident="owner", running=True)),
+              patch.object(e, "_check_bind_mount"),
+              patch.object(e, "live_engines", return_value=rows),
+              patch.object(e, "_checkpoint",
+                           side_effect=AssertionError("No file writes on stale state"))):
+            with self.assertRaises(e.StaleSettings):
+                e.apply(("duckduckgo",), ("duckduckgo", "brave"),
+                        expected_state="a" * 64)
+        self.assertEqual(self.file.read_text(), self.original)
+
+    def test_dashboard_inventory_state_changes_with_enabled_flags_and_yaml(self):
+        rows = [{"name": "duckduckgo", "enabled": True,
+                 "categories": ("general", "web")}]
+        state = e.inventory_state(rows, self.original)
+        self.assertEqual(len(state), 64)
+        self.assertNotEqual(state, e.inventory_state(
+            [{**rows[0], "enabled": False}], self.original))
+        self.assertNotEqual(state, e.inventory_state(rows, self.original + "# edited"))
+        self.assertNotIn("REDACTED", state)
+
     def test_direct_script_invocation_loads_modules_without_pythonpath(self):
         source = Path(__file__).resolve().parents[1] / "scripts" / "searxng_engines.py"
         env = os.environ.copy()
