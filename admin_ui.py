@@ -222,10 +222,13 @@ def _history_filters(query, *, validate_text=True):
     if raw not in ('0', '1', '24', '168'):
         raise ValueError("Invalid history time window")
     values['hours'] = int(raw)
-    visible = query.get('show_queries', ['0'])
-    if len(visible) != 1 or visible[0] not in ('0', '1'):
+    # Personal console: show audit queries by default. The form pairs a
+    # hidden "0" with the checkbox's "1", so unchecked sends only "0".
+    # Preserve old direct links with a single explicit "1".
+    visible = query.get('show_queries', ['1'])
+    if visible not in (['0'], ['1'], ['0', '1']):
         raise ValueError("Invalid history query visibility")
-    values['show_queries'] = visible[0] == '1'
+    values['show_queries'] = visible[-1] == '1'
     pages = query.get('page', ['1'])
     if len(pages) != 1:
         raise ValueError("Invalid history page")
@@ -881,7 +884,7 @@ def status_page():
                            mcp_port=esc(MCP_PORT))
 
 
-def history_page(kind="", status="", domain="", hours=0, show_queries=False,
+def history_page(kind="", status="", domain="", hours=0, show_queries=True,
                  filter_error="", page=1):
     filters = {"kind": kind, "status": status, "domain": domain, "hours": hours}
     snapshot = None
