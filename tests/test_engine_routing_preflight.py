@@ -155,6 +155,39 @@ class RoutingPreflightTests(unittest.TestCase):
                 preflight._verified_raw_active_inventory(
                     verified, {"qwant": 30})
 
+    def test_policy_listed_enabled_status_drift_remains_fail_closed(self):
+        import httpx
+        original = httpx.Client
+        policy = {"qwant": 30}
+        # Owner verified qwant as enabled, but raw inventory says disabled;
+        # never treat an unverified configured engine as safe to route.
+        verified = [{"name": "qwant", "enabled": True,
+                     "categories": ("general", "web")}]
+        def handler(request):
+            return httpx.Response(200, json={"engines": [
+                {"name": "qwant", "enabled": False,
+                 "categories": ["general", "web"]},
+                {"name": "duckduckgo", "enabled": True,
+                 "categories": ["general", "web"]}]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with patch.object(preflight.httpx, "Client", side_effect=factory):
+            with self.assertRaises(preflight.InventoryMismatch):
+                preflight._verified_raw_active_inventory(verified, policy)
+
+        # The reverse direction, a previously disabled engine now enabled,
+        # must also be rejected before any readiness plan is published.
+        verified[0]["enabled"] = False
+        def changed(request):
+            return httpx.Response(200, json={"engines": [
+                {"name": "qwant", "enabled": True,
+                 "categories": ["general", "web"]}]})
+        def changed_factory(**kwargs):
+            return original(transport=httpx.MockTransport(changed), trust_env=False)
+        with patch.object(preflight.httpx, "Client", side_effect=changed_factory):
+            with self.assertRaises(preflight.InventoryMismatch):
+                preflight._verified_raw_active_inventory(verified, policy)
+
     def test_stage_codes_guide_diagnosis_without_private_error_disclosure(self):
         scenarios = [
             (preflight.RawInventoryUnavailable("PRIVATE_NETWORK"),
