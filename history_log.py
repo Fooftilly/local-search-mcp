@@ -144,6 +144,57 @@ def _private_provider_diagnostic(value: object) -> dict | None:
     }
 
 
+
+def _private_search_provider_diagnostic(value: object) -> dict | None:
+    """Audit reported failures across both attempts, with per-call consent.
+
+    The public diagnostic retains each attempt independently. The private
+    provider rollup counts observed failures per *tool call*; a recovered
+    retry must not erase its failed first attempt.
+    """
+    last = _private_provider_diagnostic(value)
+    if last is None or not isinstance(value, dict):
+        return last
+    recovery = value.get("recovery")
+    if not isinstance(recovery, dict) or recovery.get("attempted") is not True:
+        return last
+    first = _private_provider_diagnostic(recovery.get("first_attempt"))
+    if first is None:
+        return last
+    names = []
+    seen = set()
+    for name in first["unresponsive_engines"] + last["unresponsive_engines"]:
+        if name.casefold() not in seen:
+            seen.add(name.casefold())
+            if len(names) < 16:
+                names.append(name)
+    extra = max(0, len(seen) - len(names))
+    coverage = ("partial" if "partial" in (first["coverage"], last["coverage"])
+                else "unverifiable" if "unverifiable" in (
+                    first["coverage"], last["coverage"])
+                else "no_failures_reported")
+    def summed(field: str):
+        a, b = first[field], last[field]
+        return min(128, a + b) if type(a) is int and type(b) is int else None
+
+    reported = summed("reported_count")
+    unparsed = summed("unparsed_count")
+    return {
+        "coverage": coverage,
+        "unresponsive_engines": names,
+        "reported_count": reported,
+        "unparsed_count": unparsed,
+        "suppressed_or_unparsed_names": min(144,
+            first["suppressed_or_unparsed_names"]
+            + last["suppressed_or_unparsed_names"] + extra),
+        "truncated": first["truncated"] or last["truncated"] or extra > 0
+                     or (reported is not None and
+                         first["reported_count"] + last["reported_count"] > 128)
+                     or (unparsed is not None and
+                         first["unparsed_count"] + last["unparsed_count"] > 128),
+    }
+
+
 def logged_tool(kind: str):
     """Decorate a registered FastMCP tool while retaining its real signature."""
     if kind not in ("search", "fetch", "page"):
@@ -232,7 +283,7 @@ def logged_tool(kind: str):
                         and isinstance(output, dict)):
                     # Explicit consent is per individual call. Only bounded
                     # provider labels survive, never details or raw payloads.
-                    diag = _private_provider_diagnostic(output.get("search_status"))
+                    diag = _private_search_provider_diagnostic(output.get("search_status"))
                     if diag is not None:
                         event["provider_diagnostics_opt_in"] = True
                         event["provider_diagnostics"] = diag

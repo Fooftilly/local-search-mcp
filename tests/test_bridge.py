@@ -1529,7 +1529,9 @@ class BridgeTests(unittest.TestCase):
             b = self.module.web_search("broken engines")
         self.assertEqual(a["status"], "upstream_unavailable")
         self.assertEqual(b["status"], "upstream_unavailable")
-        self.assertEqual(len(hits), 2)
+        # Each failed tool invocation gets at most one additional same-query
+        # recovery attempt; failures are never cached.
+        self.assertEqual(len(hits), 4)
 
     def test_upstream_transient_errors_are_structured_and_retry_bounded(self):
         seen = []

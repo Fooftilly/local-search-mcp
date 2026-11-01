@@ -285,7 +285,9 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         seen = []
         def handler(request):
             seen.append(request.url.path)
-            return httpx.Response(200, json=payloads[len(seen) - 1])
+            # A failed zero-result response is retried once with the same
+            # provider selection; retain the original failure for that retry.
+            return httpx.Response(200, json=payloads[min(len(seen) - 1, 2)])
         def factory(**kwargs):
             return original(transport=httpx.MockTransport(handler), trust_env=False)
         with patch.object(bridge.httpx, "Client", side_effect=factory):
@@ -308,7 +310,8 @@ class MCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failed.data["status"], "upstream_unavailable")
         self.assertFalse(failed.data["success"])
         self.assertNotIn("SECRET", str(failed.data))
-        self.assertEqual(seen, ["/search"] * 3)
+        self.assertEqual(seen, ["/search"] * 4)
+        self.assertEqual(failed.data["search_status"]["recovery"]["attempted"], True)
 
     async def test_search_dedupe_and_source_count_rank_over_real_mcp(self):
         urls = []
