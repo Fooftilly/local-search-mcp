@@ -49,7 +49,7 @@ show **Not recorded**. Observed result-engine labels do **not** establish the
 complete attempted engine set, per-engine timing, or provider success rates.
 Engine names are length-bounded, allowlisted by character format, stripped of
 secret-looking labels, and HTML-escaped. This column is visible independently
-of the separate opt-in display of private search queries and fetch URLs.
+of the default-on operator display of search queries and fetched page URLs.
 
 ## Personal operator history details
 
