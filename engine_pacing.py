@@ -94,7 +94,11 @@ def _parse(raw: bytes, *, preserve_case: bool = False) -> dict[str, int] | None:
         data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_pairs)
     except (UnicodeError, ValueError) as exc:
         raise PaceUnavailable("Invalid private pacing policy") from exc
-    if (not isinstance(data, dict) or set(data) != {"schema", "enabled", "engines"}
+    if (not isinstance(data, dict)
+            or set(data) not in ({"schema", "enabled", "engines"},
+                                 {"schema", "enabled", "engines", "routing"})
+            or type(data.get("routing", "fixed")) is not str
+            or data.get("routing", "fixed") not in ("fixed", "evidence")
             or data["schema"] != SCHEMA or type(data["enabled"]) is not bool
             or not isinstance(data["engines"], dict)
             or len(data["engines"]) > MAX_ENGINES):
@@ -118,22 +122,30 @@ def _parse(raw: bytes, *, preserve_case: bool = False) -> dict[str, int] | None:
     return engines if data["enabled"] else None
 
 
-def policy(*, preserve_case: bool = False) -> dict[str, int] | None:
-    """Read only owner-controlled settings; missing policy is safely off.
+def configuration(*, preserve_case: bool = False) -> tuple[dict[str, int] | None, str]:
+    """Read routing choice and engine gaps from one validated private snapshot.
 
-    Never treat a malformed or insecure policy as disabled when the caller
-    explicitly enabled engine pacing. The router can therefore fail closed.
-    preserve_case=True keeps exact configured engine labels for matching
-    SearXNG /config; the default retains canonical casefold keys for readers.
+    Legacy v1 files lacking a routing field use fixed selection, with no
+    on-disk migration and no change to the default disabled behavior.
     """
     directory = _private_dir()
     if directory is None:
-        return None
+        return None, "fixed"
     try:
         raw = _read_regular(directory, FILENAME, MAX_POLICY_BYTES)
-        return _parse(raw, preserve_case=preserve_case) if raw is not None else None
+        if raw is None:
+            return None, "fixed"
+        engines = _parse(raw, preserve_case=preserve_case)
+        document = json.loads(raw.decode("utf-8"))
+        return engines, document.get("routing", "fixed")
     finally:
         os.close(directory)
+
+
+def policy(*, preserve_case: bool = False) -> dict[str, int] | None:
+    """Retain the original engine-only policy interface for existing callers."""
+    engines, _ = configuration(preserve_case=preserve_case)
+    return engines
 
 
 def _locked_fd(directory: int, name: str) -> int:

@@ -89,6 +89,20 @@ class EnginePacingTests(unittest.TestCase):
         with self.assertRaises(pacing.PaceUnavailable):
             pacing.policy()
 
+    def test_adaptive_route_is_explicit_and_legacy_files_remain_fixed(self):
+        self.assertEqual(pacing.configuration(), (None, "fixed"))
+        self.write_policy(self.sample())
+        self.assertEqual(pacing.configuration(), (pacing.policy(), "fixed"))
+        adaptive = {**self.sample(), "routing": "evidence"}
+        self.write_policy(adaptive)
+        self.assertEqual(pacing.configuration(), (pacing.policy(), "evidence"))
+        self.assertEqual(pacing.configuration(preserve_case=True)[1], "evidence")
+        for bad in ("unbounded", "", False, [], {"name": "evidence"}):
+            with self.subTest(bad=bad):
+                self.write_policy({**self.sample(), "routing": bad})
+                with self.assertRaises(pacing.PaceUnavailable):
+                    pacing.configuration()
+
     def test_policy_can_preserve_exact_configured_engine_case(self):
         payload = self.sample()
         payload["engines"] = {

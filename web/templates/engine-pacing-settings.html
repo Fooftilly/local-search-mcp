@@ -13,14 +13,25 @@ The bridge applies the interval to subsequent searches without restart.</p>
 <input type="hidden" name="csrf" value="${csrf}">
 <input type="hidden" name="state" value="${state}">
 <label><input type="checkbox" name="enabled" value="on"${checked}> Enable guarded engine pacing</label>
+<label>Routing priority for automatic default and single-category searches
+<select name="routing" required>
+<option value="fixed"${fixed_selected}>Fixed engine-name order (default)</option>
+<option value="evidence"${evidence_selected}>Evidence order (pilot; explicit opt-in)</option>
+</select></label>
+<p>Evidence mode uses 24-hour direct single-engine observations to reorder only
+already-approved, currently enabled candidates. All eligible candidates must
+each have at least 10 direct observations, verified results and complete
+lock-verified history. Otherwise fixed order is used. It never affects
+explicitly selected engines, bypasses cooldowns or adds providers.</p>
 <label>Engine rules, one per line: NAME=SECONDS
 <textarea name="rules" rows="9" maxlength="4096" spellcheck="false" class="wide">${rules}</textarea></label>
 <p>Intervals: 0–3600 seconds. Up to 64 unique non-Google engine names.
 Enabling requires a live, owner-verified SearXNG inventory. No service is started or restarted.
 Saving a disabled policy works while SearXNG is sleeping.</p>
-<label>Type <strong>ENABLE</strong> to save an enabled policy,
+<label>Type <strong>ADAPT</strong> when activating evidence mode,
+<strong>ENABLE</strong> to save a fixed-mode enabled policy,
 <strong>DISABLE</strong> to turn an active policy off, or
-<strong>APPLY</strong> to edit a disabled policy.
+<strong>APPLY</strong> to save other changes.
 <input name="confirm" required autocomplete="off" maxlength="7"></label>
 <button type="submit">Save pacing policy</button>
 </form>

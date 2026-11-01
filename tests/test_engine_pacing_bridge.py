@@ -34,12 +34,13 @@ class PacedSearchBoundaryTests(unittest.TestCase):
             {"title": "Public", "url": "https://docs.python.org/3/",
              "engine": "duckduckgo"}], "unresponsive_engines": []})
 
-    def policy(self, enabled=True, entries=None):
+    def policy(self, enabled=True, entries=None, routing="fixed"):
         self.config.mkdir(mode=0o700, exist_ok=True)
         path = self.config / engine_pacing.FILENAME
         entries = {"duckduckgo": 60} if entries is None else entries
         path.write_text(json.dumps({
             "schema": engine_pacing.SCHEMA, "enabled": enabled,
+            "routing": routing,
             "engines": {name: {"min_spacing_seconds": gap}
                         for name, gap in entries.items()},
         }))
@@ -307,6 +308,69 @@ class PacedSearchBoundaryTests(unittest.TestCase):
         result = self.execute(categories="images")
         self.assertEqual(result["status"], "invalid_response")
         self.assertEqual([path for path, _ in self.calls], ["/config"])
+
+    def test_evidence_priority_reorders_only_verified_default_candidates(self):
+        self.policy(entries={"duckduckgo": 0, "qwant": 0}, routing="evidence")
+        direct = lambda name, count, hits, latency: {
+            "name": name, "direct_operations": count,
+            "direct_verified_results": hits,
+            "direct_verified_result_mean_ms": latency,
+        }
+        evidence = {
+            "hours": 24, "available": True,
+            "source_snapshot_lock_acquired": True,
+            "retention_or_scan_limited": False,
+            "isolated_engine_groups_truncated": False,
+            "isolated_engine_operations": [
+                direct("duckduckgo", 20, 11, 90),
+                direct("qwant", 20, 19, 300),
+            ],
+        }
+        def answer(request):
+            eng = request.url.params["engines"]
+            return httpx.Response(200, json={"results": [
+                {"title": "Public", "url": "https://example.org/",
+                 "engine": eng}]})
+        self.search_response = answer
+        with patch.object(bridge.provider_observations, "observations",
+                          return_value=evidence) as observed:
+            result = self.execute()
+        self.assertIsInstance(result, list)
+        observed.assert_called_once_with(24)
+        self.assertEqual(self.calls[-1][1]["engines"], "qwant")
+
+    def test_evidence_mode_uses_fixed_order_when_history_is_incomplete(self):
+        self.policy(entries={"duckduckgo": 0, "qwant": 0}, routing="evidence")
+        for report in (
+            {"hours": 24, "available": False, "isolated_engine_operations": []},
+            {"hours": 24, "available": True,
+             "source_snapshot_lock_acquired": True,
+             "retention_or_scan_limited": False,
+             "isolated_engine_groups_truncated": False,
+             "isolated_engine_operations": [
+                {"name": "qwant", "direct_operations": 20,
+                 "direct_verified_results": 19, "direct_verified_result_mean_ms": 30}]},
+        ):
+            with self.subTest(report=report):
+                self.calls.clear()
+                with patch.object(bridge.provider_observations, "observations",
+                                  return_value=report):
+                    result = self.execute()
+                self.assertIsInstance(result, list)
+                self.assertEqual(self.calls[-1][1]["engines"], "duckduckgo")
+
+    def test_evidence_does_not_affect_explicit_engine_or_disabled_policy(self):
+        self.policy(entries={"duckduckgo": 0}, routing="evidence")
+        with patch.object(bridge.provider_observations, "observations",
+                          side_effect=AssertionError("must not read")):
+            self.assertIsInstance(self.execute(engines="duckduckgo"), list)
+        self.policy(enabled=False, entries={"duckduckgo": 0}, routing="evidence")
+        self.calls.clear()
+        with patch.object(bridge.provider_observations, "observations",
+                          side_effect=AssertionError("must not read")):
+            self.assertIsInstance(self.execute(), list)
+        self.assertEqual(self.calls[-1][0], "/search")
+        self.assertNotIn("engines", self.calls[-1][1])
 
     def test_bang_shortcut_refused_with_pacing(self):
         self.policy()

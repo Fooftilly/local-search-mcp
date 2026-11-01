@@ -36,10 +36,11 @@ class PacingEditorSettingsTests(unittest.TestCase):
     def path(self):
         return self.root / "local-search-mcp" / engine_pacing.FILENAME
 
-    def form(self, enabled=False, rules="duckduckgo=15", confirm=None, state=None):
+    def form(self, enabled=False, rules="duckduckgo=15", confirm=None, state=None,
+             routing="fixed"):
         return {"csrf": [admin_ui.CSRF],
                 "state": [state or editor.snapshot()["state"]],
-                "rules": [rules],
+                "rules": [rules], "routing": [routing],
                 "confirm": [confirm or ("ENABLE" if enabled else "APPLY")],
                 **({"enabled": ["on"]} if enabled else {})}
 
@@ -73,6 +74,42 @@ class PacingEditorSettingsTests(unittest.TestCase):
             editor.apply_form(disabled)
             inventory.assert_not_called()
         self.assertIsNone(engine_pacing.policy())
+
+    def test_evidence_routing_requires_explicit_adapt_confirmation(self):
+        # A staged disabled policy remains inert and uses APPLY.
+        self.apply(rules="duckduckgo=15\\nbrave=60", routing="evidence")
+        self.assertEqual(editor.snapshot()["routing"], "evidence")
+        self.assertIsNone(engine_pacing.policy())
+        # The same-policy ENABLE confirmation may not silently activate evidence.
+        with patch.object(editor.engine_dashboard, "snapshot",
+                          return_value=(INVENTORY, ("duckduckgo", "brave"), "state")):
+            with self.assertRaisesRegex(ValueError, "ADAPT"):
+                editor.apply_form(self.form(enabled=True,
+                                 rules="duckduckgo=15\\nbrave=60",
+                                 routing="evidence", confirm="ENABLE"))
+            editor.apply_form(self.form(enabled=True,
+                              rules="duckduckgo=15\\nbrave=60",
+                              routing="evidence", confirm="ADAPT"))
+        self.assertEqual(engine_pacing.configuration()[1], "evidence")
+        self.assertEqual(engine_pacing.policy()["duckduckgo"], 15)
+        # Disable remains possible while backend is asleep.
+        with patch.object(editor.engine_dashboard, "snapshot",
+                          side_effect=AssertionError("must not wake")):
+            editor.apply_form(self.form(rules="duckduckgo=15\\nbrave=60",
+                                       routing="fixed", confirm="DISABLE"))
+        self.assertIsNone(engine_pacing.policy())
+        self.assertEqual(editor.snapshot()["routing"], "fixed")
+
+    def test_invalid_routing_fields_and_stale_evidence_cas_rejected(self):
+        for mode in ("unknown", "", "adaptive,unbounded", "EVIDENCE"):
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                self.apply(routing=mode)
+        self.assertFalse(self.path.exists())
+        fields = self.form(routing="evidence")
+        self.apply()
+        with self.assertRaisesRegex(ValueError, "changed"):
+            editor.apply_form(fields)
+        self.assertEqual(editor.snapshot()["routing"], "fixed")
 
     def test_enabling_requires_current_enabled_inventory(self):
         for engines in ("qwant=60", "unknown=5", "Google=30",
