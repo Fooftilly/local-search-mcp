@@ -8,6 +8,7 @@ import html
 import secrets
 
 from scripts import searxng_engines as engines
+import request_cache
 
 
 def _escape(value: object) -> str:
@@ -26,7 +27,7 @@ def snapshot() -> tuple[list[dict], tuple[str, ...], str]:
     inventory = engines.live_engines()
     general = tuple(row["name"] for row in inventory
                     if "general" in row["categories"])
-    if not 1 <= len(general) <= 32:
+    if not 1 <= len(general) <= 512:
         raise engines.EngineSetupError("General search-engine inventory unavailable")
     return inventory, general, engines.inventory_state(inventory, source)
 
@@ -34,7 +35,7 @@ def snapshot() -> tuple[list[dict], tuple[str, ...], str]:
 def apply_form(fields: dict[str, list[str]]) -> str:
     """Validate an explicit checked selection before the guarded YAML writer."""
     chosen = fields.get("engine", [])
-    if (not isinstance(chosen, list) or not 1 <= len(chosen) <= 32
+    if (not isinstance(chosen, list) or not 1 <= len(chosen) <= 512
             or any(not isinstance(x, str) for x in chosen)
             or len(set(chosen)) != len(chosen)):
         raise ValueError("Select one or more unique general search engines")
@@ -51,7 +52,11 @@ def apply_form(fields: dict[str, list[str]]) -> str:
         raise ValueError("Engine selection is unavailable or prohibited")
     # apply() revalidates the inventory + original YAML *inside* its cross-
     # process lock, before writing/restarting the owner-verified container.
-    return engines.apply(tuple(chosen), general, expected_state=state)
+    result = engines.apply(tuple(chosen), general, expected_state=state)
+    # The dashboard and MCP bridge share one process. Invalidate only after
+    # verified completion, detaching pre-change in-flight search loaders.
+    request_cache.invalidate_search()
+    return result
 
 
 def page(csrf: str, *, message: str = "", error: bool = False) -> str:
