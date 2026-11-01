@@ -445,8 +445,16 @@ def _isolated_default_recovery_params(client: httpx.Client, params: dict,
         return None
     if re.search(r"(?<!\S)![^\s]+", params.get("q", "")):
         return None
-    status = _search_failure_status(first)
-    if "duckduckgo" not in status["unresponsive_engines"]:
+    # Examine at most the same bounded 128-entry prefix as the diagnostic
+    # parser, independently of its 16-name *display* limit. Never inspect
+    # or copy upstream exception text into tool output or history.
+    failures = first.get("unresponsive_engines")
+    if not isinstance(failures, list):
+        return None
+    def reported_duckduckgo(item: object) -> bool:
+        name = item[0] if isinstance(item, (list, tuple)) and item else item
+        return name == "duckduckgo"
+    if not any(reported_duckduckgo(item) for item in failures[:128]):
         return None
     fallback = dict(params, engines="duckduckgo")
     try:
