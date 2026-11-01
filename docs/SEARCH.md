@@ -567,3 +567,31 @@ selection bias can affect results. Explicit selections, pacing cooldown
 reservations, no-retry semantics, no Google and no unverified categories or
 optional filters are unchanged. A live operator-host comparison is still
 required before enabling the mode.
+
+
+## Read-only local routing acceptance preflight
+
+After updating the repository on your own host, run:
+
+```bash
+./.venv/bin/python -m scripts.engine_routing_preflight
+```
+
+This emits a bounded JSON readiness assessment, **not a benchmark of provider
+quality or a claim that host acceptance passed**. It uses the existing
+owner-verified, already-running SearXNG inventory, the exact saved pacing
+policy and 24-hour private observations. It reports the eligible general and
+single-category engine sets, current fixed vs provisional evidence order,
+candidate sample readiness, unavailable policy engines, and blockers
+(including a sleeping/unavailable backend). It sends **zero searches**,
+does not wake Docker, reserve cooldowns, write policy, modify engine flags,
+change approvals or enable adaptive routing.
+
+The preflight uses the same pure candidate selector as the MCP bridge, so
+its eligibility rules cannot silently diverge. A missing/incomplete history
+leaves fixed order as the effective choice; even a ready preflight does not
+measure real network latency, throughput, simultaneous caller behavior,
+provider quotas or search relevance. A separate attended nonsensitive
+query/cross-process concurrency comparison is still required before you
+enable `evidence` routing in the guarded console. Do not treat this
+command's result as authorization to switch on the policy.

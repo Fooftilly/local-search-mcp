@@ -23,6 +23,7 @@ from history_log import logged_tool
 import isolated_engine_observations
 import engine_pacing
 import engine_routing_evidence
+import engine_routing_plan
 import provider_observations
 import document_pages
 import document_comparison
@@ -345,12 +346,7 @@ def _paced_category_candidates(client: httpx.Client, policy: dict[str, int],
     active = _enabled_search_inventory(client, require_categories=True)
     if isinstance(active, dict):
         return active
-    eligible = sorted((
-        row["name"] for row in active
-        if row["categories"] == (category,)
-        and row["name"] in policy
-        and not row["name"].casefold().startswith("google")
-    ), key=str.casefold)
+    eligible = engine_routing_plan.candidates(active, policy, category=category)
     if not eligible:
         return {"success": False, "status": "pacing_selection_required",
                 "backend": "searxng",
@@ -393,12 +389,7 @@ def _paced_general_candidates(client: httpx.Client, policy: dict[str, int]) -> l
     active = _enabled_search_inventory(client, require_categories=True)
     if isinstance(active, dict):
         return active
-    eligible = sorted((
-        row["name"] for row in active
-        if "general" in row["categories"]
-        and row["name"] in policy
-        and not row["name"].casefold().startswith("google")
-    ), key=str.casefold)
+    eligible = engine_routing_plan.candidates(active, policy)
     if not eligible:
         return {"success": False, "status": "pacing_selection_required",
                 "backend": "searxng",
