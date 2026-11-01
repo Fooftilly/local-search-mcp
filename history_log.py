@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from functools import wraps
 import fcntl
 import inspect
+import isolated_engine_observations
 import json
 import logging
 import os
@@ -250,8 +251,10 @@ def logged_tool(kind: str):
                 except ValueError:
                     event["url_query_stripped"] = False
             started = time.monotonic()
+            operations = []
             try:
-                output = fn(*args, **kwargs)
+                with isolated_engine_observations.capture() as operations:
+                    output = fn(*args, **kwargs)
                 event["status"] = "success"
                 # An opted-in successful search has a results wrapper
                 # instead of a bare list. Keep its audit outcome identical:
@@ -306,6 +309,10 @@ def logged_tool(kind: str):
                     event["http_status"] = code
                 raise
             finally:
+                if kind == "search" and operations:
+                    # Actual local /search boundary observations only; never
+                    # infer provider attempts from returned search results.
+                    event["isolated_engine_operations"] = operations[:3]
                 event["duration_ms"] = round((time.monotonic() - started) * 1000, 1)
                 try:
                     append_history(event)
