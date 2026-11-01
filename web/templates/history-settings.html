@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Local Search MCP — History settings</title><link rel="stylesheet" href="/dashboard.css"></head>
+<body><main><h1>Nonsecret history settings</h1>
+${alert}
+<p>${note}</p><ul>${sources}</ul>
+<form method="post" action="/settings">
+<input type="hidden" name="csrf" value="${csrf}">
+<input type="hidden" name="state" value="${state}">
+<label>Indexed history retention (1–365 days) <input type="number" name="retention_days" min="1" max="365" required value="${retention_days}"></label>
+<label>JSONL rotation size (64,000–100,000,000 bytes) <input type="number" name="max_bytes" min="64000" max="100000000" required value="${max_bytes}"></label>
+<label>Type APPLY <input name="confirm" required pattern="APPLY" maxlength="5"></label><button type="submit"${disabled}>Apply history settings</button>
+</form>
+<p class="subtle">The values are stored in a separate owner-only file; this panel never displays or modifies API keys, tunnel credentials, private configuration, domain rules or paths. Changing retention controls future pruning of the derived index; changing size affects the next JSONL append/rotation.</p>
+<p><a href="/">Return to domain approvals</a></p></main></body></html>
