@@ -867,27 +867,26 @@ def provider_observations_page(hours: int = 24) -> str:
             hour_buttons=choice_buttons("hours", "UTC time window",
                  (("1", "Last hour"), ("24", "Last 24 hours"),
                   ("168", "Last 7 days")), str(hours)),
-            notice='<p role="alert" class="alert error">Private history is unavailable. '
-                   'Inspect local file permissions and history configuration.</p>',
-            coverage_rows='<tr><td colspan="2">Unavailable</td></tr>',
-            engine_rows='<tr><td colspan="4">Unavailable</td></tr>',
-            category_rows='<tr><td colspan="4">Unavailable</td></tr>',
-            reported_failure_rows='<tr><td colspan="2">Unavailable</td></tr>')
+            notice=render_template("provider-source-unavailable"),
+            coverage_rows=render_template("provider-unavailable-two"),
+            engine_rows=render_template("provider-unavailable-four"),
+            category_rows=render_template("provider-unavailable-four"),
+            reported_failure_rows=render_template("provider-unavailable-two"))
     def table_rows(items):
         return "".join(
-            "<tr><td>" + esc(row["name"]) + "</td><td>" +
-            str(row["observed_searches"]) + "</td><td>" +
-            str(row["timed_searches"]) + "</td><td>" +
-            (str(row["mean_search_call_ms"])
-             if row["mean_search_call_ms"] is not None else "Not recorded") +
-            "</td></tr>" for row in items) or (
-            '<tr><td colspan="4">No attributable samples in this window</td></tr>')
+            render_template(
+                "provider-time-row", name=esc(row["name"]),
+                observed=int(row["observed_searches"]),
+                timed=int(row["timed_searches"]),
+                mean=esc(row["mean_search_call_ms"]
+                         if row["mean_search_call_ms"] is not None
+                         else "Not recorded"))
+            for row in items) or render_template("provider-time-empty")
     reported_failure_rows = "".join(
-        "<tr><td>" + esc(row["name"]) + "</td><td>" +
-        str(row["reported_unresponsive_calls"]) + "</td></tr>"
+        render_template("provider-failure-row", name=esc(row["name"]),
+                        calls=int(row["reported_unresponsive_calls"]))
         for row in result["reported_unresponsive_engines"]) or (
-        '<tr><td colspan="2">No opted-in reported unresponsive providers '
-        'in retained history</td></tr>')
+        render_template("provider-failure-empty"))
     labels = [
         ("Audited search calls", result["sampled_search_calls"]),
         ("Non-success calls (not attributable to an engine)",
@@ -916,15 +915,15 @@ def provider_observations_page(hours: int = 24) -> str:
         ("Per-engine network latency", "Not measured"),
         ("Cache hits from historical calls", "Not recorded"),
     ]
-    coverage = "".join("<tr><td>" + esc(title) + "</td><td>" +
-                       esc(value) + "</td></tr>" for title, value in labels)
-    notice = ('<p role="status">No history files currently available.</p>'
+    coverage = "".join(
+        render_template("provider-coverage-row",
+                        title=esc(title), value=esc(value))
+        for title, value in labels)
+    notice = (render_template("provider-no-files")
               if not result["available"] else
-              '<p role="status">Sample is partial; historic rotation, scan bounds '
-              'or malformed entries prevent exhaustive conclusions.</p>'
+              render_template("provider-partial")
               if result["retention_or_scan_limited"] else
-              '<p role="status">Bounded sample of retained history. '
-              'Not a complete provider health report.</p>')
+              render_template("provider-bounded"))
     return render_template(
         "provider-observations",
         hour_buttons=choice_buttons("hours", "UTC time window",
