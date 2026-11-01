@@ -71,19 +71,29 @@ def prepare() -> None:
     result = command("/usr/bin/nft", "-f", "-", input=RULES)
     if result.returncode:
         raise RuntimeError("Cannot install private ingress guard")
+    marker_created = False
     try:
         result = command("/usr/bin/ip", "-4", "addr", "add", CIDR, "dev", "lo")
         if result.returncode:
             raise RuntimeError("Cannot install loopback-only private address")
         # Marker is root-owned; no user-writable run-directory is trusted.
         fd = os.open(MARKER, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        marker_created = True
         with os.fdopen(fd, "w", encoding="ascii") as marker:
             marker.write(invocation + "\n")
     except Exception:
-        # Address removal precedes firewall removal: no unprotected address.
+        # The ingress guard MUST remain when address cleanup fails.
         if exists_ip():
-            command("/usr/bin/ip", "-4", "addr", "del", CIDR, "dev", "lo")
-        command("/usr/bin/nft", "delete", "table", "inet", TABLE)
+            deletion = command("/usr/bin/ip", "-4", "addr", "del", CIDR, "dev", "lo")
+            if deletion.returncode or exists_ip():
+                raise RuntimeError("Alias cleanup failed; ingress guard preserved")
+        cleanup = command("/usr/bin/nft", "delete", "table", "inet", TABLE)
+        if cleanup.returncode:
+            raise RuntimeError("Ingress guard cleanup failed; inspect before retry")
+        # Only clean the marker created by this activation. An incomplete
+        # marker after ENOSPC must not block all subsequent activations.
+        if marker_created:
+            MARKER.unlink()
         raise
 
 
