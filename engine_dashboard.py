@@ -88,7 +88,8 @@ def page(csrf: str, *, message: str = "", error: bool = False) -> str:
             '<label>Type APPLY <input name="confirm" autocomplete="off" '
             'required></label><button type="submit">Save engine selection</button>'
             '</form>')
-    except (engines.EngineSetupError, ValueError, OSError) as exc:
+    except (engines.EngineSetupError, engines.on_demand_docker.LifecycleError,
+            ValueError, OSError) as exc:
         # Show only vetted, general errors: never display Docker inspection
         # responses, private YAML, paths or exception arguments.
         msg = (str(exc) if isinstance(exc, engines.EngineSetupError)
