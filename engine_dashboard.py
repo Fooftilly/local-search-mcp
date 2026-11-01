@@ -76,8 +76,8 @@ def page(csrf: str, *, message: str = "", error: bool = False) -> str:
             google = name.casefold().startswith("google")
             options.append(render_template(
                 "engine-option", engine_name=_escape(name),
-                checked="checked" if item["enabled"] and not google else "",
-                disabled="disabled" if google else "",
+                checked=" checked" if item["enabled"] and not google else "",
+                disabled=" disabled" if google else "",
                 restriction=" (not eligible: Google)" if google else "",
                 categories=_escape(", ".join(item["categories"]))))
         form = render_template(
