@@ -16,8 +16,13 @@ def _escape(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
-def snapshot() -> tuple[list[dict], tuple[str, ...], str]:
-    """Verified inventory and the current guarded config's opaque revision."""
+def verified_inventory() -> tuple[list[dict], str]:
+    """Owner-verified, read-only SearXNG inventory with no category assumption.
+
+    This is the same container and bind-mounted settings verification used
+    by the general-only settings editor; a category-only preflight can reuse
+    it without weakening that editor's general-engine requirement.
+    """
     target = engines.on_demand_docker._safe_target("searxng")
     if not target.running:
         raise engines.EngineSetupError(
@@ -26,11 +31,19 @@ def snapshot() -> tuple[list[dict], tuple[str, ...], str]:
     engines._check_bind_mount(target.ident, path)
     source = engines._read_settings(path)
     inventory = engines.live_engines()
+    if not 1 <= len(inventory) <= 512:
+        raise engines.EngineSetupError("Search-engine inventory unavailable")
+    return inventory, engines.inventory_state(inventory, source)
+
+
+def snapshot() -> tuple[list[dict], tuple[str, ...], str]:
+    """Verified general-engine inventory for the existing guarded editor."""
+    inventory, state = verified_inventory()
     general = tuple(row["name"] for row in inventory
                     if "general" in row["categories"])
     if not 1 <= len(general) <= 512:
         raise engines.EngineSetupError("General search-engine inventory unavailable")
-    return inventory, general, engines.inventory_state(inventory, source)
+    return inventory, general, state
 
 
 def apply_form(fields: dict[str, list[str]]) -> str:
