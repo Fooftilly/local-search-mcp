@@ -31,7 +31,11 @@ class DashboardTemplateTests(unittest.TestCase):
                    admin_ui.history_settings_page,
                    admin_ui.upstream_settings_page,
                    admin_ui.cache_settings_page,
-                   admin_ui.portable_settings_page):
+                   admin_ui.portable_settings_page,
+                   admin_ui.decision_audit_rows,
+                   admin_ui.decision_audit_html,
+                   admin_ui.once_grants_html,
+                   admin_ui.once_audit_html):
             with self.subTest(fn=fn.__name__):
                 self.assertNotRegex(inspect.getsource(fn), r"""['"]<[a-zA-Z]""")
         group = admin_ui.choice_buttons(
