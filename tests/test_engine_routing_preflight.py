@@ -197,16 +197,16 @@ class RoutingPreflightTests(unittest.TestCase):
             (OSError("PRIVATE_SOCKET"), "raw_inventory_unavailable"),
         ]
         for error, expected in scenarios:
-            with self.subTest(expected=expected), (
-                    patch.object(preflight.engine_pacing_dashboard, "snapshot",
-                                 return_value={"enabled": False,
-                                               "engines": POLICY, "routing": "fixed"}),
-                    patch.object(preflight.engine_dashboard, "verified_inventory",
-                                 return_value=(INVENTORY, "rev")),
-                    patch.object(preflight, "_verified_raw_active_inventory",
-                                 side_effect=error),
-                    patch.object(preflight.provider_observations, "observations",
-                                 side_effect=AssertionError("history should not be read"))):
+            with (self.subTest(expected=expected),
+                  patch.object(preflight.engine_pacing_dashboard, "snapshot",
+                               return_value={"enabled": False,
+                                             "engines": POLICY, "routing": "fixed"}),
+                  patch.object(preflight.engine_dashboard, "verified_inventory",
+                               return_value=(INVENTORY, "rev")),
+                  patch.object(preflight, "_verified_raw_active_inventory",
+                               side_effect=error),
+                  patch.object(preflight.provider_observations, "observations",
+                               side_effect=AssertionError("history should not be read"))):
                 result = preflight.report()
             self.assertEqual(result["status"], expected)
             self.assertNotIn("PRIVATE_", json.dumps(result))
