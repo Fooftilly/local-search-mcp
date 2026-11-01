@@ -83,6 +83,44 @@ class EngineDashboardTests(unittest.TestCase):
                 })
             invalidate.assert_not_called()
 
+    def test_search_cache_invalidation_releases_old_keys_and_preserves_fetch(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+        from unittest.mock import patch
+        import request_cache
+
+        request_cache.reset_for_test()
+        self.addCleanup(request_cache.reset_for_test)
+        begun, resume = Event(), Event()
+
+        def old_loader():
+            begun.set()
+            resume.wait(timeout=3)
+            return [{"engine": "brave", "title": "Stale"}]
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pending = pool.submit(
+                request_cache.run, "search", ("search", "old"),
+                old_loader, ttl=90)
+            self.assertTrue(begun.wait(timeout=2))
+            request_cache.run("fetch", ("fetch", "safe"),
+                              lambda: {"success": True}, ttl=90)
+            request_cache.invalidate_search()
+            # A new call after the selection change must not coalesce with
+            # the pre-change loader and must not get its old cached value.
+            fresh = request_cache.run(
+                "search", ("search", "old"),
+                lambda: [{"engine": "duckduckgo", "title": "Fresh"}], ttl=90)
+            resume.set()
+            self.assertEqual(pending.result(timeout=3)[0]["engine"], "brave")
+        self.assertEqual(fresh[0]["engine"], "duckduckgo")
+        result = request_cache.run("search", ("search", "old"),
+                                   lambda: [], ttl=90)
+        self.assertEqual(result, fresh)
+        self.assertEqual(request_cache.run(
+            "fetch", ("fetch", "safe"),
+            lambda: {"success": False}, ttl=90), {"success": True})
+
     def test_sleeping_inventory_is_read_only_and_cannot_apply(self):
         with (patch.object(engine_dashboard, "snapshot",
                            side_effect=engine_dashboard.engines.EngineSetupError(
