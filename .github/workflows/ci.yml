@@ -70,6 +70,8 @@ jobs:
         run: |
           python3 -c "from scripts.crawler_egress_guard import rules; print(rules('br-localcheck'))" > /tmp/local-search-mcp-guard.nft
           sudo nft --check --file /tmp/local-search-mcp-guard.nft
+          python3 -c "from scripts.cloudflare_private_endpoint import RULES; print(RULES)" > /tmp/local-search-mcp-private.nft
+          sudo nft --check --file /tmp/local-search-mcp-private.nft
   systemd-unit-syntax:
     # Syntax checks run on pushes/PRs; scheduled runs cover fresh dependencies.
     if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
@@ -105,6 +107,13 @@ jobs:
           cp config/systemd-system/local-search-mcp-crawler-egress.service "$UNIT_DIR/"
           sudo install -D -m 0755 scripts/crawler_egress_guard.py /usr/local/libexec/local-search-mcp/crawler_egress_guard.py
           SYSTEMD_UNIT_PATH="$UNIT_DIR:/usr/lib/systemd/system:/lib/systemd/system" systemd-analyze verify "$UNIT_DIR/local-search-mcp-tunnel.service" "$UNIT_DIR/local-search-mcp-crawler-egress.service"
+          sudo apt-get update && sudo apt-get install -y dnsmasq-base socat
+          # Ubuntu packages dnsmasq under /usr/sbin; Arch uses /usr/bin.
+          if [ ! -x /usr/bin/dnsmasq ]; then sudo ln -s "$(command -v dnsmasq)" /usr/bin/dnsmasq; fi
+          sudo install -D -m 0755 scripts/cloudflare_private_endpoint.py /usr/local/libexec/local-search-mcp/cloudflare_private_endpoint.py
+          cp config/systemd-system/local-search-mcp-cf-dns.service "$UNIT_DIR/"
+          cp config/systemd-system/local-search-mcp-cf-private@.service "$UNIT_DIR/local-search-mcp-cf-private@runner.service"
+          SYSTEMD_UNIT_PATH="$UNIT_DIR:/usr/lib/systemd/system:/lib/systemd/system" systemd-analyze verify "$UNIT_DIR/local-search-mcp-cf-dns.service" "$UNIT_DIR/local-search-mcp-cf-private@runner.service"
 
   crawler-compose-syntax:
     # Syntax checks run on pushes/PRs; scheduled runs cover fresh dependencies.
