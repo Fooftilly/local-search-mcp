@@ -28,12 +28,15 @@ class EngineDashboardTests(unittest.TestCase):
     def test_form_changes_only_operator_selected_general_engines(self):
         with (patch.object(engine_dashboard, "snapshot", return_value=(
                 INVENTORY, tuple(r["name"] for r in INVENTORY), "b" * 64)),
-              patch.object(engine_dashboard.engines, "apply", return_value="saved") as writer):
+              patch.object(engine_dashboard.engines, "apply", return_value="saved") as writer,
+              patch.object(engine_dashboard.request_cache, "invalidate_search")
+              as invalidate):
             result = engine_dashboard.apply_form({
                 "engine": ["duckduckgo", "bing"], "confirm": ["APPLY"],
                 "state": ["b" * 64],
             })
         self.assertEqual(result, "saved")
+        invalidate.assert_called_once_with()
         writer.assert_called_once_with(
             ("duckduckgo", "bing"), ("bing", "brave", "duckduckgo", "google"),
             expected_state="b" * 64)
@@ -59,6 +62,26 @@ class EngineDashboardTests(unittest.TestCase):
                 with self.subTest(attempt=attempt), self.assertRaises(ValueError):
                     engine_dashboard.apply_form(attempt)
             writer.assert_not_called()
+
+    def test_full_inventory_and_failed_update_does_not_invalidate(self):
+        large = [{"name": f"e-{i}", "enabled": i % 2 == 0,
+                  "categories": ("general",)} for i in range(512)]
+        state = "a" * 64
+        with (patch.object(engine_dashboard, "snapshot", return_value=(
+                large, tuple(r["name"] for r in large), state)),
+              patch.object(engine_dashboard.engines, "apply",
+                           side_effect=engine_dashboard.engines.EngineSetupError(
+                               "safe failure")),
+              patch.object(engine_dashboard.request_cache, "invalidate_search")
+              as invalidate):
+            page = engine_dashboard.page("csrf")
+            self.assertIn('value="e-511"', page)
+            with self.assertRaises(engine_dashboard.engines.EngineSetupError):
+                engine_dashboard.apply_form({
+                    "engine": ["e-0", "e-511"],
+                    "state": [state], "confirm": ["APPLY"],
+                })
+            invalidate.assert_not_called()
 
     def test_sleeping_inventory_is_read_only_and_cannot_apply(self):
         with (patch.object(engine_dashboard, "snapshot",
