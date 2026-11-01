@@ -745,14 +745,9 @@ def cache_settings_page(message="", kind="success", submitted=None):
     shown = ({**vals, "state": info["state"]}
              if submitted is None else submitted)
     locked = not info["editable"]
-    alert = ('<p class="alert ' + ('error' if kind == 'error' else 'success') +
-             '">' + esc(message) + '</p>') if message else ''
-    sources = ''.join('<li>' + esc(key) + ': ' +
-                      ('environment override' if info["environment_override"][key]
-                       else 'saved or default') + '</li>' for key in vals)
-    locked_notice = ('<p class="alert error">An environment override is present. '
-                     'Remove it from the service environment and restart before '
-                     'editing these saved settings.</p>' if locked else '')
+    alert = _settings_alert(message, kind)
+    sources = _settings_sources(info, vals)
+    locked_notice = render_template("settings-locked") if locked else ""
     return render_template(
         "cache-settings", alert=alert, sources=sources,
         locked_notice=locked_notice, csrf=esc(CSRF),
@@ -764,9 +759,9 @@ def cache_settings_page(message="", kind="success", submitted=None):
 
 
 def portable_settings_page(message="", kind="success"):
-    alert = ('<p class="alert ' + ("error" if kind == "error" else "success") +
-             '">' + esc(message) + '</p>') if message else ''
-    return render_template("portable-settings", alert=alert, csrf=esc(CSRF))
+    return render_template("portable-settings",
+                           alert=_settings_alert(message, kind),
+                           csrf=esc(CSRF))
 
 
 def portable_settings_preview(plan: dict, document: str) -> str:
