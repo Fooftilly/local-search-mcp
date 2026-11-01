@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Local Search MCP — Upstream timeouts</title><link rel="stylesheet" href="/dashboard.css"></head>
+<body><main><h1>Upstream request timeouts</h1>
+${alert}
+<p>Timeouts apply to the next outgoing upstream request without restarting the bridge. Requests already running retain their original timeout. The Crawl4AI /health safety check keeps its own fixed short timeout.</p><ul>${sources}</ul>
+${locked_notice}
+<form method="post" action="/upstream-settings">
+<input type="hidden" name="csrf" value="${csrf}">
+<input type="hidden" name="state" value="${state}">
+<label>SearXNG search timeout (5–120 seconds) <input type="number" name="searxng_seconds" min="5" max="120" required value="${searxng_seconds}"></label>
+<label>Crawl4AI crawl timeout (15–300 seconds) <input type="number" name="crawl_seconds" min="15" max="300" required value="${crawl_seconds}"></label>
+<label>Type APPLY <input name="confirm" required pattern="APPLY" maxlength="5"></label><button type="submit"${disabled}>Apply upstream timeouts</button>
+</form><p class="subtle">This separate owner-only file stores only two validated integers. It never reads or changes credentials, domain permissions, history data, endpoint URLs or service ports. Existing cached responses may still be served until their TTL expires.</p>
+<p><a href="/settings">History settings</a> · <a href="/">Return to domain approvals</a></p></main></body></html>

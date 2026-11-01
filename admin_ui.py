@@ -54,20 +54,18 @@ ONCE_DURATION_CHOICES = DURATION_CHOICES[:-1]
 
 
 def choice_buttons(name, caption, choices, selected=None, *, required=True):
-    """Accessible button-like radio group using the existing POST/GET contract."""
+    """Accessible radio group; HTML lives exclusively in bundled templates."""
     if selected is not None and selected not in {key for key, _ in choices}:
         raise ValueError("Unknown radio choice")
-    parts = ['<fieldset class="choice-field"><legend>' + esc(caption) +
-             '</legend><div class="choice-options">']
-    for key, label in choices:
-        parts.append(
-            '<label class="choice-option"><input type="radio" name="' +
-            esc(name) + '" value="' + esc(key) + '"' +
-            (' checked' if selected == key else '') +
-            (' required' if required else '') +
-            '><span class="choice-text">' + esc(label) + '</span></label>')
-    parts.append('</div></fieldset>')
-    return ''.join(parts)
+    options = [
+        render_template("choice-radio", field_name=esc(name), value=esc(key),
+                        label=esc(label),
+                        checked=" checked" if selected == key else "",
+                        required=" required" if required else "")
+        for key, label in choices
+    ]
+    return render_template("choice-group", caption=esc(caption),
+                           options="".join(options))
 
 
 def recent_history(n=25):
@@ -271,7 +269,7 @@ def _last_pending_page(total):
 
 
 def pending_pagination_html(query, page, total, pending_sort='recent'):
-    """Accessible navigation over bounded pending rows; never alters rules."""
+    """Accessible bounded navigation; URLs escaped before rendering."""
     pages = _last_pending_page(total)
     first = (page - 1) * PENDING_PAGE_SIZE + 1 if total and page <= pages else 0
     last = min(page * PENDING_PAGE_SIZE, total) if first else 0
@@ -283,16 +281,12 @@ def pending_pagination_html(query, page, total, pending_sort='recent'):
 
     links = []
     if page > 1:
-        links.append('<a rel="prev" href="' + href(page - 1) +
-                     '">Previous 200</a>')
+        links.append(render_template("pending-prev", href=href(page - 1)))
     if page < pages:
-        links.append('<a rel="next" href="' + href(page + 1) +
-                     '">Next 200</a>')
-    return ('<nav class="pending-pages" aria-label="Pending request pages">'
-            '<span role="status">Showing ' + str(first) + '–' + str(last) +
-            ' of ' + str(total) + ' matching pending domains · page ' +
-            str(page) + ' of ' + str(pages) + '</span>' +
-            ''.join(links) + '</nav>')
+        links.append(render_template("pending-next", href=href(page + 1)))
+    return render_template("pending-nav", first=first, last=last,
+                           total=total, page=page, pages=pages,
+                           links="".join(links))
 
 
 def live_snapshot(query='', view='policy', history_filters=None,
@@ -384,17 +378,14 @@ def _overview_history_metrics():
 
 def overview_summary_html(metrics):
     if metrics is None:
-        return ('<tr><td colspan="5">Operational history unavailable; '
-                'check local configuration.</td></tr>')
+        return render_template("overview-unavailable")
     return history_summary_html(metrics)
 
 
 def operations_overview_html(metrics):
-    """Aggregate, redacted 24h counts only; no URLs, domains or queries."""
+    """Aggregate 24h counts only; no URLs, domains or query text."""
     if metrics is None:
-        return ('<p class="subtle" role="status">Operational history is '
-                'unavailable. Existing permissions and recent activity '
-                'remain accessible.</p>')
+        return render_template("operations-unavailable")
     totals = {
         'Operations': sum(int(x['count']) for x in metrics),
         'Searches': sum(int(x['count']) for x in metrics
@@ -402,20 +393,19 @@ def operations_overview_html(metrics):
         'Fetches': sum(int(x['count']) for x in metrics
                        if x['kind'] == 'fetch'),
         'Non-success outcomes': sum(int(x['count']) for x in metrics
-                                    if x['status'] != 'success'),
+                                   if x['status'] != 'success'),
     }
     return ''.join(
-        '<div class="stat"><span>' + label +
-        '</span><b>' + str(value) + '</b></div>'
-        for label, value in totals.items())
+        render_template("operations-stat", label=esc(label), value=count)
+        for label, count in totals.items())
 
 
 def service_overview_rows():
-    """Bounded local TCP-only view, not proof of service health."""
+    """Bounded local TCP-only view, not proof of application health."""
     return ''.join(
-        '<tr><td>' + esc(item['service']) + '</td><td>' +
-        esc(item['status']) + '</td><td>' + esc(item['source']) +
-        '</td></tr>' for item in service_status.probe_services())
+        render_template("service-row", service=esc(item['service']),
+                        status=esc(item['status']), source=esc(item['source']))
+        for item in service_status.probe_services())
 
 
 def row_html(r, query='', page=1, pending_sort='recent'):
@@ -524,77 +514,56 @@ def row_html(r, query='', page=1, pending_sort='recent'):
             f'<td class="actions">{actions}</td></tr>')
 
 def decision_audit_rows(search=""):
-    """Render escaped, filtered decision rows for initial and live views."""
+    """Escaped decision evidence; markup owned by immutable templates."""
     rows = policy.recent_decisions(search=search)
     cells = ''.join(
-        '<tr><td class="small">' + esc(r['at']) + '</td>'
-        '<td class="domain">' + esc(r['domain']) + '</td>'
-        '<td>' + esc(r['action']) + '</td>'
-        '<td class="small">' + esc(r['request_id'] or '—') + '</td>'
-        '<td>' + esc(r['reason'] or '—') + '</td>'
-        '<td>' + esc(policy.safe_request_origin(r['requested_url']) if r['requested_url'] else '—') + '</td>'
-        '<td>' + esc(r['first_requested_at'] or '—') + '</td>'
-        '<td>' + esc(r['last_requested_at'] or '—') + '</td>'
-        '<td>' + str(int(r['request_count'])) + '</td></tr>'
+        render_template(
+            "decision-row", at=esc(r['at']), domain=esc(r['domain']),
+            action=esc(r['action']), request_id=esc(r['request_id'] or '—'),
+            reason=esc(r['reason'] or '—'),
+            requested_url=esc(policy.safe_request_origin(r['requested_url'])
+                              if r['requested_url'] else '—'),
+            first_requested_at=esc(r['first_requested_at'] or '—'),
+            last_requested_at=esc(r['last_requested_at'] or '—'),
+            request_count=int(r['request_count']))
         for r in rows)
-    return cells or '<tr><td colspan="9">No decisions recorded.</td></tr>'
+    return cells or render_template("decision-empty")
 
 
 def decision_audit_html(search=""):
-    return ('<div class="scroll"><table><thead><tr><th>UTC time</th>'
-            '<th>Domain</th><th>Action</th><th>Request ID</th>'
-            '<th>Operator reason</th><th>Request origin</th>'
-            '<th>First request</th><th>Last request</th><th>Count</th>'
-            '</tr></thead><tbody id="live-audit">' +
-            decision_audit_rows(search) + '</tbody></table></div>')
+    return render_template("decision-table", rows=decision_audit_rows(search))
 
 
 def once_grants_html(search="", page=1, pending_sort='recent'):
-    """Escaped, bounded local status; never expose bearer grant IDs."""
+    """Bounded local grant status; never expose bearer grant identifiers."""
     rows = policy.once_grant_entries(search=search)
     cells = ''.join(
-        '<tr><td class="domain">' + esc(r['domain']) + '</td>'
-        '<td>' + esc(r['state']) + '</td>'
-        '<td>' + esc('Exact host' if r['match_scope'] == 'exact'
-                   else 'Host + subdomains') + '</td>'
-        '<td>' + esc(r['expires_at'] or 'Never') + '</td>'
-        '<td><form method="post" action="/once">'
-        '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
-        '<input type="hidden" name="review_query" value="' + esc(search[:100]) + '">'
-        '<input type="hidden" name="review_page" value="' + str(page) + '">'
-        '<input type="hidden" name="review_sort" value="' + pending_sort + '">'
-        '<input type="hidden" name="domain" value="' + esc(r['domain']) + '">'
-        '<label class="small">Reason (optional) <input name="reason" '
-        'maxlength="160" placeholder="Short local note"></label>'
-        '<button class="delete" name="action" value="revoke">Revoke</button>'
-        '</form></td></tr>' for r in rows
-    )
-    return ('<div class="scroll"><table><thead><tr><th>Domain</th>'
-            '<th>Use</th><th>Scope</th><th>Expiry (UTC)</th><th>Manage</th>'
-            '</tr></thead><tbody id="once-grants">' +
-            (cells or '<tr><td colspan="5">No single-use grants stored.</td></tr>') +
-            '</tbody></table></div>')
+        render_template(
+            "once-grant-row", domain=esc(r['domain']), state=esc(r['state']),
+            scope=esc('Exact host' if r['match_scope'] == 'exact'
+                      else 'Host + subdomains'),
+            expires_at=esc(r['expires_at'] or 'Never'),
+            csrf=esc(CSRF), review_query=esc(search[:100]),
+            review_page=page, review_sort=esc(pending_sort))
+        for r in rows)
+    return render_template("once-grant-table",
+                           rows=cells or render_template("once-grant-empty"))
 
 
 def once_audit_html(search=""):
-    """Separate action log avoids changing the old decisions CHECK schema."""
+    """Separate action log avoids changing existing decisions CHECK schema."""
     rows = policy.recent_once_events(search=search)
     cells = ''.join(
-        '<tr><td>' + esc(r['at']) + '</td><td class="domain">' +
-        esc(r['domain']) + '</td><td>' + esc(r['action']) +
-        '</td><td>' + esc(r['scope'] or '—') +
-        '</td><td>' + esc(r['expires_at'] or 'Never') +
-        '</td><td>' + esc(r['request_id'] or '—') +
-        '</td><td>' + esc(r['reason'] or '—') +
-        '</td><td>' + esc(r['requested_url'] or '—') +
-        '</td></tr>' for r in rows
-    )
-    return ('<div class="scroll"><table><thead><tr><th>UTC</th>'
-            '<th>Domain</th><th>Action</th><th>Scope</th><th>Expiry</th>'
-            '<th>Request ID</th><th>Reason</th><th>Request origin</th>'
-            '</tr></thead><tbody id="once-audit">' +
-            (cells or '<tr><td colspan="8">No single-use events.</td></tr>') +
-            '</tbody></table></div>')
+        render_template(
+            "once-audit-row", at=esc(r['at']), domain=esc(r['domain']),
+            action=esc(r['action']), scope=esc(r['scope'] or '—'),
+            expires_at=esc(r['expires_at'] or 'Never'),
+            request_id=esc(r['request_id'] or '—'),
+            reason=esc(r['reason'] or '—'),
+            requested_url=esc(r['requested_url'] or '—'))
+        for r in rows)
+    return render_template("once-audit-table",
+                           rows=cells or render_template("once-audit-empty"))
 
 
 def import_preview_html(plan: dict) -> str:
@@ -704,14 +673,27 @@ def render(query='', message='', kind='success', page=1,
     )
 
 
+def _settings_alert(message, kind="success"):
+    return (render_template("settings-alert",
+                            kind="error" if kind == "error" else "success",
+                            message=esc(message)) if message else "")
+
+
+def _settings_sources(info, values):
+    return "".join(
+        render_template(
+            "settings-source", key=esc(key),
+            source=("environment override"
+                    if info["environment_override"][key] else "saved or default"))
+        for key in values)
+
+
 def history_settings_page(message="", kind="success", submitted=None):
-    """Owner-only local settings page; fields are allowlisted, never secrets."""
+    """Owner-only history settings; presentation is in bundled HTML."""
     info = safe_settings.dashboard_settings()
     vals = info["values"]
-    # Keep a rejected form intact, including its stale version: never silently
-    # upgrade the CAS token and risk overwriting a concurrent settings change.
-    displayed = ({**vals, "state": info["state"]}
-                 if submitted is None else submitted)
+    shown = ({**vals, "state": info["state"]}
+             if submitted is None else submitted)
     locked = not info["editable"]
     note = ('An environment override is present. Saved values below are '
             'inactive for overridden fields; remove the override and restart '
@@ -720,79 +702,30 @@ def history_settings_page(message="", kind="success", submitted=None):
             'Changes apply to the next history operation in the running '
             'process, without restarting. Older records already deleted '
             'by retention cannot be recovered.')
-    alerts = ('<p class="alert ' + ("error" if kind == "error" else "success") +
-              '">' + esc(message) + '</p>') if message else ''
-    override = ''.join('<li>' + esc(key) + ': ' +
-                       ("environment override" if info["environment_override"][key]
-                        else "saved or default") + '</li>' for key in vals)
-    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
-            f'<meta name="referrer" content="no-referrer">'
-            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>Local Search MCP — History settings</title><link rel="stylesheet" href="/dashboard.css">'
-            '</head><body><main><h1>Nonsecret history settings</h1>' +
-            alerts + '<p>' + esc(note) + '</p><ul>' + override + '</ul>'
-            '<form method="post" action="/settings">'
-            '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
-            '<input type="hidden" name="state" value="' + esc(displayed["state"]) + '">'
-            '<label>Indexed history retention (1–365 days) '
-            '<input type="number" name="retention_days" min="1" max="365" '
-            'required value="' + esc(displayed["retention_days"]) + '"></label>'
-            '<label>JSONL rotation size (64,000–100,000,000 bytes) '
-            '<input type="number" name="max_bytes" min="64000" '
-            'max="100000000" required value="' + esc(displayed["max_bytes"]) + '"></label>'
-            '<label>Type APPLY <input name="confirm" required pattern="APPLY" '
-            'maxlength="5"></label><button type="submit"' +
-            (' disabled' if locked else '') + '>Apply history settings</button>'
-            '</form><p class="subtle">The values are stored in a separate '
-            'owner-only file; this panel never displays or modifies API keys, '
-            'tunnel credentials, private configuration, domain rules or paths. '
-            'Changing retention controls future pruning of the derived index; '
-            'changing size affects the next JSONL append/rotation.</p>'
-            '<p><a href="/">Return to domain approvals</a></p></main></body></html>')
+    return render_template(
+        "history-settings", alert=_settings_alert(message, kind),
+        note=esc(note), sources=_settings_sources(info, vals),
+        csrf=esc(CSRF), state=esc(shown["state"]),
+        retention_days=esc(shown["retention_days"]),
+        max_bytes=esc(shown["max_bytes"]),
+        disabled=" disabled" if locked else "")
 
 
 def upstream_settings_page(message="", kind="success", submitted=None):
-    """Strictly nonsecret, operator-only timeout configuration panel."""
+    """Operator-only upstream timeout form with file-backed markup."""
     info = upstream_settings.dashboard_settings()
     vals = info["values"]
     shown = ({**vals, "state": info["state"]}
              if submitted is None else submitted)
     locked = not info["editable"]
-    alert = ('<p class="alert ' + ('error' if kind == 'error' else 'success') +
-             '">' + esc(message) + '</p>') if message else ''
-    sources = ''.join('<li>' + esc(key) + ': ' +
-                      ('environment override' if info["environment_override"][key]
-                       else 'saved or default') + '</li>' for key in vals)
-    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
-            f'<meta name="referrer" content="no-referrer">'
-            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>Local Search MCP — Upstream timeouts</title><link rel="stylesheet" href="/dashboard.css">'
-            '</head><body><main><h1>Upstream request timeouts</h1>' +
-            alert + '<p>Timeouts apply to the next outgoing upstream request '
-            'without restarting the bridge. Requests already running retain '
-            'their original timeout. The Crawl4AI /health safety check keeps '
-            'its own fixed short timeout.</p><ul>' + sources + '</ul>' +
-            ('<p class="alert error">An environment override is present. '
-             'Remove it from the service environment and restart before '
-             'editing these saved settings.</p>' if locked else '') +
-            '<form method="post" action="/upstream-settings">'
-            '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
-            '<input type="hidden" name="state" value="' + esc(shown["state"]) + '">'
-            '<label>SearXNG search timeout (5–120 seconds) '
-            '<input type="number" name="searxng_seconds" min="5" max="120" '
-            'required value="' + esc(shown["searxng_seconds"]) + '"></label>'
-            '<label>Crawl4AI crawl timeout (15–300 seconds) '
-            '<input type="number" name="crawl_seconds" min="15" max="300" '
-            'required value="' + esc(shown["crawl_seconds"]) + '"></label>'
-            '<label>Type APPLY <input name="confirm" required pattern="APPLY" '
-            'maxlength="5"></label><button type="submit"' +
-            (' disabled' if locked else '') + '>Apply upstream timeouts</button>'
-            '</form><p class="subtle">This separate owner-only file stores '
-            'only two validated integers. It never reads or changes credentials, '
-            'domain permissions, history data, endpoint URLs or service ports. '
-            'Existing cached responses may still be served until their TTL expires.</p>'
-            '<p><a href="/settings">History settings</a> · '
-            '<a href="/">Return to domain approvals</a></p></main></body></html>')
+    return render_template(
+        "upstream-settings", alert=_settings_alert(message, kind),
+        sources=_settings_sources(info, vals),
+        locked_notice=render_template("settings-locked") if locked else "",
+        csrf=esc(CSRF), state=esc(shown["state"]),
+        searxng_seconds=esc(shown["searxng_seconds"]),
+        crawl_seconds=esc(shown["crawl_seconds"]),
+        disabled=" disabled" if locked else "")
 
 
 def cache_settings_page(message="", kind="success", submitted=None):
@@ -802,14 +735,9 @@ def cache_settings_page(message="", kind="success", submitted=None):
     shown = ({**vals, "state": info["state"]}
              if submitted is None else submitted)
     locked = not info["editable"]
-    alert = ('<p class="alert ' + ('error' if kind == 'error' else 'success') +
-             '">' + esc(message) + '</p>') if message else ''
-    sources = ''.join('<li>' + esc(key) + ': ' +
-                      ('environment override' if info["environment_override"][key]
-                       else 'saved or default') + '</li>' for key in vals)
-    locked_notice = ('<p class="alert error">An environment override is present. '
-                     'Remove it from the service environment and restart before '
-                     'editing these saved settings.</p>' if locked else '')
+    alert = _settings_alert(message, kind)
+    sources = _settings_sources(info, vals)
+    locked_notice = render_template("settings-locked") if locked else ""
     return render_template(
         "cache-settings", alert=alert, sources=sources,
         locked_notice=locked_notice, csrf=esc(CSRF),
@@ -821,9 +749,9 @@ def cache_settings_page(message="", kind="success", submitted=None):
 
 
 def portable_settings_page(message="", kind="success"):
-    alert = ('<p class="alert ' + ("error" if kind == "error" else "success") +
-             '">' + esc(message) + '</p>') if message else ''
-    return render_template("portable-settings", alert=alert, csrf=esc(CSRF))
+    return render_template("portable-settings",
+                           alert=_settings_alert(message, kind),
+                           csrf=esc(CSRF))
 
 
 def portable_settings_preview(plan: dict, document: str) -> str:

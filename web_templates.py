@@ -10,7 +10,42 @@ from string import Template
 _DIR = Path(__file__).resolve().parent / "web" / "templates"
 _TEMPLATES = {
     name: Template((_DIR / (name + ".html")).read_text(encoding="utf-8"))
-    for name in ("policy", "history", "provider-observations", "status", "cache-settings", "portable-settings", "engine-settings", "engine-form", "engine-option", "engine-alert", "engine-unavailable")
+    for name in (
+        "policy",
+        "history",
+        "provider-observations",
+        "status",
+        "cache-settings",
+        "portable-settings",
+        "engine-settings",
+        "engine-form",
+        "engine-option",
+        "engine-alert",
+        "engine-unavailable",
+        "choice-group",
+        "choice-radio",
+        "pending-nav",
+        "pending-prev",
+        "pending-next",
+        "operations-stat",
+        "operations-unavailable",
+        "service-row",
+        "overview-unavailable",
+        "settings-source",
+        "settings-alert",
+        "settings-locked",
+        "history-settings",
+        "upstream-settings",
+        "decision-row",
+        "decision-table",
+        "decision-empty",
+        "once-grant-row",
+        "once-grant-table",
+        "once-grant-empty",
+        "once-audit-row",
+        "once-audit-table",
+        "once-audit-empty"
+    )
 }
 
 

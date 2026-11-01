@@ -1,5 +1,6 @@
 """The HTML templates are fixed assets, never request-controlled paths."""
 from pathlib import Path
+import inspect
 import unittest
 from unittest.mock import patch
 
@@ -20,6 +21,60 @@ class DashboardTemplateTests(unittest.TestCase):
                     self.assertIn('src="/dashboard-live.js"', raw)
                 else:
                     self.assertNotIn("<script", raw)
+
+    def test_common_ui_helpers_use_fixed_templates_not_inline_html(self):
+        for fn in (admin_ui.choice_buttons,
+                   admin_ui.pending_pagination_html,
+                   admin_ui.operations_overview_html,
+                   admin_ui.overview_summary_html,
+                   admin_ui.service_overview_rows,
+                   admin_ui.history_settings_page,
+                   admin_ui.upstream_settings_page,
+                   admin_ui.cache_settings_page,
+                   admin_ui.portable_settings_page,
+                   admin_ui.decision_audit_rows,
+                   admin_ui.decision_audit_html,
+                   admin_ui.once_grants_html,
+                   admin_ui.once_audit_html):
+            with self.subTest(fn=fn.__name__):
+                self.assertNotRegex(inspect.getsource(fn), r"""['"]<[a-zA-Z]""")
+        group = admin_ui.choice_buttons(
+            "mode", "Choose <mode>", (("a", "A&B"), ("b", "B")),
+            selected="a")
+        self.assertIn("&lt;mode&gt;", group)
+        self.assertIn('name="mode" value="a" checked required', group)
+        self.assertIn("A&amp;B", group)
+        self.assertNotIn("<mode>", group)
+        next_page = admin_ui.pending_pagination_html(
+            "<script>", 1, admin_ui.PENDING_PAGE_SIZE + 1)
+        self.assertIn("Next 200", next_page)
+        self.assertNotIn("<script>", next_page)
+        self.assertIn("%3Cscript%3E", next_page)
+
+    def test_migrated_settings_pages_are_external_templates(self):
+        with (patch.object(admin_ui.safe_settings, "dashboard_settings",
+                           return_value={"values": {"retention_days": 30, "max_bytes": 8388608},
+                                         "state": "revision", "editable": True,
+                                         "environment_override": {
+                                             "retention_days": False, "max_bytes": False}}),
+              patch.object(admin_ui.upstream_settings, "dashboard_settings",
+                           return_value={"values": {"searxng_seconds": 25,
+                                                      "crawl_seconds": 75},
+                                         "state": "revision", "editable": False,
+                                         "environment_override": {
+                                             "searxng_seconds": True,
+                                             "crawl_seconds": False}})):
+            history = admin_ui.history_settings_page(message='<test>')
+            upstream = admin_ui.upstream_settings_page()
+        self.assertIn('name="retention_days"', history)
+        self.assertIn('value="30"', history)
+        self.assertIn('&lt;test&gt;', history)
+        self.assertNotIn('<test>', history)
+        self.assertIn('name="searxng_seconds"', upstream)
+        self.assertIn('value="25"', upstream)
+        self.assertIn('Apply upstream timeouts', upstream)
+        self.assertIn(' disabled>Apply upstream timeouts', upstream)
+        self.assertIn('environment override', upstream)
 
     def test_unknown_template_is_rejected(self):
         for name in ("../secrets", "/etc/passwd", "x", "policy.html"):
