@@ -23,7 +23,11 @@ The adapter binds **only** to `127.0.0.1:18791`, denies requests from
 non-loopback peers and rejects unknown Hosts, Origins, forwarded identity
 headers, credentials in cookies, query strings, wrong paths and methods.
 It accepts an exact configured Host (with optional fixed `:18791` suffix),
-then forwards only to the fixed authenticated gateway. The existing gateway
+then forwards only to the fixed authenticated gateway. Cloudflare Portal adds
+`X-Forwarded-User-Agent` on some live calls; the adapter tolerates one bounded
+instance of this untrusted client metadata but never forwards or uses it for
+authentication. Other `X-Forwarded-*` and `Forwarded` headers remain rejected.
+The existing gateway
 independently validates its dedicated bearer, expiry, root-owned egress guard
 on each admitted request, size/rate limits and revocation. The adapter does not
 trust `CF-Access-*` headers or impersonate Cloudflare identity. **The gateway
