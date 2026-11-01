@@ -1,8 +1,9 @@
-"""Read-only bounded provider observations from existing private JSONL audit.
+"""Read-only bounded provider observations from private JSONL history.
 
 No raw queries, result titles, URLs, snippets, error payloads, or credentials
-leave this module. No database writes, new provider tracking, or searches.
-These are *observed result sources*, not per-provider uptime/latency metrics.
+leave this report. No database writes or searches are performed here.
+Result source attribution and measured isolated local SearXNG operations are
+separate measurements; neither proves remote provider uptime/latency.
 """
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -134,6 +136,7 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
     engine_samples: dict[str, list[float | None]] = defaultdict(list)
     category_samples: dict[str, list[float | None]] = defaultdict(list)
     reported_failures: dict[str, int] = defaultdict(int)
+    isolated_attempts: dict[str, list[dict]] = defaultdict(list)
     display_labels: dict[str, str] = {}
     reported_diagnostic_calls = partial_diagnostic_calls = unknown_diagnostic_calls = 0
     no_failures_reported_calls = omitted_diagnostic_names = 0
@@ -167,6 +170,30 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
             if when is None or when < cutoff or when > now + timedelta(minutes=5):
                 continue
             calls += 1
+            # Actual isolated local /search operations, never inferred from
+            # fanout hits, and absent on cache hits or preflight rejection.
+            raw_attempts = item.get("isolated_engine_operations")
+            if isinstance(raw_attempts, list):
+                for item_attempt in raw_attempts[:3]:
+                    if not isinstance(item_attempt, dict):
+                        continue
+                    label = _label(item_attempt.get("engine"))
+                    outcome = item_attempt.get("outcome")
+                    source = item_attempt.get("source")
+                    duration = item_attempt.get("roundtrip_ms")
+                    if (not label or outcome not in (
+                            "results", "empty", "reported_unresponsive",
+                            "http_error", "transport_error", "invalid_response",
+                            "unverified_attribution")
+                            or source not in ("explicit", "isolated_recovery")
+                            or type(duration) not in (int, float)
+                            or not math.isfinite(duration)
+                            or not 0 <= duration <= 3_600_000):
+                        continue
+                    isolated_attempts[label].append({
+                        "outcome": outcome, "source": source,
+                        "roundtrip_ms": duration,
+                    })
             # Old/non-opted-in events have no provider-failure evidence.
             # These are upstream-reported labels, never a provider uptime
             # denominator or measured provider-specific response time.
@@ -245,6 +272,29 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
         "engine_groups_truncated": len(engine_samples) > MAX_GROUPS,
         "category_groups_truncated": len(category_samples) > MAX_GROUPS,
         "observed_result_engines": _rollup(engine_samples),
+        "isolated_engine_operation_total": sum(
+            len(items) for items in isolated_attempts.values()),
+        "isolated_engine_operations": [
+            {
+                "name": name,
+                "local_operations": len(items),
+                "reported_results": sum(x["outcome"] == "results" for x in items),
+                "reported_empty": sum(x["outcome"] == "empty" for x in items),
+                "reported_unresponsive": sum(
+                    x["outcome"] == "reported_unresponsive" for x in items),
+                "other_outcomes": sum(
+                    x["outcome"] not in ("results", "empty", "reported_unresponsive")
+                    for x in items),
+                "recovery_operations": sum(
+                    x["source"] == "isolated_recovery" for x in items),
+                "mean_local_search_ms": round(
+                    sum(x["roundtrip_ms"] for x in items) / len(items), 1),
+            }
+            for name, items in sorted(
+                isolated_attempts.items(),
+                key=lambda x: (-len(x[1]), x[0]))[:MAX_GROUPS]
+        ],
+        "isolated_engine_groups_truncated": len(isolated_attempts) > MAX_GROUPS,
         "requested_categories": _rollup(category_samples),
         "opted_in_diagnostic_calls": reported_diagnostic_calls,
         "reported_partial_provider_calls": partial_diagnostic_calls,
@@ -263,6 +313,7 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
         "provider_failure_coverage": ("per_call_opt_in_incomplete"
                                       if reported_diagnostic_calls else "no_opt_in_reports_retained"),
         "provider_uptime": "not_measured",
+        "isolated_latency_scope": "local SearXNG /search roundtrip including retries, not remote engine execution",
         "per_engine_category_link": "not_retained",
         "cache_hit_coverage": "not_retained",
     }

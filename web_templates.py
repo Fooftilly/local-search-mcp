@@ -98,7 +98,10 @@ _TEMPLATES = {
         "domain-empty-pending",
         "domain-empty-decided",
         "domain-table-head",
-        "domain-alert"
+        "domain-alert",
+        "provider-isolated-row",
+        "provider-isolated-empty",
+        "provider-isolated-unavailable"
     )
 }
 

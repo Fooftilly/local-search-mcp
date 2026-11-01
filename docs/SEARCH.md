@@ -404,3 +404,26 @@ count, not the filtered count. A disabled/unknown exact filter returns
 `status=not_enabled`; a sleeping/unavailable backend returns the
 original bounded `unavailable` response. This discovery does not wake
 Docker, contact providers, alter engine settings or approve domains.
+
+## Individually selected search engine observations
+
+The local `/provider-observations` console now includes a separate
+**Individually selected local SearXNG searches** table. This tracks up to
+three bounded, nonsecret /search operation records per search-tool call, but
+**only** when the MCP actually invokes the local SearXNG search endpoint
+with exactly one engine. It includes explicit `engines=duckduckgo` style
+requests and an already-eligible isolated recovery attempt. Ordinary default
+fanout searches, validation rejects and cache hits do **not** create
+per-engine attempts.
+
+The private JSONL history retains the full validated search query as before;
+the new operation records contain only the engine label, explicit/recovery
+selection source, coarse upstream-row/empty/upstream-error outcome and measured
+local /search operation duration. No response exception text, headers, API
+tokens, result contents or provider URLs are added to telemetry. The duration
+includes local SearXNG overhead and any transport retries and **is not**
+remote engine execution latency. An empty result is different from a
+SearXNG-reported unresponsive engine. The aggregate dashboard reads bounded
+private history; this evidence is not used to automatically select providers
+or rate-limit engines yet. Older records cannot be retroactively attributed.
+

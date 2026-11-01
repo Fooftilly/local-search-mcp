@@ -20,6 +20,7 @@ from crawler_security import local_container_warning, verify_health
 import threading
 from urllib.parse import urlsplit, urlunsplit
 from history_log import logged_tool
+import isolated_engine_observations
 import document_pages
 import document_comparison
 import request_cache
@@ -479,8 +480,12 @@ def _run_search_network(params: dict, max_results: int, *,
         selection_failure = _verify_explicit_search_selection(client, params)
         if selection_failure is not None:
             return selection_failure
+        started_search = time.monotonic()
         response = _retry_request(lambda: client.get(
             f"{SEARXNG_URL}/search", params=params))
+        isolated_engine_observations.observe(
+            params, response, (time.monotonic() - started_search) * 1000,
+            source="explicit")
         # SearXNG can return HTTP 200 with no hits when its providers have
         # failed. Recover once, preserving the request or narrowing an
         # unrestricted default to an already-attempted, enabled engine.
@@ -503,6 +508,8 @@ def _run_search_network(params: dict, max_results: int, *,
                 retry_params = isolated if isolated is not None else params
                 attempted_engine = isolated["engines"] if isolated else None
                 time.sleep(0.15)
+                retry = None
+                retry_started = time.monotonic()
                 try:
                     retry = client.get(f"{SEARXNG_URL}/search", params=retry_params)
                     if retry.status_code == 200:
@@ -516,6 +523,12 @@ def _run_search_network(params: dict, max_results: int, *,
                     # Preserve the first provider-failure result, rather than
                     # leaking network errors or treating a bad retry as data.
                     pass
+                finally:
+                    isolated_engine_observations.observe(
+                        retry_params, retry,
+                        (time.monotonic() - retry_started) * 1000,
+                        source=("isolated_recovery" if isolated is not None
+                                else "explicit"))
     if response is not None and response.status_code in (400, 422) and len(params) > 2:
         raise ValueError("Local SearXNG rejected the requested filters or page")
     if response is None or response.status_code >= 400:

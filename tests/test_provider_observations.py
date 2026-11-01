@@ -72,6 +72,49 @@ class ProviderObservationsTests(unittest.TestCase):
                        "private.example", "PrivateKeyword", "timeout"):
             self.assertNotIn(marker, repr(answer))
 
+    def test_isolated_roundtrips_are_bounded_and_reject_malformed_data(self):
+        valid = {"engine": "duckduckgo", "source": "explicit",
+                 "outcome": "results", "roundtrip_ms": 120}
+        self.add(status="error", results=None, isolated_engine_operations=[
+            valid, {**valid, "source": "isolated_recovery",
+                    "outcome": "reported_unresponsive", "roundtrip_ms": 40},
+            {**valid, "engine": "<script>", "roundtrip_ms": 11},
+            {**valid, "engine": "SECRET_TOKEN", "roundtrip_ms": 42},
+            {**valid, "roundtrip_ms": float("nan")},
+            {**valid, "outcome": "invented_success"},
+        ])
+        self.add(minutes=1, isolated_engine_operations=[
+            {**valid, "outcome": "empty", "roundtrip_ms": 80}])
+        report = provider.observations(24, now=self.now)
+        self.assertEqual(len(report["isolated_engine_operations"]), 1)
+        metrics = report["isolated_engine_operations"][0]
+        self.assertEqual(metrics["name"], "duckduckgo")
+        self.assertEqual(metrics["local_operations"], 3)
+        self.assertEqual(report["isolated_engine_operation_total"], 3)
+        self.assertEqual(metrics["reported_results"], 1)
+        self.assertEqual(metrics["reported_empty"], 1)
+        self.assertEqual(metrics["reported_unresponsive"], 1)
+        self.assertEqual(metrics["other_outcomes"], 0)
+        self.assertEqual(metrics["recovery_operations"], 1)
+        self.assertEqual(metrics["mean_local_search_ms"], 80.0)
+        self.assertEqual(report["provider_uptime"], "not_measured")
+        self.assertNotIn("SECRET_TOKEN", repr(report))
+
+    def test_isolated_total_includes_engine_groups_beyond_display_limit(self):
+        for i in range(provider.MAX_GROUPS + 1):
+            self.add(minutes=0, results=[], isolated_engine_operations=[{
+                "engine": f"engine-{i:02d}", "source": "explicit",
+                "outcome": "empty", "roundtrip_ms": 10,
+            }])
+        result = provider.observations(24, now=self.now)
+        self.assertTrue(result["isolated_engine_groups_truncated"])
+        self.assertEqual(len(result["isolated_engine_operations"]), provider.MAX_GROUPS)
+        self.assertEqual(result["isolated_engine_operation_total"],
+                         provider.MAX_GROUPS + 1)
+        self.assertEqual(sum(r["local_operations"]
+                             for r in result["isolated_engine_operations"]),
+                         provider.MAX_GROUPS)
+
     def test_opt_in_failure_aggregation_merges_names_across_case(self):
         for name in ("Qwant", "qwant", "QWANT"):
             self.add(provider_diagnostics_opt_in=True,
