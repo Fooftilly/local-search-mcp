@@ -51,14 +51,16 @@ Engine names are length-bounded, allowlisted by character format, stripped of
 secret-looking labels, and HTML-escaped. This column is visible independently
 of the separate opt-in display of private search queries and fetch URLs.
 
-## Opt-in original history details
+## Personal operator history details
 
-The **Show search queries and page URLs** checkbox on the Request history
-page is disabled by default. When explicitly enabled, search rows display
-their original stored search query and fetch rows display the stored page URL
-(scheme, hostname and path) rather than only the domain. Live refresh and
-filter submissions preserve the operator's selection. Continuation reads
-remain domain-only and never reveal private document handles.
+The **Show search queries and page URLs** control on Request history is
+**enabled by default**. Searches display their full validated query text
+(up to the tool's 300-character maximum); fetches show sanitized page URLs
+(scheme, hostname and path). Disable the checkbox to show domains alone.
+Live refresh, pagination and filter submissions preserve the operator's
+selection. Continuation reads remain domain-only and never reveal private
+document handles. These events already reside in the original private JSONL
+audit, without new copies in the SQLite index or an agent-visible history API.
 
 This view uses the index's existing generation and byte-offset coordinates
 to retrieve matching records from the original private rotating JSONL files.
