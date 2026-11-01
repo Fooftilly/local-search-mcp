@@ -51,7 +51,14 @@ enabled flags are global across all their categories. This particular
 page cannot enable Google-named engines, preserving the operator's
 non-Google preference. It does not override agent-supplied explicit
 `engines` or `categories` filters, rate-limit engines, or select
-providers based on performance. Dedicated request pacing and adaptive
+providers based on performance. The dashboard supports the full bounded
+inventory (up to 512 general engines), with a separately bounded form size.
+A successful console update immediately invalidates cached search responses
+and detaches pre-update in-flight cache writes in the shared MCP/dashboard
+process; existing in-flight callers may still receive their original result.
+Edits performed through the separate setup CLI do not share this in-process
+invalidation and may require a bridge restart or cache TTL expiry. Dedicated
+request pacing and adaptive
 routing are tracked separately in the engine-policy roadmap.
 
 ## Optional image URLs and thumbnails
