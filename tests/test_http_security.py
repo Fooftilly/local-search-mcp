@@ -586,7 +586,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn(b'name="hours" value="1" checked required', page)
         self.assertIn(b'<tbody id="live-history-summary">', page)
         self.assertIn(b'<progress aria-label="fetch blocked count"', page)
-        self.assertIn(b'<td class="domain">docs.example.org</td><td>—</td><td>10.0</td>', page)
+        self.assertIn('<td class="domain">docs.example.org</td><td>—</td><td>10.0</td>'.encode(), page)
         self.assertIn('<td class="domain">docs.example.org</td><td>—</td><td>10.0</td>',
                       json.loads(self.exchange(
                           "GET", "/live?view=history&hours=1&kind=fetch")[1]
