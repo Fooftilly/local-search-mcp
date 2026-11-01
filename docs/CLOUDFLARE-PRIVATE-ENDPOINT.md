@@ -87,8 +87,8 @@ System services are separate from the user-managed MCP units. The private
 unit uses privileged `ExecStartPre` to install the nftables guard **before**
 assigning the private IP; the long-running `socat` process runs as `%i`,
 not as root. `ExecStopPost` removes the IP first and then the dedicated
-guard, even when the forwarder fails. A root-owned marker limits removal to
-resources this service created; an unexpected pre-existing alias/table makes
+guard, even when the forwarder fails. A root-owned systemd-invocation marker prevents a failed second activation
+from deleting the first activation\u0027s resources; an unexpected pre-existing alias/table makes
 startup fail rather than adopting foreign state.
 
 For rollback, disable the Portal server route first, then stop the transport
