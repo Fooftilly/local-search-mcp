@@ -776,28 +776,23 @@ def portable_settings_preview(plan: dict, document: str) -> str:
 
 
 def status_page():
-    """Read-only local TCP diagnostics; no mutation or privileged probes."""
-    rows = ''.join(
-        '<tr><td>' + esc(x['service']) + '</td><td>' +
-        esc(x['status']) + '</td><td>' + esc(x['source']) +
-        '</td></tr>' for x in service_status.probe_services())
-    ports = ''.join(
-        '<tr><td>' + esc(item['service']) + '</td><td>' +
-        esc(item['port'] if item['valid'] else 'Invalid (check local configuration)') +
-        '</td><td>' + esc(item['source']) + '</td><td>' +
-        esc(item['apply']) + '</td></tr>'
+    """Read-only local TCP diagnostics; template rendering only."""
+    rows = service_overview_rows()
+    ports = "".join(
+        render_template("status-port-row",
+                        service=esc(item['service']),
+                        port=esc(item['port'] if item['valid'] else
+                                 'Invalid (check local configuration)'),
+                        source=esc(item['source']),
+                        apply=esc(item['apply']))
         for item in service_status.configured_ports())
-    ports += (
-        '<tr><td>Dashboard</td><td>' + esc(PORT) +
-        '</td><td>active listener</td><td>Bridge restart and health-monitor '
-        'coordination required for a port change</td></tr>'
-        '<tr><td>MCP</td><td>' + esc(MCP_PORT) + '</td><td>fixed loopback listener</td>'
-        '<td>Not configurable through the dashboard</td></tr>'
-    )
-    limits = ''.join(
-        '<tr><td>' + esc(item['name']) + '</td><td>' +
-        esc(item['value']) + '</td><td>' + esc(item['apply']) +
-        '</td></tr>' for item in service_status.fixed_safety_limits())
+    ports += render_template("status-dashboard-port", port=esc(PORT))
+    ports += render_template("status-mcp-port", port=esc(MCP_PORT))
+    limits = "".join(
+        render_template("status-limit-row",
+                        name=esc(item['name']), value=esc(item['value']),
+                        apply=esc(item['apply']))
+        for item in service_status.fixed_safety_limits())
     return render_template("status", rows=rows, ports=ports, limits=limits,
                            mcp_port=esc(MCP_PORT))
 
@@ -817,7 +812,8 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=True,
         retention_label = "configured"
         history_unavailable = not bool(filter_error)
     metrics = snapshot['metrics'] if snapshot is not None else []
-    warning = (f'<p class="alert error" role="alert">{esc(filter_error)}</p>'
+    warning = (render_template("history-filter-warning",
+                               message=esc(filter_error))
                if filter_error else '')
     invalid_kind = bool(
         filter_error and kind not in ("", "search", "fetch", "page"))
@@ -826,7 +822,7 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=True,
     full_filters = {**filters, 'show_queries': show_queries}
     pages_html = (history_pagination_html(full_filters, page, total)
                   if snapshot is not None else
-                  '<p class="subtle" role="status">History pages unavailable.</p>'
+                  render_template("history-pages-unavailable")
                   if history_unavailable else '')
     rows = (recent_rows(**filters, show_queries=show_queries, page=page,
                         items=snapshot['rows'])
@@ -834,7 +830,7 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=True,
             recent_rows(**filters, show_queries=show_queries, page=page,
                         items=[], unavailable=True)
             if history_unavailable else
-            '<p class="subtle">Correct the filters above to view history.</p>')
+            render_template("history-filter-correction"))
     valid_kind = kind if kind in ("", "search", "fetch", "page") else ""
     return render_template(
         "history",
@@ -845,13 +841,13 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=True,
             (("0", "All retained"), ("1", "Last hour"),
              ("24", "Last 24 hours"), ("168", "Last 7 days")), str(hours)),
         invalid_kind_notice=(
-            '<span class="small" role="note">Unsupported operation: ' +
-            esc(kind) + '</span>' if invalid_kind else ''),
+            render_template("history-filter-notice", kind=esc(kind))
+            if invalid_kind else ''),
         status=esc(status), domain=esc(domain),
         query_checked=' checked' if show_queries else '',
         warning=warning, rows=rows,
         page=page, pages_html=pages_html,
-        summary_html=('<tr><td colspan="5">Indexed history is unavailable.</td></tr>'
+        summary_html=(render_template("history-summary-unavailable")
                       if history_unavailable else history_summary_html(metrics)),
         retention_label=esc(retention_label),
     )
