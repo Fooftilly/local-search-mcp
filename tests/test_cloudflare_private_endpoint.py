@@ -1,6 +1,7 @@
 """Static guard contracts and mocked privilege lifecycle: no root operations."""
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -53,6 +54,8 @@ class PrivateEndpointTests(unittest.TestCase):
                                            "stdout": "", "stderr": ""})()
 
             with (patch.object(endpoint, "MARKER", marker),
+                  patch.object(Path, "lstat",
+                               return_value=SimpleNamespace(st_uid=0, st_mode=0o100600)),
                   patch.object(endpoint, "exists_ip", return_value=True),
                   patch.object(endpoint, "exists_table", return_value=True),
                   patch.object(endpoint, "command", side_effect=run)):
