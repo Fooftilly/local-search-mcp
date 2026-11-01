@@ -154,9 +154,10 @@ def history_items_html(kind="", status="", domain="", hours=0,
             items = history_index.search_history(kind=kind, status=status,
                                                   domain=domain, hours=hours,
                                                   reveal_queries=show_queries,
+                                                  include_engines=True,
                                                   offset=(page - 1) * HISTORY_PAGE_SIZE)
         except (OSError, ValueError, sqlite3.Error):
-            return '<tr><td colspan="5">Indexed history is unavailable; check local configuration.</td></tr>'
+            return '<tr><td colspan="6">Indexed history is unavailable; check local configuration.</td></tr>'
     out = []
     for event in items:
         stamp = datetime.fromtimestamp(
@@ -173,8 +174,9 @@ def history_items_html(kind="", status="", domain="", hours=0,
             f'<tr><td class="small">{esc(stamp)}</td><td>{esc(event["kind"])}</td>'
             f'<td>{esc(event["status"])}</td>'
             f'<td class="{css_class}">{esc(display)}</td>'
+            f'<td>{esc(event.get("engine_attribution", "—") if event["kind"] == "search" else "—")}</td>'
             f'<td>{esc(elapsed)}</td></tr>')
-    return ''.join(out) or '<tr><td colspan="5">No matching MCP history.</td></tr>'
+    return ''.join(out) or '<tr><td colspan="6">No matching MCP history.</td></tr>'
 
 
 def recent_rows(kind="", status="", domain="", hours=0, show_queries=False,
@@ -182,6 +184,7 @@ def recent_rows(kind="", status="", domain="", hours=0, show_queries=False,
     column = "Search query / page URL / domain" if show_queries else "Domain"
     return ('<div class="scroll"><table><thead><tr><th>UTC time</th>'
             '<th>Operation</th><th>Status</th><th>' + column + '</th>'
+            '<th>Search engine (requested / observed)</th>'
             '<th>Duration (ms)</th></tr></thead>'
             '<tbody id="live-history">' +
             ('<tr><td colspan="5">Indexed history is unavailable; '
@@ -302,6 +305,7 @@ def live_snapshot(query='', view='policy', history_filters=None,
                    if k in filters},
                 page=filters.get('page', 1),
                 reveal_queries=filters.get('show_queries', False),
+                include_engines=True,
                 page_size=HISTORY_PAGE_SIZE)
         except (OSError, ValueError, sqlite3.Error):
             # A corrupt/unavailable index must not masquerade as zero events.
@@ -884,7 +888,7 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=False,
         if not filter_error:
             snapshot = history_index.dashboard_history_snapshot(
                 **filters, page=page, reveal_queries=show_queries,
-                page_size=HISTORY_PAGE_SIZE)
+                include_engines=True, page_size=HISTORY_PAGE_SIZE)
     except (OSError, ValueError, sqlite3.Error):
         retention_label = "configured"
         history_unavailable = not bool(filter_error)
