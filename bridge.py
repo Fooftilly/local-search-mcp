@@ -438,6 +438,7 @@ def _run_search_network(params: dict, max_results: int, *,
                         include_search_status: bool = False,
                         include_image_metadata: bool = False,
                         allowed_result_domains: tuple[tuple[str, bool], ...] = ()) -> list[dict] | dict:
+    initial_failure = None
     with httpx.Client(timeout=upstream_settings.effective_timeout("searxng_seconds"),
                       trust_env=False) as client:
         selection_failure = _verify_explicit_search_selection(client, params)
@@ -445,6 +446,33 @@ def _run_search_network(params: dict, max_results: int, *,
             return selection_failure
         response = _retry_request(lambda: client.get(
             f"{SEARXNG_URL}/search", params=params))
+        # SearXNG can return HTTP 200 with no hits when its providers have
+        # failed. Recover once, using precisely the original query/filters.
+        # Do not broaden explicit selection, consult a different service,
+        # or retry a genuine healthy empty result.
+        if response is not None and response.status_code == 200:
+            try:
+                first = response.json()
+            except (ValueError, UnicodeError):
+                first = None
+            if (isinstance(first, dict)
+                    and isinstance(first.get("results"), list)
+                    and not first["results"]
+                    and isinstance(first.get("unresponsive_engines"), list)
+                    and first["unresponsive_engines"]):
+                initial_failure = _search_failure_status(first)
+                time.sleep(0.15)
+                try:
+                    retry = client.get(f"{SEARXNG_URL}/search", params=params)
+                    if retry.status_code == 200:
+                        retry_payload = retry.json()
+                        if (isinstance(retry_payload, dict)
+                                and isinstance(retry_payload.get("results"), list)):
+                            response = retry
+                except (httpx.RequestError, ValueError, UnicodeError):
+                    # Preserve the first provider-failure result, rather than
+                    # leaking network errors or treating a bad retry as data.
+                    pass
     if response is not None and response.status_code in (400, 422) and len(params) > 2:
         raise ValueError("Local SearXNG rejected the requested filters or page")
     if response is None or response.status_code >= 400:
@@ -481,6 +509,11 @@ def _run_search_network(params: dict, max_results: int, *,
             # Existing diagnostic opt-in, now useful for zero-result failures.
             # Never persist raw SearXNG exception details or input payload.
             failure["search_status"] = _search_failure_status(payload)
+            if initial_failure is not None:
+                failure["search_status"]["recovery"] = {
+                    "attempted": True, "recovered": False,
+                    "first_attempt": initial_failure,
+                }
         return failure
     # Search engines may return rows without usable web links. Returning
     # "None", javascript: URLs or invalid Unicode as clickable results makes
@@ -535,6 +568,14 @@ def _run_search_network(params: dict, max_results: int, *,
             "unverifiable": "unknown",
             "no_failures_reported": "ok",
         }[diagnostic["coverage"]]
+        if initial_failure is not None:
+            diagnostic["recovery"] = {
+                "attempted": True, "recovered": bool(rows),
+                "first_attempt": initial_failure,
+            }
+            # A clean second attempt does not erase the observed failure on
+            # the first attempt. Keep the diagnostic status honest.
+            top_level = "degraded"
         return {"success": True, "status": top_level,
                 "results": result, "search_status": diagnostic}
     return result
@@ -561,9 +602,12 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     Set fresh=true to bypass the in-memory search cache and fetch fresh data.
     Set include_published_date=true for validated upstream date-only metadata;
     it is not a verified publisher timestamp or a guarantee of freshness.
+    When SearXNG returns no hits and reports unresponsive engines, retry the
+    identical request once before failing. A genuine empty result is not
+    retried, and explicit engine/category selections remain unchanged.
     Set include_search_status=true for an uncached diagnostic wrapper with
     bounded SearXNG-reported unresponsive provider names; absent failure
-    reports do not prove exhaustive coverage. No extra provider requests.
+    reports do not prove exhaustive coverage. Recovery details are opt-in.
     Set record_provider_diagnostics=true *together* with include_search_status
     to opt in to private history retention of sanitized provider names and
     coverage only for this individual call. Default history never includes
