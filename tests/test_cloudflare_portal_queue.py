@@ -114,6 +114,18 @@ class PortalQueueTests(unittest.IsolatedAsyncioTestCase):
             self.release.set()
             await asyncio.gather(*jobs, return_exceptions=True)
 
+    async def test_client_minute_quota_does_not_enter_wait_queue(self):
+        # A Cloudflare discovery burst may wait for a slot, never a rate
+        # quota: the 31st request must fail immediately without forwarding.
+        self.release.set()
+        for _ in range(30):
+            self.assertEqual((await self.post()).status_code, 200)
+        self.assertEqual(self.entered, 30)
+        self.assertEqual((await self.post()).status_code, 429)
+        self.assertEqual(self.entered, 30)
+        self.assertEqual(self.gateway._portal_waiters, 0)
+        self.assertEqual(self.gateway._budget._active_total, 0)
+
     async def test_cancel_waiter_releases_queue_count(self):
         jobs = [asyncio.create_task(self.post()) for _ in range(3)]
         try:
