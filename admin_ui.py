@@ -863,7 +863,7 @@ def provider_observations_page(hours: int = 24) -> str:
         ("Per-engine failure coverage", "Only explicit opted-in upstream reports"),
         ("Remote upstream engine execution latency", "Not measured"),
         ("Individually selected local search observations",
-         sum(row["local_operations"] for row in result["isolated_engine_operations"])),
+         result["isolated_engine_operation_total"]),
         ("Isolated engine grouping truncated",
          "Yes" if result["isolated_engine_groups_truncated"] else "No"),
         ("Cache hits from historical calls", "Not recorded"),
