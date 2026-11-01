@@ -459,3 +459,31 @@ third-party provider rate limits. The rate values are operator heuristics,
 not documented remote quotas. Do not enable until testing on the installed
 host and adding the guarded settings UI; operator approval is required for
 any live policy changes.
+
+## Guarded engine pacing policy editor
+
+The owner-only loopback management console exposes
+[`/engine-pacing-settings`](http://127.0.0.1:8791/engine-pacing-settings).
+It reads and atomically edits only the nonsecret
+`~/.config/local-search-mcp/engine-pacing.json` policy used by the bridge.
+The editor does not change SearXNG's own YAML, wake sleeping backends,
+approve crawl domains or grant MCP callers configuration privileges.
+Engine selection in SearXNG remains a separate guarded workflow.
+
+Enter one `NAME=SECONDS` rule per line, with intervals between 0 and
+3600 seconds. Blank lines are ignored. Engine names must be unique,
+match the bridge's conservative engine grammar, and never begin with
+`google`. Saving an **enabled** policy requires a live, owner-verified
+SearXNG engine inventory; each entry must be currently enabled.
+An unavailable or sleeping inventory blocks enablement without waking
+the backend. A disabled policy can be staged or disabled even while the
+backend is sleeping. The form uses the existing origin/CSRF protections,
+a compare-and-swap revision token, strict confirmation (`ENABLE`,
+`DISABLE` or `APPLY`), private owner-only files, a cross-process lock
+and an atomic fsynced replacement. Concurrent stale saves fail safely.
+
+**Enabling pacing currently restricts MCP searches to one explicit,
+policy-listed engine.** Default fanout, categories and !bangs are rejected
+rather than rate-limited incorrectly. Confirm the intended change and
+attend host acceptance before enabling; this editor does not by itself
+make multiple providers eligible, infer provider quotas or select engines.

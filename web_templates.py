@@ -18,6 +18,7 @@ _TEMPLATES = {
         "cache-settings",
         "portable-settings",
         "engine-settings",
+        "engine-pacing-settings",
         "engine-form",
         "engine-option",
         "engine-alert",
