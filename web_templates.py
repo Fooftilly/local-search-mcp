@@ -74,7 +74,16 @@ _TEMPLATES = {
         "provider-unavailable-four",
         "provider-no-files",
         "provider-partial",
-        "provider-bounded"
+        "provider-bounded",
+        "import-rule-row",
+        "import-rule-conflict",
+        "import-rule-safe",
+        "import-rule-form",
+        "import-rule-no-change",
+        "import-rule-page",
+        "portable-preview-row",
+        "portable-preview-empty",
+        "portable-preview-page"
     )
 }
 
