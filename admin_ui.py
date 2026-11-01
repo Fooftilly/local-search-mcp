@@ -116,7 +116,7 @@ def _history_last_page(total):
 
 
 def history_pagination_html(filters, page, total):
-    """Read-only, escaped navigation retaining filters and opt-in display."""
+    """Read-only, escaped navigation retaining existing filters."""
     final = _history_last_page(total)
     first = (page - 1) * HISTORY_PAGE_SIZE + 1 if total and page <= final else 0
     last = min(page * HISTORY_PAGE_SIZE, total) if first else 0
@@ -134,16 +134,12 @@ def history_pagination_html(filters, page, total):
 
     links = []
     if page > 1:
-        links.append('<a rel="prev" href="' + href(page - 1) +
-                     '">Previous 25</a>')
+        links.append(render_template("history-prev", href=href(page - 1)))
     if page < final:
-        links.append('<a rel="next" href="' + href(page + 1) +
-                     '">Next 25</a>')
-    return ('<nav class="pending-pages" aria-label="History pages">'
-            '<span role="status">Showing ' + str(first) + '–' + str(last) +
-            ' of ' + str(total) + ' matching history events · page ' +
-            str(page) + ' of ' + str(final) + '</span>' +
-            ''.join(links) + '</nav>')
+        links.append(render_template("history-next", href=href(page + 1)))
+    return render_template("history-nav", first=first, last=last,
+                           total=total, page=page, final=final,
+                           links="".join(links))
 
 
 def history_items_html(kind="", status="", domain="", hours=0,
@@ -157,7 +153,8 @@ def history_items_html(kind="", status="", domain="", hours=0,
                                                   include_engines=show_engines,
                                                   offset=(page - 1) * HISTORY_PAGE_SIZE)
         except (OSError, ValueError, sqlite3.Error):
-            return '<tr><td colspan="' + ("6" if show_engines else "5") + '">Indexed history is unavailable; check local configuration.</td></tr>'
+            return render_template(
+                "history-unavailable", columns=6 if show_engines else 5)
     out = []
     for event in items:
         stamp = datetime.fromtimestamp(
@@ -169,48 +166,43 @@ def history_items_html(kind="", status="", domain="", hours=0,
                    if show_queries and event["kind"] == "fetch"
                    else (event["domain"] or "—") if show_queries
                    else event["domain"])
-        css_class = 'domain history-query' if show_queries else 'domain'
-        out.append(
-            f'<tr><td class="small">{esc(stamp)}</td><td>{esc(event["kind"])}</td>'
-            f'<td>{esc(event["status"])}</td>'
-            f'<td class="{css_class}">{esc(display)}</td>'
-            + (f'<td>{esc(event.get("engine_attribution", "—") if event["kind"] == "search" else "—")}</td>'
-               if show_engines else '') +
-            f'<td>{esc(elapsed)}</td></tr>')
-    return ''.join(out) or '<tr><td colspan="' + ("6" if show_engines else "5") + '">No matching MCP history.</td></tr>'
+        engine_cell = (
+            render_template(
+                "history-engine-cell",
+                engine=esc(event.get("engine_attribution", "—")
+                           if event["kind"] == "search" else "—"))
+            if show_engines else "")
+        out.append(render_template(
+            "history-row", stamp=esc(stamp), kind=esc(event["kind"]),
+            status=esc(event["status"]), display=esc(display),
+            css_class="domain history-query" if show_queries else "domain",
+            engine_cell=engine_cell, elapsed=esc(elapsed)))
+    return "".join(out) or render_template(
+        "history-empty", columns=6 if show_engines else 5)
 
 
 def recent_rows(kind="", status="", domain="", hours=0, show_queries=False,
                 page=1, items=None, unavailable=False):
     column = "Search query / page URL / domain" if show_queries else "Domain"
-    return ('<div class="scroll"><table><thead><tr><th>UTC time</th>'
-            '<th>Operation</th><th>Status</th><th>' + column + '</th>'
-            '<th>Search engine (requested / observed)</th>'
-            '<th>Duration (ms)</th></tr></thead>'
-            '<tbody id="live-history">' +
-            ('<tr><td colspan="6">Indexed history is unavailable; '
-             'check local configuration.</td></tr>' if unavailable else
-             history_items_html(kind, status, domain, hours, show_queries,
-                                page=page, items=items, show_engines=True)) +
-            '</tbody></table></div>')
+    rows = (render_template("history-unavailable", columns=6)
+            if unavailable else
+            history_items_html(kind, status, domain, hours, show_queries,
+                               page=page, items=items, show_engines=True))
+    return render_template("history-table", column=esc(column), rows=rows)
 
 
 def history_summary_html(metrics):
-    """An accessible, CSP-compatible bar chart using native progress elements."""
+    """Accessible, CSP-compatible bars using template-backed progress rows."""
     peak = max((int(x["count"]) for x in metrics), default=1)
-    out = []
-    for row in metrics:
-        count = int(row["count"])
-        kind = esc(row["kind"])
-        status = esc(row["status"])
-        duration = esc(row["avg_duration_ms"]
-                       if row["avg_duration_ms"] is not None else "—")
-        out.append(
-            f'<tr><td>{kind}</td><td>{status}</td>'
-            f'<td><progress aria-label="{kind} {status} count" '
-            f'value="{count}" max="{peak}">{count}</progress></td>'
-            f'<td>{count}</td><td>{duration}</td></tr>')
-    return ''.join(out) or '<tr><td colspan="5">No matching events.</td></tr>'
+    rows = [
+        render_template(
+            "history-summary-row", kind=esc(row["kind"]),
+            status=esc(row["status"]), count=int(row["count"]), peak=peak,
+            duration=esc(row["avg_duration_ms"] if
+                         row["avg_duration_ms"] is not None else "—"))
+        for row in metrics
+    ]
+    return "".join(rows) or render_template("history-summary-empty")
 
 
 def _history_filters(query, *, validate_text=True):
@@ -310,12 +302,9 @@ def live_snapshot(query='', view='policy', history_filters=None,
         except (OSError, ValueError, sqlite3.Error):
             # A corrupt/unavailable index must not masquerade as zero events.
             return {
-                'history_html': '<tr><td colspan="6">Indexed history is '
-                                'unavailable; check local configuration.</td></tr>',
-                'history_summary_html': '<tr><td colspan="5">Indexed history '
-                                        'is unavailable.</td></tr>',
-                'history_pages_html': '<p class="subtle" role="status">'
-                                      'History pages unavailable.</p>',
+                'history_html': render_template("history-unavailable", columns=6),
+                'history_summary_html': render_template("history-summary-unavailable"),
+                'history_pages_html': render_template("history-pages-unavailable"),
                 'history_page': filters.get('page', 1)}
         return {'history_html': history_items_html(
                     items=snapshot['rows'],
