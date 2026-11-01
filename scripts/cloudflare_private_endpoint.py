@@ -40,9 +40,13 @@ def command(*args: str, input: str | None = None) -> subprocess.CompletedProcess
 def require_root() -> None:
     if os.geteuid() != 0:
         raise RuntimeError("Only root may manage the private ingress boundary")
-    info = Path(__file__).resolve().stat()
-    if info.st_uid != 0 or info.st_mode & 0o022:
-        raise RuntimeError("Privileged endpoint helper must be root-owned and not writable")
+    # Root-owned file alone is insufficient: a writable ancestor permits
+    # replacement of the helper before its next privileged execution.
+    path = Path(__file__).resolve()
+    for component in (path, *path.parents):
+        info = component.lstat()
+        if info.st_uid != 0 or info.st_mode & 0o022:
+            raise RuntimeError("Privileged endpoint helper ancestry is unsafe")
 
 
 def exists_ip() -> bool:
