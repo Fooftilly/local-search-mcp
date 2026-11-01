@@ -127,6 +127,24 @@ produced results; `unknown` means the upstream failure-report field has
 an unrecognized shape.
 The existing error response is preserved when search fails completely.
 
+### Bounded recovery after provider failures
+
+When SearXNG returns HTTP 200 with zero results and a nonempty **list** of
+`unresponsive_engines`, the bridge waits 150 ms and makes **one additional
+GET with precisely the original query, engine/category selection, filters,
+language and page**. The retry cannot enable new providers or broaden
+explicit selections; it uses the existing leased local SearXNG backend.
+Healthy empty results, malformed responses, and HTTP errors do not trigger
+this extra search-level retry. Failed recoveries remain uncached.
+
+Successful recovery keeps the usual result list. In `include_search_status=true`
+responses, `search_status.recovery` reports `attempted`, `recovered`, and a
+sanitized `first_attempt` status. Recovered searches are labeled `degraded`
+because the first attempt had provider failures. An empty second response with
+no reported failure is treated as a legitimate empty result. This is bounded
+best-effort recovery, not a guarantee that blocked providers become available.
+
+
 The `search_status` object contains `coverage`
 (`partial`, `no_failures_reported`, or `unverifiable`), bounded
 `unresponsive_engines` names (up to 16), `reported_count` (first 128
@@ -142,9 +160,10 @@ It also does not distinguish an engine failure from engine coverage
 omitted upstream.
 
 Opt-in calls do not use the bridge's response cache: an earlier successful
-snapshot must not be presented as current provider health. This does not
-run more providers, issue hidden retries, wake extra backends, enable
-Google, or change default result order and engine-selection validation.
+snapshot must not be presented as current provider health. Diagnostic mode alone does not run more providers or issue additional retries,
+wake extra backends, enable Google, or change default result ordering and
+engine-selection validation. The one bounded same-query recovery described
+above applies equally to ordinary and diagnostic searches.
 A search that returned no results because engines failed still returns
 `upstream_unavailable`. When `include_search_status=true`, that failure
 now also includes the bounded `search_status` field; ordinary failure
