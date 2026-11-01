@@ -807,7 +807,8 @@ def provider_observations_page(hours: int = 24) -> str:
             coverage_rows=render_template("provider-unavailable-two"),
             engine_rows=render_template("provider-unavailable-four"),
             category_rows=render_template("provider-unavailable-four"),
-            reported_failure_rows=render_template("provider-unavailable-two"))
+            reported_failure_rows=render_template("provider-unavailable-two"),
+            isolated_rows=render_template("provider-isolated-unavailable"))
     def table_rows(items):
         return "".join(
             render_template(
@@ -818,6 +819,18 @@ def provider_observations_page(hours: int = 24) -> str:
                          if row["mean_search_call_ms"] is not None
                          else "Not recorded"))
             for row in items) or render_template("provider-time-empty")
+    isolated_rows = "".join(
+        render_template(
+            "provider-isolated-row", engine_name=esc(row["name"]),
+            operations=int(row["local_operations"]),
+            results=int(row["reported_results"]),
+            empty=int(row["reported_empty"]),
+            reported_unresponsive=int(row["reported_unresponsive"]),
+            other=int(row["other_outcomes"]),
+            recoveries=int(row["recovery_operations"]),
+            mean_ms=esc(row["mean_local_search_ms"]))
+        for row in result["isolated_engine_operations"]) or (
+        render_template("provider-isolated-empty"))
     reported_failure_rows = "".join(
         render_template("provider-failure-row", display_name=esc(row["name"]),
                         calls=int(row["reported_unresponsive_calls"]))
@@ -848,7 +861,11 @@ def provider_observations_page(hours: int = 24) -> str:
         ("Provider names rejected or unparsed (bounded)", result["provider_labels_suppressed"]),
         ("Failure label table truncated", "Yes" if result["provider_failure_groups_truncated"] else "No"),
         ("Per-engine failure coverage", "Only explicit opted-in upstream reports"),
-        ("Per-engine network latency", "Not measured"),
+        ("Remote upstream engine execution latency", "Not measured"),
+        ("Individually selected local search observations",
+         sum(row["local_operations"] for row in result["isolated_engine_operations"])),
+        ("Isolated engine grouping truncated",
+         "Yes" if result["isolated_engine_groups_truncated"] else "No"),
         ("Cache hits from historical calls", "Not recorded"),
     ]
     coverage = "".join(
@@ -867,6 +884,7 @@ def provider_observations_page(hours: int = 24) -> str:
               ("168", "Last 7 days")), str(hours)), notice=notice,
         coverage_rows=coverage,
         engine_rows=table_rows(result["observed_result_engines"]),
+        isolated_rows=isolated_rows,
         category_rows=table_rows(result["requested_categories"]),
         reported_failure_rows=reported_failure_rows)
 
