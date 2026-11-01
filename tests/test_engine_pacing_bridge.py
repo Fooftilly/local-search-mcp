@@ -237,8 +237,23 @@ class PacedSearchBoundaryTests(unittest.TestCase):
                 self.calls.clear()
                 self.inventory_response = httpx.Response(200, json={"engines": entries})
                 output = self.execute(categories="images")
-                self.assertEqual(output["status"], "pacing_selection_required")
+                # A completely disabled inventory is itself an invalid
+                # routing source; eligible-but-unlisted names are a selection
+                # failure. Neither case may send a provider search.
+                expected = ("invalid_response" if not any(
+                    row["enabled"] for row in entries) else "pacing_selection_required")
+                self.assertEqual(output["status"], expected)
                 self.assertEqual([path for path, _ in self.calls], ["/config"])
+
+    def test_pacing_requires_case_exact_policy_name_for_explicit_search(self):
+        self.policy(entries={"Bing Images": 0})
+        self.inventory_response = httpx.Response(200, json={"engines": [
+            {"name": "Bing Images", "enabled": True, "categories": ["images"]}]})
+        # Case-insensitive engine labels would share a cooldown slot but the
+        # bridge still must not send any provider the policy did not name.
+        out = self.execute(engines="bing images")
+        self.assertEqual(out["status"], "pacing_selection_required")
+        self.assertEqual(self.calls, [])
 
     def test_category_pacing_skips_busy_dedicated_engine(self):
         self.policy(entries={"bing images": 30, "imageonly": 30})

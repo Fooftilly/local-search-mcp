@@ -89,6 +89,23 @@ class EnginePacingTests(unittest.TestCase):
         with self.assertRaises(pacing.PaceUnavailable):
             pacing.policy()
 
+    def test_policy_can_preserve_exact_configured_engine_case(self):
+        payload = self.sample()
+        payload["engines"] = {
+            "Bing Images": {"min_spacing_seconds": 30},
+            "duckduckgo": {"min_spacing_seconds": 15},
+        }
+        self.write_policy(payload)
+        self.assertEqual(pacing.policy(), {"bing images": 30, "duckduckgo": 15})
+        self.assertEqual(pacing.policy(preserve_case=True),
+                         {"Bing Images": 30, "duckduckgo": 15})
+        payload["engines"]["bing images"] = {"min_spacing_seconds": 10}
+        self.write_policy(payload)
+        for preserve_case in (False, True):
+            with self.subTest(preserve_case=preserve_case):
+                with self.assertRaises(pacing.PaceUnavailable):
+                    pacing.policy(preserve_case=preserve_case)
+
     def test_symlink_and_permissions_fail_closed_without_modifying_target(self):
         path = self.write_policy(self.sample())
         path.chmod(0o644)

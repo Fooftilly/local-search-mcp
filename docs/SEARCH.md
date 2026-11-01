@@ -513,7 +513,8 @@ engine **only when** the installed SearXNG `/config` inventory states that
 engine has exactly that category, and the engine is enabled. The request to
 SearXNG uses the engine selector without a category selector; combining the
 two would create a union and could contact unmetered engines. Category
-labels are checked exactly, not inferred from names. Mixed-category engines
+labels and engine spellings are matched exactly against both the policy
+and live inventory, not inferred from names. Mixed-category engines
 (e.g. `["general", "images"]`), multi-category requests, optional language,
 date-range or pagination filters, Google engines and disabled/unlisted
 providers are excluded from automatic category routing. No eligible

@@ -83,8 +83,8 @@ def _unique_pairs(pairs: list[tuple[str, object]]) -> dict:
     return result
 
 
-def _parse(raw: bytes) -> dict[str, int] | None:
-    """Return None when disabled; otherwise exact per-engine minimum gaps.
+def _parse(raw: bytes, *, preserve_case: bool = False) -> dict[str, int] | None:
+    """Return None when disabled; otherwise validated per-engine minimum gaps.
 
     No arbitrary provider names, wildcard provider groups, defaults, or
     fallback selections are supported. An enabled policy with zero engines
@@ -100,34 +100,38 @@ def _parse(raw: bytes) -> dict[str, int] | None:
             or len(data["engines"]) > MAX_ENGINES):
         raise PaceUnavailable("Invalid private pacing schema")
     engines: dict[str, int] = {}
+    seen: set[str] = set()
     for name, settings in data["engines"].items():
         if (not isinstance(name, str) or not _ENGINE.fullmatch(name)
                 or name != name.strip() or name.casefold().startswith("google")
-                or name.casefold() in engines
+                or name.casefold() in seen
                 or not isinstance(settings, dict)
                 or set(settings) != {"min_spacing_seconds"}):
             raise PaceUnavailable("Invalid private pacing engine entry")
         seconds = settings["min_spacing_seconds"]
         if type(seconds) is not int or not 0 <= seconds <= MAX_SPACING_SECONDS:
             raise PaceUnavailable("Invalid private pacing interval")
-        engines[name.casefold()] = seconds
+        seen.add(name.casefold())
+        engines[name if preserve_case else name.casefold()] = seconds
     if data["enabled"] and not engines:
         raise PaceUnavailable("Enabled pacing requires explicit engine entries")
     return engines if data["enabled"] else None
 
 
-def policy() -> dict[str, int] | None:
+def policy(*, preserve_case: bool = False) -> dict[str, int] | None:
     """Read only owner-controlled settings; missing policy is safely off.
 
     Never treat a malformed or insecure policy as disabled when the caller
     explicitly enabled engine pacing. The router can therefore fail closed.
+    preserve_case=True keeps exact configured engine labels for matching
+    SearXNG /config; the default retains canonical casefold keys for readers.
     """
     directory = _private_dir()
     if directory is None:
         return None
     try:
         raw = _read_regular(directory, FILENAME, MAX_POLICY_BYTES)
-        return _parse(raw) if raw is not None else None
+        return _parse(raw, preserve_case=preserve_case) if raw is not None else None
     finally:
         os.close(directory)
 

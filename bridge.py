@@ -346,7 +346,7 @@ def _paced_category_candidates(client: httpx.Client, policy: dict[str, int],
     eligible = sorted((
         row["name"] for row in active
         if row["categories"] == (category,)
-        and row["name"].casefold() in policy
+        and row["name"] in policy
         and not row["name"].casefold().startswith("google")
     ), key=str.casefold)
     if not eligible:
@@ -370,7 +370,7 @@ def _paced_general_candidates(client: httpx.Client, policy: dict[str, int]) -> l
     eligible = sorted((
         row["name"] for row in active
         if "general" in row["categories"]
-        and row["name"].casefold() in policy
+        and row["name"] in policy
         and not row["name"].casefold().startswith("google")
     ), key=str.casefold)
     if not eligible:
@@ -539,7 +539,7 @@ def _run_search_network(params: dict, max_results: int, *,
     # Internal paced-default engine selection is not a caller-supplied filter.
     caller_supplied_filters = len(params) > 2
     try:
-        pacing_policy = engine_pacing.policy()
+        pacing_policy = engine_pacing.policy(preserve_case=True)
     except (OSError, ValueError):
         return {"success": False, "status": "pacing_unavailable",
                 "backend": "searxng",
@@ -560,7 +560,7 @@ def _run_search_network(params: dict, max_results: int, *,
                               "or unfiltered default general routing. Combined "
                               "engine/category, multiple selections, and bangs are unsupported."}
         if engine:
-            if engine.casefold() not in pacing_policy:
+            if engine not in pacing_policy:
                 return {"success": False, "status": "pacing_selection_required",
                         "backend": "searxng",
                         "reason": "Selected engine is not covered by the active pacing policy."}
@@ -601,7 +601,7 @@ def _run_search_network(params: dict, max_results: int, *,
             for engine in (candidates if (paced_default or paced_category) else [selected_engine]):
                 try:
                     with engine_pacing.reserve(
-                            engine, pacing_policy[engine.casefold()]):
+                            engine, pacing_policy[engine]):
                         params = dict(params, engines=engine)
                         if paced_category:
                             # Send ONLY the verified, category-dedicated
