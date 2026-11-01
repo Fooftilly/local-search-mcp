@@ -83,7 +83,22 @@ _TEMPLATES = {
         "import-rule-page",
         "portable-preview-row",
         "portable-preview-empty",
-        "portable-preview-page"
+        "portable-preview-page",
+        "domain-review-context",
+        "domain-limits",
+        "domain-request-meta",
+        "domain-reason",
+        "domain-action-form",
+        "domain-quick-form",
+        "domain-once-form",
+        "domain-edit-form",
+        "domain-bulk-select",
+        "domain-maintenance",
+        "domain-table-row",
+        "domain-empty-pending",
+        "domain-empty-decided",
+        "domain-table-head",
+        "domain-alert"
     )
 }
 
