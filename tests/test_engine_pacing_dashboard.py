@@ -75,7 +75,8 @@ class PacingEditorSettingsTests(unittest.TestCase):
         self.assertIsNone(engine_pacing.policy())
 
     def test_enabling_requires_current_enabled_inventory(self):
-        for engines in ("qwant=60", "unknown=5", "Google=30"):
+        for engines in ("qwant=60", "unknown=5", "Google=30",
+                        "DuckDuckGo=15"):
             with self.subTest(engines=engines), patch.object(
                     editor.engine_dashboard, "snapshot",
                     return_value=(INVENTORY, ("duckduckgo",), "state")):

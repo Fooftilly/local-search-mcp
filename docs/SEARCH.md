@@ -434,8 +434,9 @@ The bridge now enforces an operator-owned, **disabled-by-default** pacing policy
 for explicitly selected *single* engines. The private file
 `~/.config/local-search-mcp/engine-pacing.json` must contain the exact
 `local-search-mcp/engine-pacing/v1` schema and owner-only permissions.
-This is a pilot mechanism and not yet a dashboard editing workflow; the
-maintained setup wizard remains the only writer for SearXNG engine flags.
+This is an opt-in pilot: the guarded management-console editor below
+writes only the bridge's private pacing policy. SearXNG engine flags are
+managed separately by the existing setup wizard and engine-selection page.
 
 When the file is absent or `enabled=false`, all normal search behavior,
 including combined default requests, existing retry/recovery and search
@@ -456,9 +457,9 @@ unrestricted responses from before activation. An enabled policy can therefore
 reduce search availability; it does not yet automatically choose a provider,
 balance fanout searches, offer per-provider parallelism above one, or prove
 third-party provider rate limits. The rate values are operator heuristics,
-not documented remote quotas. Do not enable until testing on the installed
-host and adding the guarded settings UI; operator approval is required for
-any live policy changes.
+not documented remote quotas. The guarded editor below is available
+for staged policy edits, but live enablement requires attended acceptance
+on the installed host and explicit operator confirmation.
 
 ## Guarded engine pacing policy editor
 
@@ -474,7 +475,7 @@ Enter one `NAME=SECONDS` rule per line, with intervals between 0 and
 3600 seconds. Blank lines are ignored. Engine names must be unique,
 match the bridge's conservative engine grammar, and never begin with
 `google`. Saving an **enabled** policy requires a live, owner-verified
-SearXNG engine inventory; each entry must be currently enabled.
+SearXNG engine inventory; each entry must match an enabled engine name exactly, including case.
 An unavailable or sleeping inventory blocks enablement without waking
 the backend. A disabled policy can be staged or disabled even while the
 backend is sleeping. The form uses the existing origin/CSRF protections,

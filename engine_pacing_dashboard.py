@@ -74,7 +74,9 @@ def _verified_engine_names() -> set[str]:
         inventory, _, _ = engine_dashboard.snapshot()
     except (ValueError, OSError, engine_dashboard.engines.on_demand_docker.LifecycleError) as exc:
         raise ValueError("SearXNG inventory is unavailable; cannot enable pacing") from exc
-    return {item["name"].casefold() for item in inventory
+    # Match SearXNG's exact /config spelling: bridge selection validation
+    # is deliberately case-sensitive and does not normalize engine labels.
+    return {item["name"] for item in inventory
             if item["enabled"] and not item["name"].casefold().startswith("google")
             and engine_pacing._ENGINE.fullmatch(item["name"])}
 
@@ -128,8 +130,8 @@ def apply_form(fields: dict[str, list[str]]) -> str:
                 raise ValueError(f"Type {expected_confirm} to confirm pacing policy changes")
             if enabled:
                 eligible = _verified_engine_names()
-                if not all(name.casefold() in eligible for name in rules):
-                    raise ValueError("Pacing engine is unknown or disabled in verified SearXNG")
+                if not all(name in eligible for name in rules):
+                    raise ValueError("Pacing engine is unknown, case-mismatched, or disabled in verified SearXNG")
             tmp_name = TMP_PREFIX + secrets.token_hex(12)
             fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
                          engine_pacing._NOFOLLOW, 0o600, dir_fd=directory)
