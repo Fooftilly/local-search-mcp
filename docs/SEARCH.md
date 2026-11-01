@@ -183,7 +183,10 @@ search tool.
 
 The stored `provider_diagnostics` contains at most 16 strictly validated
 engine labels (including parenthesized names), a declared coverage category,
-bounded counts and a truncation flag. Names containing suspicious secret
+bounded counts and a truncation flag. If bounded recovery was attempted,
+opted-in audit merges sanitized provider reports from both requests and counts
+observed failures **per tool call**, so a recovered search does not erase the
+initial failure. The public `search_status` preserves per-attempt reports. Names containing suspicious secret
 markers, URLs, credentials, controls, and upstream exception text are
 discarded. The audit already stores normal search metadata, including
 bounded query text; this opt-in adds *provider labels* to that private record,
