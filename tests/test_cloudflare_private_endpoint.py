@@ -61,7 +61,7 @@ class PrivateEndpointTests(unittest.TestCase):
                   patch.object(endpoint, "invocation_id", return_value="a" * 32),
                   patch.object(Path, "lstat",
                                return_value=SimpleNamespace(st_uid=0, st_mode=stat.S_IFREG | 0o600)),
-                  patch.object(endpoint, "exists_ip", return_value=True),
+                  patch.object(endpoint, "exists_ip", side_effect=[True, False]),
                   patch.object(endpoint, "exists_table", return_value=True),
                   patch.object(endpoint, "command", side_effect=run)):
                 endpoint.remove()
@@ -110,6 +110,45 @@ class PrivateEndpointTests(unittest.TestCase):
             self.assertTrue(marker.exists())
             self.assertFalse(any(x[:3] == ("/usr/bin/nft", "delete", "table")
                                  for x in calls))
+
+    def test_existing_ip_with_different_mask_is_not_adopted(self):
+        # An address with the same host IP but an unexpected prefix belongs
+        # to a foreign setup and must prevent the privileged prepare.
+        output = "2: lo    inet 10.253.91.1/24 scope global lo\\n"
+        with patch.object(endpoint, "command",
+                          return_value=SimpleNamespace(returncode=0,
+                                                       stdout=output, stderr="")):
+            self.assertTrue(endpoint.exists_ip())
+
+    def test_other_host_address_does_not_match(self):
+        output = "2: lo    inet 10.253.91.10/32 scope global lo\\n"
+        with patch.object(endpoint, "command",
+                          return_value=SimpleNamespace(returncode=0,
+                                                       stdout=output, stderr="")):
+            self.assertFalse(endpoint.exists_ip())
+
+    def test_shutdown_keeps_guard_if_alias_still_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "owned"
+            marker.write_text("a" * 32 + "\\n")
+            marker.chmod(0o600)
+            calls = []
+
+            def run(*args, input=None):
+                calls.append(args)
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with (patch.object(endpoint, "MARKER", marker),
+                  patch.object(endpoint, "invocation_id", return_value="a" * 32),
+                  patch.object(Path, "lstat", return_value=SimpleNamespace(
+                      st_uid=0, st_mode=stat.S_IFREG | 0o600)),
+                  patch.object(endpoint, "exists_ip", side_effect=[True, True]),
+                  patch.object(endpoint, "command", side_effect=run)):
+                with self.assertRaisesRegex(RuntimeError, "guard preserved"):
+                    endpoint.remove()
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][:4], ("/usr/bin/ip", "-4", "addr", "del"))
+            self.assertTrue(marker.exists())
 
     def test_other_invocation_cannot_cleanup_active_endpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
