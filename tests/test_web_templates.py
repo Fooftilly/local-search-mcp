@@ -1,6 +1,8 @@
 """The HTML templates are fixed assets, never request-controlled paths."""
 from pathlib import Path
 import inspect
+import ast
+import re
 import unittest
 from unittest.mock import patch
 
@@ -36,6 +38,10 @@ class DashboardTemplateTests(unittest.TestCase):
                    admin_ui.decision_audit_html,
                    admin_ui.once_grants_html,
                    admin_ui.once_audit_html,
+                   admin_ui.row_html,
+                   admin_ui.render,
+                   admin_ui.import_preview_html,
+                   admin_ui.portable_settings_preview,
                    admin_ui.history_pagination_html,
                    admin_ui.history_items_html,
                    admin_ui.recent_rows,
@@ -99,6 +105,23 @@ class DashboardTemplateTests(unittest.TestCase):
         self.assertIn("No matching events.", admin_ui.history_summary_html([]))
         self.assertIn("No matching MCP history.",
                       admin_ui.history_items_html(items=[]))
+
+    def test_python_dashboard_components_do_not_embed_web_markup(self):
+        """Web markup belongs in dedicated files, not Python strings."""
+        markup = re.compile(
+            r"<\\s*/?\\s*(?:html|head|body|div|span|form|input|button|table|"
+            r"thead|tbody|tr|td|th|p|a|label|fieldset|legend|nav|script|"
+            r"style|textarea|details|summary|progress|h[1-6])(?:[\\s>/])",
+            flags=re.IGNORECASE)
+        for source in ("admin_ui.py", "engine_dashboard.py", "web_templates.py"):
+            path = Path(__file__).resolve().parents[1] / source
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            violations = [(node.lineno, node.value[:90])
+                          for node in ast.walk(tree)
+                          if isinstance(node, ast.Constant)
+                          and isinstance(node.value, str)
+                          and markup.search(node.value)]
+            self.assertEqual(violations, [], source)
 
     def test_unknown_template_is_rejected(self):
         for name in ("../secrets", "/etc/passwd", "x", "policy.html"):
