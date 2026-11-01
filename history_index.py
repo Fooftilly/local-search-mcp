@@ -305,7 +305,7 @@ def _history_engine_attribution(event: dict) -> str:
         return accepted
 
     requested = event.get("engines")
-    selected = labels(requested.split(",")) if isinstance(requested, str) else []
+    selected = labels([part.strip() for part in requested.split(",")]) if isinstance(requested, str) else []
     rows = event.get("results")
     observed = labels([r.get("engine") for r in rows[:5]
                        if isinstance(r, dict)]) if isinstance(rows, list) else []
@@ -317,7 +317,7 @@ def _history_engine_attribution(event: dict) -> str:
     return "; ".join(parts) if parts else "Not recorded"
 
 
-def _reveal_history_queries(rows: list[dict], *, reveal_queries: bool = True) -> None:
+def _reveal_history_queries(rows: list[dict], *, reveal_queries: bool = True, include_engines: bool = False) -> None:
     """Read source-bound engine attribution and optionally sensitive text.
 
     Generation and byte offset are index metadata, never query content. Validate
@@ -332,7 +332,8 @@ def _reveal_history_queries(rows: list[dict], *, reveal_queries: bool = True) ->
         return
     for row in selected:
         if row["kind"] == "search":
-            row["engine_attribution"] = "Not recorded"
+            if include_engines:
+                row["engine_attribution"] = "Not recorded"
             if reveal_queries:
                 row["query"] = None
         elif reveal_queries:
@@ -403,7 +404,8 @@ def _reveal_history_queries(rows: list[dict], *, reveal_queries: bool = True) ->
                                                "duration_ms", "backend")):
                                 continue
                             if row["kind"] == "search":
-                                row["engine_attribution"] = _history_engine_attribution(evt)
+                                if include_engines:
+                                    row["engine_attribution"] = _history_engine_attribution(evt)
                                 if reveal_queries:
                                     query = evt.get("query")
                                     if isinstance(query, str) and len(query) <= 300:
@@ -462,7 +464,8 @@ def search_history(*, limit: int = 25, kind: str = "", status: str = "",
             suffix + " ORDER BY at_ms DESC,rowid DESC LIMIT ? OFFSET ?",
             (*args, limit, offset))]
     if reveal_queries or include_engines:
-        _reveal_history_queries(rows, reveal_queries=reveal_queries)
+        _reveal_history_queries(rows, reveal_queries=reveal_queries,
+                                include_engines=include_engines)
         for row in rows:
             row.pop("generation_id", None)
             row.pop("byte_offset", None)
@@ -526,7 +529,8 @@ def dashboard_history_snapshot(*, kind: str = "", status: str = "",
             (*args, page_size, (page - 1) * page_size))]
         conn.rollback()
     if reveal_queries or include_engines:
-        _reveal_history_queries(rows, reveal_queries=reveal_queries)
+        _reveal_history_queries(rows, reveal_queries=reveal_queries,
+                                include_engines=include_engines)
         for row in rows:
             row.pop("generation_id", None)
             row.pop("byte_offset", None)
