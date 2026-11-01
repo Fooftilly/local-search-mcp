@@ -130,16 +130,23 @@ The existing error response is preserved when search fails completely.
 ### Bounded recovery after provider failures
 
 When SearXNG returns HTTP 200 with zero results and a nonempty **list** of
-`unresponsive_engines`, the bridge waits 150 ms and makes **one additional
-GET with precisely the original query, engine/category selection, filters,
-language and page**. The retry cannot enable new providers or broaden
-explicit selections; it uses the existing leased local SearXNG backend.
-Healthy empty results, malformed responses, and HTTP errors do not trigger
-this extra search-level retry. Failed recoveries remain uncached.
+`unresponsive_engines`, the bridge makes **at most one additional search**
+after 150 ms. Unfiltered default searches can isolate `duckduckgo` when it
+was already attempted (named in the initial failure report) and the bounded,
+local SearXNG `/config` inventory confirms it is still enabled. This can
+recover from a combined-provider failure when DuckDuckGo works individually.
+If that evidence/validation is absent, or the caller specified `engines`,
+`categories` or a `!bang`, the retry keeps exactly the original search
+parameters. There are no new backends, unseen provider choices, silently
+enabled engines, or additional search calls beyond the existing recovery
+budget. Healthy empty results, malformed responses and HTTP errors do not
+trigger a search-level retry. Failed recoveries remain uncached.
 
 Successful recovery keeps the usual result list. In `include_search_status=true`
 responses, `search_status.recovery` reports `attempted`, `recovered`, and a
-sanitized `first_attempt` status. Recovered searches are labeled `degraded`
+sanitized `first_attempt` status, plus `strategy` (`same_query` or
+`isolated_engine`) and `engine` when isolation was attempted. Recovered
+searches are labeled `degraded`
 because the first attempt had provider failures. An empty second response with
 no reported failure is treated as a legitimate empty result. This is bounded
 best-effort recovery, not a guarantee that blocked providers become available.
@@ -162,7 +169,7 @@ omitted upstream.
 Opt-in calls do not use the bridge's response cache: an earlier successful
 snapshot must not be presented as current provider health. Diagnostic mode alone does not run more providers or issue additional retries,
 wake extra backends, enable Google, or change default result ordering and
-engine-selection validation. The one bounded same-query recovery described
+engine-selection validation. The one bounded recovery attempt described
 above applies equally to ordinary and diagnostic searches.
 A search that returned no results because engines failed still returns
 `upstream_unavailable`. When `include_search_status=true`, that failure

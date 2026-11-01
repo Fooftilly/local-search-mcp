@@ -431,6 +431,39 @@ def web_search_capabilities(category: str = "", engine: str = "",
     return full
 
 
+def _isolated_default_recovery_params(client: httpx.Client, params: dict,
+                                      first: dict) -> dict | None:
+    """Select a proven-attempted, locally enabled search engine for one retry.
+
+    SearXNG sometimes fails a combined default query while an individual
+    already-attempted engine succeeds. Isolate DuckDuckGo only when the
+    *default* request reported it unresponsive, and a bounded local /config
+    read confirms it remains enabled. No new engine or backend is enabled,
+    no !bang overrides, and explicit user selections are never replaced.
+    """
+    if params.get("engines") or params.get("categories"):
+        return None
+    if re.search(r"(?<!\S)![^\s]+", params.get("q", "")):
+        return None
+    # Examine at most the same bounded 128-entry prefix as the diagnostic
+    # parser, independently of its 16-name *display* limit. Never inspect
+    # or copy upstream exception text into tool output or history.
+    failures = first.get("unresponsive_engines")
+    if not isinstance(failures, list):
+        return None
+    def reported_duckduckgo(item: object) -> bool:
+        name = item[0] if isinstance(item, (list, tuple)) and item else item
+        return name == "duckduckgo"
+    if not any(reported_duckduckgo(item) for item in failures[:128]):
+        return None
+    fallback = dict(params, engines="duckduckgo")
+    try:
+        validation = _verify_explicit_search_selection(client, fallback)
+    except ValueError:
+        return None
+    return fallback if validation is None else None
+
+
 def _run_search_network(params: dict, max_results: int, *,
                         deduplicate: bool = False,
                         ranking: str = "searxng",
@@ -439,6 +472,8 @@ def _run_search_network(params: dict, max_results: int, *,
                         include_image_metadata: bool = False,
                         allowed_result_domains: tuple[tuple[str, bool], ...] = ()) -> list[dict] | dict:
     initial_failure = None
+    isolated_engine = None
+    attempted_engine = None
     with httpx.Client(timeout=upstream_settings.effective_timeout("searxng_seconds"),
                       trust_env=False) as client:
         selection_failure = _verify_explicit_search_selection(client, params)
@@ -447,9 +482,9 @@ def _run_search_network(params: dict, max_results: int, *,
         response = _retry_request(lambda: client.get(
             f"{SEARXNG_URL}/search", params=params))
         # SearXNG can return HTTP 200 with no hits when its providers have
-        # failed. Recover once, using precisely the original query/filters.
-        # Do not broaden explicit selection, consult a different service,
-        # or retry a genuine healthy empty result.
+        # failed. Recover once, preserving the request or narrowing an
+        # unrestricted default to an already-attempted, enabled engine.
+        # Never broaden explicit selection or retry a healthy empty result.
         if response is not None and response.status_code == 200:
             try:
                 first = response.json()
@@ -461,14 +496,22 @@ def _run_search_network(params: dict, max_results: int, *,
                     and isinstance(first.get("unresponsive_engines"), list)
                     and first["unresponsive_engines"]):
                 initial_failure = _search_failure_status(first)
+                # When the unrestricted default query included DuckDuckGo
+                # but failed, isolate that same already-attempted provider.
+                # Otherwise retain the existing same-query recovery.
+                isolated = _isolated_default_recovery_params(client, params, first)
+                retry_params = isolated if isolated is not None else params
+                attempted_engine = isolated["engines"] if isolated else None
                 time.sleep(0.15)
                 try:
-                    retry = client.get(f"{SEARXNG_URL}/search", params=params)
+                    retry = client.get(f"{SEARXNG_URL}/search", params=retry_params)
                     if retry.status_code == 200:
                         retry_payload = retry.json()
                         if (isinstance(retry_payload, dict)
                                 and isinstance(retry_payload.get("results"), list)):
                             response = retry
+                            if isolated is not None:
+                                isolated_engine = isolated["engines"]
                 except (httpx.RequestError, ValueError, UnicodeError):
                     # Preserve the first provider-failure result, rather than
                     # leaking network errors or treating a bad retry as data.
@@ -486,8 +529,9 @@ def _run_search_network(params: dict, max_results: int, *,
         return {"success": False, "status": "invalid_response", "backend": "searxng",
                 "reason": "Local SearXNG returned an invalid results structure."}
     rows = payload["results"]
-    if params.get("engines"):
-        allowed = set(params["engines"].split(","))
+    if params.get("engines") or isolated_engine:
+        allowed = (set(params["engines"].split(","))
+                   if params.get("engines") else {isolated_engine})
         # A changed backend or upstream fallback must not return unrequested
         # provider results. The preflight above prevents *initiating* such
         # searches in the known SearXNG fallback cases.
@@ -513,7 +557,11 @@ def _run_search_network(params: dict, max_results: int, *,
                 failure["search_status"]["recovery"] = {
                     "attempted": True, "recovered": False,
                     "first_attempt": initial_failure,
+                    "strategy": ("isolated_engine" if attempted_engine
+                                 else "same_query"),
                 }
+                if attempted_engine:
+                    failure["search_status"]["recovery"]["engine"] = attempted_engine
         return failure
     # Search engines may return rows without usable web links. Returning
     # "None", javascript: URLs or invalid Unicode as clickable results makes
@@ -572,7 +620,11 @@ def _run_search_network(params: dict, max_results: int, *,
             diagnostic["recovery"] = {
                 "attempted": True, "recovered": bool(rows),
                 "first_attempt": initial_failure,
+                "strategy": ("isolated_engine" if attempted_engine
+                             else "same_query"),
             }
+            if attempted_engine:
+                diagnostic["recovery"]["engine"] = attempted_engine
             # A clean second attempt does not erase the observed failure on
             # the first attempt. Keep the diagnostic status honest.
             top_level = "degraded"
@@ -602,9 +654,10 @@ def web_search(query: str, max_results: int = 8, language: str = "",
     Set fresh=true to bypass the in-memory search cache and fetch fresh data.
     Set include_published_date=true for validated upstream date-only metadata;
     it is not a verified publisher timestamp or a guarantee of freshness.
-    When SearXNG returns no hits and reports unresponsive engines, retry the
-    identical request once before failing. A genuine empty result is not
-    retried, and explicit engine/category selections remain unchanged.
+    When SearXNG returns no hits and reports unresponsive engines, retry once.
+    For unfiltered defaults, DuckDuckGo may be isolated if it was already
+    attempted and remains enabled; all other retries preserve the same query,
+    filters and provider selections. Healthy empty results are not retried.
     Set include_search_status=true for an uncached diagnostic wrapper with
     bounded SearXNG-reported unresponsive provider names; absent failure
     reports do not prove exhaustive coverage. Recovery details are opt-in.
