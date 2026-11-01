@@ -339,11 +339,11 @@ def live_snapshot(query='', view='policy', history_filters=None,
             'pending_html': ''.join(row_html(
                 r, query=query, page=pending_page, pending_sort=pending_sort)
                 for r in pending_rows)
-                or '<tr><td colspan="4">No pending requests.</td></tr>',
+                or render_template("domain-empty-pending"),
             'decided_html': ''.join(row_html(
                 r, query=query, page=pending_page, pending_sort=pending_sort)
                 for r in decisions)
-                or '<tr><td colspan="4">No matching domains.</td></tr>',
+                or render_template("domain-empty-decided"),
             'audit_html': decision_audit_rows(query),
             'activity_html': history_items_html(show_queries=False),
             'service_rows_html': service_overview_rows(),
@@ -398,109 +398,74 @@ def service_overview_rows():
 
 
 def row_html(r, query='', page=1, pending_sort='recent'):
+    """Permission row data and decisions; HTML stays in fixed web templates."""
     dom = esc(r['domain'])
-    # This value only restores the local review filter after POST. It never
-    # affects the permission decision or its stale-request/CSRF checks.
-    review_context = (f'<input type="hidden" name="review_query" '
-                      f'value="{esc(query[:100])}">'
-                      f'<input type="hidden" name="review_page" '
-                      f'value="{page}">'
-                      f'<input type="hidden" name="review_sort" '
-                      f'value="{pending_sort}">')
+    request_id = esc(r.get("request_id") or "")
+    review_context = render_template(
+        "domain-review-context", review_query=esc(query[:100]),
+        review_page=page, review_sort=esc(pending_sort))
     stat = esc('expired' if r.get('expired') else r['status'])
     token = esc(CSRF)
     scope = r.get('match_scope', 'subdomains')
     scope_label = 'Exact host' if scope == 'exact' else 'Host + subdomains'
     expires = r.get('expires_at') or 'Never'
-    limits = ('' if r['status'] == 'pending' else
-              f'<div class="subtle">{esc(scope_label)} · Expires: '
-              f'{esc(expires)}</div>')
-    request_meta = (
-        f'<div class="subtle">ID: {esc(r.get("request_id") or "—")}</div>'
-        f'<div class="subtle">First request: {esc(r.get("first_requested_at") or "—")}</div>'
-        f'<div class="subtle">Last: {esc(r.get("last_requested_at") or "—")}</div>'
-        f'<div class="subtle">{esc(policy.safe_request_origin(r["last_requested_url"]) if r.get("last_requested_url") else "—")}</div>')
-    opts = (
-        choice_buttons("scope", "Scope", SCOPE_CHOICES,
-                       "exact" if scope == "exact" else "subdomains") +
-        choice_buttons("expires_minutes", "Duration", DURATION_CHOICES)
-    )
-    def action(name, label, cls=''):
-        controls = ((opts if name in ('allow', 'deny') else '') +
-                    '<label class="small">Reason (optional) '
-                    '<input name="reason" maxlength="160" '
-                    'placeholder="Short local note"></label>')
-        return (f'<form method="post" action="/domain">'
-                f'<input type="hidden" name="csrf" value="{token}">' + review_context +
-                f'<input type="hidden" name="domain" value="{dom}">'
-                + controls +
-                f'<button class="{cls}" type="submit" name="action" value="{name}">'
-                f'{label}</button></form>')
-    # A pending request can be decided with one deliberate click. Default
-    # selections are bounded to one hour and the exact host; permanent and
-    # subdomain-wide rules require an operator to change a visible selector.
-    # Never default to the indefinite ("0") permission from policy.decide().
-    quick = (
-        f'<form class="quick-decision" method="post" action="/domain">'
-        f'<input type="hidden" name="csrf" value="{token}">' + review_context +
-        f'<input type="hidden" name="domain" value="{dom}">'
-        f'<input type="hidden" name="request_id" value="{esc(r.get("request_id") or "")}">' +
-        choice_buttons("scope", "Scope", SCOPE_CHOICES, "exact") +
-        choice_buttons("expires_minutes", "Duration", DURATION_CHOICES, "60") +
-        '<button class="allow" type="submit" name="action" value="allow">Allow</button>'
-        '<button class="deny" type="submit" name="action" value="deny">Deny</button>'
-        '<details class="inline-options"><summary>Note (optional)</summary>'
-        '<label class="small">Reason '
-        '<input name="reason" maxlength="160" placeholder="Short local note">'
-        '</label></details></form>'
-        if r['status'] == 'pending' and r.get('request_id') else ''
-    )
+    limits = ("" if r['status'] == 'pending' else
+              render_template("domain-limits",
+                              scope_label=esc(scope_label), expires=esc(expires)))
+    request_meta = render_template(
+        "domain-request-meta", request_id=esc(r.get("request_id") or "—"),
+        first_requested_at=esc(r.get("first_requested_at") or "—"),
+        last_requested_at=esc(r.get("last_requested_at") or "—"),
+        request_origin=esc(policy.safe_request_origin(r["last_requested_url"])
+                           if r.get("last_requested_url") else "—"))
+    opts = (choice_buttons("scope", "Scope", SCOPE_CHOICES,
+                           "exact" if scope == "exact" else "subdomains") +
+            choice_buttons("expires_minutes", "Duration", DURATION_CHOICES))
 
-    # One-use grants retain the stale-request ID check, are exact-host and
-    # one hour by default, and never become durable permission rules.
-    once = (
-        f'<form class="once-action" method="post" action="/once">'
-        f'<input type="hidden" name="csrf" value="{token}">' + review_context +
-        f'<input type="hidden" name="domain" value="{dom}">'
-        f'<input type="hidden" name="request_id" value="{esc(r.get("request_id") or "")}">'
-        '<button class="allow" name="action" value="stage">Allow once</button>'
-        '<details class="inline-options"><summary>One-use options</summary>' +
-        choice_buttons("scope", "Scope", SCOPE_CHOICES, "exact") +
-        choice_buttons("expires_minutes", "Valid for", ONCE_DURATION_CHOICES, "60") +
-        '<label class="small">Reason (optional) '
-        '<input name="reason" maxlength="160" placeholder="Short local note">'
-        '</label></details></form>'
-        if r['status'] == 'pending' and not r.get('explicit_rule') and r.get('request_id')
-        else ''
-    )
+    def action(action_name, label, cls=''):
+        controls = ((opts if action_name in ('allow', 'deny') else '') +
+                    render_template("domain-reason"))
+        return render_template(
+            "domain-action-form", csrf=token, review_context=review_context,
+            domain=dom, controls=controls, button_class=esc(cls),
+            action_name=esc(action_name), button_label=esc(label))
 
-    edit = (f'<form method="post" action="/domain">'
-            f'<input type="hidden" name="csrf" value="{token}">' + review_context +
-            f'<input type="hidden" name="domain" value="{dom}">'
-            f'<label class="small">Reason (optional) '
-            f'<input name="reason" maxlength="160" placeholder="Short local note"></label>'
-            f'<input aria-label="Rename {dom}" name="new_domain" value="{dom}"'
-            f' style="width:195px"><button name="action" value="rename">'
-            f'Rename</button></form>')
-    select = (f'<label class="small"><input type="checkbox" name="selected" '
-              f'form="bulk-form" aria-label="Select {dom}" '
-              f'value="{dom}|{esc(r.get("request_id") or "")}"> Bulk</label> '
-              if (r['status'] == 'pending' and not r.get('explicit_rule')
-                  and r.get('request_id')) else '')
-    # Keep rare rule maintenance out of the fast review path without
-    # removing or changing any POST endpoints and their CSRF protection.
-    maintenance = (
-        '<details class="secondary-actions"><summary>More actions</summary>' +
-        (action('allow', 'Allow', 'allow') +
-         action('deny', 'Deny', 'deny')
-         if r['status'] != 'pending' else '') +
-        action('delete', 'Remove', 'delete') + edit + '</details>'
-    )
-    actions = quick + once + maintenance
-    return (f'<tr><td class="domain">{select}{dom}</td>'
-            f'<td><span class="pill {stat}">{stat}</span>{limits}</td>'
-            f'<td>{int(r["request_count"])}{request_meta}</td>'
-            f'<td class="actions">{actions}</td></tr>')
+    # A pending decision defaults to a one-hour exact-host rule, never a
+    # permanent/subdomain-wide grant. The existing server checks still apply.
+    quick = (render_template(
+        "domain-quick-form", csrf=token, review_context=review_context,
+        domain=dom, request_id=request_id,
+        scope_buttons=choice_buttons("scope", "Scope",
+                                     SCOPE_CHOICES, "exact"),
+        duration_buttons=choice_buttons(
+            "expires_minutes", "Duration", DURATION_CHOICES, "60"))
+        if r['status'] == 'pending' and r.get('request_id') else "")
+    once = (render_template(
+        "domain-once-form", csrf=token, review_context=review_context,
+        domain=dom, request_id=request_id,
+        scope_buttons=choice_buttons("scope", "Scope", SCOPE_CHOICES, "exact"),
+        duration_buttons=choice_buttons(
+            "expires_minutes", "Valid for", ONCE_DURATION_CHOICES, "60"))
+        if r['status'] == 'pending' and not r.get('explicit_rule')
+        and r.get('request_id') else "")
+    edit = render_template(
+        "domain-edit-form", csrf=token, review_context=review_context,
+        domain=dom, reason=render_template("domain-reason"))
+    select = (render_template(
+        "domain-bulk-select", domain=dom, request_id=request_id)
+        if (r['status'] == 'pending' and not r.get('explicit_rule')
+            and r.get('request_id')) else "")
+    maintenance = render_template(
+        "domain-maintenance",
+        actions=(action('allow', 'Allow', 'allow') +
+                 action('deny', 'Deny', 'deny')
+                 if r['status'] != 'pending' else ""),
+        remove=action('delete', 'Remove', 'delete'), edit=edit)
+    return render_template(
+        "domain-table-row", select=select, domain=dom, status=stat,
+        limits=limits, request_count=int(r["request_count"]),
+        request_meta=request_meta, actions=quick + once + maintenance)
+
 
 def decision_audit_rows(search=""):
     """Escaped decision evidence; markup owned by immutable templates."""
@@ -599,8 +564,10 @@ def render(query='', message='', kind='success', page=1,
     other=''.join(row_html(r, query=query, page=page,
                             pending_sort=pending_sort) for r in policy.entries(
         query, limit=2000, status='decided'))
-    alert=f'<p class="alert {"error" if kind=="error" else "success"}">{esc(message)}</p>' if message else ''
-    table_head='<div class="scroll"><table><thead><tr><th>Domain</th><th>Decision / scope / expiry</th><th>Requests / latest</th><th>Manage</th></tr></thead>'
+    alert=(render_template("domain-alert",
+                           kind="error" if kind == "error" else "success",
+                           message=esc(message)) if message else "")
+    table_head=render_template("domain-table-head")
     query_escaped=esc(query)
     audit_html = decision_audit_html(query)
     once_html = once_grants_html(query, page=page,
@@ -625,7 +592,7 @@ def render(query='', message='', kind='success', page=1,
         max_pending_per_site=policy.MAX_PENDING_PER_SITE,
         max_pending_site_hour=policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR,
         table_head=table_head,
-        pending_rows=pending or '<tr><td colspan="4">No pending requests.</td></tr>',
+        pending_rows=pending or render_template("domain-empty-pending"),
         max_bulk_decisions=policy.MAX_BULK_DECISIONS,
         query_escaped=query_escaped, pending_page=page,
         pending_sort=pending_sort,
@@ -645,7 +612,7 @@ def render(query='', message='', kind='success', page=1,
                          '&page=' + str(page) +
                          ('' if pending_sort == 'recent' else
                           '&sort=' + pending_sort)),
-        other_rows=other or '<tr><td colspan="4">No matching domains.</td></tr>',
+        other_rows=other or render_template("domain-empty-decided"),
         audit_html=audit_html,
         database_path=esc(policy.database_path()),
     )
