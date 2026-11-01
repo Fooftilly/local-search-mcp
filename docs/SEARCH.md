@@ -418,7 +418,7 @@ per-engine attempts.
 
 The private JSONL history retains the full validated search query as before;
 the new operation records contain only the engine label, explicit/recovery
-selection source, coarse result/empty/upstream-error outcome and measured
+selection source, coarse upstream-row/empty/upstream-error outcome and measured
 local /search operation duration. No response exception text, headers, API
 tokens, result contents or provider URLs are added to telemetry. The duration
 includes local SearXNG overhead and any transport retries and **is not**
