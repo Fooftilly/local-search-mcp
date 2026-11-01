@@ -677,7 +677,7 @@ def _run_search_network(params: dict, max_results: int, *,
                         retry_params, retry,
                         (time.monotonic() - retry_started) * 1000,
                         source=("isolated_recovery" if isolated is not None
-                                else "explicit"))
+                                else "same_query_recovery"))
     if response is not None and response.status_code in (400, 422) and caller_supplied_filters:
         raise ValueError("Local SearXNG rejected the requested filters or page")
     if response is None and pacing_policy is not None:

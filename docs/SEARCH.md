@@ -538,8 +538,8 @@ The `/engine-pacing-settings` page displays a read-only, nonsecret
 bounded private history. It does **not** wake SearXNG, trigger provider
 searches, alter policy, or change the deterministic live engine order.
 It uses direct, individually selected local `/search` operation records
-(explicit, paced default, paced category); isolated recovery calls and
-fanout-result attribution do not count in the comparison denominator.
+(explicit, paced default, paced category); isolated and same-query recovery calls (even for explicitly selected engines)
+and fanout-result attribution do not count in the comparison denominator.
 Successful-operation mean latency is the **local SearXNG round trip**,
 not remote provider time. Observed fraction of operations with
 source-verified results is **not uptime, accuracy, quota or guaranteed

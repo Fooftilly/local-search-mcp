@@ -120,6 +120,34 @@ class IsolatedEngineObservationsTests(unittest.TestCase):
         report = provider_observations.observations(24)
         self.assertEqual(report["isolated_engine_operations"][0]["recovery_operations"], 1)
 
+    def test_explicit_same_query_recovery_is_excluded_from_direct_denominator(self):
+        calls = []
+        def handler(request):
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": [
+                    {"name": "duckduckgo", "enabled": True,
+                     "categories": ["general"]}]})
+            calls.append(request.url.path)
+            if len(calls) == 1:
+                return httpx.Response(200, json={
+                    "results": [], "unresponsive_engines": ["duckduckgo"]})
+            return httpx.Response(200, json={"results": [{
+                "title": "Public", "url": "https://docs.python.org/3/",
+                "engine": "duckduckgo"}]})
+        result, _ = self._run(handler, engines="duckduckgo")
+        self.assertIsInstance(result, list)
+        operations = self._events()[0]["isolated_engine_operations"]
+        self.assertEqual([x["source"] for x in operations],
+                         ["explicit", "same_query_recovery"])
+        self.assertEqual([x["outcome"] for x in operations],
+                         ["reported_unresponsive", "results"])
+        metrics = provider_observations.observations(24)["isolated_engine_operations"][0]
+        self.assertEqual(metrics["local_operations"], 2)
+        self.assertEqual(metrics["recovery_operations"], 1)
+        self.assertEqual(metrics["direct_operations"], 1)
+        self.assertEqual(metrics["direct_verified_results"], 0)
+        self.assertIsNone(metrics["direct_verified_result_mean_ms"])
+
     def test_empty_reported_unresponsive_and_http_error_are_not_counted_as_hits(self):
         for response, expected in [
             (httpx.Response(200, json={
