@@ -185,7 +185,8 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
                             "results", "empty", "reported_unresponsive",
                             "http_error", "transport_error", "invalid_response",
                             "unverified_attribution")
-                            or source not in ("explicit", "isolated_recovery", "paced_default", "paced_category")
+                            or source not in ("explicit", "isolated_recovery", "same_query_recovery",
+                                              "paced_default", "paced_category")
                             or type(duration) not in (int, float)
                             or not math.isfinite(duration)
                             or not 0 <= duration <= 3_600_000):
@@ -286,7 +287,24 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
                     x["outcome"] not in ("results", "empty", "reported_unresponsive")
                     for x in items),
                 "recovery_operations": sum(
-                    x["source"] == "isolated_recovery" for x in items),
+                    x["source"] in ("isolated_recovery", "same_query_recovery")
+                    for x in items),
+                # Direct one-engine requests only; recovery attempts are
+                # excluded to avoid biasing routing-quality evidence.
+                "direct_operations": sum(
+                    x["source"] not in ("isolated_recovery", "same_query_recovery") for x in items),
+                "direct_verified_results": sum(
+                    x["source"] not in ("isolated_recovery", "same_query_recovery") and x["outcome"] == "results"
+                    for x in items),
+                "direct_verified_result_mean_ms": (
+                    round(sum(x["roundtrip_ms"] for x in items
+                              if x["source"] not in ("isolated_recovery", "same_query_recovery")
+                              and x["outcome"] == "results")
+                          / sum(x["source"] not in ("isolated_recovery", "same_query_recovery")
+                                and x["outcome"] == "results" for x in items), 1)
+                    if any(x["source"] not in ("isolated_recovery", "same_query_recovery")
+                           and x["outcome"] == "results" for x in items)
+                    else None),
                 "mean_local_search_ms": round(
                     sum(x["roundtrip_ms"] for x in items) / len(items), 1),
             }

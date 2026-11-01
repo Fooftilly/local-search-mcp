@@ -1,0 +1,18 @@
+<section class="panel" aria-label="Engine routing observation preview">
+<h2>Observed engine quality — preview only</h2>
+<p>Last 24 hours of bounded private history, filtered to the engine names in the saved policy.
+Only direct isolated local /search attempts count; recovery attempts and aggregate fanout
+results are excluded. The observed result fraction is not a provider uptime, accuracy
+or rate-limit measure. Successful-operation latency includes the local SearXNG round trip,
+not the remote provider's execution time.</p>
+<p>At least 10 direct operations and one verified-result operation are needed to compare
+an engine. The display sorts sufficiently sampled candidates by observed result fraction
+and then successful local latency. Insufficiently sampled entries remain alphabetically
+ordered. This display does not change the bridge's deterministic routing priority,
+make new providers eligible, start a backend or enable pacing.</p>
+<p class="subtle" role="status">${note}</p>
+<div class="scroll"><table><thead><tr>
+<th>Configured engine</th><th>Direct operations</th><th>Verified result operations</th>
+<th>Observed result fraction</th><th>Mean successful local ms</th><th>Evidence</th>
+</tr></thead><tbody>${rows}</tbody></table></div>
+</section>

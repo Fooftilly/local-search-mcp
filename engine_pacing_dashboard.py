@@ -15,6 +15,8 @@ import stat
 
 import engine_dashboard
 import engine_pacing
+import engine_routing_evidence
+import provider_observations
 import request_cache
 from web_templates import render_template
 
@@ -156,6 +158,43 @@ def apply_form(fields: dict[str, list[str]]) -> str:
     return "Engine pacing policy saved. Existing searches are not interrupted."
 
 
+def evidence_preview(configured: dict[str, int]) -> str:
+    """Observe bounded local history without waking search or writing policy."""
+    from html import escape
+    try:
+        summary = engine_routing_evidence.compare(
+            configured, provider_observations.observations(24))
+        rows = []
+        for item in summary["rows"]:
+            status = ("Comparable" if item["comparable"] else
+                      "Insufficient or incomplete sample")
+            rows.append(render_template(
+                "engine-evidence-row",
+                engine_name=escape(item["name"], quote=True),
+                attempts=str(item["attempts"]), results=str(item["results"]),
+                fraction=("-" if item["fraction"] is None
+                          else str(item["fraction"]) + "%"),
+                mean_ms=("-" if item["mean_success_ms"] is None
+                         else str(item["mean_success_ms"])),
+                status=escape(status, quote=True)))
+        if not configured:
+            note = "No configured engines. Stage a disabled policy to compare its engine names."
+        elif not summary["complete_history"]:
+            note = "History is unavailable, truncated, malformed or not lock-verified; no comparative ranking."
+        elif not summary["comparable_count"]:
+            note = "No configured engine meets the minimum 10 direct searches with verified results."
+        else:
+            note = (f"{summary['comparable_count']} of {summary['configured_count']} "
+                    "configured engines have enough observations for provisional ordering.")
+        return render_template("engine-evidence-panel",
+                               note=escape(note, quote=True),
+                               rows="".join(rows))
+    except (ValueError, OSError):
+        return render_template("engine-evidence-panel",
+                               note="Private observation evidence unavailable; pacing controls remain usable.",
+                               rows="")
+
+
 def page(csrf: str, message: str = "", error: bool = False,
          submitted: dict[str, list[str]] | None = None) -> str:
     from html import escape
@@ -176,4 +215,5 @@ def page(csrf: str, message: str = "", error: bool = False,
     return render_template(
         "engine-pacing-settings", alert=alert, csrf=escape(csrf, quote=True),
         state=escape(state, quote=True), rules=escape(rules, quote=True),
-        checked=" checked" if enabled else "")
+        checked=" checked" if enabled else "",
+        evidence=evidence_preview(current))
