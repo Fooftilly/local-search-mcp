@@ -296,9 +296,10 @@ class DashboardHTTPTests(unittest.TestCase):
             encoding="utf-8")
         history = json.loads(self.exchange("GET", "/live?view=history")[1])
         self.assertIn("&lt;script&gt;", history["history_html"])
-        # Search query text is now visible but remains escaped/inert.
-        self.assertIn("&lt;img", history["history_html"])
-        self.assertIn("onerror", history["history_html"])
+        # Manually imported legacy file is not owner-verifiable, so the
+        # source-backed query must remain unavailable (not guessed).
+        self.assertNotIn("<img", history["history_html"])
+        self.assertNotIn("onerror", history["history_html"])
         self.assertNotIn("<script>", history["history_html"])
         html_page = self.exchange("GET", "/history")[1]
         self.assertIn(b'<tbody id="live-history">', html_page)
@@ -498,7 +499,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertNotIn("DO_NOT_LEAK", repr(live))
 
         all_history = json.loads(self.exchange(
-            "GET", "/live?view=history&page=3")[1])
+            "GET", "/live?view=history&page=3&show_queries=0")[1])
         self.assertEqual(all_history["history_page"], 3)
         self.assertEqual(all_history["history_html"].count("<tr>"), 11)
         self.assertIn("page 3 of 3", all_history["history_pages_html"])
@@ -579,7 +580,7 @@ class DashboardHTTPTests(unittest.TestCase):
                         "duration_ms": 10})
         append_history({"time_utc": now.isoformat(), "kind": "search",
                         "status": "success", "query": "PRIVATE_QUERY"})
-        url = "/history?hours=1&kind=fetch&domain=docs.example.org"
+        url = "/history?hours=1&kind=fetch&domain=docs.example.org&show_queries=0"
         status, page, headers = self.exchange("GET", url)
         self.assertEqual(status, 200)
         self.assertEqual(headers["Cache-Control"], "no-store")
@@ -589,13 +590,13 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn('<td class="domain">docs.example.org</td><td>—</td><td>10.0</td>'.encode(), page)
         self.assertIn('<td class="domain">docs.example.org</td><td>—</td><td>10.0</td>',
                       json.loads(self.exchange(
-                          "GET", "/live?view=history&hours=1&kind=fetch")[1]
+                          "GET", "/live?view=history&hours=1&kind=fetch&show_queries=0")[1]
                       )["history_html"])
         for secret in (b"PRIVATE_QUERY", b"SECRET", b"HIDDEN"):
             self.assertNotIn(secret, page)
 
         code, payload, _ = self.exchange(
-            "GET", "/live?view=history&hours=1&kind=fetch&domain=docs.example.org")
+            "GET", "/live?view=history&hours=1&kind=fetch&domain=docs.example.org&show_queries=0")
         self.assertEqual(code, 200)
         live = json.loads(payload)
         self.assertEqual(live["history_html"].count("<tr>"), 1)
@@ -608,7 +609,7 @@ class DashboardHTTPTests(unittest.TestCase):
             self.assertNotIn(secret, str(live))
 
         all_rows = json.loads(self.exchange(
-            "GET", "/live?view=history&hours=24&kind=fetch")[1])
+            "GET", "/live?view=history&hours=24&kind=fetch&show_queries=0")[1])
         self.assertEqual(all_rows["history_html"].count("<tr>"), 2)
         self.assertIn("fetch success", all_rows["history_summary_html"])
         for bad in ("-1", "2", "9999", "true", "24%3Cscript%3E", "xyz"):
