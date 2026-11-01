@@ -116,7 +116,7 @@ def _history_last_page(total):
 
 
 def history_pagination_html(filters, page, total):
-    """Read-only, escaped navigation retaining filters and opt-in display."""
+    """Read-only, escaped navigation retaining existing filters."""
     final = _history_last_page(total)
     first = (page - 1) * HISTORY_PAGE_SIZE + 1 if total and page <= final else 0
     last = min(page * HISTORY_PAGE_SIZE, total) if first else 0
@@ -134,16 +134,12 @@ def history_pagination_html(filters, page, total):
 
     links = []
     if page > 1:
-        links.append('<a rel="prev" href="' + href(page - 1) +
-                     '">Previous 25</a>')
+        links.append(render_template("history-prev", href=href(page - 1)))
     if page < final:
-        links.append('<a rel="next" href="' + href(page + 1) +
-                     '">Next 25</a>')
-    return ('<nav class="pending-pages" aria-label="History pages">'
-            '<span role="status">Showing ' + str(first) + '–' + str(last) +
-            ' of ' + str(total) + ' matching history events · page ' +
-            str(page) + ' of ' + str(final) + '</span>' +
-            ''.join(links) + '</nav>')
+        links.append(render_template("history-next", href=href(page + 1)))
+    return render_template("history-nav", first=first, last=last,
+                           total=total, page=page, final=final,
+                           links="".join(links))
 
 
 def history_items_html(kind="", status="", domain="", hours=0,
@@ -157,7 +153,8 @@ def history_items_html(kind="", status="", domain="", hours=0,
                                                   include_engines=show_engines,
                                                   offset=(page - 1) * HISTORY_PAGE_SIZE)
         except (OSError, ValueError, sqlite3.Error):
-            return '<tr><td colspan="' + ("6" if show_engines else "5") + '">Indexed history is unavailable; check local configuration.</td></tr>'
+            return render_template(
+                "history-unavailable", columns=6 if show_engines else 5)
     out = []
     for event in items:
         stamp = datetime.fromtimestamp(
@@ -169,48 +166,43 @@ def history_items_html(kind="", status="", domain="", hours=0,
                    if show_queries and event["kind"] == "fetch"
                    else (event["domain"] or "—") if show_queries
                    else event["domain"])
-        css_class = 'domain history-query' if show_queries else 'domain'
-        out.append(
-            f'<tr><td class="small">{esc(stamp)}</td><td>{esc(event["kind"])}</td>'
-            f'<td>{esc(event["status"])}</td>'
-            f'<td class="{css_class}">{esc(display)}</td>'
-            + (f'<td>{esc(event.get("engine_attribution", "—") if event["kind"] == "search" else "—")}</td>'
-               if show_engines else '') +
-            f'<td>{esc(elapsed)}</td></tr>')
-    return ''.join(out) or '<tr><td colspan="' + ("6" if show_engines else "5") + '">No matching MCP history.</td></tr>'
+        engine_cell = (
+            render_template(
+                "history-engine-cell",
+                engine=esc(event.get("engine_attribution", "—")
+                           if event["kind"] == "search" else "—"))
+            if show_engines else "")
+        out.append(render_template(
+            "history-row", stamp=esc(stamp), kind=esc(event["kind"]),
+            status=esc(event["status"]), display=esc(display),
+            css_class="domain history-query" if show_queries else "domain",
+            engine_cell=engine_cell, elapsed=esc(elapsed)))
+    return "".join(out) or render_template(
+        "history-empty", columns=6 if show_engines else 5)
 
 
 def recent_rows(kind="", status="", domain="", hours=0, show_queries=False,
                 page=1, items=None, unavailable=False):
     column = "Search query / page URL / domain" if show_queries else "Domain"
-    return ('<div class="scroll"><table><thead><tr><th>UTC time</th>'
-            '<th>Operation</th><th>Status</th><th>' + column + '</th>'
-            '<th>Search engine (requested / observed)</th>'
-            '<th>Duration (ms)</th></tr></thead>'
-            '<tbody id="live-history">' +
-            ('<tr><td colspan="6">Indexed history is unavailable; '
-             'check local configuration.</td></tr>' if unavailable else
-             history_items_html(kind, status, domain, hours, show_queries,
-                                page=page, items=items, show_engines=True)) +
-            '</tbody></table></div>')
+    rows = (render_template("history-unavailable", columns=6)
+            if unavailable else
+            history_items_html(kind, status, domain, hours, show_queries,
+                               page=page, items=items, show_engines=True))
+    return render_template("history-table", column=esc(column), rows=rows)
 
 
 def history_summary_html(metrics):
-    """An accessible, CSP-compatible bar chart using native progress elements."""
+    """Accessible, CSP-compatible bars using template-backed progress rows."""
     peak = max((int(x["count"]) for x in metrics), default=1)
-    out = []
-    for row in metrics:
-        count = int(row["count"])
-        kind = esc(row["kind"])
-        status = esc(row["status"])
-        duration = esc(row["avg_duration_ms"]
-                       if row["avg_duration_ms"] is not None else "—")
-        out.append(
-            f'<tr><td>{kind}</td><td>{status}</td>'
-            f'<td><progress aria-label="{kind} {status} count" '
-            f'value="{count}" max="{peak}">{count}</progress></td>'
-            f'<td>{count}</td><td>{duration}</td></tr>')
-    return ''.join(out) or '<tr><td colspan="5">No matching events.</td></tr>'
+    rows = [
+        render_template(
+            "history-summary-row", kind=esc(row["kind"]),
+            status=esc(row["status"]), count=int(row["count"]), peak=peak,
+            duration=esc(row["avg_duration_ms"] if
+                         row["avg_duration_ms"] is not None else "—"))
+        for row in metrics
+    ]
+    return "".join(rows) or render_template("history-summary-empty")
 
 
 def _history_filters(query, *, validate_text=True):
@@ -310,12 +302,9 @@ def live_snapshot(query='', view='policy', history_filters=None,
         except (OSError, ValueError, sqlite3.Error):
             # A corrupt/unavailable index must not masquerade as zero events.
             return {
-                'history_html': '<tr><td colspan="6">Indexed history is '
-                                'unavailable; check local configuration.</td></tr>',
-                'history_summary_html': '<tr><td colspan="5">Indexed history '
-                                        'is unavailable.</td></tr>',
-                'history_pages_html': '<p class="subtle" role="status">'
-                                      'History pages unavailable.</p>',
+                'history_html': render_template("history-unavailable", columns=6),
+                'history_summary_html': render_template("history-summary-unavailable"),
+                'history_pages_html': render_template("history-pages-unavailable"),
                 'history_page': filters.get('page', 1)}
         return {'history_html': history_items_html(
                     items=snapshot['rows'],
@@ -350,11 +339,11 @@ def live_snapshot(query='', view='policy', history_filters=None,
             'pending_html': ''.join(row_html(
                 r, query=query, page=pending_page, pending_sort=pending_sort)
                 for r in pending_rows)
-                or '<tr><td colspan="4">No pending requests.</td></tr>',
+                or render_template("domain-empty-pending"),
             'decided_html': ''.join(row_html(
                 r, query=query, page=pending_page, pending_sort=pending_sort)
                 for r in decisions)
-                or '<tr><td colspan="4">No matching domains.</td></tr>',
+                or render_template("domain-empty-decided"),
             'audit_html': decision_audit_rows(query),
             'activity_html': history_items_html(show_queries=False),
             'service_rows_html': service_overview_rows(),
@@ -409,109 +398,74 @@ def service_overview_rows():
 
 
 def row_html(r, query='', page=1, pending_sort='recent'):
+    """Permission row data and decisions; HTML stays in fixed web templates."""
     dom = esc(r['domain'])
-    # This value only restores the local review filter after POST. It never
-    # affects the permission decision or its stale-request/CSRF checks.
-    review_context = (f'<input type="hidden" name="review_query" '
-                      f'value="{esc(query[:100])}">'
-                      f'<input type="hidden" name="review_page" '
-                      f'value="{page}">'
-                      f'<input type="hidden" name="review_sort" '
-                      f'value="{pending_sort}">')
+    request_id = esc(r.get("request_id") or "")
+    review_context = render_template(
+        "domain-review-context", review_query=esc(query[:100]),
+        review_page=page, review_sort=esc(pending_sort))
     stat = esc('expired' if r.get('expired') else r['status'])
     token = esc(CSRF)
     scope = r.get('match_scope', 'subdomains')
     scope_label = 'Exact host' if scope == 'exact' else 'Host + subdomains'
     expires = r.get('expires_at') or 'Never'
-    limits = ('' if r['status'] == 'pending' else
-              f'<div class="subtle">{esc(scope_label)} · Expires: '
-              f'{esc(expires)}</div>')
-    request_meta = (
-        f'<div class="subtle">ID: {esc(r.get("request_id") or "—")}</div>'
-        f'<div class="subtle">First request: {esc(r.get("first_requested_at") or "—")}</div>'
-        f'<div class="subtle">Last: {esc(r.get("last_requested_at") or "—")}</div>'
-        f'<div class="subtle">{esc(policy.safe_request_origin(r["last_requested_url"]) if r.get("last_requested_url") else "—")}</div>')
-    opts = (
-        choice_buttons("scope", "Scope", SCOPE_CHOICES,
-                       "exact" if scope == "exact" else "subdomains") +
-        choice_buttons("expires_minutes", "Duration", DURATION_CHOICES)
-    )
-    def action(name, label, cls=''):
-        controls = ((opts if name in ('allow', 'deny') else '') +
-                    '<label class="small">Reason (optional) '
-                    '<input name="reason" maxlength="160" '
-                    'placeholder="Short local note"></label>')
-        return (f'<form method="post" action="/domain">'
-                f'<input type="hidden" name="csrf" value="{token}">' + review_context +
-                f'<input type="hidden" name="domain" value="{dom}">'
-                + controls +
-                f'<button class="{cls}" type="submit" name="action" value="{name}">'
-                f'{label}</button></form>')
-    # A pending request can be decided with one deliberate click. Default
-    # selections are bounded to one hour and the exact host; permanent and
-    # subdomain-wide rules require an operator to change a visible selector.
-    # Never default to the indefinite ("0") permission from policy.decide().
-    quick = (
-        f'<form class="quick-decision" method="post" action="/domain">'
-        f'<input type="hidden" name="csrf" value="{token}">' + review_context +
-        f'<input type="hidden" name="domain" value="{dom}">'
-        f'<input type="hidden" name="request_id" value="{esc(r.get("request_id") or "")}">' +
-        choice_buttons("scope", "Scope", SCOPE_CHOICES, "exact") +
-        choice_buttons("expires_minutes", "Duration", DURATION_CHOICES, "60") +
-        '<button class="allow" type="submit" name="action" value="allow">Allow</button>'
-        '<button class="deny" type="submit" name="action" value="deny">Deny</button>'
-        '<details class="inline-options"><summary>Note (optional)</summary>'
-        '<label class="small">Reason '
-        '<input name="reason" maxlength="160" placeholder="Short local note">'
-        '</label></details></form>'
-        if r['status'] == 'pending' and r.get('request_id') else ''
-    )
+    limits = ("" if r['status'] == 'pending' else
+              render_template("domain-limits",
+                              scope_label=esc(scope_label), expires=esc(expires)))
+    request_meta = render_template(
+        "domain-request-meta", request_id=esc(r.get("request_id") or "—"),
+        first_requested_at=esc(r.get("first_requested_at") or "—"),
+        last_requested_at=esc(r.get("last_requested_at") or "—"),
+        request_origin=esc(policy.safe_request_origin(r["last_requested_url"])
+                           if r.get("last_requested_url") else "—"))
+    opts = (choice_buttons("scope", "Scope", SCOPE_CHOICES,
+                           "exact" if scope == "exact" else "subdomains") +
+            choice_buttons("expires_minutes", "Duration", DURATION_CHOICES))
 
-    # One-use grants retain the stale-request ID check, are exact-host and
-    # one hour by default, and never become durable permission rules.
-    once = (
-        f'<form class="once-action" method="post" action="/once">'
-        f'<input type="hidden" name="csrf" value="{token}">' + review_context +
-        f'<input type="hidden" name="domain" value="{dom}">'
-        f'<input type="hidden" name="request_id" value="{esc(r.get("request_id") or "")}">'
-        '<button class="allow" name="action" value="stage">Allow once</button>'
-        '<details class="inline-options"><summary>One-use options</summary>' +
-        choice_buttons("scope", "Scope", SCOPE_CHOICES, "exact") +
-        choice_buttons("expires_minutes", "Valid for", ONCE_DURATION_CHOICES, "60") +
-        '<label class="small">Reason (optional) '
-        '<input name="reason" maxlength="160" placeholder="Short local note">'
-        '</label></details></form>'
-        if r['status'] == 'pending' and not r.get('explicit_rule') and r.get('request_id')
-        else ''
-    )
+    def action(action_name, label, cls=''):
+        controls = ((opts if action_name in ('allow', 'deny') else '') +
+                    render_template("domain-reason"))
+        return render_template(
+            "domain-action-form", csrf=token, review_context=review_context,
+            domain=dom, controls=controls, button_class=esc(cls),
+            action_name=esc(action_name), button_label=esc(label))
 
-    edit = (f'<form method="post" action="/domain">'
-            f'<input type="hidden" name="csrf" value="{token}">' + review_context +
-            f'<input type="hidden" name="domain" value="{dom}">'
-            f'<label class="small">Reason (optional) '
-            f'<input name="reason" maxlength="160" placeholder="Short local note"></label>'
-            f'<input aria-label="Rename {dom}" name="new_domain" value="{dom}"'
-            f' style="width:195px"><button name="action" value="rename">'
-            f'Rename</button></form>')
-    select = (f'<label class="small"><input type="checkbox" name="selected" '
-              f'form="bulk-form" aria-label="Select {dom}" '
-              f'value="{dom}|{esc(r.get("request_id") or "")}"> Bulk</label> '
-              if (r['status'] == 'pending' and not r.get('explicit_rule')
-                  and r.get('request_id')) else '')
-    # Keep rare rule maintenance out of the fast review path without
-    # removing or changing any POST endpoints and their CSRF protection.
-    maintenance = (
-        '<details class="secondary-actions"><summary>More actions</summary>' +
-        (action('allow', 'Allow', 'allow') +
-         action('deny', 'Deny', 'deny')
-         if r['status'] != 'pending' else '') +
-        action('delete', 'Remove', 'delete') + edit + '</details>'
-    )
-    actions = quick + once + maintenance
-    return (f'<tr><td class="domain">{select}{dom}</td>'
-            f'<td><span class="pill {stat}">{stat}</span>{limits}</td>'
-            f'<td>{int(r["request_count"])}{request_meta}</td>'
-            f'<td class="actions">{actions}</td></tr>')
+    # A pending decision defaults to a one-hour exact-host rule, never a
+    # permanent/subdomain-wide grant. The existing server checks still apply.
+    quick = (render_template(
+        "domain-quick-form", csrf=token, review_context=review_context,
+        domain=dom, request_id=request_id,
+        scope_buttons=choice_buttons("scope", "Scope",
+                                     SCOPE_CHOICES, "exact"),
+        duration_buttons=choice_buttons(
+            "expires_minutes", "Duration", DURATION_CHOICES, "60"))
+        if r['status'] == 'pending' and r.get('request_id') else "")
+    once = (render_template(
+        "domain-once-form", csrf=token, review_context=review_context,
+        domain=dom, request_id=request_id,
+        scope_buttons=choice_buttons("scope", "Scope", SCOPE_CHOICES, "exact"),
+        duration_buttons=choice_buttons(
+            "expires_minutes", "Valid for", ONCE_DURATION_CHOICES, "60"))
+        if r['status'] == 'pending' and not r.get('explicit_rule')
+        and r.get('request_id') else "")
+    edit = render_template(
+        "domain-edit-form", csrf=token, review_context=review_context,
+        domain=dom, reason=render_template("domain-reason"))
+    select = (render_template(
+        "domain-bulk-select", domain=dom, request_id=request_id)
+        if (r['status'] == 'pending' and not r.get('explicit_rule')
+            and r.get('request_id')) else "")
+    maintenance = render_template(
+        "domain-maintenance",
+        actions=(action('allow', 'Allow', 'allow') +
+                 action('deny', 'Deny', 'deny')
+                 if r['status'] != 'pending' else ""),
+        remove=action('delete', 'Remove', 'delete'), edit=edit)
+    return render_template(
+        "domain-table-row", select=select, domain=dom, status=stat,
+        limits=limits, request_count=int(r["request_count"]),
+        request_meta=request_meta, actions=quick + once + maintenance)
+
 
 def decision_audit_rows(search=""):
     """Escaped decision evidence; markup owned by immutable templates."""
@@ -567,43 +521,32 @@ def once_audit_html(search=""):
 
 
 def import_preview_html(plan: dict) -> str:
-    """Read-only validated preview with explicit, stale-state-checked apply."""
+    """Read-only rule import preview with stale-state-checked POST."""
     new = set(plan["add"])
     unchanged = set(plan["unchanged"])
-    rows = ''.join(
-        '<tr><td class="domain">' + esc(x["domain"]) + '</td><td>' +
-        esc("New" if x["domain"] in new else
-            "Unchanged" if x["domain"] in unchanged else "Conflict") +
-        '</td><td>' + esc(x["status"]) + '</td><td>' + esc(x["scope"]) +
-        '</td><td>' + esc(x["expires_at"] or "Permanent") + '</td></tr>'
+    rows = "".join(
+        render_template(
+            "import-rule-row", domain=esc(x["domain"]),
+            classification=esc("New" if x["domain"] in new else
+                               "Unchanged" if x["domain"] in unchanged
+                               else "Conflict"),
+            status=esc(x["status"]), scope=esc(x["scope"]),
+            expires_at=esc(x["expires_at"] or "Permanent"))
         for x in plan["rules"])
     conflicts = plan["conflicts"]
-    notice = (f'<p class="alert error">Conflicts with {len(conflicts)} existing '
-              'explicit rules or inherited denials (marked Conflict below); '
-              'resolve them locally before retrying. No '
-              'changes have been made.</p>' if conflicts else
-              '<p class="subtle">No changes yet. The import will add only '
-              'missing decisions and retain identical rules. A changed '
-              'policy or expired rule invalidates this preview.</p>')
-    submit = (f'<form method="post" action="/rules/apply">'
-              f'<input type="hidden" name="csrf" value="{esc(CSRF)}">'
-              f'<input type="hidden" name="state" value="{esc(plan["state"])}">'
-              f'<input type="hidden" name="ticket" value="{esc(plan["ticket"])}">'
-              f'<textarea name="rule_doc" hidden>{esc(plan["canonical"])}</textarea>'
-              '<label>Type IMPORT to apply '
-              '<input name="confirm" required pattern="IMPORT" maxlength="6"></label>'
-              '<button name="action" value="apply" class="allow">Import rules</button>'
-              '</form>' if not conflicts and plan["add"] else
-              '<p>No changes can be applied from this preview.</p>')
-    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
-            f'<meta name="referrer" content="no-referrer"><title>Rule import preview</title>'
-            f'<link rel="stylesheet" href="/dashboard.css"></head><body><main><h1>Domain rule import preview</h1>'
-            f'<p>New: {len(plan["add"])} · Unchanged: {len(plan["unchanged"])}'
-            f' · Conflicts: {len(conflicts)}</p>{notice}'
-            '<div class="scroll"><table><thead><tr><th>Domain</th><th>Preview</th>'
-            '<th>Decision</th><th>Scope</th><th>Expiration (UTC)</th></tr></thead><tbody>' +
-            rows + '</tbody></table></div>' + submit +
-            '<p><a href="/">Return without applying</a></p></main></body></html>')
+    notice = (render_template("import-rule-conflict", count=len(conflicts))
+              if conflicts else render_template("import-rule-safe"))
+    submit = (
+        render_template("import-rule-form", csrf=esc(CSRF),
+                        state=esc(plan["state"]), ticket=esc(plan["ticket"]),
+                        canonical=esc(plan["canonical"]))
+        if not conflicts and plan["add"] else
+        render_template("import-rule-no-change"))
+    return render_template(
+        "import-rule-page", new_count=len(plan["add"]),
+        unchanged_count=len(plan["unchanged"]),
+        conflict_count=len(conflicts), notice=notice,
+        rows=rows, submit=submit)
 
 
 def render(query='', message='', kind='success', page=1,
@@ -621,8 +564,10 @@ def render(query='', message='', kind='success', page=1,
     other=''.join(row_html(r, query=query, page=page,
                             pending_sort=pending_sort) for r in policy.entries(
         query, limit=2000, status='decided'))
-    alert=f'<p class="alert {"error" if kind=="error" else "success"}">{esc(message)}</p>' if message else ''
-    table_head='<div class="scroll"><table><thead><tr><th>Domain</th><th>Decision / scope / expiry</th><th>Requests / latest</th><th>Manage</th></tr></thead>'
+    alert=(render_template("domain-alert",
+                           kind="error" if kind == "error" else "success",
+                           message=esc(message)) if message else "")
+    table_head=render_template("domain-table-head")
     query_escaped=esc(query)
     audit_html = decision_audit_html(query)
     once_html = once_grants_html(query, page=page,
@@ -647,7 +592,7 @@ def render(query='', message='', kind='success', page=1,
         max_pending_per_site=policy.MAX_PENDING_PER_SITE,
         max_pending_site_hour=policy.MAX_NEW_PENDING_PER_SITE_PER_HOUR,
         table_head=table_head,
-        pending_rows=pending or '<tr><td colspan="4">No pending requests.</td></tr>',
+        pending_rows=pending or render_template("domain-empty-pending"),
         max_bulk_decisions=policy.MAX_BULK_DECISIONS,
         query_escaped=query_escaped, pending_page=page,
         pending_sort=pending_sort,
@@ -667,7 +612,7 @@ def render(query='', message='', kind='success', page=1,
                          '&page=' + str(page) +
                          ('' if pending_sort == 'recent' else
                           '&sort=' + pending_sort)),
-        other_rows=other or '<tr><td colspan="4">No matching domains.</td></tr>',
+        other_rows=other or render_template("domain-empty-decided"),
         audit_html=audit_html,
         database_path=esc(policy.database_path()),
     )
@@ -755,60 +700,35 @@ def portable_settings_page(message="", kind="success"):
 
 
 def portable_settings_preview(plan: dict, document: str) -> str:
-    """Bounded, HTML-escaped preview; submit the same text under CAS."""
-    rows = ''.join(
-        '<tr><td>' + esc(key) + '</td><td>' + esc(values["old"]) +
-        '</td><td>' + esc(values["new"]) + '</td></tr>'
-        for key, values in plan["changes"].items()
-    )
-    if not rows:
-        rows = '<tr><td colspan="3">No changes</td></tr>'
-    return (
-        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        '<meta name="referrer" content="no-referrer">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<title>Local Search MCP — Settings import preview</title>'
-        '<link rel="stylesheet" href="/dashboard.css"></head><body><main>'
-        '<h1>Nonsecret settings import preview</h1><p>Profile: ' +
-        esc(plan["profile"]) + ' (one atomic profile only)</p>'
-        '<table><thead><tr><th>Setting</th><th>Current</th><th>New</th>'
-        '</tr></thead><tbody>' + rows + '</tbody></table>'
-        '<form method="post" action="/portable-settings/apply">'
-        '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
-        '<input type="hidden" name="state" value="' + esc(plan["state"]) + '">'
-        '<textarea name="settings_doc" hidden readonly>' + esc(document) + '</textarea>'
-        '<label>Type IMPORT to confirm <input name="confirm" required '
-        'pattern="IMPORT" maxlength="6"></label>'
-        '<button type="submit">Apply validated settings</button></form>'
-        '<p>Stale or conflicting values and environment overrides refuse the '
-        'write; no secrets or service restart actions are included.</p>'
-        '<p><a href="/portable-settings">Cancel import</a></p></main></body></html>'
-    )
+    """Bounded, escaped preview; submit unchanged operator input under CAS."""
+    rows = "".join(
+        render_template("portable-preview-row", key=esc(key),
+                        old=esc(values["old"]), new=esc(values["new"]))
+        for key, values in plan["changes"].items())
+    return render_template(
+        "portable-preview-page", profile=esc(plan["profile"]),
+        rows=rows or render_template("portable-preview-empty"),
+        csrf=esc(CSRF), state=esc(plan["state"]), document=esc(document))
 
 
 def status_page():
-    """Read-only local TCP diagnostics; no mutation or privileged probes."""
-    rows = ''.join(
-        '<tr><td>' + esc(x['service']) + '</td><td>' +
-        esc(x['status']) + '</td><td>' + esc(x['source']) +
-        '</td></tr>' for x in service_status.probe_services())
-    ports = ''.join(
-        '<tr><td>' + esc(item['service']) + '</td><td>' +
-        esc(item['port'] if item['valid'] else 'Invalid (check local configuration)') +
-        '</td><td>' + esc(item['source']) + '</td><td>' +
-        esc(item['apply']) + '</td></tr>'
+    """Read-only local TCP diagnostics; template rendering only."""
+    rows = service_overview_rows()
+    ports = "".join(
+        render_template("status-port-row",
+                        service=esc(item['service']),
+                        port=esc(item['port'] if item['valid'] else
+                                 'Invalid (check local configuration)'),
+                        source=esc(item['source']),
+                        apply=esc(item['apply']))
         for item in service_status.configured_ports())
-    ports += (
-        '<tr><td>Dashboard</td><td>' + esc(PORT) +
-        '</td><td>active listener</td><td>Bridge restart and health-monitor '
-        'coordination required for a port change</td></tr>'
-        '<tr><td>MCP</td><td>' + esc(MCP_PORT) + '</td><td>fixed loopback listener</td>'
-        '<td>Not configurable through the dashboard</td></tr>'
-    )
-    limits = ''.join(
-        '<tr><td>' + esc(item['name']) + '</td><td>' +
-        esc(item['value']) + '</td><td>' + esc(item['apply']) +
-        '</td></tr>' for item in service_status.fixed_safety_limits())
+    ports += render_template("status-dashboard-port", port=esc(PORT))
+    ports += render_template("status-mcp-port", port=esc(MCP_PORT))
+    limits = "".join(
+        render_template("status-limit-row",
+                        display_name=esc(item['name']), value=esc(item['value']),
+                        apply=esc(item['apply']))
+        for item in service_status.fixed_safety_limits())
     return render_template("status", rows=rows, ports=ports, limits=limits,
                            mcp_port=esc(MCP_PORT))
 
@@ -828,7 +748,8 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=True,
         retention_label = "configured"
         history_unavailable = not bool(filter_error)
     metrics = snapshot['metrics'] if snapshot is not None else []
-    warning = (f'<p class="alert error" role="alert">{esc(filter_error)}</p>'
+    warning = (render_template("history-filter-warning",
+                               message=esc(filter_error))
                if filter_error else '')
     invalid_kind = bool(
         filter_error and kind not in ("", "search", "fetch", "page"))
@@ -837,7 +758,7 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=True,
     full_filters = {**filters, 'show_queries': show_queries}
     pages_html = (history_pagination_html(full_filters, page, total)
                   if snapshot is not None else
-                  '<p class="subtle" role="status">History pages unavailable.</p>'
+                  render_template("history-pages-unavailable")
                   if history_unavailable else '')
     rows = (recent_rows(**filters, show_queries=show_queries, page=page,
                         items=snapshot['rows'])
@@ -845,7 +766,7 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=True,
             recent_rows(**filters, show_queries=show_queries, page=page,
                         items=[], unavailable=True)
             if history_unavailable else
-            '<p class="subtle">Correct the filters above to view history.</p>')
+            render_template("history-filter-correction"))
     valid_kind = kind if kind in ("", "search", "fetch", "page") else ""
     return render_template(
         "history",
@@ -856,13 +777,13 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=True,
             (("0", "All retained"), ("1", "Last hour"),
              ("24", "Last 24 hours"), ("168", "Last 7 days")), str(hours)),
         invalid_kind_notice=(
-            '<span class="small" role="note">Unsupported operation: ' +
-            esc(kind) + '</span>' if invalid_kind else ''),
+            render_template("history-filter-notice", kind=esc(kind))
+            if invalid_kind else ''),
         status=esc(status), domain=esc(domain),
         query_checked=' checked' if show_queries else '',
         warning=warning, rows=rows,
         page=page, pages_html=pages_html,
-        summary_html=('<tr><td colspan="5">Indexed history is unavailable.</td></tr>'
+        summary_html=(render_template("history-summary-unavailable")
                       if history_unavailable else history_summary_html(metrics)),
         retention_label=esc(retention_label),
     )
@@ -882,27 +803,26 @@ def provider_observations_page(hours: int = 24) -> str:
             hour_buttons=choice_buttons("hours", "UTC time window",
                  (("1", "Last hour"), ("24", "Last 24 hours"),
                   ("168", "Last 7 days")), str(hours)),
-            notice='<p role="alert" class="alert error">Private history is unavailable. '
-                   'Inspect local file permissions and history configuration.</p>',
-            coverage_rows='<tr><td colspan="2">Unavailable</td></tr>',
-            engine_rows='<tr><td colspan="4">Unavailable</td></tr>',
-            category_rows='<tr><td colspan="4">Unavailable</td></tr>',
-            reported_failure_rows='<tr><td colspan="2">Unavailable</td></tr>')
+            notice=render_template("provider-source-unavailable"),
+            coverage_rows=render_template("provider-unavailable-two"),
+            engine_rows=render_template("provider-unavailable-four"),
+            category_rows=render_template("provider-unavailable-four"),
+            reported_failure_rows=render_template("provider-unavailable-two"))
     def table_rows(items):
         return "".join(
-            "<tr><td>" + esc(row["name"]) + "</td><td>" +
-            str(row["observed_searches"]) + "</td><td>" +
-            str(row["timed_searches"]) + "</td><td>" +
-            (str(row["mean_search_call_ms"])
-             if row["mean_search_call_ms"] is not None else "Not recorded") +
-            "</td></tr>" for row in items) or (
-            '<tr><td colspan="4">No attributable samples in this window</td></tr>')
+            render_template(
+                "provider-time-row", display_name=esc(row["name"]),
+                observed=int(row["observed_searches"]),
+                timed=int(row["timed_searches"]),
+                mean=esc(row["mean_search_call_ms"]
+                         if row["mean_search_call_ms"] is not None
+                         else "Not recorded"))
+            for row in items) or render_template("provider-time-empty")
     reported_failure_rows = "".join(
-        "<tr><td>" + esc(row["name"]) + "</td><td>" +
-        str(row["reported_unresponsive_calls"]) + "</td></tr>"
+        render_template("provider-failure-row", display_name=esc(row["name"]),
+                        calls=int(row["reported_unresponsive_calls"]))
         for row in result["reported_unresponsive_engines"]) or (
-        '<tr><td colspan="2">No opted-in reported unresponsive providers '
-        'in retained history</td></tr>')
+        render_template("provider-failure-empty"))
     labels = [
         ("Audited search calls", result["sampled_search_calls"]),
         ("Non-success calls (not attributable to an engine)",
@@ -931,15 +851,15 @@ def provider_observations_page(hours: int = 24) -> str:
         ("Per-engine network latency", "Not measured"),
         ("Cache hits from historical calls", "Not recorded"),
     ]
-    coverage = "".join("<tr><td>" + esc(title) + "</td><td>" +
-                       esc(value) + "</td></tr>" for title, value in labels)
-    notice = ('<p role="status">No history files currently available.</p>'
+    coverage = "".join(
+        render_template("provider-coverage-row",
+                        title=esc(title), value=esc(value))
+        for title, value in labels)
+    notice = (render_template("provider-no-files")
               if not result["available"] else
-              '<p role="status">Sample is partial; historic rotation, scan bounds '
-              'or malformed entries prevent exhaustive conclusions.</p>'
+              render_template("provider-partial")
               if result["retention_or_scan_limited"] else
-              '<p role="status">Bounded sample of retained history. '
-              'Not a complete provider health report.</p>')
+              render_template("provider-bounded"))
     return render_template(
         "provider-observations",
         hour_buttons=choice_buttons("hours", "UTC time window",

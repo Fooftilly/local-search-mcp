@@ -1,6 +1,8 @@
 """The HTML templates are fixed assets, never request-controlled paths."""
 from pathlib import Path
 import inspect
+import ast
+import re
 import unittest
 from unittest.mock import patch
 
@@ -35,7 +37,18 @@ class DashboardTemplateTests(unittest.TestCase):
                    admin_ui.decision_audit_rows,
                    admin_ui.decision_audit_html,
                    admin_ui.once_grants_html,
-                   admin_ui.once_audit_html):
+                   admin_ui.once_audit_html,
+                   admin_ui.row_html,
+                   admin_ui.render,
+                   admin_ui.import_preview_html,
+                   admin_ui.portable_settings_preview,
+                   admin_ui.history_pagination_html,
+                   admin_ui.history_items_html,
+                   admin_ui.recent_rows,
+                   admin_ui.history_summary_html,
+                   admin_ui.status_page,
+                   admin_ui.history_page,
+                   admin_ui.provider_observations_page):
             with self.subTest(fn=fn.__name__):
                 self.assertNotRegex(inspect.getsource(fn), r"""['"]<[a-zA-Z]""")
         group = admin_ui.choice_buttons(
@@ -75,6 +88,44 @@ class DashboardTemplateTests(unittest.TestCase):
         self.assertIn('Apply upstream timeouts', upstream)
         self.assertIn(' disabled>Apply upstream timeouts', upstream)
         self.assertIn('environment override', upstream)
+
+    def test_history_and_provider_components_are_template_backed(self):
+        navigation = admin_ui.history_pagination_html(
+            {"kind": "search", "status": "", "domain": "<unsafe>",
+             "hours": 24, "show_queries": True}, 1, 26)
+        self.assertIn("Next 25", navigation)
+        self.assertIn("%3Cunsafe%3E", navigation)
+        self.assertNotIn("<unsafe>", navigation)
+        rows = admin_ui.history_summary_html([
+            {"kind": "<script>", "status": "success", "count": 3,
+             "avg_duration_ms": 1.5}])
+        self.assertIn("&lt;script&gt;", rows)
+        self.assertNotIn("<script>", rows)
+        self.assertIn('value="3" max="3"', rows)
+        self.assertIn("No matching events.", admin_ui.history_summary_html([]))
+        self.assertIn("No matching MCP history.",
+                      admin_ui.history_items_html(items=[]))
+
+    def test_production_python_does_not_embed_web_markup(self):
+        """Web markup belongs in dedicated files, not Python strings."""
+        markup = re.compile(
+            r"<\s*/?\s*(?:html|head|body|div|span|form|input|button|table|"
+            r"thead|tbody|tr|td|th|p|a|label|fieldset|legend|nav|script|"
+            r"style|textarea|details|summary|progress|h[1-6])(?:[\s>/])",
+            flags=re.IGNORECASE)
+        project = Path(__file__).resolve().parents[1]
+        production_files = sorted([*project.glob("*.py"),
+                                   *(project / "scripts").glob("*.py")])
+        self.assertGreaterEqual(len(production_files), 50)
+        for path in production_files:
+            with self.subTest(source=str(path.relative_to(project))):
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                violations = [(node.lineno, node.value[:90])
+                              for node in ast.walk(tree)
+                              if isinstance(node, ast.Constant)
+                              and isinstance(node.value, str)
+                              and markup.search(node.value)]
+                self.assertEqual(violations, [])
 
     def test_unknown_template_is_rejected(self):
         for name in ("../secrets", "/etc/passwd", "x", "policy.html"):
