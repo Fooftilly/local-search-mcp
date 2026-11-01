@@ -283,7 +283,7 @@ def _history_filter(kind: str, status: str, domain: str,
     return (" WHERE " + " AND ".join(where)) if where else "", args
 
 
-_ENGINE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()\\-]{0,39}\\Z")
+_ENGINE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()\-]{0,39}\Z")
 _ENGINE_SECRETS = re.compile(r"(?i)(?:token|password|secret|bearer|cookie|api.?key)")
 
 
