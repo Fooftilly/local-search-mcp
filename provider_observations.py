@@ -1,8 +1,9 @@
-"""Read-only bounded provider observations from existing private JSONL audit.
+"""Read-only bounded provider observations from private JSONL history.
 
 No raw queries, result titles, URLs, snippets, error payloads, or credentials
-leave this module. No database writes, new provider tracking, or searches.
-These are *observed result sources*, not per-provider uptime/latency metrics.
+leave this report. No database writes or searches are performed here.
+Result source attribution and measured isolated local SearXNG operations are
+separate measurements; neither proves remote provider uptime/latency.
 """
 from __future__ import annotations
 
