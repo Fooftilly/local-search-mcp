@@ -133,11 +133,12 @@ class EnginePacingTests(unittest.TestCase):
         )
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(Path(pacing.__file__).resolve().parent)
-        with subprocess.Popen(
+        child = subprocess.Popen(
             [sys.executable, "-c", child_code], env=environment,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True,
-        ) as child:
+        )
+        try:
             readable, _, _ = select.select([child.stdout], [], [], 5)
             self.assertTrue(readable, "Child admission process did not respond")
             self.assertEqual(child.stdout.readline().strip(), "ADMITTED")
@@ -146,8 +147,17 @@ class EnginePacingTests(unittest.TestCase):
                     pass
             child.stdin.write("\n")
             child.stdin.flush()
-            _, errors = child.communicate(timeout=5)
-            self.assertEqual(child.returncode, 0, errors)
+            child.stdin.close()
+            self.assertEqual(child.wait(timeout=5), 0, child.stderr.read())
+        finally:
+            # An assertion before the stdin write must never hang CI while
+            # Popen's context manager waits on a child blocked in readline.
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+            for stream in (child.stdin, child.stdout, child.stderr):
+                if stream is not None:
+                    stream.close()
         with pacing.reserve("duckduckgo", 0):
             pass
 
