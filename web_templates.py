@@ -12,7 +12,8 @@ _TEMPLATES = {
     name: Template((_DIR / (name + ".html")).read_text(encoding="utf-8"))
     for name in ("policy", "history", "provider-observations", "status", "cache-settings", "portable-settings",
                  "choice-group", "choice-radio", "pending-nav", "pending-prev", "pending-next",
-                 "operations-stat", "operations-unavailable", "service-row", "overview-unavailable")
+                 "operations-stat", "operations-unavailable", "service-row", "overview-unavailable",
+                 "settings-source", "settings-alert", "settings-locked", "history-settings", "upstream-settings")
 }
 
 
