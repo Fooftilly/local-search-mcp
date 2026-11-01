@@ -13,7 +13,9 @@ _TEMPLATES = {
     for name in ("policy", "history", "provider-observations", "status", "cache-settings", "portable-settings",
                  "choice-group", "choice-radio", "pending-nav", "pending-prev", "pending-next",
                  "operations-stat", "operations-unavailable", "service-row", "overview-unavailable",
-                 "settings-source", "settings-alert", "settings-locked", "history-settings", "upstream-settings")
+                 "settings-source", "settings-alert", "settings-locked", "history-settings", "upstream-settings",
+                 "decision-row", "decision-table", "decision-empty", "once-grant-row", "once-grant-table",
+                 "once-grant-empty", "once-audit-row", "once-audit-table", "once-audit-empty")
 }
 
 
