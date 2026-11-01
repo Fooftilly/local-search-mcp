@@ -9,6 +9,7 @@ import secrets
 
 from scripts import searxng_engines as engines
 import request_cache
+from web_templates import render_template
 
 
 def _escape(value: object) -> str:
@@ -60,59 +61,31 @@ def apply_form(fields: dict[str, list[str]]) -> str:
 
 
 def page(csrf: str, *, message: str = "", error: bool = False) -> str:
-    note = ""
-    if message:
-        note = ('<p class="alert ' + ('error' if error else 'success') +
-                '" role="status">' + _escape(message) + '</p>')
+    """Render fixed web templates; data/validation remain separate from HTML."""
+    alert = (render_template("engine-alert",
+                             kind="error" if error else "success",
+                             message=_escape(message)) if message else "")
     try:
         inventory, general, state = snapshot()
-        rows = []
+        options = []
+        available = set(general)
         for item in inventory:
-            if item["name"] not in general:
+            if item["name"] not in available:
                 continue
             name = item["name"]
-            is_google = name.casefold().startswith("google")
-            checked = " checked" if item["enabled"] and not is_google else ""
-            disabled = " disabled" if is_google else ""
-            rows.append(
-                '<label class="choice-option"><input type="checkbox" name="engine" '
-                'value="' + _escape(name) + '"' + checked + disabled +
-                '><span class="choice-text">' + _escape(name) +
-                (' (not eligible: Google)' if is_google else '') +
-                ' · ' + _escape(", ".join(item["categories"])) +
-                '</span></label>')
-        form = (
-            '<form method="post" action="/engine-settings">'
-            '<input type="hidden" name="csrf" value="' + _escape(csrf) + '">'
-            '<input type="hidden" name="state" value="' + _escape(state) + '">'
-            '<fieldset class="choice-field"><legend>Default general-search engines</legend>'
-            '<div class="choice-options">' + "".join(rows) + '</div></fieldset>'
-            '<p>Choose at least one non-Google engine. Flags apply across all '
-            'of each engine\'s categories. Saving the selection restarts the '
-            'verified running SearXNG container and may interrupt searches.</p>'
-            '<label>Type APPLY <input name="confirm" autocomplete="off" '
-            'required></label><button type="submit">Save engine selection</button>'
-            '</form>')
+            google = name.casefold().startswith("google")
+            options.append(render_template(
+                "engine-option", name=_escape(name),
+                checked="checked" if item["enabled"] and not google else "",
+                disabled="disabled" if google else "",
+                restriction=" (not eligible: Google)" if google else "",
+                categories=_escape(", ".join(item["categories"]))))
+        form = render_template(
+            "engine-form", csrf=_escape(csrf), state=_escape(state),
+            rows="".join(options))
     except (engines.EngineSetupError, engines.on_demand_docker.LifecycleError,
             ValueError, OSError) as exc:
-        # Show only vetted, general errors: never display Docker inspection
-        # responses, private YAML, paths or exception arguments.
-        msg = (str(exc) if isinstance(exc, engines.EngineSetupError)
-               else "Engine inventory unavailable")
-        form = '<p role="status">' + _escape(msg) + '</p>'
-    return (
-        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<meta name="referrer" content="no-referrer">'
-        '<title>Local Search MCP — Engine selection</title>'
-        '<link rel="stylesheet" href="/dashboard.css"></head><body><main>'
-        '<h1>Search engine selection</h1>'
-        '<p>This local page reads the running SearXNG engine inventory without '
-        'waking sleeping services. Updates reuse the protected operator setup '
-        'editor, Docker ownership checks, checkpoint and rollback. Explicitly '
-        'selected engines in MCP calls are not changed here.</p>'
-        + note + form +
-        '<p><a href="/engine-settings">Refresh inventory</a> · '
-        '<a href="/status">Service settings</a> · '
-        '<a href="/">Operator workspace</a></p>'
-        '</main></body></html>')
+        detail = (str(exc) if isinstance(exc, engines.EngineSetupError)
+                  else "Engine inventory unavailable")
+        form = render_template("engine-unavailable", message=_escape(detail))
+    return render_template("engine-settings", alert=alert, form=form)
