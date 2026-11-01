@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -16,6 +18,14 @@ PRIVATE_IP = "10.253.91.1"
 CIDR = PRIVATE_IP + "/32"
 TABLE = "lsm_cf_private_endpoint"
 MARKER = Path("/run/local-search-mcp-cloudflare-private.owned")
+INVOCATION_PATTERN = re.compile(r"[a-fA-F0-9]{32}\\Z")
+
+
+def invocation_id() -> str:
+    value = os.environ.get("INVOCATION_ID", "")
+    if not INVOCATION_PATTERN.fullmatch(value):
+        raise RuntimeError("Managed systemd invocation ID required")
+    return value.lower()
 RULES = """add table inet lsm_cf_private_endpoint
 add chain inet lsm_cf_private_endpoint input { type filter hook input priority -150; policy accept; }
 add rule inet lsm_cf_private_endpoint input ip daddr 10.253.91.1 iifname != "lo" drop
@@ -52,6 +62,7 @@ def exists_table() -> bool:
 
 
 def prepare() -> None:
+    invocation = invocation_id()
     # Never modify a pre-existing alias or nft table; another owner or a
     # stale deployment requires explicit inspection and cleanup first.
     if MARKER.exists() or exists_ip() or exists_table():
@@ -66,7 +77,8 @@ def prepare() -> None:
             raise RuntimeError("Cannot install loopback-only private address")
         # Marker is root-owned; no user-writable run-directory is trusted.
         fd = os.open(MARKER, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        os.close(fd)
+        with os.fdopen(fd, "w", encoding="ascii") as marker:
+            marker.write(invocation + "\\n")
     except Exception:
         # Address removal precedes firewall removal: no unprotected address.
         if exists_ip():
@@ -79,8 +91,12 @@ def remove() -> None:
     if not MARKER.exists():
         return
     info = MARKER.lstat()
-    if not MARKER.is_file() or info.st_uid != 0 or info.st_mode & 0o077:
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
         raise RuntimeError("Unexpected ownership of private ingress marker")
+    # ExecStopPost also runs after an unsuccessful ExecStartPre. A different
+    # activation/instance must not remove another service's active ingress.
+    if MARKER.read_text(encoding="ascii") != invocation_id() + "\\n":
+        return
     # Fail closed if deleting the address fails: retain nftables protection.
     if exists_ip():
         result = command("/usr/bin/ip", "-4", "addr", "del", CIDR, "dev", "lo")
