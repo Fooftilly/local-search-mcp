@@ -264,19 +264,15 @@ def _run_search(params: dict, max_results: int, *,
 MAX_SEARCH_CONFIG_BYTES = 512 * 1024
 
 
-def _verify_explicit_search_selection(client: httpx.Client, params: dict) -> dict | None:
-    """Fail closed if explicitly selected engines/categories are unavailable.
+def _enabled_search_inventory(client: httpx.Client, *,
+                              require_categories: bool = False) -> list[dict] | dict:
+    """One bounded loopback inventory read, shared by existing preflight and pacing.
 
-    SearXNG silently ignores unknown engine/category names; an empty valid
-    selection can fall back to default providers. Use only its existing
-    bounded loopback /config read while the on-demand lease is held.
+    Never silently treat missing/ambiguous engine rows as permission to send
+    a default multi-engine search. Category data is validated when required.
     """
-    names = params.get("engines")
-    categories = params.get("categories")
-    if not names and not categories:
-        return None
     failure = {"success": False, "status": "invalid_response", "backend": "searxng",
-               "reason": "Could not validate selected search engines/categories; no search was sent."}
+               "reason": "Could not validate enabled search engines; no search was sent."}
     try:
         with client.stream("GET", f"{SEARXNG_URL}/config") as response:
             if response.status_code != 200:
@@ -290,34 +286,72 @@ def _verify_explicit_search_selection(client: httpx.Client, params: dict) -> dic
     except (httpx.RequestError, UnicodeError, ValueError, TypeError):
         return failure
     engines = payload.get("engines") if isinstance(payload, dict) else None
-    if not isinstance(engines, list) or len(engines) > 512:
+    if not isinstance(engines, list) or not 1 <= len(engines) <= 512:
         return failure
-    active = set()
-    active_categories = set()
+    active = []
+    seen = set()
     for row in engines:
         if not isinstance(row, dict):
             return failure
         name = row.get("name")
-        if (not isinstance(name, str) or not 1 <= len(name) <= 80 or
-                type(row.get("enabled")) is not bool):
+        if (not isinstance(name, str) or not 1 <= len(name) <= 80
+                or type(row.get("enabled")) is not bool or name in seen):
             return failure
-        if row["enabled"]:
-            active.add(name)
-            if categories:
-                groups = row.get("categories")
-                if (not isinstance(groups, list) or not 1 <= len(groups) <= 16
-                        or any(not isinstance(cat, str) or
-                               not 1 <= len(cat) <= 80 or
-                               not cat.isprintable() for cat in groups)):
-                    return failure
-                active_categories.update(groups)
-    if not active:
-        return failure
-    if names and not set(names.split(",")).issubset(active):
+        seen.add(name)
+        if not row["enabled"]:
+            continue
+        categories = ()
+        if require_categories:
+            groups = row.get("categories")
+            if (not isinstance(groups, list) or not 1 <= len(groups) <= 16
+                    or any(not isinstance(cat, str) or
+                           not 1 <= len(cat) <= 80 or
+                           not cat.isprintable() for cat in groups)):
+                return failure
+            categories = tuple(groups)
+        active.append({"name": name, "categories": categories})
+    return active if active else failure
+
+
+def _verify_explicit_search_selection(client: httpx.Client, params: dict) -> dict | None:
+    """Fail closed for unknown/disabled explicit engines and categories."""
+    names = params.get("engines")
+    categories = params.get("categories")
+    if not names and not categories:
+        return None
+    active = _enabled_search_inventory(client, require_categories=bool(categories))
+    if isinstance(active, dict):
+        return active
+    enabled_names = {row["name"] for row in active}
+    active_categories = {cat for row in active for cat in row["categories"]}
+    if names and not set(names.split(",")).issubset(enabled_names):
         raise ValueError("Requested search engine is unknown or disabled in SearXNG")
     if categories and not set(categories.split(",")).issubset(active_categories):
         raise ValueError("Requested search category is unknown or has no enabled engines in SearXNG")
     return None
+
+
+def _paced_general_candidates(client: httpx.Client, policy: dict[str, int]) -> list[str] | dict:
+    """Choose only known enabled general providers from the operator policy.
+
+    Stable lexicographic priority provides deterministic cold-start selection;
+    the admission loop can skip providers already cooling down or busy. This
+    is not adaptive quality ranking, and no provider is enabled by this read.
+    """
+    active = _enabled_search_inventory(client, require_categories=True)
+    if isinstance(active, dict):
+        return active
+    eligible = sorted((
+        row["name"] for row in active
+        if "general" in row["categories"]
+        and row["name"].casefold() in policy
+        and not row["name"].casefold().startswith("google")
+    ), key=str.casefold)
+    if not eligible:
+        return {"success": False, "status": "pacing_selection_required",
+                "backend": "searxng",
+                "reason": "No enabled general search engine is covered by the pacing policy."}
+    return eligible
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
@@ -476,6 +510,8 @@ def _run_search_network(params: dict, max_results: int, *,
     initial_failure = None
     isolated_engine = None
     attempted_engine = None
+    # Internal paced-default engine selection is not a caller-supplied filter.
+    caller_supplied_filters = len(params) > 2
     try:
         pacing_policy = engine_pacing.policy()
     except (OSError, ValueError):
@@ -483,57 +519,85 @@ def _run_search_network(params: dict, max_results: int, *,
                 "backend": "searxng",
                 "reason": "Engine pacing settings are unavailable; no search was sent."}
     selected_engine = None
+    paced_default = False
     if pacing_policy is not None:
-        # Never let aggregate fanout, categories or !bangs bypass per-engine
-        # slots. The opt-in pilot supports only one explicitly selected engine
-        # already included in the operator's private policy.
+        # Pacing applies to exactly one verified engine at the network edge.
+        # Default general searches can select among enabled policy members;
+        # category and !bang semantics cannot safely be rewritten as an
+        # engine selector (SearXNG combines engine+category as a UNION).
         engine = params.get("engines")
-        if (not isinstance(engine, str) or not engine or "," in engine
-                or params.get("categories")
+        if (params.get("categories") or (engine and "," in engine)
                 or re.search(r"(?<!\S)![^\s]+", params.get("q", ""))):
             return {"success": False, "status": "pacing_selection_required",
                     "backend": "searxng",
-                    "reason": "Pacing is enabled: select one policy-listed engine. "
-                              "Combined, category and bang searches are not supported."}
-        if engine.casefold() not in pacing_policy:
-            return {"success": False, "status": "pacing_selection_required",
-                    "backend": "searxng",
-                    "reason": "Selected engine is not covered by the active pacing policy."}
-        selected_engine = engine
+                    "reason": "Pacing requires one policy-listed engine or an unfiltered "
+                              "default general search; category, multi-engine and bang "
+                              "searches are not supported."}
+        if engine:
+            if engine.casefold() not in pacing_policy:
+                return {"success": False, "status": "pacing_selection_required",
+                        "backend": "searxng",
+                        "reason": "Selected engine is not covered by the active pacing policy."}
+            selected_engine = engine
+        else:
+            # Optional language/time/page filters are not known to be
+            # supported by every eligible engine. Until the installed
+            # inventory proves those capabilities, do not reinterpret them.
+            if any(key in params for key in ("language", "time_range", "pageno")):
+                return {"success": False, "status": "pacing_selection_required",
+                        "backend": "searxng",
+                        "reason": "Automatic paced routing requires an unfiltered "
+                                  "default general search; select one engine "
+                                  "explicitly for language, time or paging filters."}
+            paced_default = True
     with httpx.Client(timeout=upstream_settings.effective_timeout("searxng_seconds"),
                       trust_env=False) as client:
-        selection_failure = _verify_explicit_search_selection(client, params)
-        if selection_failure is not None:
-            return selection_failure
+        if paced_default:
+            candidates = _paced_general_candidates(client, pacing_policy)
+            if isinstance(candidates, dict):
+                return candidates
+        else:
+            selection_failure = _verify_explicit_search_selection(client, params)
+            if selection_failure is not None:
+                return selection_failure
         started_search = time.monotonic()
-        if selected_engine is None:
+        if pacing_policy is None:
             response = _retry_request(lambda: client.get(
                 f"{SEARXNG_URL}/search", params=params))
         else:
-            try:
-                with engine_pacing.reserve(
-                        selected_engine, pacing_policy[selected_engine.casefold()]):
-                    try:
-                        # One admitted network operation only. A hidden GET retry
-                        # could exceed the engine's minimum request spacing.
-                        response = client.get(f"{SEARXNG_URL}/search", params=params)
-                    except httpx.RequestError:
-                        response = None
-            except engine_pacing.PaceUnavailable as exc:
-                cooled = bool(exc.retry_after_seconds)
-                return {"success": False,
-                        "status": "rate_limited" if cooled else "pacing_unavailable",
+            # Try another *already approved* general engine only if no
+            # network request was admitted. Never retry or fail over after
+            # starting /search, even if that request fails.
+            wait_hints = []
+            for engine in (candidates if paced_default else [selected_engine]):
+                try:
+                    with engine_pacing.reserve(
+                            engine, pacing_policy[engine.casefold()]):
+                        params = dict(params, engines=engine)
+                        try:
+                            response = client.get(f"{SEARXNG_URL}/search", params=params)
+                        except httpx.RequestError:
+                            response = None
+                        break
+                except engine_pacing.PaceUnavailable as exc:
+                    if not exc.retry_after_seconds:
+                        return {"success": False, "status": "pacing_unavailable",
+                                "backend": "searxng",
+                                "reason": "Engine pacing state is unavailable."}
+                    wait_hints.append(exc.retry_after_seconds)
+                except OSError:
+                    return {"success": False, "status": "pacing_unavailable",
+                            "backend": "searxng",
+                            "reason": "Engine pacing reservation unavailable; no search was sent."}
+            else:
+                return {"success": False, "status": "rate_limited",
                         "backend": "searxng",
-                        "reason": ("Selected engine is cooling down or busy."
-                                   if cooled else "Engine pacing state is unavailable."),
-                        "retry_after_seconds": exc.retry_after_seconds}
-            except OSError:
-                return {"success": False, "status": "pacing_unavailable",
-                        "backend": "searxng",
-                        "reason": "Engine pacing reservation unavailable; no search was sent."}
+                        "reason": "All permitted general engines are cooling down or busy."
+                                  if paced_default else "Selected engine is cooling down or busy.",
+                        "retry_after_seconds": min(wait_hints)}
         isolated_engine_observations.observe(
             params, response, (time.monotonic() - started_search) * 1000,
-            source="explicit")
+            source="paced_default" if paced_default else "explicit")
         # SearXNG can return HTTP 200 with no hits when its providers have
         # failed. Recover once, preserving the request or narrowing an
         # unrestricted default to an already-attempted, enabled engine.
@@ -577,7 +641,7 @@ def _run_search_network(params: dict, max_results: int, *,
                         (time.monotonic() - retry_started) * 1000,
                         source=("isolated_recovery" if isolated is not None
                                 else "explicit"))
-    if response is not None and response.status_code in (400, 422) and len(params) > 2:
+    if response is not None and response.status_code in (400, 422) and caller_supplied_filters:
         raise ValueError("Local SearXNG rejected the requested filters or page")
     if response is None and pacing_policy is not None:
         return {"success": False, "status": "upstream_unavailable",

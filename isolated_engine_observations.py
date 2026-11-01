@@ -14,7 +14,7 @@ from time import monotonic
 _ACTIVE: ContextVar[list[dict] | None] = ContextVar("mcp_isolated_search_observations", default=None)
 _ENGINE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()\-]{0,39}\Z")
 _SECRET = re.compile(r"(?i)(?:token|password|secret|bearer|cookie|api.?key)")
-_ALLOWED_SOURCE = frozenset(("explicit", "isolated_recovery"))
+_ALLOWED_SOURCE = frozenset(("explicit", "isolated_recovery", "paced_default"))
 _ALLOWED_OUTCOME = frozenset(("results", "empty", "reported_unresponsive",
                               "http_error", "transport_error", "invalid_response",
                               "unverified_attribution"))

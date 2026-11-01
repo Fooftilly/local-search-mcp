@@ -34,31 +34,36 @@ class PacedSearchBoundaryTests(unittest.TestCase):
             {"title": "Public", "url": "https://docs.python.org/3/",
              "engine": "duckduckgo"}], "unresponsive_engines": []})
 
-    def policy(self, enabled=True):
+    def policy(self, enabled=True, entries=None):
         self.config.mkdir(mode=0o700, exist_ok=True)
         path = self.config / engine_pacing.FILENAME
+        entries = {"duckduckgo": 60} if entries is None else entries
         path.write_text(json.dumps({
             "schema": engine_pacing.SCHEMA, "enabled": enabled,
-            "engines": {"duckduckgo": {"min_spacing_seconds": 60}},
+            "engines": {name: {"min_spacing_seconds": gap}
+                        for name, gap in entries.items()},
         }))
         path.chmod(0o600)
         return path
 
-    def execute(self, query="public example", **kwargs):
+    def execute(self, query="public example", *, batch=False, **kwargs):
         original = httpx.Client
 
         def handler(request):
             self.calls.append((request.url.path, dict(request.url.params)))
             if request.url.path == "/config":
-                return httpx.Response(200, json={"engines": [
-                    {"name": "duckduckgo", "enabled": True,
-                     "categories": ["general"]},
-                    {"name": "qwant", "enabled": True,
-                     "categories": ["general"]},
-                ]})
+                return (self.inventory_response if hasattr(self, "inventory_response")
+                        else httpx.Response(200, json={"engines": [
+                            {"name": "duckduckgo", "enabled": True,
+                             "categories": ["general"]},
+                            {"name": "qwant", "enabled": True,
+                             "categories": ["general"]},
+                        ]}))
             self.assertEqual(request.url.path, "/search")
             if isinstance(self.search_response, Exception):
                 raise self.search_response
+            if callable(self.search_response):
+                return self.search_response(request)
             return self.search_response
 
         def client_factory(**kwargs):
@@ -67,6 +72,8 @@ class PacedSearchBoundaryTests(unittest.TestCase):
               patch.object(bridge.on_demand, "lease",
                            side_effect=lambda _: nullcontext()),
               patch.object(bridge.time, "sleep", return_value=None)):
+            if batch:
+                return asyncio.run(bridge.web_search_batch([query], fresh=True, **kwargs))
             return bridge.web_search(query, fresh=True, **kwargs)
 
     def test_disabled_policy_preserves_search_default(self):
@@ -91,7 +98,7 @@ class PacedSearchBoundaryTests(unittest.TestCase):
 
     def test_ambiguous_requests_do_not_query_searxng(self):
         self.policy()
-        for arguments in ({}, {"categories": "general"},
+        for arguments in ({"categories": "general"},
                           {"engines": "duckduckgo,qwant"},
                           {"engines": "qwant"}):
             with self.subTest(arguments=arguments):
@@ -99,6 +106,97 @@ class PacedSearchBoundaryTests(unittest.TestCase):
                 result = self.execute(**arguments)
                 self.assertEqual(result["status"], "pacing_selection_required")
                 self.assertEqual(self.calls, [])
+
+    def test_auto_routing_does_not_guess_optional_filter_support(self):
+        self.policy()
+        for options in ({"language": "en"}, {"time_range": "month"},
+                        {"page": 2}):
+            with self.subTest(options=options):
+                self.calls.clear()
+                result = self.execute(**options)
+                self.assertEqual(result["status"], "pacing_selection_required")
+                self.assertEqual(self.calls, [])
+
+    def test_paced_default_routes_only_to_verified_general_engine(self):
+        self.policy(entries={"duckduckgo": 60})
+        with patch.object(bridge.isolated_engine_observations, "observe",
+                          wraps=bridge.isolated_engine_observations.observe) as observed:
+            result = self.execute()
+        self.assertIsInstance(result, list)
+        self.assertEqual([path for path, _ in self.calls], ["/config", "/search"])
+        self.assertEqual(self.calls[-1][1]["engines"], "duckduckgo")
+        self.assertNotIn("categories", self.calls[-1][1])
+        self.assertEqual(observed.call_args.kwargs["source"], "paced_default")
+
+    def test_paced_default_skips_cooling_engine_without_extra_searches(self):
+        self.policy(entries={"duckduckgo": 60, "qwant": 60})
+        def answer(request):
+            engine = request.url.params["engines"]
+            return httpx.Response(200, json={"results": [
+                {"title": "Public", "url": "https://docs.python.org/3/",
+                 "engine": engine}], "unresponsive_engines": []})
+        self.search_response = answer
+        first = self.execute()
+        second = self.execute()
+        third = self.execute()
+        self.assertIsInstance(first, list)
+        self.assertIsInstance(second, list)
+        self.assertEqual(third["status"], "rate_limited")
+        self.assertGreater(third["retry_after_seconds"], 0)
+        self.assertEqual([params["engines"] for path, params in self.calls
+                          if path == "/search"], ["duckduckgo", "qwant"])
+        self.assertEqual([path for path, _ in self.calls],
+                         ["/config", "/search", "/config", "/search", "/config"])
+
+    def test_paced_default_no_eligible_general_engine_fails_closed(self):
+        self.policy(entries={"qwant": 15})
+        self.inventory_response = httpx.Response(200, json={"engines": [
+            {"name": "qwant", "enabled": True, "categories": ["images"]},
+            {"name": "duckduckgo", "enabled": True, "categories": ["general"]}]})
+        result = self.execute()
+        self.assertEqual(result["status"], "pacing_selection_required")
+        self.assertEqual([path for path, _ in self.calls], ["/config"])
+
+    def test_bad_paced_inventory_fails_before_provider_search(self):
+        self.policy()
+        for payload in ({"engines": [{"name": "duckduckgo", "enabled": True}]},
+                        {"engines": [{"name": "duckduckgo", "enabled": True,
+                                       "categories": ["general"]},
+                                      {"name": "duckduckgo", "enabled": True,
+                                       "categories": ["general"]}]},
+                        {"engines": "untrusted"}):
+            with self.subTest(payload=payload):
+                self.calls.clear()
+                self.inventory_response = httpx.Response(200, json=payload)
+                result = self.execute()
+                self.assertEqual(result["status"], "invalid_response")
+                self.assertEqual([path for path, _ in self.calls], ["/config"])
+
+    def test_unfiltered_paced_rejection_remains_structured_for_direct_and_batch(self):
+        for batch in (False, True):
+            with self.subTest(batch=batch):
+                for state in self.config.glob(".engine-pacing-*.json"):
+                    state.unlink()
+                self.calls.clear()
+                self.policy()
+                self.search_response = httpx.Response(400)
+                output = self.execute(batch=batch)
+                if batch:
+                    self.assertFalse(output["success"])
+                    self.assertEqual(output["results"][0]["status"], "upstream_rejected")
+                else:
+                    self.assertEqual(output["status"], "upstream_rejected")
+                    self.assertEqual(output["http_status"], 400)
+                self.assertEqual([p for p, _ in self.calls], ["/config", "/search"])
+
+    def test_paced_default_one_failed_search_does_not_try_next_engine(self):
+        self.policy(entries={"duckduckgo": 60, "qwant": 0})
+        self.search_response = httpx.ConnectError("PRIVATE ERROR")
+        result = self.execute()
+        self.assertEqual(result["status"], "upstream_unavailable")
+        self.assertNotIn("PRIVATE ERROR", str(result))
+        self.assertEqual([path for path, _ in self.calls], ["/config", "/search"])
+        self.assertEqual(self.calls[-1][1]["engines"], "duckduckgo")
 
     def test_bang_shortcut_refused_with_pacing(self):
         self.policy()
@@ -166,6 +264,10 @@ class PacedSearchBoundaryTests(unittest.TestCase):
         def client_factory(**kwargs):
             def handler(request):
                 self.calls.append(request.url.path)
+                if request.url.path == "/config":
+                    return httpx.Response(200, json={"engines": [
+                        {"name": "duckduckgo", "enabled": True,
+                         "categories": ["general"]}]})
                 return self.search_response
             return original(transport=httpx.MockTransport(handler), trust_env=False)
         with (patch.object(bridge.httpx, "Client", side_effect=client_factory),
@@ -175,8 +277,8 @@ class PacedSearchBoundaryTests(unittest.TestCase):
             self.assertIsInstance(first, list)
             self.policy()
             second = bridge.web_search("cache topic", fresh=False)
-        self.assertEqual(second["status"], "pacing_selection_required")
-        self.assertEqual(self.calls, ["/search"])
+        self.assertIsInstance(second, list)
+        self.assertEqual(self.calls, ["/search", "/config", "/search"])
 
 
 if __name__ == "__main__":

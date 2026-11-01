@@ -411,14 +411,14 @@ The local `/provider-observations` console now includes a separate
 **Individually selected local SearXNG searches** table. This tracks up to
 three bounded, nonsecret /search operation records per search-tool call, but
 **only** when the MCP actually invokes the local SearXNG search endpoint
-with exactly one engine. It includes explicit `engines=duckduckgo` style
-requests and an already-eligible isolated recovery attempt. Ordinary default
-fanout searches, validation rejects and cache hits do **not** create
+with exactly one engine. It includes explicit `engines=duckduckgo` requests,
+eligible isolated recovery attempts, and opt-in paced default routing.
+Ordinary unrestricted default fanout searches, validation rejects and cache hits do **not** create
 per-engine attempts.
 
 The private JSONL history retains the full validated search query as before;
-the new operation records contain only the engine label, explicit/recovery
-selection source, coarse upstream-row/empty/upstream-error outcome and measured
+the new operation records contain only the engine label, explicit/recovery/
+paced-default selection source, coarse upstream-row/empty/upstream-error outcome and measured
 local /search operation duration. No response exception text, headers, API
 tokens, result contents or provider URLs are added to telemetry. The duration
 includes local SearXNG overhead and any transport retries and **is not**
@@ -431,21 +431,31 @@ or rate-limit engines yet. Older records cannot be retroactively attributed.
 ## Opt-in isolated engine pacing (initial integration)
 
 The bridge now enforces an operator-owned, **disabled-by-default** pacing policy
-for explicitly selected *single* engines. The private file
+for individually verified engines, including explicit single-engine requests
+and automatically selected engines for unfiltered default general searches.
+The private file
 `~/.config/local-search-mcp/engine-pacing.json` must contain the exact
 `local-search-mcp/engine-pacing/v1` schema and owner-only permissions.
 This is an opt-in pilot: the guarded management-console editor below
 writes only the bridge's private pacing policy. SearXNG engine flags are
 managed separately by the existing setup wizard and engine-selection page.
 
-When the file is absent or `enabled=false`, all normal search behavior,
-including combined default requests, existing retry/recovery and search
-caching, is unchanged. When `enabled=true`, only a single explicitly selected
-engine present in the policy can be queried. The existing bounded SearXNG
-`/config` verification still requires that engine to be enabled. Default
-fanout, category filters, !bang shortcuts, multiple explicit engines, and
-unlisted providers **fail closed before any provider search** rather than
-silently sending traffic to unmetered engines or substituting another engine.
+When the file is absent or `enabled=false`, ordinary requests retain
+their previous combined-default behavior, retries/recovery and caching.
+With an enabled policy, an **unfiltered default general query** (no
+optional language, date-range or page selector) selects
+one eligible, enabled general engine from the policy using a bounded local
+SearXNG `/config` read and deterministic name ordering. A second candidate
+may be used only when the first has not been admitted because of an existing
+cooldown/lock. No fallback happens *after* a provider request starts.
+Optional language, time-range and page settings on an automatic default
+search also fail closed until support can be verified per eligible engine;
+such filters remain usable with explicitly selected engines.
+Explicit single-engine requests still require exact SearXNG verification
+and a policy entry. Category filters, !bang shortcuts, multiple explicit
+engines, and unlisted providers **fail closed** rather than silently sending
+unmetered traffic. Category requests remain unsupported because SearXNG
+treats engines+categories as a union and rewriting them would change scope.
 The bridge returns `pacing_selection_required` for those unsupported
 selectors, `rate_limited` with a bounded retry hint for busy/cooling-down
 engines, or `pacing_unavailable` for an invalid/unsafe settings file.
@@ -455,7 +465,7 @@ one local SearXNG `/search` request, without a hidden GET retry or recovery
 attempt. With pacing enabled, result caching is skipped to prevent reusing
 unrestricted responses from before activation. An enabled policy can therefore
 reduce search availability; it does not yet automatically choose a provider,
-balance fanout searches, offer per-provider parallelism above one, or prove
+balance multi-engine searches, offer parallelism above one per engine, or prove
 third-party provider rate limits. The rate values are operator heuristics,
 not documented remote quotas. The guarded editor below is available
 for staged policy edits, but live enablement requires attended acceptance
@@ -483,8 +493,10 @@ a compare-and-swap revision token, strict confirmation (`ENABLE`,
 `DISABLE` or `APPLY`), private owner-only files, a cross-process lock
 and an atomic fsynced replacement. Concurrent stale saves fail safely.
 
-**Enabling pacing currently restricts MCP searches to one explicit,
-policy-listed engine.** Default fanout, categories and !bangs are rejected
-rather than rate-limited incorrectly. Confirm the intended change and
+**Enabling pacing restricts every outbound search to one verified,
+policy-listed engine.** Unfiltered default general queries now choose an
+eligible provider without contacting multiple engines. Categories,
+multi-engine explicit requests and !bangs are still rejected to avoid
+changing scope or bypassing limits. Confirm the intended change and
 attend host acceptance before enabling; this editor does not by itself
 make multiple providers eligible, infer provider quotas or select engines.
