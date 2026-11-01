@@ -77,7 +77,7 @@ class PacingEditorSettingsTests(unittest.TestCase):
 
     def test_evidence_routing_requires_explicit_adapt_confirmation(self):
         # A staged disabled policy remains inert and uses APPLY.
-        self.apply(rules="duckduckgo=15\\nbrave=60", routing="evidence")
+        self.apply(rules="duckduckgo=15\nbrave=60", routing="evidence")
         self.assertEqual(editor.snapshot()["routing"], "evidence")
         self.assertIsNone(engine_pacing.policy())
         # The same-policy ENABLE confirmation may not silently activate evidence.
@@ -85,17 +85,17 @@ class PacingEditorSettingsTests(unittest.TestCase):
                           return_value=(INVENTORY, ("duckduckgo", "brave"), "state")):
             with self.assertRaisesRegex(ValueError, "ADAPT"):
                 editor.apply_form(self.form(enabled=True,
-                                 rules="duckduckgo=15\\nbrave=60",
+                                 rules="duckduckgo=15\nbrave=60",
                                  routing="evidence", confirm="ENABLE"))
             editor.apply_form(self.form(enabled=True,
-                              rules="duckduckgo=15\\nbrave=60",
+                              rules="duckduckgo=15\nbrave=60",
                               routing="evidence", confirm="ADAPT"))
         self.assertEqual(engine_pacing.configuration()[1], "evidence")
         self.assertEqual(engine_pacing.policy()["duckduckgo"], 15)
         # Disable remains possible while backend is asleep.
         with patch.object(editor.engine_dashboard, "snapshot",
                           side_effect=AssertionError("must not wake")):
-            editor.apply_form(self.form(rules="duckduckgo=15\\nbrave=60",
+            editor.apply_form(self.form(rules="duckduckgo=15\nbrave=60",
                                        routing="fixed", confirm="DISABLE"))
         self.assertIsNone(engine_pacing.policy())
         self.assertEqual(editor.snapshot()["routing"], "fixed")
