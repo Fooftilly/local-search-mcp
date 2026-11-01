@@ -109,9 +109,9 @@ class DashboardTemplateTests(unittest.TestCase):
     def test_python_dashboard_components_do_not_embed_web_markup(self):
         """Web markup belongs in dedicated files, not Python strings."""
         markup = re.compile(
-            r"<\\s*/?\\s*(?:html|head|body|div|span|form|input|button|table|"
+            r"<\s*/?\s*(?:html|head|body|div|span|form|input|button|table|"
             r"thead|tbody|tr|td|th|p|a|label|fieldset|legend|nav|script|"
-            r"style|textarea|details|summary|progress|h[1-6])(?:[\\s>/])",
+            r"style|textarea|details|summary|progress|h[1-6])(?:[\s>/])",
             flags=re.IGNORECASE)
         for source in ("admin_ui.py", "engine_dashboard.py", "web_templates.py"):
             path = Path(__file__).resolve().parents[1] / source
