@@ -318,9 +318,26 @@ def _verify_google_inventory(rows: list[dict], expected: tuple[str, ...], *,
             "A Google engine remained enabled after restart")
 
 
+def inventory_state(rows: list[dict], source: str) -> str:
+    """Versioned digest for a browser preview, never engine configuration data.
+
+    A dashboard form becomes stale after a manual YAML edit, external engine
+    selection change, or backend restart with different /config inventory.
+    """
+    snapshot = sorted(
+        (row["name"], bool(row["enabled"]), sorted(row["categories"]))
+        for row in rows)
+    payload = json.dumps(snapshot, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256((source + "\\n" + payload).encode("utf-8")).hexdigest()
+
+
 def apply(selected: tuple[str, ...], controlled: tuple[str, ...], *,
-          exclude_google: bool = False) -> str:
-    """One confirmed config change, serialized with project-owned Docker."""
+          exclude_google: bool = False, expected_state: str | None = None) -> str:
+    """One confirmed config change, serialized with project-owned Docker.
+
+    Optional dashboard stale-state check runs INSIDE the exclusive lock, before
+    creating a checkpoint or touching the verified bind-mounted settings.
+    """
     if os.geteuid() == 0:
         raise EngineSetupError("Run setup as the normal user")
     with on_demand_coordination.exclusive():
@@ -330,6 +347,20 @@ def apply(selected: tuple[str, ...], controlled: tuple[str, ...], *,
         if _recovery_path(path).exists():
             raise EngineSetupError("Interrupted edit detected; recover through the setup menu first")
         original = _read_settings(path)
+        if expected_state is not None:
+            if (not isinstance(expected_state, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", expected_state) is None
+                    or not target.running):
+                raise EngineSetupError("Engine selection preview is invalid or stale")
+            verified_inventory = live_engines()
+            if inventory_state(verified_inventory, original) != expected_state:
+                raise StaleSettings("Engine inventory or settings changed since preview")
+            general = {row["name"] for row in verified_inventory
+                       if "general" in row["categories"]}
+            if (not general or set(controlled) != general
+                    or not selected or not set(selected).issubset(general)
+                    or any(name.casefold().startswith("google") for name in selected)):
+                raise EngineSetupError("Invalid general engine selection")
         if exclude_google:
             # The wizard's global Google exclusion must be based on the
             # current owned, running backend, not a stale menu snapshot.
