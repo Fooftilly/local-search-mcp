@@ -10,7 +10,9 @@ from string import Template
 _DIR = Path(__file__).resolve().parent / "web" / "templates"
 _TEMPLATES = {
     name: Template((_DIR / (name + ".html")).read_text(encoding="utf-8"))
-    for name in ("policy", "history", "provider-observations", "status", "cache-settings", "portable-settings")
+    for name in ("policy", "history", "provider-observations", "status", "cache-settings", "portable-settings",
+                 "choice-group", "choice-radio", "pending-nav", "pending-prev", "pending-next",
+                 "operations-stat", "operations-unavailable", "service-row", "overview-unavailable")
 }
 
 
