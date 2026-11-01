@@ -60,7 +60,7 @@ class RoutingPreflightTests(unittest.TestCase):
         self.assertTrue(result["history_complete"])
         self.assertEqual(result["plans"][0]["fixed"], ["duckduckgo", "qwant"])
         self.assertEqual(result["plans"][0]["evidence"], ["qwant", "duckduckgo"])
-        self.assertEqual(result["plans"][0]["effective"], ["qwant", "duckduckgo"])
+        self.assertEqual(result["plans"][0]["effective_if_enabled"], ["qwant", "duckduckgo"])
         self.assertEqual(result["plans"][1]["scope"], "images")
         self.assertEqual(result["plans"][1]["fixed"], ["bing images"])
         self.assertEqual(result["configured_but_unavailable"], ["disabled"])
@@ -71,12 +71,12 @@ class RoutingPreflightTests(unittest.TestCase):
 
     def test_fixed_mode_and_incomplete_history_keep_name_order(self):
         fixed = self._run(routing="fixed")
-        self.assertEqual(fixed["plans"][0]["effective"], ["duckduckgo", "qwant"])
+        self.assertEqual(fixed["plans"][0]["effective_if_enabled"], ["duckduckgo", "qwant"])
         self.assertTrue(fixed["plans"][0]["evidence_eligible"])
         incomplete = {**history(), "retention_or_scan_limited": True}
         fallback = self._run(observed=incomplete)
         self.assertFalse(fallback["plans"][0]["evidence_eligible"])
-        self.assertEqual(fallback["plans"][0]["effective"], ["duckduckgo", "qwant"])
+        self.assertEqual(fallback["plans"][0]["effective_if_enabled"], ["duckduckgo", "qwant"])
         missing = {**history()}
         missing["isolated_engine_operations"] = missing["isolated_engine_operations"][:1]
         self.assertFalse(self._run(observed=missing)["plans"][0]["evidence_eligible"])
@@ -98,12 +98,12 @@ class RoutingPreflightTests(unittest.TestCase):
     def test_missing_or_unsafe_policy_cannot_trigger_provider_call(self):
         for outcome in ({"enabled": False, "engines": {}, "routing": "fixed"},
                         ValueError("PRIVATE_SETTINGS")):
-            with self.subTest(outcome=str(type(outcome))), (
-                    patch.object(preflight.engine_pacing_dashboard, "snapshot",
-                                 side_effect=outcome if isinstance(outcome, Exception) else None,
-                                 return_value=outcome if isinstance(outcome, dict) else None),
-                    patch.object(preflight.engine_dashboard, "snapshot",
-                                 side_effect=AssertionError("must not call"))):
+            with (self.subTest(outcome=str(type(outcome))),
+                  patch.object(preflight.engine_pacing_dashboard, "snapshot",
+                               side_effect=outcome if isinstance(outcome, Exception) else None,
+                               return_value=outcome if isinstance(outcome, dict) else None),
+                  patch.object(preflight.engine_dashboard, "snapshot",
+                               side_effect=AssertionError("must not call"))):
                 result = preflight.report()
             self.assertIn(result["status"], ("no_configured_engines", "invalid_policy"))
             self.assertEqual(result["searches_sent"], 0)

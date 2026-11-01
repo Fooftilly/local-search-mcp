@@ -22,7 +22,7 @@ def _plan(names: list[str], config: dict[str, int], history: dict | None,
     """Compare fixed name order with fully qualified, provisional evidence."""
     fixed = list(names)
     result = {
-        "fixed": fixed, "evidence": fixed, "effective": fixed,
+        "fixed": fixed, "evidence": fixed, "effective_if_enabled": fixed,
         "evidence_eligible": False, "qualifying_engines": 0,
         "eligible_engines": len(fixed),
     }
@@ -40,7 +40,7 @@ def _plan(names: list[str], config: dict[str, int], history: dict | None,
                 result["evidence"] = ranked
                 result["evidence_eligible"] = True
                 if mode == "evidence":
-                    result["effective"] = ranked
+                    result["effective_if_enabled"] = ranked
     except (TypeError, ValueError, KeyError):
         pass
     return result
