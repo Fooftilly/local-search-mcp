@@ -19,11 +19,17 @@ class SearchRecoveryTests(unittest.TestCase):
             return original(transport=httpx.MockTransport(handler), trust_env=False)
         return factory
 
-    def test_empty_reported_failure_recovers_same_query_with_diagnostic(self):
+    def test_empty_reported_failure_isolates_attempted_enabled_engine(self):
         requests = []
         def handler(request):
-            requests.append(dict(request.url.params))
-            if len(requests) == 1:
+            requests.append((request.url.path, dict(request.url.params)))
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": [
+                    {"name": "duckduckgo", "enabled": True,
+                     "categories": ["general"]},
+                    {"name": "qwant", "enabled": True, "categories": ["general"]},
+                ]})
+            if len([path for path, _ in requests if path == "/search"]) == 1:
                 return httpx.Response(200, json={
                     "results": [],
                     "unresponsive_engines": [["duckduckgo", "PRIVATE_TOKEN_AND_URL"]],
@@ -37,18 +43,87 @@ class SearchRecoveryTests(unittest.TestCase):
               patch.object(bridge.time, "sleep", return_value=None)):
             result = bridge.web_search("Python documentation", include_search_status=True)
         self.assertEqual(requests, [
-            {"q": "Python documentation", "format": "json"},
-            {"q": "Python documentation", "format": "json"},
+            ("/search", {"q": "Python documentation", "format": "json"}),
+            ("/config", {}),
+            ("/search", {"q": "Python documentation", "format": "json",
+                         "engines": "duckduckgo"}),
         ])
         self.assertTrue(result["success"])
         self.assertEqual(result["status"], "degraded")
         self.assertEqual(result["results"][0]["engine"], "duckduckgo")
         recovery = result["search_status"]["recovery"]
-        self.assertEqual(recovery["attempted"], True)
-        self.assertEqual(recovery["recovered"], True)
+        self.assertTrue(recovery["attempted"])
+        self.assertTrue(recovery["recovered"])
+        self.assertEqual(recovery["strategy"], "isolated_engine")
+        self.assertEqual(recovery["engine"], "duckduckgo")
         self.assertEqual(recovery["first_attempt"]["unresponsive_engines"],
                          ["duckduckgo"])
         self.assertNotIn("PRIVATE_TOKEN_AND_URL", str(result))
+
+    def test_unavailable_fallback_inventory_preserves_same_query_retry(self):
+        requests = []
+        def handler(request):
+            requests.append((request.url.path, dict(request.url.params)))
+            if request.url.path == "/config":
+                return httpx.Response(503, json={"private": "SECRET"})
+            return httpx.Response(200, json={
+                "results": [],
+                "unresponsive_engines": [["duckduckgo", "PRIVATE_ERROR"]],
+            })
+        with (patch.object(bridge.httpx, "Client", side_effect=self.client_for(handler)),
+              patch.object(bridge.on_demand, "lease", side_effect=lambda _: nullcontext()),
+              patch.object(bridge.time, "sleep", return_value=None)):
+            output = bridge.web_search("Python", include_search_status=True)
+        self.assertEqual([p for p, _ in requests],
+                         ["/search", "/config", "/search"])
+        self.assertEqual(requests[0][1], requests[2][1])
+        self.assertEqual(output["status"], "upstream_unavailable")
+        self.assertEqual(output["search_status"]["recovery"]["strategy"],
+                         "same_query")
+        self.assertNotIn("PRIVATE_ERROR", str(output))
+
+    def test_bang_shortcut_never_triggers_isolated_provider(self):
+        requests = []
+        def handler(request):
+            requests.append(dict(request.url.params))
+            return httpx.Response(200, json={
+                "results": [], "unresponsive_engines": [["duckduckgo", "timeout"]],
+            })
+        with (patch.object(bridge.httpx, "Client", side_effect=self.client_for(handler)),
+              patch.object(bridge.on_demand, "lease", side_effect=lambda _: nullcontext()),
+              patch.object(bridge.time, "sleep", return_value=None)):
+            answer = bridge.web_search("Python !ddg", include_search_status=True)
+        self.assertEqual(requests, [
+            {"q": "Python !ddg", "format": "json"},
+            {"q": "Python !ddg", "format": "json"},
+        ])
+        self.assertEqual(answer["search_status"]["recovery"]["strategy"],
+                         "same_query")
+
+    def test_isolated_provider_mismatch_fails_closed(self):
+        requests = []
+        def handler(request):
+            requests.append((request.url.path, dict(request.url.params)))
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": [
+                    {"name": "duckduckgo", "enabled": True,
+                     "categories": ["general"]},
+                ]})
+            if len([path for path, _ in requests if path == "/search"]) == 1:
+                return httpx.Response(200, json={
+                    "results": [], "unresponsive_engines": [["duckduckgo", "timeout"]],
+                })
+            return httpx.Response(200, json={"results": [{
+                "title": "Unexpected", "url": "https://example.org/",
+                "engine": "google", "engines": ["google"],
+            }]})
+        with (patch.object(bridge.httpx, "Client", side_effect=self.client_for(handler)),
+              patch.object(bridge.on_demand, "lease", side_effect=lambda _: nullcontext()),
+              patch.object(bridge.time, "sleep", return_value=None)):
+            out = bridge.web_search("Python", include_search_status=True)
+        self.assertEqual(out["status"], "upstream_selection_mismatch")
+        self.assertEqual([path for path, _ in requests],
+                         ["/search", "/config", "/search"])
 
     def test_explicit_engine_retry_cannot_broaden_or_skip_inventory(self):
         requests = []
