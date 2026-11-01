@@ -3,6 +3,19 @@
 Follow [CONTRIBUTING.md](CONTRIBUTING.md) for test commands, security
 boundaries, and review expectations.
 
+## Web source separation
+
+- Never embed HTML, CSS, JavaScript snippets, DOM markup, inline event
+  handlers, or browser scripts as source string literals in Python or other
+  non-web implementation languages.
+- Author presentation only in `web/templates/*.html`, `web/static/*.css`
+  and `web/static/*.js`. Python handles server routing, validated data,
+  trusted rendering context and safe escaping. Keep existing CSP, no-JS
+  fallback, Host/Origin and CSRF controls intact.
+- The legacy `admin_ui.py` currently contains inline HTML; migrate its
+  remaining markup under issue #259 rather than adding more. This legacy
+  debt is not an exception for new code.
+
 ## Pull request coordination and Mergify
 
 - Do not autonomously merge or queue pull requests. Merge a particular PR only
