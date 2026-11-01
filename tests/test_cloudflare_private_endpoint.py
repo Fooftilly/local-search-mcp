@@ -39,7 +39,8 @@ class PrivateEndpointTests(unittest.TestCase):
         with (patch.object(endpoint, "exists_ip", return_value=True),
               patch.object(endpoint, "command") as run,
               patch.object(endpoint, "MARKER",
-                           Path("/nonexistent-cloudflare-test-marker"))):
+                           Path("/nonexistent-cloudflare-test-marker")),
+              patch.object(endpoint, "invocation_id", return_value="a" * 32)):
             with self.assertRaisesRegex(RuntimeError, "already exist"):
                 endpoint.prepare()
             run.assert_not_called()
@@ -67,6 +68,48 @@ class PrivateEndpointTests(unittest.TestCase):
             self.assertEqual(calls[0][:4], ("/usr/bin/ip", "-4", "addr", "del"))
             self.assertEqual(calls[1][:3], ("/usr/bin/nft", "delete", "table"))
             self.assertFalse(marker.exists())
+
+    def test_partial_marker_write_cleanup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "owned"
+            calls = []
+            def run(*args, input=None):
+                calls.append(args)
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            with (patch.object(endpoint, "MARKER", marker),
+                  patch.object(endpoint, "invocation_id", return_value="a" * 32),
+                  patch.object(endpoint, "exists_ip", side_effect=[False, True, False]),
+                  patch.object(endpoint, "exists_table", return_value=False),
+                  patch.object(endpoint, "command", side_effect=run),
+                  patch.object(endpoint.os, "fdopen", side_effect=OSError("ENOSPC"))):
+                with self.assertRaises(OSError):
+                    endpoint.prepare()
+            self.assertFalse(marker.exists())
+            self.assertEqual(calls[-2][:4],
+                             ("/usr/bin/ip", "-4", "addr", "del"))
+            self.assertEqual(calls[-1][:3],
+                             ("/usr/bin/nft", "delete", "table"))
+
+    def test_failed_address_cleanup_preserves_firewall(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "owned"
+            calls = []
+            def run(*args, input=None):
+                calls.append(args)
+                if args[:4] == ("/usr/bin/ip", "-4", "addr", "del"):
+                    return SimpleNamespace(returncode=1, stdout="", stderr="failed")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            with (patch.object(endpoint, "MARKER", marker),
+                  patch.object(endpoint, "invocation_id", return_value="a" * 32),
+                  patch.object(endpoint, "exists_ip", side_effect=[False, True]),
+                  patch.object(endpoint, "exists_table", return_value=False),
+                  patch.object(endpoint, "command", side_effect=run),
+                  patch.object(endpoint.os, "fdopen", side_effect=OSError("ENOSPC"))):
+                with self.assertRaisesRegex(RuntimeError, "guard preserved"):
+                    endpoint.prepare()
+            self.assertTrue(marker.exists())
+            self.assertFalse(any(x[:3] == ("/usr/bin/nft", "delete", "table")
+                                 for x in calls))
 
     def test_other_invocation_cannot_cleanup_active_endpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -97,6 +140,7 @@ class PrivateEndpointTests(unittest.TestCase):
         self.assertIn("ExecStartPre=+", unit)
         self.assertIn("ExecStopPost=+", unit)
         self.assertIn("ExecStart=/usr/bin/socat", unit)
+        self.assertIn("so-bindtodevice=lo", unit)
         self.assertNotIn("0.0.0.0", unit)
         self.assertIn("NoNewPrivileges=true", unit)
         dns = (root / "config/systemd-system" /
