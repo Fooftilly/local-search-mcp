@@ -431,7 +431,9 @@ or rate-limit engines yet. Older records cannot be retroactively attributed.
 ## Opt-in isolated engine pacing (initial integration)
 
 The bridge now enforces an operator-owned, **disabled-by-default** pacing policy
-for explicitly selected *single* engines. The private file
+for individually verified engines, including explicit single-engine requests
+and automatically selected engines for unfiltered default general searches.
+The private file
 `~/.config/local-search-mcp/engine-pacing.json` must contain the exact
 `local-search-mcp/engine-pacing/v1` schema and owner-only permissions.
 This is an opt-in pilot: the guarded management-console editor below

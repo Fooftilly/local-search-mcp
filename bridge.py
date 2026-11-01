@@ -510,6 +510,8 @@ def _run_search_network(params: dict, max_results: int, *,
     initial_failure = None
     isolated_engine = None
     attempted_engine = None
+    # Internal paced-default engine selection is not a caller-supplied filter.
+    caller_supplied_filters = len(params) > 2
     try:
         pacing_policy = engine_pacing.policy()
     except (OSError, ValueError):
@@ -630,7 +632,7 @@ def _run_search_network(params: dict, max_results: int, *,
                         (time.monotonic() - retry_started) * 1000,
                         source=("isolated_recovery" if isolated is not None
                                 else "explicit"))
-    if response is not None and response.status_code in (400, 422) and len(params) > 2:
+    if response is not None and response.status_code in (400, 422) and caller_supplied_filters:
         raise ValueError("Local SearXNG rejected the requested filters or page")
     if response is None and pacing_policy is not None:
         return {"success": False, "status": "upstream_unavailable",

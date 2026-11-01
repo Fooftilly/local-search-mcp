@@ -46,7 +46,7 @@ class PacedSearchBoundaryTests(unittest.TestCase):
         path.chmod(0o600)
         return path
 
-    def execute(self, query="public example", **kwargs):
+    def execute(self, query="public example", *, batch=False, **kwargs):
         original = httpx.Client
 
         def handler(request):
@@ -72,6 +72,8 @@ class PacedSearchBoundaryTests(unittest.TestCase):
               patch.object(bridge.on_demand, "lease",
                            side_effect=lambda _: nullcontext()),
               patch.object(bridge.time, "sleep", return_value=None)):
+            if batch:
+                return asyncio.run(bridge.web_search_batch([query], fresh=True, **kwargs))
             return bridge.web_search(query, fresh=True, **kwargs)
 
     def test_disabled_policy_preserves_search_default(self):
@@ -159,6 +161,23 @@ class PacedSearchBoundaryTests(unittest.TestCase):
                 result = self.execute()
                 self.assertEqual(result["status"], "invalid_response")
                 self.assertEqual([path for path, _ in self.calls], ["/config"])
+
+    def test_unfiltered_paced_rejection_remains_structured_for_direct_and_batch(self):
+        for batch in (False, True):
+            with self.subTest(batch=batch):
+                for state in self.config.glob(".engine-pacing-*.json"):
+                    state.unlink()
+                self.calls.clear()
+                self.policy()
+                self.search_response = httpx.Response(400)
+                output = self.execute(batch=batch)
+                if batch:
+                    self.assertFalse(output["success"])
+                    self.assertEqual(output["results"][0]["status"], "upstream_rejected")
+                else:
+                    self.assertEqual(output["status"], "upstream_rejected")
+                    self.assertEqual(output["http_status"], 400)
+                self.assertEqual([p for p, _ in self.calls], ["/config", "/search"])
 
     def test_paced_default_one_failed_search_does_not_try_next_engine(self):
         self.policy(entries={"duckduckgo": 60, "qwant": 0})
