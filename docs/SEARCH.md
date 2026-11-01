@@ -551,5 +551,19 @@ malformed or lacks a verified writer lock, the dashboard refuses to rank
 engines. Other configured engines remain visible as insufficiently sampled.
 The report is non-authoritative: provider mix, query selection, user-selected
 engines, 24-hour retention and small sample sizes may bias comparisons.
-No adaptive routing is enabled by this preview; a separate explicit operator
-opt-in and unattended-host safety review are still required for that change.
+The console also offers a distinct `evidence` routing mode, **disabled by
+default**, inside the same private pacing policy. Enabling it for the first
+time requires typing `ADAPT` in the guarded settings editor, and requires
+pacing to be enabled. Legacy policies without a routing field use `fixed`.
+
+When active, evidence mode only reorders **already enabled and policy-listed**
+engines meeting existing general or dedicated-category safeguards. The
+bounded 24-hour private history must be lock-verified, complete and
+untruncated, and *every* eligible candidate must have at least ten direct
+isolated requests and at least one source-verified result. Otherwise
+the existing deterministic name order is preserved. This is an evidence
+ranking pilot, **not** a remote capacity, uptime or rate-limit model;
+selection bias can affect results. Explicit selections, pacing cooldown
+reservations, no-retry semantics, no Google and no unverified categories or
+optional filters are unchanged. A live operator-host comparison is still
+required before enabling the mode.

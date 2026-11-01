@@ -22,6 +22,8 @@ from urllib.parse import urlsplit, urlunsplit
 from history_log import logged_tool
 import isolated_engine_observations
 import engine_pacing
+import engine_routing_evidence
+import provider_observations
 import document_pages
 import document_comparison
 import request_cache
@@ -357,6 +359,30 @@ def _paced_category_candidates(client: httpx.Client, policy: dict[str, int],
     return eligible
 
 
+def _evidence_order(candidates: list[str], policy: dict[str, int],
+                    routing: str) -> list[str]:
+    """Optional evidence ordering over an *already inventory-verified* subset.
+
+    Only rank if every eligible engine is comparably sampled in a complete
+    private history snapshot. Incomplete/missing/unsafe evidence preserves
+    the former deterministic ordering, without triggering any provider probe.
+    """
+    if routing != "evidence" or len(candidates) < 2:
+        return candidates
+    try:
+        report = provider_observations.observations(24)
+        evidence = engine_routing_evidence.compare(
+            {name: policy[name] for name in candidates}, report)
+        if (evidence["complete_history"] is not True
+                or evidence["comparable_count"] != len(candidates)):
+            return candidates
+        ranked = [row["name"] for row in evidence["rows"]]
+        # Never use untrusted retained labels to expand the verified inventory.
+        return ranked if len(ranked) == len(candidates) and set(ranked) == set(candidates) else candidates
+    except (ValueError, OSError, KeyError, TypeError):
+        return candidates
+
+
 def _paced_general_candidates(client: httpx.Client, policy: dict[str, int]) -> list[str] | dict:
     """Choose only known enabled general providers from the operator policy.
 
@@ -539,7 +565,7 @@ def _run_search_network(params: dict, max_results: int, *,
     # Internal paced-default engine selection is not a caller-supplied filter.
     caller_supplied_filters = len(params) > 2
     try:
-        pacing_policy = engine_pacing.policy(preserve_case=True)
+        pacing_policy, routing = engine_pacing.configuration(preserve_case=True)
     except (OSError, ValueError):
         return {"success": False, "status": "pacing_unavailable",
                 "backend": "searxng",
@@ -585,6 +611,7 @@ def _run_search_network(params: dict, max_results: int, *,
                           if paced_category else _paced_general_candidates(client, pacing_policy))
             if isinstance(candidates, dict):
                 return candidates
+            candidates = _evidence_order(candidates, pacing_policy, routing)
         else:
             selection_failure = _verify_explicit_search_selection(client, params)
             if selection_failure is not None:

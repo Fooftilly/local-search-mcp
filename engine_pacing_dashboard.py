@@ -36,10 +36,11 @@ def snapshot() -> dict:
         if directory is not None:
             os.close(directory)
     if raw is None:
-        return {"enabled": False, "engines": {}, "state": hashlib.sha256(b"").hexdigest()}
+        return {"enabled": False, "engines": {}, "routing": "fixed",
+                "state": hashlib.sha256(b"").hexdigest()}
     engine_pacing._parse(raw)
     document = json.loads(raw.decode("utf-8"), object_pairs_hook=engine_pacing._unique_pairs)
-    return {"enabled": document["enabled"],
+    return {"enabled": document["enabled"], "routing": document.get("routing", "fixed"),
             "engines": {name: config["min_spacing_seconds"]
                         for name, config in document["engines"].items()},
             "state": hashlib.sha256(raw).hexdigest()}
@@ -85,7 +86,7 @@ def _verified_engine_names() -> set[str]:
 
 def apply_form(fields: dict[str, list[str]]) -> str:
     if not isinstance(fields, dict) or not set(fields).issubset(
-            {"csrf", "state", "rules", "enabled", "confirm"}):
+            {"csrf", "state", "rules", "enabled", "confirm", "routing"}):
         raise ValueError("Unexpected pacing form fields")
     for name, values in fields.items():
         if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], str):
@@ -93,6 +94,9 @@ def apply_form(fields: dict[str, list[str]]) -> str:
     enabled = fields.get("enabled", []) == ["on"]
     if "enabled" in fields and not enabled:
         raise ValueError("Invalid pacing enable flag")
+    routing = fields.get("routing", ["fixed"])[0]
+    if routing not in ("fixed", "evidence"):
+        raise ValueError("Unknown pacing routing mode")
     state = fields.get("state", [""])[0]
     if not re.fullmatch(r"[a-f0-9]{64}", state):
         raise ValueError("Invalid pacing revision; reload the page")
@@ -101,7 +105,8 @@ def apply_form(fields: dict[str, list[str]]) -> str:
         raise ValueError("Enabled pacing requires at least one engine rule")
     document = {"schema": engine_pacing.SCHEMA, "enabled": enabled,
                 "engines": {name: {"min_spacing_seconds": interval}
-                            for name, interval in rules.items()}}
+                            for name, interval in rules.items()},
+                "routing": routing}
     payload = (json.dumps(document, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
     if len(payload) > engine_pacing.MAX_POLICY_BYTES:
         raise ValueError("Pacing policy is too large")
@@ -126,8 +131,17 @@ def apply_form(fields: dict[str, list[str]]) -> str:
             before = previous if previous is not None else b""
             if hashlib.sha256(before).hexdigest() != state:
                 raise ValueError("Pacing policy changed; refresh before saving")
-            old_enabled = (json.loads(previous)["enabled"] if previous is not None else False)
-            expected_confirm = "ENABLE" if enabled else "DISABLE" if old_enabled else "APPLY"
+            old_document = json.loads(previous) if previous is not None else {}
+            old_enabled = old_document.get("enabled", False)
+            old_routing = old_document.get("routing", "fixed")
+            if not enabled and old_enabled:
+                expected_confirm = "DISABLE"
+            elif enabled and routing == "evidence" and (not old_enabled or old_routing != "evidence"):
+                expected_confirm = "ADAPT"
+            elif enabled and not old_enabled:
+                expected_confirm = "ENABLE"
+            else:
+                expected_confirm = "APPLY"
             if fields.get("confirm") != [expected_confirm]:
                 raise ValueError(f"Type {expected_confirm} to confirm pacing policy changes")
             if enabled:
@@ -203,10 +217,12 @@ def page(csrf: str, message: str = "", error: bool = False,
     if submitted is None:
         rules = "\n".join(f"{name}={interval}" for name, interval in sorted(current.items()))
         enabled = values["enabled"]
+        routing = values["routing"]
         state = values["state"]
     else:
         rules = submitted.get("rules", [""])[0]
         enabled = submitted.get("enabled") == ["on"]
+        routing = submitted.get("routing", [values["routing"]])[0]
         state = submitted.get("state", [values["state"]])[0]
     alert = (render_template("engine-alert",
                              kind="error" if error else "success",
@@ -216,4 +232,6 @@ def page(csrf: str, message: str = "", error: bool = False,
         "engine-pacing-settings", alert=alert, csrf=escape(csrf, quote=True),
         state=escape(state, quote=True), rules=escape(rules, quote=True),
         checked=" checked" if enabled else "",
+        fixed_selected=" selected" if routing == "fixed" else "",
+        evidence_selected=" selected" if routing == "evidence" else "",
         evidence=evidence_preview(current))
