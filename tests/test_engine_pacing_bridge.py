@@ -44,7 +44,7 @@ class PacedSearchBoundaryTests(unittest.TestCase):
         path.chmod(0o600)
         return path
 
-    def execute(self, **kwargs):
+    def execute(self, query="public example", **kwargs):
         original = httpx.Client
 
         def handler(request):
@@ -57,6 +57,8 @@ class PacedSearchBoundaryTests(unittest.TestCase):
                      "categories": ["general"]},
                 ]})
             self.assertEqual(request.url.path, "/search")
+            if isinstance(self.search_response, Exception):
+                raise self.search_response
             return self.search_response
 
         def client_factory(**kwargs):
@@ -65,7 +67,7 @@ class PacedSearchBoundaryTests(unittest.TestCase):
               patch.object(bridge.on_demand, "lease",
                            side_effect=lambda _: nullcontext()),
               patch.object(bridge.time, "sleep", return_value=None)):
-            return bridge.web_search("public example", fresh=True, **kwargs)
+            return bridge.web_search(query, fresh=True, **kwargs)
 
     def test_disabled_policy_preserves_search_default(self):
         for enabled in (None, False):
@@ -136,6 +138,21 @@ class PacedSearchBoundaryTests(unittest.TestCase):
                                      ["/config", "/search"])
                 for item in self.config.glob(".engine-pacing-*.json"):
                     item.unlink()
+
+    def test_exclamation_inside_word_is_not_a_bang_shortcut(self):
+        self.policy()
+        result = self.execute(query="foo!bar", engines="duckduckgo")
+        self.assertIsInstance(result, list)
+        self.assertEqual([p for p, _ in self.calls], ["/config", "/search"])
+
+    def test_one_paced_transport_error_reports_one_attempt_only(self):
+        self.policy()
+        self.search_response = httpx.ConnectError("PRIVATE_TRANSPORT_DETAIL")
+        result = self.execute(engines="duckduckgo")
+        self.assertEqual(result["status"], "upstream_unavailable")
+        self.assertIn("one paced request", result["reason"])
+        self.assertNotIn("PRIVATE_TRANSPORT_DETAIL", repr(result))
+        self.assertEqual([p for p, _ in self.calls], ["/config", "/search"])
 
     def test_corrupt_policy_fails_closed_before_backend_wake(self):
         self.policy().write_text("{malformed")

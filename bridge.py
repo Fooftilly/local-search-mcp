@@ -490,7 +490,7 @@ def _run_search_network(params: dict, max_results: int, *,
         engine = params.get("engines")
         if (not isinstance(engine, str) or not engine or "," in engine
                 or params.get("categories")
-                or re.search(r"(?<!\\S)![^\\s]+", params.get("q", ""))):
+                or re.search(r"(?<!\S)![^\s]+", params.get("q", ""))):
             return {"success": False, "status": "pacing_selection_required",
                     "backend": "searxng",
                     "reason": "Pacing is enabled: select one policy-listed engine. "
@@ -579,6 +579,10 @@ def _run_search_network(params: dict, max_results: int, *,
                                 else "explicit"))
     if response is not None and response.status_code in (400, 422) and len(params) > 2:
         raise ValueError("Local SearXNG rejected the requested filters or page")
+    if response is None and pacing_policy is not None:
+        return {"success": False, "status": "upstream_unavailable",
+                "backend": "searxng",
+                "reason": "Local SearXNG transport failed after one paced request."}
     if response is None or response.status_code >= 400:
         return _upstream_error(response, "searxng")
     try:
