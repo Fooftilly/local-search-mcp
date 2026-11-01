@@ -198,8 +198,49 @@ class EnginePacingTests(unittest.TestCase):
             with pacing.reserve("duckduckgo", 60):
                 pass
 
+    def test_reboot_with_zero_gap_admits_first_operation(self):
+        boot_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        boot_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        with (patch.object(pacing, "_boot_id", return_value=boot_a),
+              patch.object(pacing.time, "time", return_value=10000),
+              patch.object(pacing.time, "monotonic", return_value=5000)):
+            with pacing.reserve("duckduckgo", 0):
+                pass
+        with (patch.object(pacing, "_boot_id", return_value=boot_b),
+              patch.object(pacing.time, "time", return_value=20000),
+              patch.object(pacing.time, "monotonic", return_value=100)):
+            # Zero spacing must not emit an immediate-retry failure, even
+            # when a reservation file exists from the previous boot.
+            with pacing.reserve("duckduckgo", 0):
+                pass
+            with pacing.reserve("duckduckgo", 0):
+                pass
+
+    def test_reboot_preserves_old_positive_gap_if_new_policy_is_zero(self):
+        boot_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        boot_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        with (patch.object(pacing, "_boot_id", return_value=boot_a),
+              patch.object(pacing.time, "time", return_value=10000),
+              patch.object(pacing.time, "monotonic", return_value=5000)):
+            with pacing.reserve("duckduckgo", 60):
+                pass
+        with (patch.object(pacing, "_boot_id", return_value=boot_b),
+              patch.object(pacing.time, "time", return_value=20000),
+              patch.object(pacing.time, "monotonic", return_value=100)):
+            with self.assertRaises(pacing.PaceUnavailable) as caught:
+                with pacing.reserve("duckduckgo", 0):
+                    pass
+            self.assertEqual(caught.exception.retry_after_seconds, 60)
+        with (patch.object(pacing, "_boot_id", return_value=boot_b),
+              patch.object(pacing.time, "time", return_value=20060),
+              patch.object(pacing.time, "monotonic", return_value=160)):
+            with pacing.reserve("duckduckgo", 0):
+                pass
+
     def test_invalid_state_and_clock_rollback_fail_closed(self):
-        with patch.object(pacing.time, "time", return_value=10000):
+        # Fix both clocks: otherwise host uptime changes the exception path.
+        with (patch.object(pacing.time, "time", return_value=10000),
+              patch.object(pacing.time, "monotonic", return_value=5000)):
             with pacing.reserve("duckduckgo", 100):
                 pass
         state = next(self.folder.glob("*.json"))

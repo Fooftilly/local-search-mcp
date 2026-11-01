@@ -228,18 +228,21 @@ def reserve(engine: str, spacing_seconds: int):
                 except (ValueError, UnicodeError) as exc:
                     raise PaceUnavailable("Invalid private pacing state") from exc
                 if record["boot_id"] != boot:
-                    # A wall-clock step during reboot cannot certify elapsed
-                    # time. Start a fresh, full cooldown on the new boot.
+                    # After reboot elapsed monotonic time cannot be reconstructed.
+                    # Reestablish the full positive gap before admitting traffic.
+                    # A zero-gap engine has no cooldown to reestablish.
                     wait = max(spacing_seconds, record["spacing_seconds"])
-                    _save_next(directory, state_name, epoch=now + wait,
-                               mono=now_mono + wait, boot=boot, spacing=wait)
-                    raise PaceUnavailable("Engine cooling down after system reboot", wait)
-                remaining = record["next_allowed_mono"] - now_mono
-                if remaining > MAX_SPACING_SECONDS:
-                    raise PaceUnavailable("Pacing monotonic clock skew requires inspection")
-                if remaining > 0:
-                    raise PaceUnavailable("Selected engine cooling down",
-                                          math.ceil(remaining))
+                    if wait:
+                        _save_next(directory, state_name, epoch=now + wait,
+                                   mono=now_mono + wait, boot=boot, spacing=wait)
+                        raise PaceUnavailable("Engine cooling down after system reboot", wait)
+                else:
+                    remaining = record["next_allowed_mono"] - now_mono
+                    if remaining > MAX_SPACING_SECONDS:
+                        raise PaceUnavailable("Pacing monotonic clock skew requires inspection")
+                    if remaining > 0:
+                        raise PaceUnavailable("Selected engine cooling down",
+                                              math.ceil(remaining))
             _save_next(directory, state_name, epoch=now + spacing_seconds,
                        mono=now_mono + spacing_seconds, boot=boot,
                        spacing=spacing_seconds)
