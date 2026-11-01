@@ -452,10 +452,14 @@ Optional language, time-range and page settings on an automatic default
 search also fail closed until support can be verified per eligible engine;
 such filters remain usable with explicitly selected engines.
 Explicit single-engine requests still require exact SearXNG verification
-and a policy entry. Category filters, !bang shortcuts, multiple explicit
-engines, and unlisted providers **fail closed** rather than silently sending
-unmetered traffic. Category requests remain unsupported because SearXNG
-treats engines+categories as a union and rewriting them would change scope.
+and a policy entry. A **single category** can route only to an enabled,
+policy-listed engine whose verified SearXNG inventory declares *exactly*
+that category. The outbound request contains the selected engine but
+omits categories: SearXNG treats engines+categories as a union. Engines
+shared between multiple categories, multiple requested categories, and
+category searches with optional language/time/page filters remain
+unsupported and fail closed to avoid expanding scope. !bang shortcuts,
+multiple explicit engines, and unlisted providers also fail closed.
 The bridge returns `pacing_selection_required` for those unsupported
 selectors, `rate_limited` with a bounded retry hint for busy/cooling-down
 engines, or `pacing_unavailable` for an invalid/unsafe settings file.
@@ -494,9 +498,34 @@ a compare-and-swap revision token, strict confirmation (`ENABLE`,
 and an atomic fsynced replacement. Concurrent stale saves fail safely.
 
 **Enabling pacing restricts every outbound search to one verified,
-policy-listed engine.** Unfiltered default general queries now choose an
-eligible provider without contacting multiple engines. Categories,
-multi-engine explicit requests and !bangs are still rejected to avoid
-changing scope or bypassing limits. Confirm the intended change and
+policy-listed engine.** Unfiltered default general queries select
+an eligible provider; single-category queries can select dedicated
+category-only engines. Multi-category engines and filters, multi-engine
+explicit requests and !bangs are rejected to avoid changing scope or
+bypassing limits. Confirm the intended change and
 attend host acceptance before enabling; this editor does not by itself
 make multiple providers eligible, infer provider quotas or select engines.
+
+## Single-category routing under pacing
+
+A single `categories=images`-style request may now use one policy-listed
+engine **only when** the installed SearXNG `/config` inventory states that
+engine has exactly that category, and the engine is enabled. The request to
+SearXNG uses the engine selector without a category selector; combining the
+two would create a union and could contact unmetered engines. Category
+labels are checked exactly, not inferred from names. Mixed-category engines
+(e.g. `["general", "images"]`), multi-category requests, optional language,
+date-range or pagination filters, Google engines and disabled/unlisted
+providers are excluded from automatic category routing. No eligible
+category-dedicated engine returns `pacing_selection_required` without
+sending a search. Busy engines may be skipped to another eligible,
+category-dedicated engine *only before* any network request has started.
+Actual admitted calls use the same engine pacing admission, one-shot
+network semantics, source-verified result handling and bounded private
+`paced_category` observation as paced default searches.
+
+This is deliberately conservative: some search categories may have no
+exclusively assigned engines, so they remain unavailable while pacing is
+enabled. The operator must not interpret the inventory alone as proof
+of a remote provider's current quota, support for every search filter, or
+successful attended host acceptance.

@@ -98,9 +98,9 @@ class PacedSearchBoundaryTests(unittest.TestCase):
 
     def test_ambiguous_requests_do_not_query_searxng(self):
         self.policy()
-        for arguments in ({"categories": "general"},
-                          {"engines": "duckduckgo,qwant"},
-                          {"engines": "qwant"}):
+        for arguments in ({"engines": "duckduckgo,qwant"},
+                          {"engines": "qwant"},
+                          {"categories": "images,news"}):
             with self.subTest(arguments=arguments):
                 self.calls.clear()
                 result = self.execute(**arguments)
@@ -197,6 +197,101 @@ class PacedSearchBoundaryTests(unittest.TestCase):
         self.assertNotIn("PRIVATE ERROR", str(result))
         self.assertEqual([path for path, _ in self.calls], ["/config", "/search"])
         self.assertEqual(self.calls[-1][1]["engines"], "duckduckgo")
+
+    def test_paced_single_category_uses_only_dedicated_engine(self):
+        self.policy(entries={"bing images": 30, "duckduckgo": 15})
+        self.inventory_response = httpx.Response(200, json={"engines": [
+            {"name": "duckduckgo", "enabled": True, "categories": ["general", "images"]},
+            {"name": "bing images", "enabled": True, "categories": ["images"]},
+            {"name": "google images", "enabled": False, "categories": ["images"]},
+        ]})
+        self.search_response = httpx.Response(200, json={"results": [
+            {"title": "Image", "url": "https://example.com/image",
+             "engine": "bing images"}], "unresponsive_engines": []})
+        with patch.object(bridge.isolated_engine_observations, "observe",
+                          wraps=bridge.isolated_engine_observations.observe) as observed:
+            result = self.execute(categories="images", include_image_metadata=True)
+        self.assertIsInstance(result, list)
+        self.assertEqual([name for name, _ in self.calls], ["/config", "/search"])
+        self.assertEqual(self.calls[-1][1]["engines"], "bing images")
+        self.assertNotIn("categories", self.calls[-1][1])
+        self.assertEqual(observed.call_args.kwargs["source"], "paced_category")
+
+    def test_mixed_category_engines_cannot_expand_scope(self):
+        self.policy(entries={"duckduckgo": 15})
+        self.inventory_response = httpx.Response(200, json={"engines": [
+            {"name": "duckduckgo", "enabled": True, "categories": ["general", "images"]}]})
+        output = self.execute(categories="images")
+        self.assertEqual(output["status"], "pacing_selection_required")
+        self.assertEqual([path for path, _ in self.calls], ["/config"])
+
+    def test_paced_category_must_be_policy_listed_enabled_and_exact(self):
+        self.policy(entries={"bing images": 15})
+        for entries in ([
+            {"name": "bing images", "enabled": False, "categories": ["images"]}],
+            [{"name": "Bing Images", "enabled": True, "categories": ["images"]}],
+            [{"name": "bing images", "enabled": True, "categories": ["videos"]}],
+            [{"name": "bing images", "enabled": True, "categories": ["images", "general"]}],
+        ):
+            with self.subTest(entries=entries):
+                self.calls.clear()
+                self.inventory_response = httpx.Response(200, json={"engines": entries})
+                output = self.execute(categories="images")
+                self.assertEqual(output["status"], "pacing_selection_required")
+                self.assertEqual([path for path, _ in self.calls], ["/config"])
+
+    def test_category_pacing_skips_busy_dedicated_engine(self):
+        self.policy(entries={"bing images": 30, "imageonly": 30})
+        self.inventory_response = httpx.Response(200, json={"engines": [
+            {"name": "bing images", "enabled": True, "categories": ["images"]},
+            {"name": "imageonly", "enabled": True, "categories": ["images"]}]})
+        def answer(request):
+            engine = request.url.params["engines"]
+            return httpx.Response(200, json={"results": [
+                {"title": "Photo", "url": "https://example.com/image",
+                 "engine": engine}]})
+        self.search_response = answer
+        first = self.execute(categories="images")
+        second = self.execute(categories="images")
+        third = self.execute(categories="images")
+        self.assertIsInstance(first, list)
+        self.assertIsInstance(second, list)
+        self.assertEqual(third["status"], "rate_limited")
+        self.assertGreater(third["retry_after_seconds"], 0)
+        search_calls = [params for name, params in self.calls if name == "/search"]
+        self.assertEqual([p["engines"] for p in search_calls], ["bing images", "imageonly"])
+        self.assertTrue(all("categories" not in p for p in search_calls))
+
+    def test_category_pacing_never_retries_after_transport_failure(self):
+        self.policy(entries={"bing images": 30, "imageonly": 30})
+        self.inventory_response = httpx.Response(200, json={"engines": [
+            {"name": "bing images", "enabled": True, "categories": ["images"]},
+            {"name": "imageonly", "enabled": True, "categories": ["images"]}]})
+        self.search_response = httpx.ConnectError("PRIVATE_NETWORK_DETAIL")
+        result = self.execute(categories="images")
+        self.assertEqual(result["status"], "upstream_unavailable")
+        self.assertNotIn("PRIVATE_NETWORK_DETAIL", repr(result))
+        self.assertEqual([path for path, _ in self.calls], ["/config", "/search"])
+
+    def test_filtered_category_auto_routing_stays_disabled(self):
+        self.policy(entries={"bing images": 30})
+        for kwargs in ({"categories": "images", "language": "en"},
+                       {"categories": "images", "page": 2},
+                       {"categories": "images", "time_range": "month"}):
+            with self.subTest(kwargs=kwargs):
+                self.calls.clear()
+                out = self.execute(**kwargs)
+                self.assertEqual(out["status"], "pacing_selection_required")
+                self.assertEqual(self.calls, [])
+
+    def test_case_colliding_inventory_fails_before_search(self):
+        self.policy(entries={"bing images": 30})
+        self.inventory_response = httpx.Response(200, json={"engines": [
+            {"name": "bing images", "enabled": True, "categories": ["images"]},
+            {"name": "Bing Images", "enabled": True, "categories": ["images"]}]})
+        result = self.execute(categories="images")
+        self.assertEqual(result["status"], "invalid_response")
+        self.assertEqual([path for path, _ in self.calls], ["/config"])
 
     def test_bang_shortcut_refused_with_pacing(self):
         self.policy()
