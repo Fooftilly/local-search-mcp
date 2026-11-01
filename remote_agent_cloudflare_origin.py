@@ -224,11 +224,20 @@ class CloudflarePrivateOrigin:
         for k, v in raw:
             names.setdefault(k.lower(), []).append(v)
         host = names.get(b"host", [])
+        # Cloudflare MCP Portal adds X-Forwarded-User-Agent on live tool calls.
+        # Its value comes from the MCP client and is NEVER an identity signal:
+        # tolerate one bounded instance but never forward or consume it.
+        forwarded_agent = names.get(b"x-forwarded-user-agent", [])
+        if len(forwarded_agent) > 1 or any(
+                len(value) > 512 for value in forwarded_agent):
+            await _reply(send, 403)
+            return
         if (host not in ([self.hostname.encode("ascii")],
                          [(self.hostname + ":" + str(ORIGIN_PORT)).encode("ascii")])
                 or b"origin" in names or b"transfer-encoding" in names
                 or b"mcp-session-id" in names or b"last-event-id" in names
-                or any(k.startswith(b"x-forwarded-") or k in (
+                or any((k.startswith(b"x-forwarded-")
+                        and k != b"x-forwarded-user-agent") or k in (
                     b"forwarded", b"proxy-authorization", b"cookie",
                     b"cf-access-client-id", b"cf-access-client-secret",
                 ) for k in names)):

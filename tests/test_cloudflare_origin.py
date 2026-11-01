@@ -219,6 +219,44 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bridge_requests[0].url.port, 8790)
         self.assertNotIn("authorization", self.bridge_requests[0].headers)
 
+    async def test_portal_forwarded_user_agent_is_ignored_not_forwarded(self):
+        # Cloudflare adds this untrusted client-supplied metadata during live
+        # tool calls, though it can be absent during capabilities sync.
+        response = await self.send(
+            token=self.token,
+            headers={"X-Forwarded-User-Agent": "Cloudflare AI Playground"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self.gateway_requests), 1)
+        self.assertEqual(len(self.bridge_requests), 1)
+        self.assertNotIn(
+            b"x-forwarded-user-agent",
+            [name for name, _ in self.gateway_requests[0]["headers"]])
+        self.assertNotIn(
+            "x-forwarded-user-agent", self.bridge_requests[0].headers)
+
+        # The client-controlled header is not authentication.
+        missing_bearer = await self.send(
+            headers={"X-Forwarded-User-Agent": "Cloudflare AI Playground"})
+        self.assertEqual(missing_bearer.status_code, 401)
+        self.assertEqual(len(self.gateway_requests), 1)
+
+    async def test_portal_forwarded_user_agent_rejects_duplicates_or_oversize(self):
+        oversize = await self.send(
+            token=self.token, headers={"x-forwarded-user-agent": "a" * 513})
+        self.assertEqual(oversize.status_code, 403)
+        duplicate = await self.client.post(
+            "/mcp",
+            headers=[
+                ("host", self.hostname),
+                ("authorization", "Bearer " + self.token),
+                ("x-forwarded-user-agent", "client-one"),
+                ("X-Forwarded-User-Agent", "client-two"),
+            ],
+            content=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
+        self.assertEqual(duplicate.status_code, 403)
+        self.assertEqual(self.gateway_requests, [])
+        self.assertEqual(self.bridge_requests, [])
+
     async def test_unauthenticated_or_wrong_grant_never_reaches_bridge(self):
         for tok in (None, "X" * 48, "short"):
             with self.subTest(token=tok):
@@ -258,6 +296,11 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
             dict(host="mcp.example.internal:80", token=self.token),
             dict(token=self.token, headers={"origin": "https://evil.example"}),
             dict(token=self.token, headers={"x-forwarded-host": self.hostname}),
+            dict(token=self.token, headers={"x-forwarded-for": "203.0.113.9"}),
+            dict(token=self.token, headers={"x-forwarded-proto": "https"}),
+            dict(token=self.token, headers={
+                "x-forwarded-user-agent": "Cloudflare AI Playground",
+                "x-forwarded-host": self.hostname}),
             dict(token=self.token, headers={"cookie": "SESSION=x"}),
             dict(token=self.token, headers={"mcp-session-id": "session"}),
             dict(token=self.token, headers={"cf-access-client-secret": "faked"}),
