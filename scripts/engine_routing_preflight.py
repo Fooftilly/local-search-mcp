@@ -8,13 +8,40 @@ from __future__ import annotations
 
 import json
 
+import httpx
+import bridge
 import engine_dashboard
 import engine_pacing_dashboard
 import engine_routing_evidence
 import engine_routing_plan
 import provider_observations
+import upstream_settings
 
 MAX_CATEGORY_GROUPS = 16
+
+
+def _verified_raw_active_inventory(verified_inventory: list[dict]) -> list[dict]:
+    """Recheck the bridge's *unmodified* bounded /config category semantics.
+
+    The operator inventory reader may normalize repeated category names.
+    Compare exact categories and enabled names before publishing an
+    acceptance plan; on drift/ambiguity, fail closed without a /search.
+    """
+    with httpx.Client(
+            timeout=upstream_settings.effective_timeout("searxng_seconds"),
+            trust_env=False) as client:
+        active = bridge._enabled_search_inventory(client, require_categories=True)
+    if isinstance(active, dict):
+        raise ValueError("Raw inventory unavailable")
+    owner_active = {
+        row["name"]: tuple(row["categories"])
+        for row in verified_inventory if row["enabled"] is True
+    }
+    actual_active = {row["name"]: row["categories"] for row in active}
+    if owner_active != actual_active:
+        raise ValueError("Operator and bridge inventory differ")
+    return active
+
 
 
 def _plan(names: list[str], config: dict[str, int], history: dict | None,
@@ -80,19 +107,22 @@ def report() -> dict:
         return output
     try:
         inventory, _, _ = engine_dashboard.snapshot()
-        # The existing dashboard verified the owner-controlled bind mount,
-        # current container identity and SearXNG live engine inventory.
-        general = engine_routing_plan.candidates(inventory, policy)
+        # Verify the container/bind-mount through the operator read path,
+        # then validate *raw* /config category rows through the exact bridge
+        # parser. Any normalization or concurrent drift fails closed.
+        active = _verified_raw_active_inventory(inventory)
+        general = engine_routing_plan.candidates(active, policy)
     except (ValueError, OSError, TypeError,
             engine_dashboard.engines.on_demand_docker.LifecycleError):
         output["status"] = "inventory_unavailable"
         output["next_step"] = "Start SearXNG through the attended operator setup; retry read-only preflight."
         return output
 
-    enabled_names = {row["name"] for row in inventory if row["enabled"]}
+    enabled_names = {row["name"] for row in active}
     output["configured_but_unavailable"] = sorted(set(policy) - enabled_names,
                                                    key=str.casefold)
     output["eligible_general_engines"] = len(general)
+    output["general_route_available"] = bool(general)
     try:
         history = provider_observations.observations(24)
     except (OSError, ValueError):
@@ -108,9 +138,8 @@ def report() -> dict:
     })
     categories = sorted({
         row["categories"][0]
-        for row in inventory
-        if row.get("enabled") is True
-        and len(row.get("categories", ())) == 1
+        for row in active
+        if len(row.get("categories", ())) == 1
         and row["categories"][0] != "general"
         and row["name"] in policy
         and not row["name"].casefold().startswith("google")
@@ -123,16 +152,17 @@ def report() -> dict:
         output["plans"].append({
             "scope": category,
             **_plan(engine_routing_plan.candidates(
-                inventory, policy, category=category),
+                active, policy, category=category),
                 policy, history, mode=routing),
         })
-    output["status"] = ("ready_for_attended_comparison" if general
-                        else "no_eligible_general_engine")
+    any_eligible = any(plan["eligible_engines"] for plan in output["plans"])
+    output["status"] = ("ready_for_attended_comparison" if any_eligible
+                        else "no_eligible_engines")
     output["next_step"] = (
         "Compare fixed and evidence routing using non-sensitive operator-approved queries; "
         "this preflight did not execute or enable any searches."
-        if general else
-        "Review enabled policy-listed general engines in the guarded console."
+        if any_eligible else
+        "Review enabled policy-listed engines in the guarded console."
     )
     return output
 

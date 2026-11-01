@@ -44,11 +44,16 @@ class RoutingPreflightTests(unittest.TestCase):
                                          "routing": routing}) as config,
               patch.object(preflight.engine_dashboard, "snapshot",
                            return_value=(inventory, ("duckduckgo", "qwant"), "rev")) as live,
+              patch.object(preflight, "_verified_raw_active_inventory",
+                           return_value=[{"name": item["name"],
+                                          "categories": tuple(item["categories"])}
+                                         for item in inventory if item["enabled"]]) as raw,
               patch.object(preflight.provider_observations, "observations",
                            return_value=history() if observed is None else observed) as reader):
             result = preflight.report()
         config.assert_called_once_with()
         live.assert_called_once_with()
+        raw.assert_called_once_with(inventory)
         reader.assert_called_once_with(24)
         return result
 
@@ -68,6 +73,47 @@ class RoutingPreflightTests(unittest.TestCase):
         self.assertEqual(result["services_started"], 0)
         self.assertIs(result["settings_modified"], False)
         self.assertNotIn("google", json.dumps(result))
+
+    def test_dedicated_category_only_is_eligible_even_without_general(self):
+        only_images = [{"name": "bing images", "enabled": True,
+                        "categories": ["images"]}]
+        result = self._run(inventory=only_images)
+        self.assertEqual(result["status"], "ready_for_attended_comparison")
+        self.assertFalse(result["general_route_available"])
+        self.assertEqual(result["plans"][0]["eligible_engines"], 0)
+        self.assertEqual(result["plans"][1]["scope"], "images")
+        self.assertEqual(result["plans"][1]["effective_if_enabled"], ["bing images"])
+
+    def test_raw_bridge_inventory_rejects_normalized_duplicate_category(self):
+        import httpx
+        verified = [{"name": "bing images", "enabled": True,
+                     "categories": ["images"]}]
+        original = httpx.Client
+        def handler(request):
+            self.assertEqual(request.url.path, "/config")
+            return httpx.Response(200, json={"engines": [
+                {"name": "bing images", "enabled": True,
+                 "categories": ["images", "images"]}]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with patch.object(preflight.httpx, "Client", side_effect=factory):
+            with self.assertRaises(ValueError):
+                preflight._verified_raw_active_inventory(verified)
+
+    def test_backend_drift_returns_no_plan_and_sanitized_blocker(self):
+        with (patch.object(preflight.engine_pacing_dashboard, "snapshot",
+                           return_value={"enabled": True, "engines": POLICY,
+                                         "routing": "evidence"}),
+              patch.object(preflight.engine_dashboard, "snapshot",
+                           return_value=(INVENTORY, (), "rev")),
+              patch.object(preflight, "_verified_raw_active_inventory",
+                           side_effect=ValueError("PRIVATE_DRIFT")),
+              patch.object(preflight.provider_observations, "observations",
+                           side_effect=AssertionError("must not read"))):
+            result = preflight.report()
+        self.assertEqual(result["status"], "inventory_unavailable")
+        self.assertEqual(result["plans"], [])
+        self.assertNotIn("PRIVATE_DRIFT", str(result))
 
     def test_fixed_mode_and_incomplete_history_keep_name_order(self):
         fixed = self._run(routing="fixed")

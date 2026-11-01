@@ -579,8 +579,10 @@ After updating the repository on your own host, run:
 
 This emits a bounded JSON readiness assessment, **not a benchmark of provider
 quality or a claim that host acceptance passed**. It uses the existing
-owner-verified, already-running SearXNG inventory, the exact saved pacing
-policy and 24-hour private observations. It reports the eligible general and
+owner-verified, already-running SearXNG inventory and then rechecks the
+same raw bounded `/config` inventory validator as the search bridge,
+refusing mismatched/normalized categories. It also reads the exact saved
+pacing policy and 24-hour private observations. It reports the eligible general and
 single-category engine sets, current fixed vs provisional evidence order,
 candidate sample readiness, unavailable policy engines, and blockers
 (including a sleeping/unavailable backend). It sends **zero searches**,
@@ -595,3 +597,8 @@ provider quotas or search relevance. A separate attended nonsensitive
 query/cross-process concurrency comparison is still required before you
 enable `evidence` routing in the guarded console. Do not treat this
 command's result as authorization to switch on the policy.
+
+Category-only policies may be ready even when no general-search engine is
+eligible; the preflight separately reports general-route availability.
+Any disagreement between owner-verified and raw SearXNG category inventories
+produces an inventory blocker instead of a misleading readiness claim.
