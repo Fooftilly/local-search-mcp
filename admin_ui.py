@@ -53,20 +53,18 @@ ONCE_DURATION_CHOICES = DURATION_CHOICES[:-1]
 
 
 def choice_buttons(name, caption, choices, selected=None, *, required=True):
-    """Accessible button-like radio group using the existing POST/GET contract."""
+    """Accessible radio group; HTML lives exclusively in bundled templates."""
     if selected is not None and selected not in {key for key, _ in choices}:
         raise ValueError("Unknown radio choice")
-    parts = ['<fieldset class="choice-field"><legend>' + esc(caption) +
-             '</legend><div class="choice-options">']
-    for key, label in choices:
-        parts.append(
-            '<label class="choice-option"><input type="radio" name="' +
-            esc(name) + '" value="' + esc(key) + '"' +
-            (' checked' if selected == key else '') +
-            (' required' if required else '') +
-            '><span class="choice-text">' + esc(label) + '</span></label>')
-    parts.append('</div></fieldset>')
-    return ''.join(parts)
+    options = [
+        render_template("choice-radio", name=esc(name), value=esc(key),
+                        label=esc(label),
+                        checked=" checked" if selected == key else "",
+                        required=" required" if required else "")
+        for key, label in choices
+    ]
+    return render_template("choice-group", caption=esc(caption),
+                           options="".join(options))
 
 
 def recent_history(n=25):
@@ -262,7 +260,7 @@ def _last_pending_page(total):
 
 
 def pending_pagination_html(query, page, total, pending_sort='recent'):
-    """Accessible navigation over bounded pending rows; never alters rules."""
+    """Accessible bounded navigation; URLs escaped before rendering."""
     pages = _last_pending_page(total)
     first = (page - 1) * PENDING_PAGE_SIZE + 1 if total and page <= pages else 0
     last = min(page * PENDING_PAGE_SIZE, total) if first else 0
@@ -274,16 +272,12 @@ def pending_pagination_html(query, page, total, pending_sort='recent'):
 
     links = []
     if page > 1:
-        links.append('<a rel="prev" href="' + href(page - 1) +
-                     '">Previous 200</a>')
+        links.append(render_template("pending-prev", href=href(page - 1)))
     if page < pages:
-        links.append('<a rel="next" href="' + href(page + 1) +
-                     '">Next 200</a>')
-    return ('<nav class="pending-pages" aria-label="Pending request pages">'
-            '<span role="status">Showing ' + str(first) + '–' + str(last) +
-            ' of ' + str(total) + ' matching pending domains · page ' +
-            str(page) + ' of ' + str(pages) + '</span>' +
-            ''.join(links) + '</nav>')
+        links.append(render_template("pending-next", href=href(page + 1)))
+    return render_template("pending-nav", first=first, last=last,
+                           total=total, page=page, pages=pages,
+                           links="".join(links))
 
 
 def live_snapshot(query='', view='policy', history_filters=None,
@@ -373,17 +367,14 @@ def _overview_history_metrics():
 
 def overview_summary_html(metrics):
     if metrics is None:
-        return ('<tr><td colspan="5">Operational history unavailable; '
-                'check local configuration.</td></tr>')
+        return render_template("overview-unavailable")
     return history_summary_html(metrics)
 
 
 def operations_overview_html(metrics):
-    """Aggregate, redacted 24h counts only; no URLs, domains or queries."""
+    """Aggregate 24h counts only; no URLs, domains or query text."""
     if metrics is None:
-        return ('<p class="subtle" role="status">Operational history is '
-                'unavailable. Existing permissions and recent activity '
-                'remain accessible.</p>')
+        return render_template("operations-unavailable")
     totals = {
         'Operations': sum(int(x['count']) for x in metrics),
         'Searches': sum(int(x['count']) for x in metrics
@@ -391,20 +382,19 @@ def operations_overview_html(metrics):
         'Fetches': sum(int(x['count']) for x in metrics
                        if x['kind'] == 'fetch'),
         'Non-success outcomes': sum(int(x['count']) for x in metrics
-                                    if x['status'] != 'success'),
+                                   if x['status'] != 'success'),
     }
     return ''.join(
-        '<div class="stat"><span>' + label +
-        '</span><b>' + str(value) + '</b></div>'
-        for label, value in totals.items())
+        render_template("operations-stat", label=esc(label), value=count)
+        for label, count in totals.items())
 
 
 def service_overview_rows():
-    """Bounded local TCP-only view, not proof of service health."""
+    """Bounded local TCP-only view, not proof of application health."""
     return ''.join(
-        '<tr><td>' + esc(item['service']) + '</td><td>' +
-        esc(item['status']) + '</td><td>' + esc(item['source']) +
-        '</td></tr>' for item in service_status.probe_services())
+        render_template("service-row", service=esc(item['service']),
+                        status=esc(item['status']), source=esc(item['source']))
+        for item in service_status.probe_services())
 
 
 def row_html(r, query='', page=1, pending_sort='recent'):
