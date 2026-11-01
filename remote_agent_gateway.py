@@ -29,6 +29,10 @@ MAX_AUDIT_EVENTS = 256
 MAX_PER_CLIENT_ACTIVE = 2
 MAX_TOTAL_ACTIVE = 8
 MAX_PER_CLIENT_PER_MINUTE = 30
+# Admission bursts from the Cloudflare capability discovery handshake are
+# queued only for that dedicated identity. Neither active caps nor quotas move.
+PORTAL_MAX_WAITING = 8
+PORTAL_MAX_WAIT_SECONDS = 5.0
 MAX_RESPONSE_SECONDS = 120
 MAX_BODY_SECONDS = 15
 MAX_RESPONSE_START_SECONDS = 15
@@ -163,6 +167,14 @@ class ClientRequestBudget:
         self._active_total += 1
         return True
 
+    def may_wait_for_slot(self, client_id: str, now: float) -> bool:
+        """A capacity wait must not turn quota exhaustion into a long hold."""
+        recent = self._calls.get(client_id, ())
+        return (sum(0 <= now - t < 60 for t in recent)
+                < MAX_PER_CLIENT_PER_MINUTE
+                and (client_id in self._calls
+                     or len(self._calls) < MAX_CACHED_IDENTITIES))
+
     def release(self, client_id: str) -> None:
         current = self._active.get(client_id, 0)
         if current <= 0:
@@ -202,10 +214,53 @@ class LoopbackMCPGateway:
         self._rate_clock = rate_clock
         self._budget = ClientRequestBudget()
         self._audit = GatewayAudit()
+        self._portal_waiters = 0
+        self._portal_changed = asyncio.Event()
         # Serializes expensive root guard checks. No cached attestation:
         # every authorized request must pass a fresh host read/probe.
         self._guard_slot = asyncio.Lock()
         self._guard_inflight: asyncio.Task[bool] | None = None
+
+    async def _reserve_request(self, client_id: str, digest: bytes) -> str:
+        """Bounded capacity wait for the Cloudflare discovery burst only.
+
+        Other clients retain immediate rejection.  A rejected rate quota is
+        never queued, and credentials are revalidated while waiting. The event
+        loop serializes all admission decisions and releases.
+        """
+        if client_id != "cloudflare-portal":
+            return ("admitted" if self._budget.reserve(
+                client_id, self._rate_clock()) else "limited")
+        if self._portal_waiters == 0 and self._budget.reserve(
+                client_id, self._rate_clock()):
+            return "admitted"
+        if (self._portal_waiters >= PORTAL_MAX_WAITING
+                or not self._budget.may_wait_for_slot(
+                    client_id, self._rate_clock())):
+            return "limited"
+        self._portal_waiters += 1
+        deadline = asyncio.get_running_loop().time() + PORTAL_MAX_WAIT_SECONDS
+        try:
+            while True:
+                if not self._credential_still_valid(digest, client_id):
+                    return "unauthorized"
+                self._portal_changed.clear()
+                if self._budget.reserve(client_id, self._rate_clock()):
+                    return "admitted"
+                if not self._budget.may_wait_for_slot(
+                        client_id, self._rate_clock()):
+                    return "limited"
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return "limited"
+                try:
+                    await asyncio.wait_for(
+                        self._portal_changed.wait(),
+                        min(remaining, REVOCATION_POLL_SECONDS))
+                except TimeoutError:
+                    pass
+        finally:
+            self._portal_waiters -= 1
 
     def audit_snapshot(self) -> tuple[GatewayAuditEvent, ...]:
         """Read-only in-process snapshot, intentionally not routed to HTTP."""
@@ -306,9 +361,11 @@ class LoopbackMCPGateway:
                   not message.get("more_body", False)):
                 completed = True
 
-        if not self._budget.reserve(client_id, self._rate_clock()):
+        admission = await self._reserve_request(client_id, digest)
+        if admission != "admitted":
             try:
-                await _reply(audited_send, 429)
+                await _reply(audited_send,
+                             401 if admission == "unauthorized" else 429)
             finally:
                 # A client can disconnect after 429 headers but before
                 # receiving its terminal body: retain that incomplete event.
@@ -321,6 +378,7 @@ class LoopbackMCPGateway:
         finally:
             self._audit.record(client_id, method, status, completed)
             self._budget.release(client_id)
+            self._portal_changed.set()
 
     def _credential_still_valid(self, digest: bytes, client_id: str) -> bool:
         """Revocation and expiration are checked throughout active streams."""

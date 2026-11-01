@@ -256,3 +256,19 @@ you used the same remote gateway for other authenticated clients, stopping
 its optional systemd unit may briefly disconnect them; make a deliberate
 decision before rollback. No remote Cloudflare settings or user credentials
 are ever removed by this script.
+
+## Cloudflare capability-discovery concurrency (opt-in gateway)
+
+The dedicated `cloudflare-portal` client can briefly queue up to eight
+**authenticated** requests for a maximum of five seconds while waiting for
+one of its existing two active slots. The gateway still enforces eight total
+active requests, 30 requests per client per minute, independent identities,
+per-request root guard checks, credential expiration and revocation. Other
+clients still receive immediate 429 on overload. The waiting queue is
+bounded and is cleared on timeout, cancellation or revocation; it never
+logs a bearer or request body. A Cloudflare HTTP 429 is evidence of quota or
+concurrency rejection, not proof of which cap was reached.
+
+The queue change alone does not make the private route reachable. Re-run
+Cloudflare MCP capability sync only after the independently guarded private
+network endpoint has been deployed and checked.
