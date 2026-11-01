@@ -21,6 +21,7 @@ import threading
 from urllib.parse import urlsplit, urlunsplit
 from history_log import logged_tool
 import isolated_engine_observations
+import engine_pacing
 import document_pages
 import document_comparison
 import request_cache
@@ -475,14 +476,61 @@ def _run_search_network(params: dict, max_results: int, *,
     initial_failure = None
     isolated_engine = None
     attempted_engine = None
+    try:
+        pacing_policy = engine_pacing.policy()
+    except (OSError, ValueError):
+        return {"success": False, "status": "pacing_unavailable",
+                "backend": "searxng",
+                "reason": "Engine pacing settings are unavailable; no search was sent."}
+    selected_engine = None
+    if pacing_policy is not None:
+        # Never let aggregate fanout, categories or !bangs bypass per-engine
+        # slots. The opt-in pilot supports only one explicitly selected engine
+        # already included in the operator's private policy.
+        engine = params.get("engines")
+        if (not isinstance(engine, str) or not engine or "," in engine
+                or params.get("categories")
+                or re.search(r"(?<!\S)![^\s]+", params.get("q", ""))):
+            return {"success": False, "status": "pacing_selection_required",
+                    "backend": "searxng",
+                    "reason": "Pacing is enabled: select one policy-listed engine. "
+                              "Combined, category and bang searches are not supported."}
+        if engine.casefold() not in pacing_policy:
+            return {"success": False, "status": "pacing_selection_required",
+                    "backend": "searxng",
+                    "reason": "Selected engine is not covered by the active pacing policy."}
+        selected_engine = engine
     with httpx.Client(timeout=upstream_settings.effective_timeout("searxng_seconds"),
                       trust_env=False) as client:
         selection_failure = _verify_explicit_search_selection(client, params)
         if selection_failure is not None:
             return selection_failure
         started_search = time.monotonic()
-        response = _retry_request(lambda: client.get(
-            f"{SEARXNG_URL}/search", params=params))
+        if selected_engine is None:
+            response = _retry_request(lambda: client.get(
+                f"{SEARXNG_URL}/search", params=params))
+        else:
+            try:
+                with engine_pacing.reserve(
+                        selected_engine, pacing_policy[selected_engine.casefold()]):
+                    try:
+                        # One admitted network operation only. A hidden GET retry
+                        # could exceed the engine's minimum request spacing.
+                        response = client.get(f"{SEARXNG_URL}/search", params=params)
+                    except httpx.RequestError:
+                        response = None
+            except engine_pacing.PaceUnavailable as exc:
+                cooled = bool(exc.retry_after_seconds)
+                return {"success": False,
+                        "status": "rate_limited" if cooled else "pacing_unavailable",
+                        "backend": "searxng",
+                        "reason": ("Selected engine is cooling down or busy."
+                                   if cooled else "Engine pacing state is unavailable."),
+                        "retry_after_seconds": exc.retry_after_seconds}
+            except OSError:
+                return {"success": False, "status": "pacing_unavailable",
+                        "backend": "searxng",
+                        "reason": "Engine pacing reservation unavailable; no search was sent."}
         isolated_engine_observations.observe(
             params, response, (time.monotonic() - started_search) * 1000,
             source="explicit")
@@ -490,7 +538,7 @@ def _run_search_network(params: dict, max_results: int, *,
         # failed. Recover once, preserving the request or narrowing an
         # unrestricted default to an already-attempted, enabled engine.
         # Never broaden explicit selection or retry a healthy empty result.
-        if response is not None and response.status_code == 200:
+        if pacing_policy is None and response is not None and response.status_code == 200:
             try:
                 first = response.json()
             except (ValueError, UnicodeError):
@@ -531,6 +579,10 @@ def _run_search_network(params: dict, max_results: int, *,
                                 else "explicit"))
     if response is not None and response.status_code in (400, 422) and len(params) > 2:
         raise ValueError("Local SearXNG rejected the requested filters or page")
+    if response is None and pacing_policy is not None:
+        return {"success": False, "status": "upstream_unavailable",
+                "backend": "searxng",
+                "reason": "Local SearXNG transport failed after one paced request."}
     if response is None or response.status_code >= 400:
         return _upstream_error(response, "searxng")
     try:
@@ -717,7 +769,16 @@ def web_search(query: str, max_results: int = 8, language: str = "",
         params["q"], flags=re.IGNORECASE))
     # Do not replay a cached "all providers healthy" snapshot as current
     # provider health. Diagnostic calls are always fresh and not cached.
-    key = None if private or include_search_status else (
+    # Never replay a previously cached unrestricted fanout response after
+    # the operator opts into per-engine pacing. Each paced search obtains its
+    # own admission decision; the disabled default keeps existing cache use.
+    try:
+        pacing_active = engine_pacing.policy() is not None
+    except (OSError, ValueError):
+        return {"success": False, "status": "pacing_unavailable",
+                "backend": "searxng",
+                "reason": "Engine pacing settings are unavailable; no search was sent."}
+    key = None if private or include_search_status or pacing_active else (
         "search", SEARXNG_URL, tuple(sorted(params.items())),
         max_results, deduplicate, ranking, include_published_date,
         include_image_metadata, allowed_hosts,

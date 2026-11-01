@@ -427,3 +427,35 @@ SearXNG-reported unresponsive engine. The aggregate dashboard reads bounded
 private history; this evidence is not used to automatically select providers
 or rate-limit engines yet. Older records cannot be retroactively attributed.
 
+
+## Opt-in isolated engine pacing (initial integration)
+
+The bridge now enforces an operator-owned, **disabled-by-default** pacing policy
+for explicitly selected *single* engines. The private file
+`~/.config/local-search-mcp/engine-pacing.json` must contain the exact
+`local-search-mcp/engine-pacing/v1` schema and owner-only permissions.
+This is a pilot mechanism and not yet a dashboard editing workflow; the
+maintained setup wizard remains the only writer for SearXNG engine flags.
+
+When the file is absent or `enabled=false`, all normal search behavior,
+including combined default requests, existing retry/recovery and search
+caching, is unchanged. When `enabled=true`, only a single explicitly selected
+engine present in the policy can be queried. The existing bounded SearXNG
+`/config` verification still requires that engine to be enabled. Default
+fanout, category filters, !bang shortcuts, multiple explicit engines, and
+unlisted providers **fail closed before any provider search** rather than
+silently sending traffic to unmetered engines or substituting another engine.
+The bridge returns `pacing_selection_required` for those unsupported
+selectors, `rate_limited` with a bounded retry hint for busy/cooling-down
+engines, or `pacing_unavailable` for an invalid/unsafe settings file.
+
+Each admitted single-engine search holds its cross-process reservation around
+one local SearXNG `/search` request, without a hidden GET retry or recovery
+attempt. With pacing enabled, result caching is skipped to prevent reusing
+unrestricted responses from before activation. An enabled policy can therefore
+reduce search availability; it does not yet automatically choose a provider,
+balance fanout searches, offer per-provider parallelism above one, or prove
+third-party provider rate limits. The rate values are operator heuristics,
+not documented remote quotas. Do not enable until testing on the installed
+host and adding the guarded settings UI; operator approval is required for
+any live policy changes.
