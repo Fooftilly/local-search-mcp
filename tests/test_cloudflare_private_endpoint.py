@@ -47,7 +47,7 @@ class PrivateEndpointTests(unittest.TestCase):
     def test_cleanup_removes_address_before_guard(self):
         with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / "owned"
-            marker.write_text("a" * 32 + "\\n")
+            marker.write_text("a" * 32 + "\n")
             marker.chmod(0o600)
             calls = []
 
@@ -71,7 +71,7 @@ class PrivateEndpointTests(unittest.TestCase):
     def test_other_invocation_cannot_cleanup_active_endpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / "owned"
-            marker.write_text("a" * 32 + "\\n")
+            marker.write_text("a" * 32 + "\n")
             marker.chmod(0o600)
             with (patch.object(endpoint, "MARKER", marker),
                   patch.object(endpoint, "invocation_id", return_value="b" * 32),
