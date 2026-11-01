@@ -21,6 +21,9 @@ the root-owned crawler guard and the existing MCP service units are unchanged.
   A root-owned helper installs that guard **before** assigning the address.
   The socat process then listens on this address and forwards to the existing
   loopback adapter, running as the intended unprivileged Linux account.
+  The listening socket also uses SO_BINDTODEVICE=lo so a firewall reload
+  cannot make it accept traffic arriving from WLAN, Docker, or Tailscale;
+  verify kernel support during live acceptance (failure prevents startup).
 
 ## Attended installation (do not run blindly)
 
