@@ -296,15 +296,15 @@ class DashboardHTTPTests(unittest.TestCase):
             encoding="utf-8")
         history = json.loads(self.exchange("GET", "/live?view=history")[1])
         self.assertIn("&lt;script&gt;", history["history_html"])
-        # The indexed dashboard intentionally omits raw search-query text.
-        self.assertNotIn("<img", history["history_html"])
-        self.assertNotIn("onerror", history["history_html"])
+        # Search query text is now visible but remains escaped/inert.
+        self.assertIn("&lt;img", history["history_html"])
+        self.assertIn("onerror", history["history_html"])
         self.assertNotIn("<script>", history["history_html"])
         html_page = self.exchange("GET", "/history")[1]
         self.assertIn(b'<tbody id="live-history">', html_page)
         self.assertIn(b'&lt;script&gt;', html_page)
 
-    def test_history_queries_require_opt_in_and_survive_live_filter_refresh(self):
+    def test_history_queries_show_by_default_and_survive_live_filter_refresh(self):
         from history_log import append_history
         long_query = ("Full Unicode café 猫 " + "x" * 240 +
                       ' <script>alert("x")</script>&' + chr(0x202e))
@@ -318,11 +318,11 @@ class DashboardHTTPTests(unittest.TestCase):
                         "url": "https://docs.example.org/private?secret=yes"})
         base_status, normal, _ = self.exchange("GET", "/history")
         self.assertEqual(base_status, 200)
-        self.assertNotIn(b"Full Unicode", normal)
+        self.assertIn(b"Full Unicode", normal)
         self.assertNotIn(b"private?secret", normal)
-        self.assertNotIn(b'checked> Show search queries', normal)
+        self.assertIn(b'checked> Show search queries', normal)
         live_normal = json.loads(self.exchange("GET", "/live?view=history")[1])
-        self.assertNotIn("Full Unicode", live_normal["history_html"])
+        self.assertIn("Full Unicode", live_normal["history_html"])
         uri = "/history?hours=24&kind=search&show_queries=1"
         code, revealed, headers = self.exchange("GET", uri)
         self.assertEqual(code, 200)
@@ -346,7 +346,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertNotIn("<script>", live["history_html"])
         self.assertNotIn("Full Unicode", live["history_summary_html"])
         no_reveal = json.loads(self.exchange(
-            "GET", "/live?view=history&kind=search&hours=24")[1])
+            "GET", "/live?view=history&kind=search&hours=24&show_queries=0")[1])
         self.assertNotIn("Full Unicode", str(no_reveal))
         fetch_only = json.loads(self.exchange(
             "GET", "/live?view=history&kind=fetch&show_queries=1")[1])
@@ -355,14 +355,14 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertNotIn("private?secret", str(fetch_only))
         self.assertNotIn("secret=yes", str(fetch_only))
         self.assertNotIn("https://docs.example.org/private",
-                         json.loads(self.exchange("GET", "/live?view=history&kind=fetch")[1])["history_html"])
+                         json.loads(self.exchange("GET", "/live?view=history&kind=fetch&show_queries=0")[1])["history_html"])
         for bad in ("2", "yes", "%3Cscript%3E", "1&show_queries=1"):
             self.assertEqual(self.exchange(
                 "GET", "/history?show_queries=" + bad)[0], 400)
             self.assertEqual(self.exchange(
                 "GET", "/live?view=history&show_queries=" + bad)[0], 400)
 
-    def test_history_fetch_urls_are_opt_in_escaped_and_live(self):
+    def test_history_fetch_urls_default_visible_escaped_and_live(self):
         from history_log import append_history
         from urllib.parse import urlencode
         target = 'https://docs.example.org/a/<script>alert("x")</script>/new?token=SECRET#fragment'
@@ -375,7 +375,7 @@ class DashboardHTTPTests(unittest.TestCase):
         code, original, _ = self.exchange("GET", "/history?kind=fetch")
         self.assertEqual(code, 200)
         self.assertIn(b"docs.example.org", original)
-        self.assertNotIn(b"/a/", original)
+        self.assertIn(b"/a/", original)
         code, reveal, headers = self.exchange(
             "GET", "/history?kind=fetch&hours=24&show_queries=1")
         self.assertEqual(code, 200)
@@ -393,7 +393,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertIn("https://docs.example.org/a/", rows["history_html"])
         self.assertNotIn("SECRET", str(rows))
         hidden = json.loads(self.exchange(
-            "GET", "/live?view=history&kind=fetch&hours=24")[1])
+            "GET", "/live?view=history&kind=fetch&hours=24&show_queries=0")[1])
         self.assertNotIn("https://", hidden["history_html"])
         cont = json.loads(self.exchange(
             "GET", "/live?view=history&kind=page&show_queries=1")[1])
@@ -472,7 +472,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertNotIn(b'token=DO_NOT_LEAK', page)
         self.assertIn(b'show_queries=1', page)
         status, hidden, _ = self.exchange(
-            "GET", "/history?kind=fetch&page=2")
+            "GET", "/history?kind=fetch&page=2&show_queries=0")
         self.assertEqual(status, 200)
         self.assertIn(b'Showing 26', hidden)
         self.assertNotIn(b'/private-page/', hidden)
