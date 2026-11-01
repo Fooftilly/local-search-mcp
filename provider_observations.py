@@ -185,7 +185,7 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
                             "results", "empty", "reported_unresponsive",
                             "http_error", "transport_error", "invalid_response",
                             "unverified_attribution")
-                            or source not in ("explicit", "isolated_recovery")
+                            or source not in ("explicit", "isolated_recovery", "paced_default")
                             or type(duration) not in (int, float)
                             or not math.isfinite(duration)
                             or not 0 <= duration <= 3_600_000):
