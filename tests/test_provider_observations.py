@@ -90,6 +90,7 @@ class ProviderObservationsTests(unittest.TestCase):
         metrics = report["isolated_engine_operations"][0]
         self.assertEqual(metrics["name"], "duckduckgo")
         self.assertEqual(metrics["local_operations"], 3)
+        self.assertEqual(report["isolated_engine_operation_total"], 3)
         self.assertEqual(metrics["reported_results"], 1)
         self.assertEqual(metrics["reported_empty"], 1)
         self.assertEqual(metrics["reported_unresponsive"], 1)
@@ -98,6 +99,21 @@ class ProviderObservationsTests(unittest.TestCase):
         self.assertEqual(metrics["mean_local_search_ms"], 80.0)
         self.assertEqual(report["provider_uptime"], "not_measured")
         self.assertNotIn("SECRET_TOKEN", repr(report))
+
+    def test_isolated_total_includes_engine_groups_beyond_display_limit(self):
+        for i in range(provider.MAX_GROUPS + 1):
+            self.add(minutes=0, results=[], isolated_engine_operations=[{
+                "engine": f"engine-{i:02d}", "source": "explicit",
+                "outcome": "empty", "roundtrip_ms": 10,
+            }])
+        result = provider.observations(24, now=self.now)
+        self.assertTrue(result["isolated_engine_groups_truncated"])
+        self.assertEqual(len(result["isolated_engine_operations"]), provider.MAX_GROUPS)
+        self.assertEqual(result["isolated_engine_operation_total"],
+                         provider.MAX_GROUPS + 1)
+        self.assertEqual(sum(r["local_operations"]
+                             for r in result["isolated_engine_operations"]),
+                         provider.MAX_GROUPS)
 
     def test_opt_in_failure_aggregation_merges_names_across_case(self):
         for name in ("Qwant", "qwant", "QWANT"):
