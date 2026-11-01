@@ -358,7 +358,8 @@ def apply(selected: tuple[str, ...], controlled: tuple[str, ...], *,
             general = {row["name"] for row in verified_inventory
                        if "general" in row["categories"]}
             if (not general or set(controlled) != general
-                    or not selected or not set(selected).issubset(general)
+                    or not selected or len(selected) > 512
+                    or not set(selected).issubset(general)
                     or any(name.casefold().startswith("google") for name in selected)):
                 raise EngineSetupError("Invalid general engine selection")
         if exclude_google:
