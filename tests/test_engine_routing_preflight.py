@@ -53,7 +53,7 @@ class RoutingPreflightTests(unittest.TestCase):
             result = preflight.report()
         config.assert_called_once_with()
         live.assert_called_once_with()
-        raw.assert_called_once_with(inventory)
+        raw.assert_called_once_with(inventory, POLICY)
         reader.assert_called_once_with(24)
         return result
 
@@ -98,7 +98,7 @@ class RoutingPreflightTests(unittest.TestCase):
             return original(transport=httpx.MockTransport(handler), trust_env=False)
         with patch.object(preflight.httpx, "Client", side_effect=factory):
             with self.assertRaises(ValueError):
-                preflight._verified_raw_active_inventory(verified)
+                preflight._verified_raw_active_inventory(verified, {"bing images": 10})
 
     def test_backend_drift_returns_no_plan_and_sanitized_blocker(self):
         with (patch.object(preflight.engine_pacing_dashboard, "snapshot",
@@ -111,9 +111,74 @@ class RoutingPreflightTests(unittest.TestCase):
               patch.object(preflight.provider_observations, "observations",
                            side_effect=AssertionError("must not read"))):
             result = preflight.report()
-        self.assertEqual(result["status"], "inventory_unavailable")
+        self.assertEqual(result["status"], "raw_inventory_unavailable")
         self.assertEqual(result["plans"], [])
         self.assertNotIn("PRIVATE_DRIFT", str(result))
+
+    def test_raw_inventory_ignores_unlisted_engine_category_normalization(self):
+        """Unrelated engines must not prevent a configured provider comparison."""
+        import httpx
+        verified = [
+            {"name": "qwant", "enabled": True, "categories": ("general", "web")},
+            {"name": "unlisted", "enabled": True, "categories": ("images",)},
+        ]
+        original = httpx.Client
+        def handler(request):
+            self.assertEqual(request.url.path, "/config")
+            return httpx.Response(200, json={"engines": [
+                {"name": "qwant", "enabled": True, "categories": ["general", "web"]},
+                {"name": "unlisted", "enabled": True,
+                 "categories": ["images", "images"]}]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with patch.object(preflight.httpx, "Client", side_effect=factory):
+            result = preflight._verified_raw_active_inventory(
+                verified, {"qwant": 30})
+        self.assertEqual([row["name"] for row in result], ["qwant", "unlisted"])
+
+    def test_policy_listed_category_drift_remains_fail_closed(self):
+        import httpx
+        verified = [
+            {"name": "qwant", "enabled": True, "categories": ("general", "web")},
+            {"name": "unlisted", "enabled": True, "categories": ("images",)},
+        ]
+        original = httpx.Client
+        def handler(request):
+            return httpx.Response(200, json={"engines": [
+                {"name": "qwant", "enabled": True,
+                 "categories": ["general", "general", "web"]},
+                {"name": "unlisted", "enabled": True, "categories": ["images"]}]})
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+        with patch.object(preflight.httpx, "Client", side_effect=factory):
+            with self.assertRaises(preflight.InventoryMismatch):
+                preflight._verified_raw_active_inventory(
+                    verified, {"qwant": 30})
+
+    def test_stage_codes_guide_diagnosis_without_private_error_disclosure(self):
+        scenarios = [
+            (preflight.RawInventoryUnavailable("PRIVATE_NETWORK"),
+             "raw_inventory_unavailable"),
+            (preflight.InventoryMismatch("PRIVATE_CATEGORY"),
+             "configured_engine_inventory_mismatch"),
+            (OSError("PRIVATE_SOCKET"), "raw_inventory_unavailable"),
+        ]
+        for error, expected in scenarios:
+            with self.subTest(expected=expected), (
+                    patch.object(preflight.engine_pacing_dashboard, "snapshot",
+                                 return_value={"enabled": False,
+                                               "engines": POLICY, "routing": "fixed"}),
+                    patch.object(preflight.engine_dashboard, "verified_inventory",
+                                 return_value=(INVENTORY, "rev")),
+                    patch.object(preflight, "_verified_raw_active_inventory",
+                                 side_effect=error),
+                    patch.object(preflight.provider_observations, "observations",
+                                 side_effect=AssertionError("history should not be read"))):
+                result = preflight.report()
+            self.assertEqual(result["status"], expected)
+            self.assertNotIn("PRIVATE_", json.dumps(result))
+            self.assertEqual(result["searches_sent"], 0)
+            self.assertEqual(result["plans"], [])
 
     def test_fixed_mode_and_incomplete_history_keep_name_order(self):
         fixed = self._run(routing="fixed")
@@ -137,7 +202,7 @@ class RoutingPreflightTests(unittest.TestCase):
                            side_effect=AssertionError("must not read"))):
             result = preflight.report()
         live.assert_called_once_with()
-        self.assertEqual(result["status"], "inventory_unavailable")
+        self.assertEqual(result["status"], "operator_inventory_unavailable")
         self.assertNotIn("PRIVATE_URL", str(result))
         self.assertEqual(result["plans"], [])
 

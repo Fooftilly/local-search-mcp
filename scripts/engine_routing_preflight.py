@@ -20,26 +20,41 @@ import upstream_settings
 MAX_CATEGORY_GROUPS = 16
 
 
-def _verified_raw_active_inventory(verified_inventory: list[dict]) -> list[dict]:
+class RawInventoryUnavailable(ValueError):
+    """The bounded search-bridge /config read could not be verified."""
+
+
+class InventoryMismatch(ValueError):
+    """A policy-listed engine disagrees between operator and bridge views."""
+
+
+def _verified_raw_active_inventory(verified_inventory: list[dict],
+                                   policy: dict[str, int]) -> list[dict]:
     """Recheck the bridge's *unmodified* bounded /config category semantics.
 
     The operator inventory reader may normalize repeated category names.
-    Compare exact categories and enabled names before publishing an
-    acceptance plan; on drift/ambiguity, fail closed without a /search.
+    Compare exact categories and enabled status for *policy-listed* engines
+    before publishing an acceptance plan. Unrelated enabled engines may be
+    normalized differently by the operator reader and cannot influence a
+    strictly policy-filtered request. The bridge still validates the complete
+    bounded raw inventory and rejects invalid /config without sending /search.
     """
     with httpx.Client(
             timeout=upstream_settings.effective_timeout("searxng_seconds"),
             trust_env=False) as client:
         active = bridge._enabled_search_inventory(client, require_categories=True)
     if isinstance(active, dict):
-        raise ValueError("Raw inventory unavailable")
+        raise RawInventoryUnavailable("Raw inventory unavailable")
     owner_active = {
         row["name"]: tuple(row["categories"])
         for row in verified_inventory if row["enabled"] is True
     }
     actual_active = {row["name"]: row["categories"] for row in active}
-    if owner_active != actual_active:
-        raise ValueError("Operator and bridge inventory differ")
+    # Both readers may omit the same disabled/unavailable configured engine;
+    # absence in both views is reported separately, not treated as drift.
+    if any(owner_active.get(name) != actual_active.get(name)
+           for name in policy):
+        raise InventoryMismatch("Configured engine inventory differs")
     return active
 
 
@@ -107,15 +122,37 @@ def report() -> dict:
         return output
     try:
         inventory, _ = engine_dashboard.verified_inventory()
-        # Verify the container/bind-mount through the operator read path,
-        # then validate *raw* /config category rows through the exact bridge
-        # parser. Any normalization or concurrent drift fails closed.
-        active = _verified_raw_active_inventory(inventory)
-        general = engine_routing_plan.candidates(active, policy)
     except (ValueError, OSError, TypeError,
             engine_dashboard.engines.on_demand_docker.LifecycleError):
-        output["status"] = "inventory_unavailable"
-        output["next_step"] = "Start SearXNG through the attended operator setup; retry read-only preflight."
+        output["status"] = "operator_inventory_unavailable"
+        output["next_step"] = (
+            "Check ./setup.sh --docker-status and the owner-verified SearXNG "
+            "settings bind mount; the backend may be sleeping. No changes were made.")
+        return output
+    try:
+        # Compare only policy-listed engines after validating the complete
+        # raw /config through the production bridge's strict inventory reader.
+        active = _verified_raw_active_inventory(inventory, policy)
+    except InventoryMismatch:
+        output["status"] = "configured_engine_inventory_mismatch"
+        output["next_step"] = (
+            "Configured engine names or categories differ between the operator "
+            "and bridge inventory reads; inspect the already-running /config "
+            "and saved policy. No changes were made.")
+        return output
+    except (RawInventoryUnavailable, OSError, ValueError, TypeError):
+        output["status"] = "raw_inventory_unavailable"
+        output["next_step"] = (
+            "The production search inventory could not be validated from "
+            "SearXNG /config; check the local endpoint and retry. No changes were made.")
+        return output
+    try:
+        general = engine_routing_plan.candidates(active, policy)
+    except (ValueError, TypeError):
+        output["status"] = "routing_inventory_invalid"
+        output["next_step"] = (
+            "Verified inventory rows could not be interpreted for routing; "
+            "inspect the SearXNG inventory and configured engine rules.")
         return output
 
     enabled_names = {row["name"] for row in active}

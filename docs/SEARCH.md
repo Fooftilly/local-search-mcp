@@ -607,3 +607,25 @@ The preflight uses the common owner-verification reader without requiring a
 general engine; the interactive general-engine settings editor retains its
 existing separate general-only guard. Category-only routing therefore can
 be assessed while preserving the editor's original safety boundary.
+
+## Diagnosing preflight inventory blockers
+
+The preflight now distinguishes these read-only failure stages instead of
+always returning `inventory_unavailable` and suggesting a backend wake:
+
+- `operator_inventory_unavailable`: local managed-container ownership,
+  settings bind-mount verification or the operator's inventory reader failed.
+  Check `./setup.sh --docker-status` before considering an attended wake.
+- `raw_inventory_unavailable`: the bridge's independently validated bounded
+  `/config` read failed. Check that the already-running endpoint responds.
+- `configured_engine_inventory_mismatch`: the exact enabled status or
+  categories for at least one *policy-listed* engine differ across the two
+  reads; inspect saved spelling and SearXNG engine configuration.
+- `routing_inventory_invalid`: a validated raw row cannot be safely
+  interpreted as a routing candidate.
+
+Only policy-listed engines need to agree between the operator and bridge
+inventory readers; unrelated enabled engines do not affect strict routing
+eligibility. The raw reader still validates every source row and fails closed
+on malformed input. Diagnostic JSON never includes untrusted exceptions,
+private file paths, search text, or extra network requests.
