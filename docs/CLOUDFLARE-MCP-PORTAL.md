@@ -132,13 +132,25 @@ All steps are run on your own Linux machine as its **unprivileged** owner.
    the private-file ownership allowlist, loosen 0600/0700 requirements or
    change the sudoers/egress guard to work around the failure.
 
-   This is a conscious trade-off: those two optional services do **not** get
-   read-only filesystem mount isolation or a separate temporary directory.
-   They retain fixed loopback listening, strict credential/Host checks,
-   `UMask=0077`, address-family restrictions and root-guard checks; the
-   adapter additionally retains `NoNewPrivileges=true`. The gateway
-   must retain `NoNewPrivileges=false` for the guard. Future isolation
-   upgrades require a separately verified host-guard delegation design.
+   **Gateway effective privilege compatibility:** On the affected Arch
+   system, the gateway user unit with
+   `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK` had
+   `NoNewPrivs: 1` and its root-guard preflight failed, despite explicit
+   `NoNewPrivileges=false`. An otherwise identical transient user service
+   without that restriction had `NoNewPrivs: 0` and the guard passed.
+   Therefore, **only the optional authenticated gateway** omits
+   `RestrictAddressFamilies`. The adapter retains its address-family
+   restrictions and `NoNewPrivileges=true` because it does not invoke sudo.
+   Never relax the root guard or grant broader sudoers access.
+
+   This is a conscious trade-off: the optional services do **not** get
+   read-only filesystem mount isolation or a separate temporary directory;
+   the gateway also lacks address-family filtering. Both retain the strict
+   private-file validator, `UMask=0077`, and fixed loopback-only listeners.
+   The authenticated gateway checks the host-root guard before binding and
+   on every admitted request, and the adapter performs its own unprivileged
+   twelve-tool discovery. Future improvements to isolation require a
+   separately verified host-guard delegation design.
 
    After pulling an update to these templates, regenerate only the two
    optional user units (do not rerun attended hostname preparation):

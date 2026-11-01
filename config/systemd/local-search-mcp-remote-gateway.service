@@ -15,15 +15,19 @@ UMask=0077
 # before forwarding EVERY request. NoNewPrivileges would make sudo fail.
 # Keep this isolated to the privileged guard probe; never change sudoers.
 NoNewPrivileges=false
-# A user-service mount namespace remaps unmapped host root directories to
-# UID 65534, invalidating our strict private-file ancestor ownership checks.
-# It also prevents the gateway's narrowly authorized host-root sudo guard
-# from working. Run as the same unprivileged user *without* a user namespace.
-# Retain its UMask, fixed loopback listener, guard checks and syscall filter.
+# Under systemd --user, sandbox features that install a seccomp or mount
+# restriction can *implicitly* enable NoNewPrivileges even when set false.
+# The authenticated gateway must perform the narrowly scoped host-root
+# sudo NOPASSWD egress-guard probe at startup and on every admitted request.
+# On Arch Linux, RestrictAddressFamilies set NoNewPrivs=1 and broke the guard,
+# while an otherwise identical unfiltered user service had NoNewPrivs=0 and
+# passed. Do not enable it here until host-root guard delegation is redesigned.
+# Mount namespaces also map host-root ancestors to UID 65534, breaking the
+# credential store's strict ownership validation.
+# Keep unprivileged service ownership, UMask, exact loopback bind, and guard.
 PrivateTmp=false
 ProtectSystem=false
 ProtectHome=false
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]
 WantedBy=default.target

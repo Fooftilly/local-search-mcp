@@ -71,10 +71,13 @@ class ServiceInstallerTests(unittest.TestCase):
         self.assertNotIn("BindsTo=", origin)
         self.assertNotIn("0.0.0.0", gateway + origin)
         self.assertNotIn("cloudflared", gateway + origin)
-        # sudo -n root-guard probe and nftables need this privilege/netlink.
+        # The gateway's sudo -n root-guard probe needs effective NoNewPrivs=0.
+        # RestrictAddressFamilies in a user unit implicitly sets it to 1.
         self.assertIn("NoNewPrivileges=false", gateway)
-        self.assertIn("AF_NETLINK", gateway)
+        self.assertNotIn("RestrictAddressFamilies=", gateway)
         self.assertIn("NoNewPrivileges=true", origin)
+        self.assertIn(
+            "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6", origin)
 
     def test_cloudflare_services_do_not_remap_host_root_or_break_sudo_guard(self):
         """Unprivileged systemd mount namespaces map / and /home to nobody.
@@ -91,17 +94,23 @@ class ServiceInstallerTests(unittest.TestCase):
             with self.subTest(name=name):
                 for setting in (
                         "PrivateTmp=false", "ProtectSystem=false",
-                        "ProtectHome=false", "UMask=0077",
-                        "RestrictAddressFamilies="):
+                        "ProtectHome=false", "UMask=0077"):
                     self.assertIn(setting, unit)
                 for unsafe in (
                         "PrivateTmp=true", "ProtectSystem=strict",
                         "ProtectHome=read-only", "PrivateUsers=true"):
                     self.assertNotIn(unsafe, unit)
                 self.assertNotIn("0.0.0.0", unit)
+        # Other systemd sandboxing directives can force NoNewPrivs=1 despite
+        # an explicit false setting. Keep gateway free of such restrictions
+        # while it performs its narrowly authorized host sudo probe.
         self.assertIn("NoNewPrivileges=false", gateway)
-        self.assertIn("AF_NETLINK", gateway)
+        self.assertNotIn("RestrictAddressFamilies=", gateway)
+        self.assertNotIn("SystemCallFilter=", gateway)
+        self.assertNotIn("PrivateUsers=true", gateway)
         self.assertIn("NoNewPrivileges=true", adapter)
+        self.assertIn(
+            "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6", adapter)
         self.assertNotIn("AF_NETLINK", adapter)
 
     def test_optional_install_uses_private_project_python_not_system_python(self):
