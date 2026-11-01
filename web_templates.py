@@ -44,7 +44,22 @@ _TEMPLATES = {
         "once-grant-empty",
         "once-audit-row",
         "once-audit-table",
-        "once-audit-empty"
+        "once-audit-empty",
+        "history-nav",
+        "history-prev",
+        "history-next",
+        "history-row",
+        "history-engine-cell",
+        "history-empty",
+        "history-unavailable",
+        "history-table",
+        "history-summary-row",
+        "history-summary-empty",
+        "history-summary-unavailable",
+        "history-pages-unavailable",
+        "history-filter-notice",
+        "history-filter-warning",
+        "history-filter-correction"
     )
 }
 
