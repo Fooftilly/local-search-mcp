@@ -150,13 +150,25 @@ def _locked_fd(directory: int, name: str) -> int:
         raise
 
 
-def _save_next(directory: int, name: str, until: float) -> None:
+
+def _boot_id() -> str:
+    """Identify a Linux boot so monotonic deadlines survive process restarts."""
+    try:
+        value = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError) as exc:
+        raise PaceUnavailable("System boot identity unavailable for safe pacing") from exc
+    if not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value):
+        raise PaceUnavailable("Invalid system boot identity")
+    return value
+
+def _save_next(directory: int, name: str, *, epoch: float, mono: float, boot: str, spacing: int) -> None:
     tmp = ".engine-pacing-" + secrets.token_hex(12)
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
                      0o600, dir_fd=directory)
         with os.fdopen(fd, "wb") as stream:
-            stream.write((json.dumps({"next_allowed_epoch": until}) + "\n").encode("ascii"))
+            stream.write((json.dumps({"next_allowed_epoch": epoch, "next_allowed_mono": mono,
+                                     "boot_id": boot, "spacing_seconds": spacing}) + "\n").encode("ascii"))
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(tmp, name, src_dir_fd=directory, dst_dir_fd=directory)
@@ -192,27 +204,45 @@ def reserve(engine: str, spacing_seconds: int):
             state_name = ".engine-pacing-" + suffix + ".json"
             raw = _read_regular(directory, state_name, MAX_STATE_BYTES)
             now = time.time()
-            if not math.isfinite(now) or now < 0:
+            now_mono = time.monotonic()
+            boot = _boot_id()
+            if (not math.isfinite(now) or now < 0
+                    or not math.isfinite(now_mono) or now_mono < 0):
                 raise PaceUnavailable("Invalid system clock for pacing")
             if raw is not None:
                 try:
                     record = json.loads(raw.decode("ascii"), object_pairs_hook=_unique_pairs)
                     if (not isinstance(record, dict)
-                            or set(record) != {"next_allowed_epoch"}
-                            or type(record["next_allowed_epoch"]) not in (int, float)
-                            or not math.isfinite(record["next_allowed_epoch"])
-                            or record["next_allowed_epoch"] < 0):
+                            or set(record) != {"next_allowed_epoch", "next_allowed_mono",
+                                               "boot_id", "spacing_seconds"}
+                            or not isinstance(record["boot_id"], str)
+                            or not re.fullmatch(
+                                r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}",
+                                record["boot_id"])
+                            or type(record["spacing_seconds"]) is not int
+                            or not 0 <= record["spacing_seconds"] <= MAX_SPACING_SECONDS
+                            or any(type(record[key]) not in (int, float)
+                                   or not math.isfinite(record[key]) or record[key] < 0
+                                   for key in ("next_allowed_epoch", "next_allowed_mono"))):
                         raise ValueError("invalid pacing state")
-                    next_allowed = float(record["next_allowed_epoch"])
                 except (ValueError, UnicodeError) as exc:
                     raise PaceUnavailable("Invalid private pacing state") from exc
-                # Clock rollback is not permission to exceed a configured cap.
-                if next_allowed > now + MAX_SPACING_SECONDS:
-                    raise PaceUnavailable("Pacing clock skew requires inspection")
-                if next_allowed > now:
+                if record["boot_id"] != boot:
+                    # A wall-clock step during reboot cannot certify elapsed
+                    # time. Start a fresh, full cooldown on the new boot.
+                    wait = max(spacing_seconds, record["spacing_seconds"])
+                    _save_next(directory, state_name, epoch=now + wait,
+                               mono=now_mono + wait, boot=boot, spacing=wait)
+                    raise PaceUnavailable("Engine cooling down after system reboot", wait)
+                remaining = record["next_allowed_mono"] - now_mono
+                if remaining > MAX_SPACING_SECONDS:
+                    raise PaceUnavailable("Pacing monotonic clock skew requires inspection")
+                if remaining > 0:
                     raise PaceUnavailable("Selected engine cooling down",
-                                          math.ceil(next_allowed - now))
-            _save_next(directory, state_name, now + spacing_seconds)
+                                          math.ceil(remaining))
+            _save_next(directory, state_name, epoch=now + spacing_seconds,
+                       mono=now_mono + spacing_seconds, boot=boot,
+                       spacing=spacing_seconds)
             yield
         finally:
             os.close(lock)
