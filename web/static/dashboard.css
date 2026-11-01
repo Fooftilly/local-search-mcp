@@ -71,3 +71,6 @@ h3{font-size:15px;margin:0 0 12px}
 .quick-decision .choice-field,.once-action .choice-field{margin-right:3px}
 .quick-decision .inline-options,.once-action .inline-options{flex-basis:100%}
 @media (max-width:700px){.choice-text{padding:9px 11px}.choice-field{width:100%}.quick-decision .choice-field{width:100%}}
+
+/* Domain-rule rename fields belong to the stylesheet, not server markup. */
+.domain-rename-input { width: 195px; }
