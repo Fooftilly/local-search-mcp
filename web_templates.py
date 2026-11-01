@@ -59,7 +59,22 @@ _TEMPLATES = {
         "history-pages-unavailable",
         "history-filter-notice",
         "history-filter-warning",
-        "history-filter-correction"
+        "history-filter-correction",
+        "status-port-row",
+        "status-dashboard-port",
+        "status-mcp-port",
+        "status-limit-row",
+        "provider-time-row",
+        "provider-time-empty",
+        "provider-failure-row",
+        "provider-failure-empty",
+        "provider-coverage-row",
+        "provider-source-unavailable",
+        "provider-unavailable-two",
+        "provider-unavailable-four",
+        "provider-no-files",
+        "provider-partial",
+        "provider-bounded"
     )
 }
 
