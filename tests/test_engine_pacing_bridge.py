@@ -107,6 +107,16 @@ class PacedSearchBoundaryTests(unittest.TestCase):
                 self.assertEqual(result["status"], "pacing_selection_required")
                 self.assertEqual(self.calls, [])
 
+    def test_auto_routing_does_not_guess_optional_filter_support(self):
+        self.policy()
+        for options in ({"language": "en"}, {"time_range": "month"},
+                        {"page": 2}):
+            with self.subTest(options=options):
+                self.calls.clear()
+                result = self.execute(**options)
+                self.assertEqual(result["status"], "pacing_selection_required")
+                self.assertEqual(self.calls, [])
+
     def test_paced_default_routes_only_to_verified_general_engine(self):
         self.policy(entries={"duckduckgo": 60})
         with patch.object(bridge.isolated_engine_observations, "observe",

@@ -540,6 +540,15 @@ def _run_search_network(params: dict, max_results: int, *,
                         "reason": "Selected engine is not covered by the active pacing policy."}
             selected_engine = engine
         else:
+            # Optional language/time/page filters are not known to be
+            # supported by every eligible engine. Until the installed
+            # inventory proves those capabilities, do not reinterpret them.
+            if any(key in params for key in ("language", "time_range", "pageno")):
+                return {"success": False, "status": "pacing_selection_required",
+                        "backend": "searxng",
+                        "reason": "Automatic paced routing requires an unfiltered "
+                                  "default general search; select one engine "
+                                  "explicitly for language, time or paging filters."}
             paced_default = True
     with httpx.Client(timeout=upstream_settings.effective_timeout("searxng_seconds"),
                       trust_env=False) as client:

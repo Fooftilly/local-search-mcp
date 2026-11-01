@@ -442,11 +442,15 @@ managed separately by the existing setup wizard and engine-selection page.
 
 When the file is absent or `enabled=false`, ordinary requests retain
 their previous combined-default behavior, retries/recovery and caching.
-With an enabled policy, an **unfiltered default general query** selects
+With an enabled policy, an **unfiltered default general query** (no
+optional language, date-range or page selector) selects
 one eligible, enabled general engine from the policy using a bounded local
 SearXNG `/config` read and deterministic name ordering. A second candidate
 may be used only when the first has not been admitted because of an existing
 cooldown/lock. No fallback happens *after* a provider request starts.
+Optional language, time-range and page settings on an automatic default
+search also fail closed until support can be verified per eligible engine;
+such filters remain usable with explicitly selected engines.
 Explicit single-engine requests still require exact SearXNG verification
 and a policy entry. Category filters, !bang shortcuts, multiple explicit
 engines, and unlisted providers **fail closed** rather than silently sending
