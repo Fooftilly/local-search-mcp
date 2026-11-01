@@ -31,6 +31,36 @@ fastmcp call http://127.0.0.1:8790/mcp web_search query='recent science' max_res
 fastmcp call http://127.0.0.1:8790/mcp web_search query='linux' max_results=8 engines=qwant page=2 --auth none
 ```
 
+## Operator-managed default engine selection
+
+The **Search engine selection** link in the loopback-only management console
+(`http://127.0.0.1:8791/engine-settings`) now displays current general
+SearXNG engines, their enabled state and categories. GET only reads verified
+container ownership, the private bind-mounted settings and bounded local
+`/config` inventory; it never wakes a sleeping backend. When SearXNG is
+sleeping, use the attended `./setup.sh --search-engines` workflow to wake
+and inspect it deliberately.
+
+A protected same-origin, CSRF-checked POST with explicit `APPLY` applies
+a nonempty selection through the **existing** `scripts/searxng_engines.py`
+operator editor: its project-identity check, cross-process lock, private
+checkpoint, same-inode YAML write, verified restart and rollback remain
+authoritative. The displayed inventory/YAML revision is rechecked inside the
+lock and any stale/invalid selection is rejected before writes. Engine
+enabled flags are global across all their categories. This particular
+page cannot enable Google-named engines, preserving the operator's
+non-Google preference. It does not override agent-supplied explicit
+`engines` or `categories` filters, rate-limit engines, or select
+providers based on performance. The dashboard supports the full bounded
+inventory (up to 512 general engines), with a separately bounded form size.
+A successful console update immediately invalidates cached search responses
+and detaches pre-update in-flight cache writes in the shared MCP/dashboard
+process; existing in-flight callers may still receive their original result.
+Edits performed through the separate setup CLI do not share this in-process
+invalidation and may require a bridge restart or cache TTL expiry. Dedicated
+request pacing and adaptive
+routing are tracked separately in the engine-policy roadmap.
+
 ## Optional image URLs and thumbnails
 
 The operator's 2026-10-30 read-only SearXNG `/search?categories=images&format=json`

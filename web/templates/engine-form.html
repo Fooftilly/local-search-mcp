@@ -1,0 +1,13 @@
+<form method="post" action="/engine-settings">
+<input type="hidden" name="csrf" value="${csrf}">
+<input type="hidden" name="state" value="${state}">
+<fieldset class="choice-field">
+<legend>Default general-search engines</legend>
+<div class="choice-options">
+${rows}
+</div>
+</fieldset>
+<p>Choose at least one non-Google engine. Flags apply across all of each engine's categories. Saving the selection restarts the verified running SearXNG container and may interrupt searches.</p>
+<label>Type APPLY <input name="confirm" autocomplete="off" required></label>
+<button type="submit">Save engine selection</button>
+</form>

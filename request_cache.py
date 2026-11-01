@@ -78,6 +78,27 @@ def policy_epoch() -> int:
         return _POLICY_EPOCH
 
 
+def invalidate_search() -> None:
+    """Evict old engine-selection results after an operator config change.
+
+    Detach pending search loaders and fresh refresh tokens, so a request
+    started before the config update cannot reinsert obsolete search results.
+    Caller owns the operator-only engine-change permission/verification.
+    """
+    with _LOCK:
+        for key in list(_CACHE):
+            if key[0] == "search":
+                del _CACHE[key]
+                _METRICS["search"]["evictions"] += 1
+        for key in list(_INFLIGHT):
+            if key[0] == "search":
+                _INFLIGHT[key][2]["superseded"] = True
+                del _INFLIGHT[key]
+        for key in list(_REFRESHING):
+            if key[0] == "search":
+                del _REFRESHING[key]
+
+
 def invalidate_fetch() -> None:
     """Invalidate all fetch caches and detach old in-flight fetch operations.
 

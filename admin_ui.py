@@ -23,6 +23,7 @@ import cache_settings
 import portable_settings
 import history_index
 import provider_observations
+import engine_dashboard
 from web_assets import LIVE_SCRIPT, STYLESHEET
 from web_templates import render_template
 from runtime_ports import MCP_PORT
@@ -1127,6 +1128,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._respond(200,history_settings_page())
             except (ValueError, OSError):
                 return self._respond(400,'Nonsecret settings unavailable; inspect permissions and file contents')
+        if path.path=='/engine-settings':
+            if not self._read_origin_valid():return self._respond(403,'Forbidden')
+            return self._respond(200, engine_dashboard.page(CSRF))
         if path.path=='/upstream-settings':
             if not self._read_origin_valid():return self._respond(403,'Forbidden')
             try:
@@ -1250,6 +1254,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path not in ('/domain', '/pending/clear', '/bulk', '/once',
                              '/rules/preview', '/rules/apply', '/settings',
                              '/upstream-settings', '/cache-settings',
+                             '/engine-settings',
                              '/portable-settings/preview', '/portable-settings/apply'):
             return self._respond(404,'Not found')
         try:
@@ -1263,12 +1268,15 @@ class Handler(BaseHTTPRequestHandler):
                  else (3 * portable_settings.MAX_JSON_BYTES + 4096)
                  if self.path in ('/portable-settings/preview',
                                   '/portable-settings/apply')
+                 else 160 * 1024 if self.path == '/engine-settings'
                  else 8192 if self.path == '/bulk' else 4096)
         if length < 0 or length > limit:
             return self._respond(413,'Request too large')
         try:
             vals=parse_qs(self.rfile.read(length).decode('utf-8'),
-                          keep_blank_values=True, max_num_fields=40)
+                          keep_blank_values=True,
+                          max_num_fields=(520 if self.path == '/engine-settings'
+                                          else 40))
         except (ValueError,UnicodeError):
             return self._respond(400,'Invalid form data')
         def val(key):return vals.get(key,[''])[0]
@@ -1311,6 +1319,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._respond(400, portable_settings_page(
                     message=message, kind='error'))
         try:
+            if self.path == '/engine-settings':
+                try:
+                    result = engine_dashboard.apply_form(vals)
+                    return self._respond(200, engine_dashboard.page(CSRF, message=result))
+                except (ValueError, OSError, engine_dashboard.engines.on_demand_docker.LifecycleError) as exc:
+                    message = (str(exc) if isinstance(exc, ValueError)
+                               else 'Engine selection unavailable or verification failed')
+                    return self._respond(400, engine_dashboard.page(CSRF, message=message, error=True))
             if self.path == '/cache-settings':
                 submitted = {
                     'search_seconds': val('search_seconds'),

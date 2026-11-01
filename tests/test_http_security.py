@@ -165,7 +165,7 @@ class DashboardHTTPTests(unittest.TestCase):
         routes = (
             "/domain", "/pending/clear", "/bulk", "/once",
             "/rules/preview", "/rules/apply", "/settings",
-            "/upstream-settings", "/cache-settings",
+            "/upstream-settings", "/cache-settings", "/engine-settings",
             "/portable-settings/preview", "/portable-settings/apply",
         )
         writer_targets = (
@@ -173,6 +173,7 @@ class DashboardHTTPTests(unittest.TestCase):
             (admin_ui.upstream_settings, "update_settings"),
             (admin_ui.cache_settings, "update_settings"),
             (admin_ui.portable_settings, "apply"),
+            (admin_ui.engine_dashboard.engines, "apply"),
             (admin_ui.policy_transfer, "apply_import"),
             (admin_ui.policy, "clear_pending_requests"),
             (admin_ui.policy, "_stage_once_grant"),
@@ -202,6 +203,41 @@ class DashboardHTTPTests(unittest.TestCase):
                     self.assertEqual(status, 403)
             for writer in writers:
                 writer.assert_not_called()
+
+    def test_engine_settings_get_is_read_only_and_post_is_guarded(self):
+        inventory = [
+            {"name": "duckduckgo", "enabled": True, "categories": ("general",)},
+            {"name": "brave", "enabled": True, "categories": ("general",)},
+        ]
+        with (patch.object(admin_ui.engine_dashboard, "snapshot",
+                           return_value=(inventory, ("duckduckgo", "brave"), "f" * 64)),
+              patch.object(admin_ui.engine_dashboard.engines, "apply",
+                           return_value="selection verified") as writer):
+            status, html, _ = self.exchange("GET", "/engine-settings")
+            self.assertEqual(status, 200)
+            self.assertIn(b'Search engine selection', html)
+            self.assertIn(b'duckduckgo', html)
+            self.assertNotIn(b'PRIVATE_SEARCH_QUERY', html)
+            writer.assert_not_called()
+            valid = [("csrf", admin_ui.CSRF), ("engine", "duckduckgo"),
+                     ("state", "f" * 64), ("confirm", "APPLY")]
+            self.assertEqual(self.exchange(
+                "POST", "/engine-settings", valid,
+                headers={"Sec-Fetch-Site": "cross-site"})[0], 403)
+            self.assertEqual(self.exchange(
+                "POST", "/engine-settings",
+                [("csrf", "incorrect"), *valid[1:]])[0], 403)
+            self.assertEqual(self.exchange(
+                "POST", "/engine-settings",
+                [("csrf", admin_ui.CSRF), ("engine", "duckduckgo"),
+                 ("state", "e" * 64), ("confirm", "APPLY")])[0], 400)
+            self.assertEqual(self.exchange("POST", "/engine-settings", valid)[0], 200)
+            writer.assert_called_once_with(
+                ("duckduckgo",), ("duckduckgo", "brave"), expected_state="f" * 64)
+            # The dashboard does not offer a GET-based mutation route.
+            self.assertEqual(self.exchange(
+                "GET", "/engine-settings?confirm=APPLY&engine=brave")[0], 200)
+            writer.assert_called_once()
 
     def test_health_endpoint_and_defense_headers(self):
         status, body, headers = self.exchange("GET", "/healthz")
