@@ -411,7 +411,7 @@ class DashboardHTTPTests(unittest.TestCase):
         original = admin_ui.history_index.sync_history
         with patch.object(admin_ui.history_index, "sync_history",
                           wraps=original) as wrapped:
-            code, rendered, _ = self.exchange("GET", "/history?kind=fetch")
+            code, rendered, _ = self.exchange("GET", "/history?kind=fetch&show_queries=0")
             wrapped.assert_called_once_with()
         self.assertEqual(code, 200)
         self.assertIn(b"1 matching history events", rendered)
