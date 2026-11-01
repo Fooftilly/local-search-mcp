@@ -1258,12 +1258,15 @@ class Handler(BaseHTTPRequestHandler):
                  else (3 * portable_settings.MAX_JSON_BYTES + 4096)
                  if self.path in ('/portable-settings/preview',
                                   '/portable-settings/apply')
+                 else 160 * 1024 if self.path == '/engine-settings'
                  else 8192 if self.path == '/bulk' else 4096)
         if length < 0 or length > limit:
             return self._respond(413,'Request too large')
         try:
             vals=parse_qs(self.rfile.read(length).decode('utf-8'),
-                          keep_blank_values=True, max_num_fields=40)
+                          keep_blank_values=True,
+                          max_num_fields=(520 if self.path == '/engine-settings'
+                                          else 40))
         except (ValueError,UnicodeError):
             return self._respond(400,'Invalid form data')
         def val(key):return vals.get(key,[''])[0]
