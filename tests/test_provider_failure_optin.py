@@ -122,7 +122,7 @@ class OptInFailureAuditTests(unittest.TestCase):
             "results": [],
             "unresponsive_engines": [["qwant", "PRIVATE_ERROR"]]
         }
-        calls, factory = self.mock_backend([payload, payload])
+        calls, factory = self.mock_backend([payload] * 4)
         with (patch.object(bridge.httpx, "Client", side_effect=factory),
               patch.object(bridge.on_demand, "lease",
                            side_effect=lambda _: nullcontext())):
@@ -130,7 +130,7 @@ class OptInFailureAuditTests(unittest.TestCase):
             diagnostic = bridge.web_search(
                 "available data", include_search_status=True,
                 record_provider_diagnostics=True)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 4)
         self.assertEqual(ordinary["status"], "upstream_unavailable")
         self.assertNotIn("search_status", ordinary)
         self.assertFalse(diagnostic["success"])
