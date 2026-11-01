@@ -57,7 +57,7 @@ def choice_buttons(name, caption, choices, selected=None, *, required=True):
     if selected is not None and selected not in {key for key, _ in choices}:
         raise ValueError("Unknown radio choice")
     options = [
-        render_template("choice-radio", name=esc(name), value=esc(key),
+        render_template("choice-radio", field_name=esc(name), value=esc(key),
                         label=esc(label),
                         checked=" checked" if selected == key else "",
                         required=" required" if required else "")
