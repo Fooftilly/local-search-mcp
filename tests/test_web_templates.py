@@ -1,5 +1,6 @@
 """The HTML templates are fixed assets, never request-controlled paths."""
 from pathlib import Path
+import inspect
 import unittest
 from unittest.mock import patch
 
@@ -20,6 +21,27 @@ class DashboardTemplateTests(unittest.TestCase):
                     self.assertIn('src="/dashboard-live.js"', raw)
                 else:
                     self.assertNotIn("<script", raw)
+
+    def test_common_ui_helpers_use_fixed_templates_not_inline_html(self):
+        for fn in (admin_ui.choice_buttons,
+                   admin_ui.pending_pagination_html,
+                   admin_ui.operations_overview_html,
+                   admin_ui.overview_summary_html,
+                   admin_ui.service_overview_rows):
+            with self.subTest(fn=fn.__name__):
+                self.assertNotRegex(inspect.getsource(fn), r"""['"]<[a-zA-Z]""")
+        group = admin_ui.choice_buttons(
+            "mode", "Choose <mode>", (("a", "A&B"), ("b", "B")),
+            selected="a")
+        self.assertIn("&lt;mode&gt;", group)
+        self.assertIn('name="mode" value="a" checked required', group)
+        self.assertIn("A&amp;B", group)
+        self.assertNotIn("<mode>", group)
+        next_page = admin_ui.pending_pagination_html(
+            "<script>", 1, admin_ui.PENDING_PAGE_SIZE + 1)
+        self.assertIn("Next 200", next_page)
+        self.assertNotIn("<script>", next_page)
+        self.assertIn("%3Cscript%3E", next_page)
 
     def test_unknown_template_is_rejected(self):
         for name in ("../secrets", "/etc/passwd", "x", "policy.html"):
