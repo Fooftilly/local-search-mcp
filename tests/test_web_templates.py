@@ -106,22 +106,26 @@ class DashboardTemplateTests(unittest.TestCase):
         self.assertIn("No matching MCP history.",
                       admin_ui.history_items_html(items=[]))
 
-    def test_python_dashboard_components_do_not_embed_web_markup(self):
+    def test_production_python_does_not_embed_web_markup(self):
         """Web markup belongs in dedicated files, not Python strings."""
         markup = re.compile(
             r"<\s*/?\s*(?:html|head|body|div|span|form|input|button|table|"
             r"thead|tbody|tr|td|th|p|a|label|fieldset|legend|nav|script|"
             r"style|textarea|details|summary|progress|h[1-6])(?:[\s>/])",
             flags=re.IGNORECASE)
-        for source in ("admin_ui.py", "engine_dashboard.py", "web_templates.py"):
-            path = Path(__file__).resolve().parents[1] / source
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            violations = [(node.lineno, node.value[:90])
-                          for node in ast.walk(tree)
-                          if isinstance(node, ast.Constant)
-                          and isinstance(node.value, str)
-                          and markup.search(node.value)]
-            self.assertEqual(violations, [], source)
+        project = Path(__file__).resolve().parents[1]
+        production_files = sorted([*project.glob("*.py"),
+                                   *(project / "scripts").glob("*.py")])
+        self.assertGreaterEqual(len(production_files), 50)
+        for path in production_files:
+            with self.subTest(source=str(path.relative_to(project))):
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                violations = [(node.lineno, node.value[:90])
+                              for node in ast.walk(tree)
+                              if isinstance(node, ast.Constant)
+                              and isinstance(node.value, str)
+                              and markup.search(node.value)]
+                self.assertEqual(violations, [])
 
     def test_unknown_template_is_rejected(self):
         for name in ("../secrets", "/etc/passwd", "x", "policy.html"):
