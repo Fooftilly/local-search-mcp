@@ -683,14 +683,27 @@ def render(query='', message='', kind='success', page=1,
     )
 
 
+def _settings_alert(message, kind="success"):
+    return (render_template("settings-alert",
+                            kind="error" if kind == "error" else "success",
+                            message=esc(message)) if message else "")
+
+
+def _settings_sources(info, values):
+    return "".join(
+        render_template(
+            "settings-source", key=esc(key),
+            source=("environment override"
+                    if info["environment_override"][key] else "saved or default"))
+        for key in values)
+
+
 def history_settings_page(message="", kind="success", submitted=None):
-    """Owner-only local settings page; fields are allowlisted, never secrets."""
+    """Owner-only history settings; presentation is in bundled HTML."""
     info = safe_settings.dashboard_settings()
     vals = info["values"]
-    # Keep a rejected form intact, including its stale version: never silently
-    # upgrade the CAS token and risk overwriting a concurrent settings change.
-    displayed = ({**vals, "state": info["state"]}
-                 if submitted is None else submitted)
+    shown = ({**vals, "state": info["state"]}
+             if submitted is None else submitted)
     locked = not info["editable"]
     note = ('An environment override is present. Saved values below are '
             'inactive for overridden fields; remove the override and restart '
@@ -699,79 +712,30 @@ def history_settings_page(message="", kind="success", submitted=None):
             'Changes apply to the next history operation in the running '
             'process, without restarting. Older records already deleted '
             'by retention cannot be recovered.')
-    alerts = ('<p class="alert ' + ("error" if kind == "error" else "success") +
-              '">' + esc(message) + '</p>') if message else ''
-    override = ''.join('<li>' + esc(key) + ': ' +
-                       ("environment override" if info["environment_override"][key]
-                        else "saved or default") + '</li>' for key in vals)
-    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
-            f'<meta name="referrer" content="no-referrer">'
-            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>Local Search MCP — History settings</title><link rel="stylesheet" href="/dashboard.css">'
-            '</head><body><main><h1>Nonsecret history settings</h1>' +
-            alerts + '<p>' + esc(note) + '</p><ul>' + override + '</ul>'
-            '<form method="post" action="/settings">'
-            '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
-            '<input type="hidden" name="state" value="' + esc(displayed["state"]) + '">'
-            '<label>Indexed history retention (1–365 days) '
-            '<input type="number" name="retention_days" min="1" max="365" '
-            'required value="' + esc(displayed["retention_days"]) + '"></label>'
-            '<label>JSONL rotation size (64,000–100,000,000 bytes) '
-            '<input type="number" name="max_bytes" min="64000" '
-            'max="100000000" required value="' + esc(displayed["max_bytes"]) + '"></label>'
-            '<label>Type APPLY <input name="confirm" required pattern="APPLY" '
-            'maxlength="5"></label><button type="submit"' +
-            (' disabled' if locked else '') + '>Apply history settings</button>'
-            '</form><p class="subtle">The values are stored in a separate '
-            'owner-only file; this panel never displays or modifies API keys, '
-            'tunnel credentials, private configuration, domain rules or paths. '
-            'Changing retention controls future pruning of the derived index; '
-            'changing size affects the next JSONL append/rotation.</p>'
-            '<p><a href="/">Return to domain approvals</a></p></main></body></html>')
+    return render_template(
+        "history-settings", alert=_settings_alert(message, kind),
+        note=esc(note), sources=_settings_sources(info, vals),
+        csrf=esc(CSRF), state=esc(shown["state"]),
+        retention_days=esc(shown["retention_days"]),
+        max_bytes=esc(shown["max_bytes"]),
+        disabled=" disabled" if locked else "")
 
 
 def upstream_settings_page(message="", kind="success", submitted=None):
-    """Strictly nonsecret, operator-only timeout configuration panel."""
+    """Operator-only upstream timeout form with file-backed markup."""
     info = upstream_settings.dashboard_settings()
     vals = info["values"]
     shown = ({**vals, "state": info["state"]}
              if submitted is None else submitted)
     locked = not info["editable"]
-    alert = ('<p class="alert ' + ('error' if kind == 'error' else 'success') +
-             '">' + esc(message) + '</p>') if message else ''
-    sources = ''.join('<li>' + esc(key) + ': ' +
-                      ('environment override' if info["environment_override"][key]
-                       else 'saved or default') + '</li>' for key in vals)
-    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
-            f'<meta name="referrer" content="no-referrer">'
-            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>Local Search MCP — Upstream timeouts</title><link rel="stylesheet" href="/dashboard.css">'
-            '</head><body><main><h1>Upstream request timeouts</h1>' +
-            alert + '<p>Timeouts apply to the next outgoing upstream request '
-            'without restarting the bridge. Requests already running retain '
-            'their original timeout. The Crawl4AI /health safety check keeps '
-            'its own fixed short timeout.</p><ul>' + sources + '</ul>' +
-            ('<p class="alert error">An environment override is present. '
-             'Remove it from the service environment and restart before '
-             'editing these saved settings.</p>' if locked else '') +
-            '<form method="post" action="/upstream-settings">'
-            '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
-            '<input type="hidden" name="state" value="' + esc(shown["state"]) + '">'
-            '<label>SearXNG search timeout (5–120 seconds) '
-            '<input type="number" name="searxng_seconds" min="5" max="120" '
-            'required value="' + esc(shown["searxng_seconds"]) + '"></label>'
-            '<label>Crawl4AI crawl timeout (15–300 seconds) '
-            '<input type="number" name="crawl_seconds" min="15" max="300" '
-            'required value="' + esc(shown["crawl_seconds"]) + '"></label>'
-            '<label>Type APPLY <input name="confirm" required pattern="APPLY" '
-            'maxlength="5"></label><button type="submit"' +
-            (' disabled' if locked else '') + '>Apply upstream timeouts</button>'
-            '</form><p class="subtle">This separate owner-only file stores '
-            'only two validated integers. It never reads or changes credentials, '
-            'domain permissions, history data, endpoint URLs or service ports. '
-            'Existing cached responses may still be served until their TTL expires.</p>'
-            '<p><a href="/settings">History settings</a> · '
-            '<a href="/">Return to domain approvals</a></p></main></body></html>')
+    return render_template(
+        "upstream-settings", alert=_settings_alert(message, kind),
+        sources=_settings_sources(info, vals),
+        locked_notice=render_template("settings-locked") if locked else "",
+        csrf=esc(CSRF), state=esc(shown["state"]),
+        searxng_seconds=esc(shown["searxng_seconds"]),
+        crawl_seconds=esc(shown["crawl_seconds"]),
+        disabled=" disabled" if locked else "")
 
 
 def cache_settings_page(message="", kind="success", submitted=None):
