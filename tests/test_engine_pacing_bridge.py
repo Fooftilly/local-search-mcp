@@ -235,6 +235,10 @@ class PacedSearchBoundaryTests(unittest.TestCase):
         def client_factory(**kwargs):
             def handler(request):
                 self.calls.append(request.url.path)
+                if request.url.path == "/config":
+                    return httpx.Response(200, json={"engines": [
+                        {"name": "duckduckgo", "enabled": True,
+                         "categories": ["general"]}]})
                 return self.search_response
             return original(transport=httpx.MockTransport(handler), trust_env=False)
         with (patch.object(bridge.httpx, "Client", side_effect=client_factory),
