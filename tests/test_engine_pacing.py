@@ -2,6 +2,9 @@
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
+import select
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import threading
@@ -116,6 +119,33 @@ class EnginePacingTests(unittest.TestCase):
                 pass
             release.set()
             job.result(timeout=3)
+        with pacing.reserve("duckduckgo", 0):
+            pass
+
+    def test_separate_process_cannot_overlap_selected_engine(self):
+        child_code = (
+            "import engine_pacing as p, sys\n"
+            "with p.reserve('duckduckgo', 0):\n"
+            "    print('ADMITTED', flush=True)\n"
+            "    sys.stdin.readline()\n"
+        )
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(Path(pacing.__file__).resolve().parent)
+        with subprocess.Popen(
+            [sys.executable, "-c", child_code], env=environment,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True,
+        ) as child:
+            readable, _, _ = select.select([child.stdout], [], [], 5)
+            self.assertTrue(readable, "Child admission process did not respond")
+            self.assertEqual(child.stdout.readline().strip(), "ADMITTED")
+            with self.assertRaisesRegex(pacing.PaceUnavailable, "active search"):
+                with pacing.reserve("duckduckgo", 0):
+                    pass
+            child.stdin.write("\n")
+            child.stdin.flush()
+            _, errors = child.communicate(timeout=5)
+            self.assertEqual(child.returncode, 0, errors)
         with pacing.reserve("duckduckgo", 0):
             pass
 
