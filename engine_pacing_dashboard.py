@@ -170,7 +170,7 @@ def evidence_preview(configured: dict[str, int]) -> str:
                       "Insufficient or incomplete sample")
             rows.append(render_template(
                 "engine-evidence-row",
-                name=escape(item["name"], quote=True),
+                engine_name=escape(item["name"], quote=True),
                 attempts=str(item["attempts"]), results=str(item["results"]),
                 fraction=("-" if item["fraction"] is None
                           else str(item["fraction"]) + "%"),
