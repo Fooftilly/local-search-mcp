@@ -37,6 +37,20 @@ there is no permission-changing MCP tool.
   not search potentially sensitive source text. The bars show counts for **all**
   matching retained events, not only the 25 most recent table rows.
 
+## Search engine attribution
+
+The Request history table also shows an **Engine** column. The read reads
+source-matched original JSONL records without storing engine labels or search
+terms in the SQLite index. It shows **Requested:** when explicit `engines`
+filters were recorded and **Observed:** for safe names reported by up to the
+first five stored search hits. Default searches without result attribution,
+failed searches without explicit selection, and missing/rotated source records
+show **Not recorded**. Observed result-engine labels do **not** establish the
+complete attempted engine set, per-engine timing, or provider success rates.
+Engine names are length-bounded, allowlisted by character format, stripped of
+secret-looking labels, and HTML-escaped. This column is visible independently
+of the separate opt-in display of private search queries and fetch URLs.
+
 ## Opt-in original history details
 
 The **Show search queries and page URLs** checkbox on the Request history
