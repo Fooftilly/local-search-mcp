@@ -283,19 +283,61 @@ def _history_filter(kind: str, status: str, domain: str,
     return (" WHERE " + " AND ".join(where)) if where else "", args
 
 
-def _reveal_history_queries(rows: list[dict]) -> None:
-    """Read explicitly selected search terms and fetch URLs from original JSONL.
+_ENGINE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()\-]{0,39}\Z")
+_ENGINE_SECRETS = re.compile(r"(?i)(?:token|password|secret|bearer|cookie|api.?key)")
+
+
+def _history_engine_attribution(event: dict) -> str:
+    """Requested selection and observed result sources are distinct facts.
+
+    The existing JSONL records only the first five result engines; it does
+    not prove which default engines were contacted, or provider uptime.
+    """
+    def labels(values):
+        accepted = []
+        seen = set()
+        for value in values[:8]:
+            if (isinstance(value, str) and _ENGINE_NAME.fullmatch(value)
+                    and not _ENGINE_SECRETS.search(value)
+                    and value.casefold() not in seen):
+                seen.add(value.casefold())
+                accepted.append(value)
+        return accepted
+
+    requested = event.get("engines")
+    selected = labels([part.strip() for part in requested.split(",")]) if isinstance(requested, str) else []
+    rows = event.get("results")
+    observed = labels([r.get("engine") for r in rows[:5]
+                       if isinstance(r, dict)]) if isinstance(rows, list) else []
+    parts = []
+    if selected:
+        parts.append("Requested: " + ", ".join(selected))
+    if observed:
+        parts.append("Observed: " + ", ".join(observed))
+    return "; ".join(parts) if parts else "Not recorded"
+
+
+def _reveal_history_queries(rows: list[dict], *, reveal_queries: bool = True, include_engines: bool = False) -> None:
+    """Read source-bound engine attribution and optionally sensitive text.
 
     Generation and byte offset are index metadata, never query content. Validate
     the original inode plus first/last indexed line fingerprints before reading.
     If the file rotated away or changed, leave the query unavailable rather
     than guessing from a matching timestamp or a different event.
     """
-    selected = [row for row in rows if row["kind"] in ("search", "fetch")]
+    selected = [row for row in rows
+                if row["kind"] == "search" or
+                (reveal_queries and row["kind"] == "fetch")]
     if not selected:
         return
     for row in selected:
-        row["query" if row["kind"] == "search" else "url"] = None
+        if row["kind"] == "search":
+            if include_engines:
+                row["engine_attribution"] = "Not recorded"
+            if reveal_queries:
+                row["query"] = None
+        elif reveal_queries:
+            row["url"] = None
     target = history_path()
     folder = target.parent
     lock_file = folder / ".history.lock"
@@ -362,10 +404,13 @@ def _reveal_history_queries(rows: list[dict]) -> None:
                                                "duration_ms", "backend")):
                                 continue
                             if row["kind"] == "search":
-                                query = evt.get("query")
-                                if isinstance(query, str) and len(query) <= 300:
-                                    row["query"] = query
-                            elif row["kind"] == "fetch":
+                                if include_engines:
+                                    row["engine_attribution"] = _history_engine_attribution(evt)
+                                if reveal_queries:
+                                    query = evt.get("query")
+                                    if isinstance(query, str) and len(query) <= 300:
+                                        row["query"] = query
+                            elif reveal_queries and row["kind"] == "fetch":
                                 # Legacy JSONL can contain unsanitized input.
                                 # Always strip userinfo, query and fragment,
                                 # and require a public-looking HTTP(S) URL
@@ -396,17 +441,21 @@ def _reveal_history_queries(rows: list[dict]) -> None:
 
 def search_history(*, limit: int = 25, kind: str = "", status: str = "",
                    domain: str = "", hours: int = 0,
-                   reveal_queries: bool = False, offset: int = 0) -> list[dict]:
+                   reveal_queries: bool = False, offset: int = 0,
+                   include_engines: bool = False) -> list[dict]:
     """Return indexed metadata; reveal raw history details only on opt-in."""
     if type(limit) is not int or not 1 <= limit <= MAX_QUERY_RESULTS:
         raise ValueError("Invalid history page size")
     if type(reveal_queries) is not bool:
         raise ValueError("Invalid query visibility setting")
+    if type(include_engines) is not bool:
+        raise ValueError("Invalid engine attribution setting")
     if type(offset) is not int or not 0 <= offset < MAX_HISTORY_ROWS:
         raise ValueError("Invalid history offset")
     suffix, args = _history_filter(kind, status, domain, hours)
     sync_history()
-    columns = ("generation_id,byte_offset," if reveal_queries else "") + (
+    columns = ("generation_id,byte_offset,"
+               if reveal_queries or include_engines else "") + (
         "at_ms,kind,status,domain,duration_ms,backend")
     with closing(sqlite3.connect(index_path(), timeout=10)) as conn:
         conn.row_factory = sqlite3.Row
@@ -414,8 +463,9 @@ def search_history(*, limit: int = 25, kind: str = "", status: str = "",
             "SELECT " + columns + " FROM history" +
             suffix + " ORDER BY at_ms DESC,rowid DESC LIMIT ? OFFSET ?",
             (*args, limit, offset))]
-    if reveal_queries:
-        _reveal_history_queries(rows)
+    if reveal_queries or include_engines:
+        _reveal_history_queries(rows, reveal_queries=reveal_queries,
+                                include_engines=include_engines)
         for row in rows:
             row.pop("generation_id", None)
             row.pop("byte_offset", None)
@@ -439,6 +489,7 @@ def summarize_history(*, kind: str = "", status: str = "",
 def dashboard_history_snapshot(*, kind: str = "", status: str = "",
                                domain: str = "", hours: int = 0,
                                page: int = 1, reveal_queries: bool = False,
+                               include_engines: bool = False,
                                page_size: int = 25) -> dict:
     """Consistent, bounded dashboard rows and aggregates after one sync.
 
@@ -454,9 +505,12 @@ def dashboard_history_snapshot(*, kind: str = "", status: str = "",
         raise ValueError("Invalid history dashboard page")
     if type(reveal_queries) is not bool:
         raise ValueError("Invalid query visibility setting")
+    if type(include_engines) is not bool:
+        raise ValueError("Invalid engine attribution setting")
     suffix, args = _history_filter(kind, status, domain, hours)
     sync_history()
-    columns = ("generation_id,byte_offset," if reveal_queries else "") + (
+    columns = ("generation_id,byte_offset,"
+               if reveal_queries or include_engines else "") + (
         "at_ms,kind,status,domain,duration_ms,backend")
     with closing(sqlite3.connect(index_path(), timeout=10)) as conn:
         conn.row_factory = sqlite3.Row
@@ -474,8 +528,9 @@ def dashboard_history_snapshot(*, kind: str = "", status: str = "",
             suffix + " ORDER BY at_ms DESC,rowid DESC LIMIT ? OFFSET ?",
             (*args, page_size, (page - 1) * page_size))]
         conn.rollback()
-    if reveal_queries:
-        _reveal_history_queries(rows)
+    if reveal_queries or include_engines:
+        _reveal_history_queries(rows, reveal_queries=reveal_queries,
+                                include_engines=include_engines)
         for row in rows:
             row.pop("generation_id", None)
             row.pop("byte_offset", None)

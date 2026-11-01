@@ -148,15 +148,17 @@ def history_pagination_html(filters, page, total):
 
 
 def history_items_html(kind="", status="", domain="", hours=0,
-                       show_queries=False, page=1, items=None):
+                       show_queries=False, page=1, items=None,
+                       show_engines=False):
     if items is None:
         try:
             items = history_index.search_history(kind=kind, status=status,
                                                   domain=domain, hours=hours,
                                                   reveal_queries=show_queries,
+                                                  include_engines=show_engines,
                                                   offset=(page - 1) * HISTORY_PAGE_SIZE)
         except (OSError, ValueError, sqlite3.Error):
-            return '<tr><td colspan="5">Indexed history is unavailable; check local configuration.</td></tr>'
+            return '<tr><td colspan="' + ("6" if show_engines else "5") + '">Indexed history is unavailable; check local configuration.</td></tr>'
     out = []
     for event in items:
         stamp = datetime.fromtimestamp(
@@ -173,8 +175,10 @@ def history_items_html(kind="", status="", domain="", hours=0,
             f'<tr><td class="small">{esc(stamp)}</td><td>{esc(event["kind"])}</td>'
             f'<td>{esc(event["status"])}</td>'
             f'<td class="{css_class}">{esc(display)}</td>'
+            + (f'<td>{esc(event.get("engine_attribution", "—") if event["kind"] == "search" else "—")}</td>'
+               if show_engines else '') +
             f'<td>{esc(elapsed)}</td></tr>')
-    return ''.join(out) or '<tr><td colspan="5">No matching MCP history.</td></tr>'
+    return ''.join(out) or '<tr><td colspan="' + ("6" if show_engines else "5") + '">No matching MCP history.</td></tr>'
 
 
 def recent_rows(kind="", status="", domain="", hours=0, show_queries=False,
@@ -182,12 +186,13 @@ def recent_rows(kind="", status="", domain="", hours=0, show_queries=False,
     column = "Search query / page URL / domain" if show_queries else "Domain"
     return ('<div class="scroll"><table><thead><tr><th>UTC time</th>'
             '<th>Operation</th><th>Status</th><th>' + column + '</th>'
+            '<th>Search engine (requested / observed)</th>'
             '<th>Duration (ms)</th></tr></thead>'
             '<tbody id="live-history">' +
-            ('<tr><td colspan="5">Indexed history is unavailable; '
+            ('<tr><td colspan="6">Indexed history is unavailable; '
              'check local configuration.</td></tr>' if unavailable else
              history_items_html(kind, status, domain, hours, show_queries,
-                                page=page, items=items)) +
+                                page=page, items=items, show_engines=True)) +
             '</tbody></table></div>')
 
 
@@ -217,10 +222,13 @@ def _history_filters(query, *, validate_text=True):
     if raw not in ('0', '1', '24', '168'):
         raise ValueError("Invalid history time window")
     values['hours'] = int(raw)
-    visible = query.get('show_queries', ['0'])
-    if len(visible) != 1 or visible[0] not in ('0', '1'):
+    # Personal console: show audit queries by default. The form pairs a
+    # hidden "0" with the checkbox's "1", so unchecked sends only "0".
+    # Preserve old direct links with a single explicit "1".
+    visible = query.get('show_queries', ['1'])
+    if visible not in (['0'], ['1'], ['0', '1']):
         raise ValueError("Invalid history query visibility")
-    values['show_queries'] = visible[0] == '1'
+    values['show_queries'] = visible[-1] == '1'
     pages = query.get('page', ['1'])
     if len(pages) != 1:
         raise ValueError("Invalid history page")
@@ -302,11 +310,12 @@ def live_snapshot(query='', view='policy', history_filters=None,
                    if k in filters},
                 page=filters.get('page', 1),
                 reveal_queries=filters.get('show_queries', False),
+                include_engines=True,
                 page_size=HISTORY_PAGE_SIZE)
         except (OSError, ValueError, sqlite3.Error):
             # A corrupt/unavailable index must not masquerade as zero events.
             return {
-                'history_html': '<tr><td colspan="5">Indexed history is '
+                'history_html': '<tr><td colspan="6">Indexed history is '
                                 'unavailable; check local configuration.</td></tr>',
                 'history_summary_html': '<tr><td colspan="5">Indexed history '
                                         'is unavailable.</td></tr>',
@@ -315,7 +324,8 @@ def live_snapshot(query='', view='policy', history_filters=None,
                 'history_page': filters.get('page', 1)}
         return {'history_html': history_items_html(
                     items=snapshot['rows'],
-                    show_queries=filters.get('show_queries', False)),
+                    show_queries=filters.get('show_queries', False),
+                    show_engines=True),
                 'history_summary_html': history_summary_html(snapshot['metrics']),
                 'history_pages_html': history_pagination_html(
                     filters, snapshot['page'], snapshot['total']),
@@ -874,7 +884,7 @@ def status_page():
                            mcp_port=esc(MCP_PORT))
 
 
-def history_page(kind="", status="", domain="", hours=0, show_queries=False,
+def history_page(kind="", status="", domain="", hours=0, show_queries=True,
                  filter_error="", page=1):
     filters = {"kind": kind, "status": status, "domain": domain, "hours": hours}
     snapshot = None
@@ -884,7 +894,7 @@ def history_page(kind="", status="", domain="", hours=0, show_queries=False,
         if not filter_error:
             snapshot = history_index.dashboard_history_snapshot(
                 **filters, page=page, reveal_queries=show_queries,
-                page_size=HISTORY_PAGE_SIZE)
+                include_engines=True, page_size=HISTORY_PAGE_SIZE)
     except (OSError, ValueError, sqlite3.Error):
         retention_label = "configured"
         history_unavailable = not bool(filter_error)

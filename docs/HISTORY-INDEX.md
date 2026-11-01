@@ -37,14 +37,30 @@ there is no permission-changing MCP tool.
   not search potentially sensitive source text. The bars show counts for **all**
   matching retained events, not only the 25 most recent table rows.
 
-## Opt-in original history details
+## Search engine attribution
 
-The **Show search queries and page URLs** checkbox on the Request history
-page is disabled by default. When explicitly enabled, search rows display
-their original stored search query and fetch rows display the stored page URL
-(scheme, hostname and path) rather than only the domain. Live refresh and
-filter submissions preserve the operator's selection. Continuation reads
-remain domain-only and never reveal private document handles.
+The Request history table also shows an **Engine** column. The read reads
+source-matched original JSONL records without storing engine labels or search
+terms in the SQLite index. It shows **Requested:** when explicit `engines`
+filters were recorded and **Observed:** for safe names reported by up to the
+first five stored search hits. Default searches without result attribution,
+failed searches without explicit selection, and missing/rotated source records
+show **Not recorded**. Observed result-engine labels do **not** establish the
+complete attempted engine set, per-engine timing, or provider success rates.
+Engine names are length-bounded, allowlisted by character format, stripped of
+secret-looking labels, and HTML-escaped. This column is visible independently
+of the default-on operator display of search queries and fetched page URLs.
+
+## Personal operator history details
+
+The **Show search queries and page URLs** control on Request history is
+**enabled by default**. Searches display their full validated query text
+(up to the tool's 300-character maximum); fetches show sanitized page URLs
+(scheme, hostname and path). Disable the checkbox to show domains alone.
+Live refresh, pagination and filter submissions preserve the operator's
+selection. Continuation reads remain domain-only and never reveal private
+document handles. These events already reside in the original private JSONL
+audit, without new copies in the SQLite index or an agent-visible history API.
 
 This view uses the index's existing generation and byte-offset coordinates
 to retrieve matching records from the original private rotating JSONL files.
