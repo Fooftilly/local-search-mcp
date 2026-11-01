@@ -272,3 +272,10 @@ concurrency rejection, not proof of which cap was reached.
 The queue change alone does not make the private route reachable. Re-run
 Cloudflare MCP capability sync only after the independently guarded private
 network endpoint has been deployed and checked.
+
+## Persistent private-origin deployment
+
+See [the separate opt-in system service recipe](CLOUDFLARE-PRIVATE-ENDPOINT.md).
+It stages a root-owned helper for the nftables guard and loopback alias,
+a non-root socat forwarder and a dedicated loopback-only DNS unit. The
+runtime steps are deliberately manual, not performed by a repository PR.

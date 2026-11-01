@@ -1,0 +1,30 @@
+# Root-owned, opt-in Cloudflare private origin transport.
+# Install under /etc/systemd/system only after inspecting the repository PR.
+[Unit]
+Description=Restricted private MCP Cloudflare origin for local account %i
+After=network.target local-search-mcp-cf-dns.service
+Requires=local-search-mcp-cf-dns.service
+
+[Service]
+Type=simple
+User=%i
+Group=%i
+# '+' is required: only root may install the nftables guard and loopback IP.
+# The long-running socat process is unprivileged, not a root MCP process.
+ExecStartPre=+/usr/bin/python3 /usr/local/libexec/local-search-mcp/cloudflare_private_endpoint.py prepare
+ExecStart=/usr/bin/socat TCP4-LISTEN:18791,bind=10.253.91.1,reuseaddr,fork TCP4:127.0.0.1:18791
+ExecStopPost=+/usr/bin/python3 /usr/local/libexec/local-search-mcp/cloudflare_private_endpoint.py remove
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

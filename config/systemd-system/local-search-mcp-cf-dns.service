@@ -1,0 +1,21 @@
+# Root-owned, opt-in DNS for the second Cloudflare Tunnel only.
+[Unit]
+Description=Dedicated Cloudflare private MCP hostname resolver
+After=network.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/dnsmasq --test --conf-file=/etc/local-search-mcp/cloudflare-dns.conf
+ExecStart=/usr/bin/dnsmasq --keep-in-foreground --conf-file=/etc/local-search-mcp/cloudflare-dns.conf
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target
