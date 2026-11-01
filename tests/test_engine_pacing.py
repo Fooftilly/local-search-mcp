@@ -1,5 +1,6 @@
 """Cross-process engine admission is conservative, private and disabled by default."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
 import json
 import os
 import select
@@ -12,6 +13,22 @@ import unittest
 from unittest.mock import patch
 
 import engine_pacing as pacing
+
+
+BOOT_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+BOOT_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+
+@contextmanager
+def fixed_clocks(epoch: int, monotonic: int, *, boot: str | None = None):
+    """Keep timing tests deterministic across runner uptimes and reboot states."""
+    with ExitStack() as patches:
+        patches.enter_context(patch.object(pacing.time, "time", return_value=epoch))
+        patches.enter_context(patch.object(pacing.time, "monotonic",
+                                          return_value=monotonic))
+        if boot is not None:
+            patches.enter_context(patch.object(pacing, "_boot_id", return_value=boot))
+        yield
 
 
 class EnginePacingTests(unittest.TestCase):
@@ -86,8 +103,7 @@ class EnginePacingTests(unittest.TestCase):
         self.assertEqual(target.read_text(), "external")
 
     def test_cooldown_persists_but_different_engines_have_independent_slots(self):
-        with (patch.object(pacing.time, "time", return_value=10000),
-              patch.object(pacing.time, "monotonic", return_value=5000)):
+        with fixed_clocks(10000, 5000):
             with pacing.reserve("duckduckgo", 15):
                 with pacing.reserve("qwant", 60):
                     pass
@@ -95,8 +111,7 @@ class EnginePacingTests(unittest.TestCase):
                 with pacing.reserve("duckduckgo", 15):
                     pass
             self.assertEqual(caught.exception.retry_after_seconds, 15)
-        with (patch.object(pacing.time, "time", return_value=10015),
-              patch.object(pacing.time, "monotonic", return_value=5015)):
+        with fixed_clocks(10015, 5015):
             with pacing.reserve("duckduckgo", 15):
                 pass
             with self.assertRaises(pacing.PaceUnavailable):
@@ -162,53 +177,36 @@ class EnginePacingTests(unittest.TestCase):
             pass
 
     def test_forward_wall_clock_jump_cannot_bypass_monotonic_cooldown(self):
-        with (patch.object(pacing.time, "time", return_value=10000),
-              patch.object(pacing.time, "monotonic", return_value=5000)):
+        with fixed_clocks(10000, 5000):
             with pacing.reserve("duckduckgo", 60):
                 pass
-        with (patch.object(pacing.time, "time", return_value=10100),
-              patch.object(pacing.time, "monotonic", return_value=5001)):
+        with fixed_clocks(10100, 5001):
             with self.assertRaises(pacing.PaceUnavailable) as caught:
                 with pacing.reserve("duckduckgo", 60):
                     pass
             self.assertEqual(caught.exception.retry_after_seconds, 59)
-        with (patch.object(pacing.time, "time", return_value=10101),
-              patch.object(pacing.time, "monotonic", return_value=5060)):
+        with fixed_clocks(10101, 5060):
             with pacing.reserve("duckduckgo", 60):
                 pass
 
     def test_reboot_requires_new_full_cooldown_before_admission(self):
-        boot_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-        boot_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-        with (patch.object(pacing, "_boot_id", return_value=boot_a),
-              patch.object(pacing.time, "time", return_value=10000),
-              patch.object(pacing.time, "monotonic", return_value=5000)):
+        with fixed_clocks(10000, 5000, boot=BOOT_A):
             with pacing.reserve("duckduckgo", 60):
                 pass
-        with (patch.object(pacing, "_boot_id", return_value=boot_b),
-              patch.object(pacing.time, "time", return_value=20000),
-              patch.object(pacing.time, "monotonic", return_value=100)):
+        with fixed_clocks(20000, 100, boot=BOOT_B):
             with self.assertRaises(pacing.PaceUnavailable) as caught:
                 with pacing.reserve("duckduckgo", 60):
                     pass
             self.assertEqual(caught.exception.retry_after_seconds, 60)
-        with (patch.object(pacing, "_boot_id", return_value=boot_b),
-              patch.object(pacing.time, "time", return_value=20060),
-              patch.object(pacing.time, "monotonic", return_value=160)):
+        with fixed_clocks(20060, 160, boot=BOOT_B):
             with pacing.reserve("duckduckgo", 60):
                 pass
 
     def test_reboot_with_zero_gap_admits_first_operation(self):
-        boot_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-        boot_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-        with (patch.object(pacing, "_boot_id", return_value=boot_a),
-              patch.object(pacing.time, "time", return_value=10000),
-              patch.object(pacing.time, "monotonic", return_value=5000)):
+        with fixed_clocks(10000, 5000, boot=BOOT_A):
             with pacing.reserve("duckduckgo", 0):
                 pass
-        with (patch.object(pacing, "_boot_id", return_value=boot_b),
-              patch.object(pacing.time, "time", return_value=20000),
-              patch.object(pacing.time, "monotonic", return_value=100)):
+        with fixed_clocks(20000, 100, boot=BOOT_B):
             # Zero spacing must not emit an immediate-retry failure, even
             # when a reservation file exists from the previous boot.
             with pacing.reserve("duckduckgo", 0):
@@ -217,43 +215,32 @@ class EnginePacingTests(unittest.TestCase):
                 pass
 
     def test_reboot_preserves_old_positive_gap_if_new_policy_is_zero(self):
-        boot_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-        boot_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-        with (patch.object(pacing, "_boot_id", return_value=boot_a),
-              patch.object(pacing.time, "time", return_value=10000),
-              patch.object(pacing.time, "monotonic", return_value=5000)):
+        with fixed_clocks(10000, 5000, boot=BOOT_A):
             with pacing.reserve("duckduckgo", 60):
                 pass
-        with (patch.object(pacing, "_boot_id", return_value=boot_b),
-              patch.object(pacing.time, "time", return_value=20000),
-              patch.object(pacing.time, "monotonic", return_value=100)):
+        with fixed_clocks(20000, 100, boot=BOOT_B):
             with self.assertRaises(pacing.PaceUnavailable) as caught:
                 with pacing.reserve("duckduckgo", 0):
                     pass
             self.assertEqual(caught.exception.retry_after_seconds, 60)
-        with (patch.object(pacing, "_boot_id", return_value=boot_b),
-              patch.object(pacing.time, "time", return_value=20060),
-              patch.object(pacing.time, "monotonic", return_value=160)):
+        with fixed_clocks(20060, 160, boot=BOOT_B):
             with pacing.reserve("duckduckgo", 0):
                 pass
 
     def test_invalid_state_and_clock_rollback_fail_closed(self):
         # Fix both clocks: otherwise host uptime changes the exception path.
-        with (patch.object(pacing.time, "time", return_value=10000),
-              patch.object(pacing.time, "monotonic", return_value=5000)):
+        with fixed_clocks(10000, 5000):
             with pacing.reserve("duckduckgo", 100):
                 pass
         state = next(self.folder.glob("*.json"))
         # State is intentionally hidden, not a visible user policy file.
         self.assertIn("next_allowed_epoch", state.read_text())
-        with (patch.object(pacing.time, "time", return_value=1000),
-              patch.object(pacing.time, "monotonic", return_value=100)):
+        with fixed_clocks(1000, 100):
             with self.assertRaisesRegex(pacing.PaceUnavailable, "clock skew"):
                 with pacing.reserve("duckduckgo", 100):
                     pass
         state.write_text('{"next_allowed_epoch": "oops"}')
-        with (patch.object(pacing.time, "time", return_value=10100),
-              patch.object(pacing.time, "monotonic", return_value=5100)):
+        with fixed_clocks(10100, 5100):
             with self.assertRaisesRegex(pacing.PaceUnavailable, "state"):
                 with pacing.reserve("duckduckgo", 100):
                     pass
