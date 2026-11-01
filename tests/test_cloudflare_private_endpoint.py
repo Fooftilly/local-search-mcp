@@ -114,14 +114,14 @@ class PrivateEndpointTests(unittest.TestCase):
     def test_existing_ip_with_different_mask_is_not_adopted(self):
         # An address with the same host IP but an unexpected prefix belongs
         # to a foreign setup and must prevent the privileged prepare.
-        output = "2: lo    inet 10.253.91.1/24 scope global lo\\n"
+        output = "2: lo    inet 10.253.91.1/24 scope global lo\n"
         with patch.object(endpoint, "command",
                           return_value=SimpleNamespace(returncode=0,
                                                        stdout=output, stderr="")):
             self.assertTrue(endpoint.exists_ip())
 
     def test_other_host_address_does_not_match(self):
-        output = "2: lo    inet 10.253.91.10/32 scope global lo\\n"
+        output = "2: lo    inet 10.253.91.10/32 scope global lo\n"
         with patch.object(endpoint, "command",
                           return_value=SimpleNamespace(returncode=0,
                                                        stdout=output, stderr="")):
@@ -130,7 +130,7 @@ class PrivateEndpointTests(unittest.TestCase):
     def test_shutdown_keeps_guard_if_alias_still_present(self):
         with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / "owned"
-            marker.write_text("a" * 32 + "\\n")
+            marker.write_text("a" * 32 + "\n")
             marker.chmod(0o600)
             calls = []
 
