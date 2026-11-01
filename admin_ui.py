@@ -726,7 +726,7 @@ def status_page():
     ports += render_template("status-mcp-port", port=esc(MCP_PORT))
     limits = "".join(
         render_template("status-limit-row",
-                        name=esc(item['name']), value=esc(item['value']),
+                        display_name=esc(item['name']), value=esc(item['value']),
                         apply=esc(item['apply']))
         for item in service_status.fixed_safety_limits())
     return render_template("status", rows=rows, ports=ports, limits=limits,
@@ -811,7 +811,7 @@ def provider_observations_page(hours: int = 24) -> str:
     def table_rows(items):
         return "".join(
             render_template(
-                "provider-time-row", name=esc(row["name"]),
+                "provider-time-row", display_name=esc(row["name"]),
                 observed=int(row["observed_searches"]),
                 timed=int(row["timed_searches"]),
                 mean=esc(row["mean_search_call_ms"]
@@ -819,7 +819,7 @@ def provider_observations_page(hours: int = 24) -> str:
                          else "Not recorded"))
             for row in items) or render_template("provider-time-empty")
     reported_failure_rows = "".join(
-        render_template("provider-failure-row", name=esc(row["name"]),
+        render_template("provider-failure-row", display_name=esc(row["name"]),
                         calls=int(row["reported_unresponsive_calls"]))
         for row in result["reported_unresponsive_engines"]) or (
         render_template("provider-failure-empty"))
