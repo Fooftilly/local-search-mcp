@@ -60,6 +60,41 @@ class SearchRecoveryTests(unittest.TestCase):
                          ["duckduckgo"])
         self.assertNotIn("PRIVATE_TOKEN_AND_URL", str(result))
 
+    def test_recovery_not_limited_by_diagnostic_display_cap(self):
+        requests = []
+        failures = [[f"engine-{i}", "PRIVATE_ERROR"] for i in range(17)]
+        failures.append(["duckduckgo", "PRIVATE_DDG_ERROR"])
+        def handler(request):
+            requests.append(request.url.path)
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": [
+                    {"name": "duckduckgo", "enabled": True,
+                     "categories": ["general"]},
+                ]})
+            if requests.count("/search") == 1:
+                return httpx.Response(200, json={
+                    "results": [], "unresponsive_engines": failures,
+                })
+            self.assertEqual(request.url.params.get("engines"), "duckduckgo")
+            return httpx.Response(200, json={"results": [{
+                "title": "Python", "url": "https://docs.python.org/3/",
+                "engine": "duckduckgo",
+            }]})
+        with (patch.object(bridge.httpx, "Client", side_effect=self.client_for(handler)),
+              patch.object(bridge.on_demand, "lease", side_effect=lambda _: nullcontext()),
+              patch.object(bridge.time, "sleep", return_value=None)):
+            result = bridge.web_search("Python", include_search_status=True)
+        self.assertEqual(requests, ["/search", "/config", "/search"])
+        self.assertEqual(result["status"], "degraded")
+        self.assertEqual(result["search_status"]["recovery"]["strategy"],
+                         "isolated_engine")
+        self.assertTrue(result["search_status"]["recovery"]["first_attempt"]["truncated"])
+        self.assertNotIn("duckduckgo",
+                         result["search_status"]["recovery"]["first_attempt"][
+                             "unresponsive_engines"])
+        self.assertNotIn("PRIVATE_ERROR", str(result))
+        self.assertNotIn("PRIVATE_DDG_ERROR", str(result))
+
     def test_unavailable_fallback_inventory_preserves_same_query_retry(self):
         requests = []
         def handler(request):
