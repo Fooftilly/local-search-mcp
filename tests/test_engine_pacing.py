@@ -1,0 +1,141 @@
+"""Cross-process engine admission is conservative, private and disabled by default."""
+from concurrent.futures import ThreadPoolExecutor
+import json
+import os
+from pathlib import Path
+import tempfile
+import threading
+import unittest
+from unittest.mock import patch
+
+import engine_pacing as pacing
+
+
+class EnginePacingTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        env = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.root)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    @property
+    def folder(self):
+        return self.root / "local-search-mcp"
+
+    def write_policy(self, data):
+        self.folder.mkdir(mode=0o700, exist_ok=True)
+        path = self.folder / pacing.FILENAME
+        path.write_text(json.dumps(data))
+        path.chmod(0o600)
+        return path
+
+    def sample(self, enabled=True):
+        return {"schema": pacing.SCHEMA, "enabled": enabled, "engines": {
+            "duckduckgo": {"min_spacing_seconds": 15},
+            "qwant": {"min_spacing_seconds": 60}}}
+
+    def test_missing_policy_disabled_and_read_does_not_write(self):
+        self.assertIsNone(pacing.policy())
+        self.assertFalse(self.folder.exists())
+        self.write_policy(self.sample(False))
+        self.assertIsNone(pacing.policy())
+        self.assertEqual(list(self.folder.iterdir()), [self.folder / pacing.FILENAME])
+
+    def test_explicit_policy_validates_names_and_exact_schema(self):
+        self.write_policy(self.sample())
+        self.assertEqual(pacing.policy(), {"duckduckgo": 15, "qwant": 60})
+        bad = [
+            {**self.sample(), "extra": "invalid"},
+            {**self.sample(), "enabled": 1},
+            {**self.sample(), "engines": {"Google": {"min_spacing_seconds": 20}}},
+            {**self.sample(), "engines": {"duckduckgo": {"min_spacing_seconds": True}}},
+            {**self.sample(), "engines": {"duckduckgo": {"min_spacing_seconds": -1}}},
+            {**self.sample(), "engines": {"duckduckgo": {"min_spacing_seconds": 3601}}},
+            {**self.sample(), "engines": {"duckduckgo": {"min_spacing_seconds": 1},
+                                          "DuckDuckGo": {"min_spacing_seconds": 1}}},
+            {**self.sample(), "engines": {}},
+        ]
+        for payload in bad:
+            with self.subTest(payload=payload):
+                self.write_policy(payload)
+                with self.assertRaises(pacing.PaceUnavailable):
+                    pacing.policy()
+        self.write_policy(self.sample())
+        with (self.folder / pacing.FILENAME).open("w") as stream:
+            stream.write('{"schema":"' + pacing.SCHEMA + '","enabled":true,'
+                         '"engines":{},"engines":{}}')
+        with self.assertRaises(pacing.PaceUnavailable):
+            pacing.policy()
+
+    def test_symlink_and_permissions_fail_closed_without_modifying_target(self):
+        path = self.write_policy(self.sample())
+        path.chmod(0o644)
+        with self.assertRaises(pacing.PaceUnavailable):
+            pacing.policy()
+        path.unlink()
+        target = self.root / "outside"
+        target.write_text("external")
+        path.symlink_to(target)
+        with self.assertRaises(OSError):
+            pacing.policy()
+        self.assertEqual(target.read_text(), "external")
+
+    def test_cooldown_persists_but_different_engines_have_independent_slots(self):
+        with patch.object(pacing.time, "time", return_value=10000):
+            with pacing.reserve("duckduckgo", 15):
+                with pacing.reserve("qwant", 60):
+                    pass
+            with self.assertRaises(pacing.PaceUnavailable) as caught:
+                with pacing.reserve("duckduckgo", 15):
+                    pass
+            self.assertEqual(caught.exception.retry_after_seconds, 15)
+        with patch.object(pacing.time, "time", return_value=10015):
+            with pacing.reserve("duckduckgo", 15):
+                pass
+            with self.assertRaises(pacing.PaceUnavailable):
+                with pacing.reserve("qwant", 60):
+                    pass
+        for path in self.folder.iterdir():
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_concurrent_same_engine_fail_fast_different_engine_allowed(self):
+        arrived, release = threading.Event(), threading.Event()
+        def first():
+            with pacing.reserve("duckduckgo", 0):
+                arrived.set()
+                self.assertTrue(release.wait(timeout=3))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            job = pool.submit(first)
+            self.assertTrue(arrived.wait(timeout=2))
+            with self.assertRaisesRegex(pacing.PaceUnavailable, "active search"):
+                with pacing.reserve("duckduckgo", 0):
+                    pass
+            with pacing.reserve("qwant", 0):
+                pass
+            release.set()
+            job.result(timeout=3)
+        with pacing.reserve("duckduckgo", 0):
+            pass
+
+    def test_invalid_state_and_clock_rollback_fail_closed(self):
+        with patch.object(pacing.time, "time", return_value=10000):
+            with pacing.reserve("duckduckgo", 100):
+                pass
+        state = next(self.folder.glob("*.json"))
+        # State is intentionally hidden, not a visible user policy file.
+        self.assertIn("next_allowed_epoch", state.read_text())
+        with patch.object(pacing.time, "time", return_value=1000):
+            with self.assertRaisesRegex(pacing.PaceUnavailable, "clock skew"):
+                with pacing.reserve("duckduckgo", 100):
+                    pass
+        state.write_text('{"next_allowed_epoch": "oops"}')
+        with patch.object(pacing.time, "time", return_value=10100):
+            with self.assertRaisesRegex(pacing.PaceUnavailable, "state"):
+                with pacing.reserve("duckduckgo", 100):
+                    pass
+
+
+if __name__ == "__main__":
+    unittest.main()
