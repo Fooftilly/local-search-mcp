@@ -287,6 +287,22 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
                     for x in items),
                 "recovery_operations": sum(
                     x["source"] == "isolated_recovery" for x in items),
+                # Direct one-engine requests only; recovery attempts are
+                # excluded to avoid biasing routing-quality evidence.
+                "direct_operations": sum(
+                    x["source"] != "isolated_recovery" for x in items),
+                "direct_verified_results": sum(
+                    x["source"] != "isolated_recovery" and x["outcome"] == "results"
+                    for x in items),
+                "direct_verified_result_mean_ms": (
+                    round(sum(x["roundtrip_ms"] for x in items
+                              if x["source"] != "isolated_recovery"
+                              and x["outcome"] == "results")
+                          / sum(x["source"] != "isolated_recovery"
+                                and x["outcome"] == "results" for x in items), 1)
+                    if any(x["source"] != "isolated_recovery"
+                           and x["outcome"] == "results" for x in items)
+                    else None),
                 "mean_local_search_ms": round(
                     sum(x["roundtrip_ms"] for x in items) / len(items), 1),
             }

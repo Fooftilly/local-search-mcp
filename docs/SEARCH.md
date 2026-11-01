@@ -530,3 +530,26 @@ exclusively assigned engines, so they remain unavailable while pacing is
 enabled. The operator must not interpret the inventory alone as proof
 of a remote provider's current quota, support for every search filter, or
 successful attended host acceptance.
+
+## Read-only engine evidence preview
+
+The `/engine-pacing-settings` page displays a read-only, nonsecret
+24-hour comparison using the configured policy engine names and the existing
+bounded private history. It does **not** wake SearXNG, trigger provider
+searches, alter policy, or change the deterministic live engine order.
+It uses direct, individually selected local `/search` operation records
+(explicit, paced default, paced category); isolated recovery calls and
+fanout-result attribution do not count in the comparison denominator.
+Successful-operation mean latency is the **local SearXNG round trip**,
+not remote provider time. Observed fraction of operations with
+source-verified results is **not uptime, accuracy, quota or guaranteed
+search quality**.
+
+A row needs at least 10 direct local operations and one verified result to
+qualify for a provisional comparison. If history is unavailable, truncated,
+malformed or lacks a verified writer lock, the dashboard refuses to rank
+engines. Other configured engines remain visible as insufficiently sampled.
+The report is non-authoritative: provider mix, query selection, user-selected
+engines, 24-hour retention and small sample sizes may bias comparisons.
+No adaptive routing is enabled by this preview; a separate explicit operator
+opt-in and unattended-host safety review are still required for that change.

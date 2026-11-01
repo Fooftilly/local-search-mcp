@@ -4,9 +4,11 @@
 <title>Local Search MCP — Engine pacing policy</title><link rel="stylesheet" href="/dashboard.css"></head>
 <body><main><h1>Per-engine search pacing</h1>
 ${alert}
-<p>Disabled by default. When enabled, only one explicitly selected, policy-listed engine can be searched.
-Default fanout, categories and bang shortcuts are rejected. The bridge applies the interval before
-the next search without restart. Existing in-flight searches are not interrupted.</p>
+<p>Disabled by default. When enabled, every search contacts only one verified,
+policy-listed engine per request. Unfiltered general searches may choose an eligible
+engine automatically; a single category may choose an exclusively category-dedicated engine.
+Multi-engine, multi-category, bang and unsupported automatic filter requests remain blocked.
+The bridge applies the interval to subsequent searches without restart.</p>
 <form method="post" action="/engine-pacing-settings">
 <input type="hidden" name="csrf" value="${csrf}">
 <input type="hidden" name="state" value="${state}">
@@ -22,6 +24,7 @@ Saving a disabled policy works while SearXNG is sleeping.</p>
 <input name="confirm" required autocomplete="off" maxlength="7"></label>
 <button type="submit">Save pacing policy</button>
 </form>
+${evidence}
 <p class="subtle">Each private engine admission holds a cross-process lock over one search attempt.
 This form does not set upstream provider quotas, change search engine flags or authorize a crawl.
 Invalid or unsafe stored state must be repaired manually; the editor will not overwrite it.</p>

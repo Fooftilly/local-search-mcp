@@ -19,6 +19,8 @@ _TEMPLATES = {
         "portable-settings",
         "engine-settings",
         "engine-pacing-settings",
+        "engine-evidence-panel",
+        "engine-evidence-row",
         "engine-form",
         "engine-option",
         "engine-alert",
