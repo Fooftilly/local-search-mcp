@@ -503,77 +503,56 @@ def row_html(r, query='', page=1, pending_sort='recent'):
             f'<td class="actions">{actions}</td></tr>')
 
 def decision_audit_rows(search=""):
-    """Render escaped, filtered decision rows for initial and live views."""
+    """Escaped decision evidence; markup owned by immutable templates."""
     rows = policy.recent_decisions(search=search)
     cells = ''.join(
-        '<tr><td class="small">' + esc(r['at']) + '</td>'
-        '<td class="domain">' + esc(r['domain']) + '</td>'
-        '<td>' + esc(r['action']) + '</td>'
-        '<td class="small">' + esc(r['request_id'] or '—') + '</td>'
-        '<td>' + esc(r['reason'] or '—') + '</td>'
-        '<td>' + esc(policy.safe_request_origin(r['requested_url']) if r['requested_url'] else '—') + '</td>'
-        '<td>' + esc(r['first_requested_at'] or '—') + '</td>'
-        '<td>' + esc(r['last_requested_at'] or '—') + '</td>'
-        '<td>' + str(int(r['request_count'])) + '</td></tr>'
+        render_template(
+            "decision-row", at=esc(r['at']), domain=esc(r['domain']),
+            action=esc(r['action']), request_id=esc(r['request_id'] or '—'),
+            reason=esc(r['reason'] or '—'),
+            requested_url=esc(policy.safe_request_origin(r['requested_url'])
+                              if r['requested_url'] else '—'),
+            first_requested_at=esc(r['first_requested_at'] or '—'),
+            last_requested_at=esc(r['last_requested_at'] or '—'),
+            request_count=int(r['request_count']))
         for r in rows)
-    return cells or '<tr><td colspan="9">No decisions recorded.</td></tr>'
+    return cells or render_template("decision-empty")
 
 
 def decision_audit_html(search=""):
-    return ('<div class="scroll"><table><thead><tr><th>UTC time</th>'
-            '<th>Domain</th><th>Action</th><th>Request ID</th>'
-            '<th>Operator reason</th><th>Request origin</th>'
-            '<th>First request</th><th>Last request</th><th>Count</th>'
-            '</tr></thead><tbody id="live-audit">' +
-            decision_audit_rows(search) + '</tbody></table></div>')
+    return render_template("decision-table", rows=decision_audit_rows(search))
 
 
 def once_grants_html(search="", page=1, pending_sort='recent'):
-    """Escaped, bounded local status; never expose bearer grant IDs."""
+    """Bounded local grant status; never expose bearer grant identifiers."""
     rows = policy.once_grant_entries(search=search)
     cells = ''.join(
-        '<tr><td class="domain">' + esc(r['domain']) + '</td>'
-        '<td>' + esc(r['state']) + '</td>'
-        '<td>' + esc('Exact host' if r['match_scope'] == 'exact'
-                   else 'Host + subdomains') + '</td>'
-        '<td>' + esc(r['expires_at'] or 'Never') + '</td>'
-        '<td><form method="post" action="/once">'
-        '<input type="hidden" name="csrf" value="' + esc(CSRF) + '">'
-        '<input type="hidden" name="review_query" value="' + esc(search[:100]) + '">'
-        '<input type="hidden" name="review_page" value="' + str(page) + '">'
-        '<input type="hidden" name="review_sort" value="' + pending_sort + '">'
-        '<input type="hidden" name="domain" value="' + esc(r['domain']) + '">'
-        '<label class="small">Reason (optional) <input name="reason" '
-        'maxlength="160" placeholder="Short local note"></label>'
-        '<button class="delete" name="action" value="revoke">Revoke</button>'
-        '</form></td></tr>' for r in rows
-    )
-    return ('<div class="scroll"><table><thead><tr><th>Domain</th>'
-            '<th>Use</th><th>Scope</th><th>Expiry (UTC)</th><th>Manage</th>'
-            '</tr></thead><tbody id="once-grants">' +
-            (cells or '<tr><td colspan="5">No single-use grants stored.</td></tr>') +
-            '</tbody></table></div>')
+        render_template(
+            "once-grant-row", domain=esc(r['domain']), state=esc(r['state']),
+            scope=esc('Exact host' if r['match_scope'] == 'exact'
+                      else 'Host + subdomains'),
+            expires_at=esc(r['expires_at'] or 'Never'),
+            csrf=esc(CSRF), review_query=esc(search[:100]),
+            review_page=page, review_sort=esc(pending_sort))
+        for r in rows)
+    return render_template("once-grant-table",
+                           rows=cells or render_template("once-grant-empty"))
 
 
 def once_audit_html(search=""):
-    """Separate action log avoids changing the old decisions CHECK schema."""
+    """Separate action log avoids changing existing decisions CHECK schema."""
     rows = policy.recent_once_events(search=search)
     cells = ''.join(
-        '<tr><td>' + esc(r['at']) + '</td><td class="domain">' +
-        esc(r['domain']) + '</td><td>' + esc(r['action']) +
-        '</td><td>' + esc(r['scope'] or '—') +
-        '</td><td>' + esc(r['expires_at'] or 'Never') +
-        '</td><td>' + esc(r['request_id'] or '—') +
-        '</td><td>' + esc(r['reason'] or '—') +
-        '</td><td>' + esc(r['requested_url'] or '—') +
-        '</td></tr>' for r in rows
-    )
-    return ('<div class="scroll"><table><thead><tr><th>UTC</th>'
-            '<th>Domain</th><th>Action</th><th>Scope</th><th>Expiry</th>'
-            '<th>Request ID</th><th>Reason</th><th>Request origin</th>'
-            '</tr></thead><tbody id="once-audit">' +
-            (cells or '<tr><td colspan="8">No single-use events.</td></tr>') +
-            '</tbody></table></div>')
+        render_template(
+            "once-audit-row", at=esc(r['at']), domain=esc(r['domain']),
+            action=esc(r['action']), scope=esc(r['scope'] or '—'),
+            expires_at=esc(r['expires_at'] or 'Never'),
+            request_id=esc(r['request_id'] or '—'),
+            reason=esc(r['reason'] or '—'),
+            requested_url=esc(r['requested_url'] or '—'))
+        for r in rows)
+    return render_template("once-audit-table",
+                           rows=cells or render_template("once-audit-empty"))
 
 
 def import_preview_html(plan: dict) -> str:
