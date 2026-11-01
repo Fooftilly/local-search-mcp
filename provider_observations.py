@@ -271,6 +271,8 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
         "engine_groups_truncated": len(engine_samples) > MAX_GROUPS,
         "category_groups_truncated": len(category_samples) > MAX_GROUPS,
         "observed_result_engines": _rollup(engine_samples),
+        "isolated_engine_operation_total": sum(
+            len(items) for items in isolated_attempts.values()),
         "isolated_engine_operations": [
             {
                 "name": name,
