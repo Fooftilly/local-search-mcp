@@ -42,8 +42,8 @@ class RoutingPreflightTests(unittest.TestCase):
         with (patch.object(preflight.engine_pacing_dashboard, "snapshot",
                            return_value={"enabled": enabled, "engines": POLICY,
                                          "routing": routing}) as config,
-              patch.object(preflight.engine_dashboard, "snapshot",
-                           return_value=(inventory, ("duckduckgo", "qwant"), "rev")) as live,
+              patch.object(preflight.engine_dashboard, "verified_inventory",
+                           return_value=(inventory, "rev")) as live,
               patch.object(preflight, "_verified_raw_active_inventory",
                            return_value=[{"name": item["name"],
                                           "categories": tuple(item["categories"])}
@@ -104,8 +104,8 @@ class RoutingPreflightTests(unittest.TestCase):
         with (patch.object(preflight.engine_pacing_dashboard, "snapshot",
                            return_value={"enabled": True, "engines": POLICY,
                                          "routing": "evidence"}),
-              patch.object(preflight.engine_dashboard, "snapshot",
-                           return_value=(INVENTORY, (), "rev")),
+              patch.object(preflight.engine_dashboard, "verified_inventory",
+                           return_value=(INVENTORY, "rev")),
               patch.object(preflight, "_verified_raw_active_inventory",
                            side_effect=ValueError("PRIVATE_DRIFT")),
               patch.object(preflight.provider_observations, "observations",
@@ -131,7 +131,7 @@ class RoutingPreflightTests(unittest.TestCase):
         with (patch.object(preflight.engine_pacing_dashboard, "snapshot",
                            return_value={"enabled": True, "engines": POLICY,
                                          "routing": "evidence"}),
-              patch.object(preflight.engine_dashboard, "snapshot",
+              patch.object(preflight.engine_dashboard, "verified_inventory",
                            side_effect=ValueError("PRIVATE_URL")) as live,
               patch.object(preflight.provider_observations, "observations",
                            side_effect=AssertionError("must not read"))):
@@ -148,7 +148,7 @@ class RoutingPreflightTests(unittest.TestCase):
                   patch.object(preflight.engine_pacing_dashboard, "snapshot",
                                side_effect=outcome if isinstance(outcome, Exception) else None,
                                return_value=outcome if isinstance(outcome, dict) else None),
-                  patch.object(preflight.engine_dashboard, "snapshot",
+                  patch.object(preflight.engine_dashboard, "verified_inventory",
                                side_effect=AssertionError("must not call"))):
                 result = preflight.report()
             self.assertIn(result["status"], ("no_configured_engines", "invalid_policy"))

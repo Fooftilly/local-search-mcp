@@ -106,7 +106,7 @@ def report() -> dict:
         output["next_step"] = "Stage policy rules in the guarded settings console."
         return output
     try:
-        inventory, _, _ = engine_dashboard.snapshot()
+        inventory, _ = engine_dashboard.verified_inventory()
         # Verify the container/bind-mount through the operator read path,
         # then validate *raw* /config category rows through the exact bridge
         # parser. Any normalization or concurrent drift fails closed.

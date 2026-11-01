@@ -121,6 +121,28 @@ class EngineDashboardTests(unittest.TestCase):
             "fetch", ("fetch", "safe"),
             lambda: {"success": False}, ttl=90), {"success": True})
 
+    def test_verified_inventory_supports_category_only_without_relaxing_editor(self):
+        from types import SimpleNamespace
+        from pathlib import Path
+        category_only = [{"name": "bing images", "enabled": True,
+                          "categories": ("images",)}]
+        with (patch.object(engine_dashboard.engines.on_demand_docker, "_safe_target",
+                           return_value=SimpleNamespace(running=True, ident="owner-container")),
+              patch.object(engine_dashboard.engines, "settings_path",
+                           return_value=Path("/tmp/dedicated-searxng-settings.yml")),
+              patch.object(engine_dashboard.engines, "_check_bind_mount") as binding,
+              patch.object(engine_dashboard.engines, "_read_settings", return_value="verified"),
+              patch.object(engine_dashboard.engines, "live_engines",
+                           return_value=category_only),
+              patch.object(engine_dashboard.engines, "inventory_state",
+                           return_value="opaque-revision")):
+            self.assertEqual(engine_dashboard.verified_inventory(),
+                             (category_only, "opaque-revision"))
+            with self.assertRaisesRegex(engine_dashboard.engines.EngineSetupError,
+                                        "General search-engine inventory unavailable"):
+                engine_dashboard.snapshot()
+            self.assertEqual(binding.call_count, 2)
+
     def test_sleeping_inventory_is_read_only_and_cannot_apply(self):
         with (patch.object(engine_dashboard, "snapshot",
                            side_effect=engine_dashboard.engines.EngineSetupError(

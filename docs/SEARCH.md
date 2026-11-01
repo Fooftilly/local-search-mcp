@@ -602,3 +602,8 @@ Category-only policies may be ready even when no general-search engine is
 eligible; the preflight separately reports general-route availability.
 Any disagreement between owner-verified and raw SearXNG category inventories
 produces an inventory blocker instead of a misleading readiness claim.
+
+The preflight uses the common owner-verification reader without requiring a
+general engine; the interactive general-engine settings editor retains its
+existing separate general-only guard. Category-only routing therefore can
+be assessed while preserving the editor's original safety boundary.
