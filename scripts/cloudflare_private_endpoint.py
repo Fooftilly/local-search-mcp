@@ -53,7 +53,14 @@ def exists_ip() -> bool:
     result = command("/usr/bin/ip", "-4", "-o", "addr", "show", "dev", "lo")
     if result.returncode:
         raise RuntimeError("Cannot inspect loopback address")
-    return any(CIDR in line.split() for line in result.stdout.splitlines())
+    # A differently masked alias is still a conflicting private address.
+    # Never create or remove our /32 while the same IP has foreign ownership.
+    return any(
+        field.split("/", 1)[0] == PRIVATE_IP
+        for line in result.stdout.splitlines()
+        for field in line.split()
+        if "/" in field
+    )
 
 
 def exists_table() -> bool:
@@ -114,7 +121,7 @@ def remove() -> None:
     # Fail closed if deleting the address fails: retain nftables protection.
     if exists_ip():
         result = command("/usr/bin/ip", "-4", "addr", "del", CIDR, "dev", "lo")
-        if result.returncode:
+        if result.returncode or exists_ip():
             raise RuntimeError("Cannot remove private address; guard preserved")
     if exists_table():
         result = command("/usr/bin/nft", "delete", "table", "inet", TABLE)
