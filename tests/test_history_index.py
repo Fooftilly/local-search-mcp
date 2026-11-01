@@ -103,6 +103,63 @@ class HistoryIndexTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             history_index.dashboard_history_snapshot(reveal_queries=1)
 
+    def test_dashboard_engine_attribution_without_revealing_private_queries(self):
+        append_history(event("search", backend="SearXNG",
+                             query="PRIVATE_UNDISCLOSED",
+                             engines="duckduckgo",
+                             results=[
+                                 {"engine": "duckduckgo", "url": "https://example.org"},
+                                 {"engine": "qwant", "url": "https://example.org/b"},
+                             ]))
+        append_history(event("search", backend="SearXNG",
+                             query="PRIVATE_SECOND",
+                             results=[{"engine": "brave"},
+                                      {"engine": "bad<script>"},
+                                      {"engine": "tokenSECRET"}]))
+        append_history(event("search", "error", backend="SearXNG",
+                             query="PRIVATE_FAILED", engines="qwant"))
+        append_history(event("fetch", backend="Crawl4AI",
+                             url="https://private.example.org/private"))
+        snapshot = history_index.dashboard_history_snapshot(include_engines=True)
+        rows = snapshot["rows"]
+        self.assertEqual(rows[0]["kind"], "fetch")
+        self.assertNotIn("engine_attribution", rows[0])
+        self.assertEqual(rows[1]["engine_attribution"], "Requested: qwant")
+        self.assertEqual(rows[2]["engine_attribution"], "Observed: brave")
+        self.assertEqual(rows[3]["engine_attribution"],
+                         "Requested: duckduckgo; Observed: duckduckgo, qwant")
+        self.assertTrue(all("query" not in row and "url" not in row
+                            and "generation_id" not in row and
+                            "byte_offset" not in row for row in rows))
+        for forbidden in (b"PRIVATE_UNDISCLOSED", b"PRIVATE_SECOND",
+                          b"PRIVATE_FAILED", b"tokenSECRET"):
+            self.assertNotIn(forbidden, history_index.index_path().read_bytes())
+        revealed = history_index.dashboard_history_snapshot(
+            include_engines=True, reveal_queries=True)
+        self.assertEqual(revealed["rows"][1]["query"], "PRIVATE_FAILED")
+        self.assertEqual(revealed["rows"][3]["engine_attribution"],
+                         rows[3]["engine_attribution"])
+        with self.assertRaises(ValueError):
+            history_index.dashboard_history_snapshot(include_engines="true")
+
+    def test_engine_attribution_refuses_unsafe_labels_and_rotated_sources(self):
+        self.assertEqual(history_index._history_engine_attribution({
+            "engines": "duckduckgo,SECRET-key",
+            "results": [{"engine": "<svg onload=alert(1)>"},
+                        {"engine": "safe-engine"},
+                        {"engine": "safe-engine"}],
+        }), "Requested: duckduckgo; Observed: safe-engine")
+        append_history(event("search", backend="SearXNG",
+                             results=[{"engine": "duckduckgo"}]))
+        first = history_index.search_history(include_engines=True)[0]
+        self.assertEqual(first["engine_attribution"], "Observed: duckduckgo")
+        old = history_path()
+        old.unlink()
+        # Source record is gone; the indexed row cannot claim a provider.
+        result = history_index.search_history(include_engines=True)
+        self.assertTrue(all(row.get("engine_attribution") != "Observed: duckduckgo"
+                            for row in result))
+
     def test_history_offsets_reveal_only_the_selected_original_events(self):
         when = datetime.now(timezone.utc).isoformat()
         for i in range(64):
