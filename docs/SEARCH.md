@@ -629,3 +629,31 @@ inventory readers; unrelated enabled engines do not affect strict routing
 eligibility. The raw reader still validates every source row and fails closed
 on malformed input. Diagnostic JSON never includes untrusted exceptions,
 private file paths, search text, or extra network requests.
+
+## Direct per-engine evidence readiness (read-only)
+
+The acceptance preflight now shows `engine_evidence` per routing scope in
+**deterministic fixed-engine order**. Each row reports bounded, aggregated
+`direct_operations`, `direct_verified_results`, and
+`verified_result_fraction_pct` from the same 24-hour evidence comparator used
+by the actual routing pilot. No query, URL, history filename or private request
+text is exported. The status distinguishes:
+
+- `comparable`: at least ten direct attempts, one verified result, valid
+  successful local SearXNG /search latency, complete locked history;
+- `needs_more_direct_operations`: fewer than ten direct attempts;
+- `zero_verified_results`: ten or more direct attempts, none returning
+  source-verified results (a **local observation**, not proof of outage);
+- `incomplete_latency_measurement`: otherwise sufficient observed results
+  but no valid latency measurement;
+- `history_unverified`: the evidence history was missing, truncated, not
+  lock-verified or invalid, so numeric counts are withheld instead of
+  presenting partial data as reliable.
+
+The top-level `zero_result_engines_needing_review` helps an operator identify
+configured engines that should be investigated **before** enabling isolated
+pacing. Evidence ordering, strict all-candidate qualification, cooldown
+admission, search behavior, provider choices, history retention and policy
+settings remain unchanged. 24-hour direct results measure neither provider
+uptime nor search relevance; host-side comparison and operator approval remain
+necessary. The preflight still sends zero searches and starts zero services.
