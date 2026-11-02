@@ -213,6 +213,61 @@ class RoutingPreflightTests(unittest.TestCase):
             self.assertEqual(result["searches_sent"], 0)
             self.assertEqual(result["plans"], [])
 
+    def test_per_engine_readiness_exposes_zero_result_provider_and_short_sample(self):
+        observed = history()
+        observed["isolated_engine_operations"] = [
+            {"name": "duckduckgo", "direct_operations": 10,
+             "direct_verified_results": 10, "direct_verified_result_mean_ms": 83.4},
+            {"name": "qwant", "direct_operations": 3,
+             "direct_verified_results": 0, "direct_verified_result_mean_ms": None},
+            {"name": "bing images", "direct_operations": 10,
+             "direct_verified_results": 0, "direct_verified_result_mean_ms": None},
+        ]
+        result = self._run(observed=observed)
+        general = result["plans"][0]
+        self.assertEqual(general["evidence_eligible"], False)
+        self.assertEqual(general["qualifying_engines"], 1)
+        self.assertEqual(general["engine_evidence"], [
+            {"engine": "duckduckgo", "direct_operations": 10,
+             "direct_verified_results": 10, "verified_result_fraction_pct": 100.0,
+             "status": "comparable"},
+            {"engine": "qwant", "direct_operations": 3,
+             "direct_verified_results": 0, "verified_result_fraction_pct": 0.0,
+             "status": "needs_more_direct_operations"},
+        ])
+        self.assertEqual(result["zero_result_engines_needing_review"], ["bing images"])
+        self.assertIn("before enabling pacing", result["next_step"])
+        self.assertEqual(result["plans"][1]["engine_evidence"][0]["status"],
+                         "zero_verified_results")
+        self.assertEqual(result["plans"][0]["fixed"], ["duckduckgo", "qwant"])
+
+    def test_unverified_history_never_exposes_pseudo_performance_values(self):
+        for observed in (
+                {**history(), "retention_or_scan_limited": True},
+                {**history(), "source_snapshot_lock_acquired": False},
+                {**history(), "isolated_engine_groups_truncated": True},
+                {**history(), "isolated_engine_operations": "invalid"}):
+            with self.subTest(observed=observed):
+                report = self._run(observed=observed)
+                for plan in report["plans"]:
+                    for row in plan["engine_evidence"]:
+                        self.assertEqual(row["status"], "history_unverified")
+                        self.assertIsNone(row["direct_operations"])
+                        self.assertIsNone(row["direct_verified_results"])
+                        self.assertIsNone(row["verified_result_fraction_pct"])
+                self.assertEqual(report["zero_result_engines_needing_review"], [])
+                self.assertFalse(report["plans"][0]["evidence_eligible"])
+
+    def test_comparable_evidence_maintains_existing_ranking_and_eligibility(self):
+        observed = history()
+        result = self._run(observed=observed)
+        self.assertEqual(result["plans"][0]["evidence"], ["qwant", "duckduckgo"])
+        self.assertTrue(result["plans"][0]["evidence_eligible"])
+        self.assertEqual(result["plans"][0]["qualifying_engines"], 2)
+        self.assertEqual(result["zero_result_engines_needing_review"], [])
+        self.assertEqual({r["status"] for r in result["plans"][0]["engine_evidence"]},
+                         {"comparable"})
+
     def test_fixed_mode_and_incomplete_history_keep_name_order(self):
         fixed = self._run(routing="fixed")
         self.assertEqual(fixed["plans"][0]["effective_if_enabled"], ["duckduckgo", "qwant"])

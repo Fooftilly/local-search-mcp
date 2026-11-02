@@ -63,19 +63,46 @@ def _plan(names: list[str], config: dict[str, int], history: dict | None,
           *, mode: str) -> dict:
     """Compare fixed name order with fully qualified, provisional evidence."""
     fixed = list(names)
+    # Unverified, truncated or malformed history must not produce apparent
+    # success rates. Keep every configured candidate visible with null counts.
+    unknown = [
+        {"engine": name, "direct_operations": None,
+         "direct_verified_results": None, "verified_result_fraction_pct": None,
+         "status": "history_unverified"} for name in fixed
+    ]
     result = {
         "fixed": fixed, "evidence": fixed, "effective_if_enabled": fixed,
         "evidence_eligible": False, "qualifying_engines": 0,
         "eligible_engines": len(fixed),
+        "engine_evidence": unknown,
     }
     if not fixed or history is None:
         return result
     try:
         comparison = engine_routing_evidence.compare(
             {name: config[name] for name in fixed}, history)
+        if comparison["complete_history"] is not True:
+            return result
         result["qualifying_engines"] = comparison["comparable_count"]
-        qualified = (comparison["complete_history"] is True
-                     and comparison["comparable_count"] == len(fixed))
+        by_name = {row["name"]: row for row in comparison["rows"]}
+        evidence_rows = []
+        for name in fixed:
+            row = by_name[name]
+            attempts = row["attempts"]
+            successes = row["results"]
+            status = ("comparable" if row["comparable"]
+                      else "needs_more_direct_operations"
+                      if attempts < engine_routing_evidence.MIN_DIRECT_OPERATIONS
+                      else "zero_verified_results"
+                      if successes == 0 else "incomplete_latency_measurement")
+            evidence_rows.append({
+                "engine": name, "direct_operations": attempts,
+                "direct_verified_results": successes,
+                "verified_result_fraction_pct": row["fraction"],
+                "status": status,
+            })
+        result["engine_evidence"] = evidence_rows
+        qualified = comparison["comparable_count"] == len(fixed)
         if qualified:
             ranked = [row["name"] for row in comparison["rows"]]
             if len(ranked) == len(fixed) and set(ranked) == set(fixed):
@@ -195,12 +222,24 @@ def report() -> dict:
     any_eligible = any(plan["eligible_engines"] for plan in output["plans"])
     output["status"] = ("ready_for_attended_comparison" if any_eligible
                         else "no_eligible_engines")
-    output["next_step"] = (
-        "Compare fixed and evidence routing using non-sensitive operator-approved queries; "
-        "this preflight did not execute or enable any searches."
-        if any_eligible else
-        "Review enabled policy-listed engines in the guarded console."
-    )
+    observed_zero_results = sorted({
+        row["engine"] for plan in output["plans"]
+        for row in plan["engine_evidence"]
+        if row["status"] == "zero_verified_results"
+    }, key=str.casefold)
+    output["zero_result_engines_needing_review"] = observed_zero_results
+    if observed_zero_results:
+        output["next_step"] = (
+            "Review the configured engines with at least 10 direct searches "
+            "and zero verified results before enabling pacing. Do not infer "
+            "upstream outages or quotas from these observations.")
+    elif any_eligible:
+        output["next_step"] = (
+            "Compare fixed and evidence routing using non-sensitive "
+            "operator-approved queries; this preflight did not execute or "
+            "enable any searches.")
+    else:
+        output["next_step"] = "Review enabled policy-listed engines in the guarded console."
     return output
 
 
