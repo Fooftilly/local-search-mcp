@@ -35,6 +35,7 @@ class EnginePacingAcceptanceTests(unittest.TestCase):
             self.assertEqual(report["provider_searches_sent"], 0)
             self.assertFalse(report["persisted_policy_modified"])
             self.assertTrue(report["sandbox_removed"])
+            self.assertNotIn("operator_pacing_enabled", report)
             self.assertEqual(actual_policy.read_bytes(), original)
             self.assertEqual(set(config.iterdir()), {actual_policy})
 

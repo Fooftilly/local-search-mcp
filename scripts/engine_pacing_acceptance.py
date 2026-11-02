@@ -173,7 +173,6 @@ def report() -> dict:
         "provider_searches_sent": 0,
         "services_started": 0,
         "persisted_policy_modified": False,
-        "operator_pacing_enabled": False,
         "sandbox_removed": True,
         "limitations": (
             "No real provider availability, upstream quota, request relevance, "
