@@ -126,6 +126,9 @@ class EngineEvidenceTests(unittest.TestCase):
             rendered = engine_pacing_dashboard.evidence_preview(
                 {"bing": 30, "qwant": 60, "duckduckgo web": 15})
         reader.assert_called_once_with(24)
+        # The fixed HTML row template deliberately includes formatting
+        # newlines between cells; test the semantic order, not whitespace.
+        rendered = rendered.replace("\n", "")
         self.assertIn("<th>Reported unresponsive</th>", rendered)
         self.assertIn("<td>bing</td><td>10</td><td>0</td>", rendered)
         self.assertIn("<td>10</td><td>0</td><td>0</td><td>No verified results</td>", rendered)
@@ -160,6 +163,7 @@ class EngineEvidenceTests(unittest.TestCase):
                           "observations",
                           return_value=report([entry("brave", 10, 8, 310)])):
             rendered = engine_pacing_dashboard.evidence_preview({"brave": 30})
+        rendered = rendered.replace("\n", "")
         self.assertIn("<td>80.0%</td><td>310</td>", rendered)
         self.assertIn("<td>-</td><td>-</td><td>-</td><td>Comparable</td>",
                       rendered)
