@@ -1,6 +1,8 @@
 """Strict, opt-in single-engine pacing is enforced at the real /search boundary."""
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 import asyncio
+import threading
 import json
 import os
 from pathlib import Path
@@ -148,6 +150,101 @@ class PacedSearchBoundaryTests(unittest.TestCase):
                           if path == "/search"], ["duckduckgo", "qwant"])
         self.assertEqual([path for path, _ in self.calls],
                          ["/config", "/search", "/config", "/search", "/config"])
+
+    def test_concurrent_clients_enforce_real_lock_before_automatic_fallback(self):
+        """An active /search holds the slot across independent MCP calls.
+
+        A second explicit request must not enter the same engine, while an
+        unfiltered default may use another approved engine before /search.
+        """
+        self.policy(entries={"duckduckgo": 0, "qwant": 0})
+        entered, release = threading.Event(), threading.Event()
+        search_calls = []
+        original = httpx.Client
+
+        def handler(request):
+            if request.url.path == "/config":
+                return httpx.Response(200, json={"engines": [
+                    {"name": "duckduckgo", "enabled": True,
+                     "categories": ["general"]},
+                    {"name": "qwant", "enabled": True,
+                     "categories": ["general"]},
+                ]})
+            self.assertEqual(request.url.path, "/search")
+            selected = request.url.params["engines"]
+            search_calls.append((selected, request.url.params["q"]))
+            if selected == "duckduckgo":
+                entered.set()
+                self.assertTrue(release.wait(timeout=5),
+                                "Held network call never released")
+            return httpx.Response(200, json={
+                "results": [{"title": "Public",
+                             "url": "https://docs.python.org/3/",
+                             "engine": selected}],
+                "unresponsive_engines": [],
+            })
+
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+
+        with (patch.object(bridge.httpx, "Client", side_effect=factory),
+              patch.object(bridge.on_demand, "lease",
+                           side_effect=lambda _: nullcontext()),
+              ThreadPoolExecutor(max_workers=2) as pool):
+            held = pool.submit(bridge.web_search, "public query held",
+                               engines="duckduckgo", fresh=True)
+            try:
+                self.assertTrue(entered.wait(timeout=4),
+                                "First search did not reach the network boundary")
+                blocked = bridge.web_search(
+                    "public query blocked", engines="duckduckgo", fresh=True)
+                self.assertEqual(blocked["status"], "rate_limited")
+                self.assertEqual(blocked["retry_after_seconds"], 1)
+                alternative = bridge.web_search(
+                    "public query fallback", fresh=True)
+                self.assertIsInstance(alternative, list)
+                self.assertEqual(len(alternative), 1)
+            finally:
+                release.set()
+            first = held.result(timeout=5)
+        self.assertIsInstance(first, list)
+        self.assertEqual(
+            sorted(search_calls),
+            [("duckduckgo", "public query held"),
+             ("qwant", "public query fallback")])
+        self.assertNotIn(("duckduckgo", "public query blocked"), search_calls)
+
+    def test_http_429_does_not_fail_over_after_admitted_default_request(self):
+        """Only a later independent call may select a different engine."""
+        self.policy(entries={"duckduckgo": 60, "qwant": 0})
+        outcomes = []
+
+        def handler(request):
+            name = request.url.params["engines"]
+            outcomes.append(name)
+            if name == "duckduckgo":
+                return httpx.Response(429)
+            return httpx.Response(200, json={
+                "results": [{"title": "Public",
+                             "url": "https://docs.python.org/3/",
+                             "engine": name}],
+                "unresponsive_engines": [],
+            })
+
+        self.search_response = handler
+        first = self.execute(query="first public query")
+        self.assertEqual(first["status"], "rate_limited")
+        self.assertEqual(outcomes, ["duckduckgo"],
+                         "One admitted request must never retry another provider")
+
+        # This is a new call, not a hidden retry of the first request.
+        second = self.execute(query="second public query")
+        self.assertIsInstance(second, list)
+        self.assertEqual(outcomes, ["duckduckgo", "qwant"])
+        self.assertEqual(
+            [params["engines"] for path, params in self.calls
+             if path == "/search"],
+            ["duckduckgo", "qwant"])
 
     def test_paced_default_no_eligible_general_engine_fails_closed(self):
         self.policy(entries={"qwant": 15})

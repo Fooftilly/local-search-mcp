@@ -752,3 +752,29 @@ the adaptive pilot based on this diagnostic alone.
 
 References: SearXNG administrator engine settings and upstream webapp
 implementation of the existing stats error endpoint.
+
+
+## Concurrent MCP search boundary regression checks
+
+The offline CI suite now exercises real bridge-level calls under a
+controlled mock SearXNG transport while pacing is enabled only in
+temporary private test state. One call holds the production
+`engine_pacing.reserve` lock across a slow mocked `/search`.
+A second, concurrent client selecting that same engine must return a bounded
+`rate_limited` result without entering `/search`; an unfiltered
+default client can select another already-approved available engine before
+any request is admitted. The test deliberately uses `fresh=True` to
+avoid cache coalescing and counts each actual mock network attempt.
+
+A second test verifies that SearXNG HTTP 429 after admission produces
+only one attempt, without changing provider or automatically retrying. A
+subsequent, independent request may use another approved engine if the
+first is cooling down. These tests exercise the production bridge,
+cross-process-capable lock primitive and routing boundary together,
+rather than mocking out the pacing reservation itself.
+
+These are deterministic CI regression tests, not real remote provider
+requests, live agent session concurrency, confirmed upstream quotas,
+cold-boot recovery or a recommendation to enable the operator's pacing
+policy. The standalone, no-provider on-host acceptance command remains
+`./.venv/bin/python -m scripts.engine_pacing_acceptance`.
