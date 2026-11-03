@@ -74,6 +74,16 @@ class AdvertisedAlternativesTests(unittest.TestCase):
 
 """
         self.assertEqual(extract(other)["alternatives"], [])
+        # An approved RFC Editor host with a trailing DNS root dot must
+        # obey the same RFC identity restriction.
+        with patch("domain_policy.socket.getaddrinfo",
+                   side_effect=AssertionError("Never fetch alternatives")):
+            dotted = subject.extract(
+                {"links": {"internal": []}, "tables": []},
+                "https://www.rfc-editor.org./info/rfc9110",
+                include_links=False, include_tables=False,
+                include_alternatives=True, markdown=other)
+        self.assertEqual(dotted["alternatives"], [])
         # The trailing slash and case of the RFC Editor info route are valid.
         with patch("domain_policy.socket.getaddrinfo",
                    side_effect=AssertionError("Never fetch alternatives")):
