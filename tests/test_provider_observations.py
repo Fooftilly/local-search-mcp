@@ -96,9 +96,36 @@ class ProviderObservationsTests(unittest.TestCase):
         self.assertEqual(metrics["reported_unresponsive"], 1)
         self.assertEqual(metrics["other_outcomes"], 0)
         self.assertEqual(metrics["recovery_operations"], 1)
+        self.assertEqual(metrics["direct_operations"], 2)
+        self.assertEqual(metrics["direct_verified_results"], 1)
+        self.assertEqual(metrics["direct_reported_empty"], 1)
+        self.assertEqual(metrics["direct_reported_unresponsive"], 0)
+        self.assertEqual(metrics["direct_other_outcomes"], 0)
         self.assertEqual(metrics["mean_local_search_ms"], 80.0)
         self.assertEqual(report["provider_uptime"], "not_measured")
         self.assertNotIn("SECRET_TOKEN", repr(report))
+
+    def test_direct_breakdown_excludes_same_query_recovery(self):
+        qwant = {"engine": "qwant", "source": "explicit",
+                 "outcome": "reported_unresponsive", "roundtrip_ms": 50}
+        self.add(status="error", results=None, isolated_engine_operations=[
+            qwant, {**qwant, "source": "same_query_recovery"},
+        ])
+        self.add(minutes=1, status="error", results=None,
+                 isolated_engine_operations=[
+                     {**qwant, "outcome": "http_error"}])
+        self.add(minutes=2, isolated_engine_operations=[
+            {**qwant, "outcome": "empty"}])
+        report = provider.observations(24, now=self.now)
+        row = report["isolated_engine_operations"][0]
+        self.assertEqual(row["direct_operations"], 3)
+        self.assertEqual(row["direct_verified_results"], 0)
+        self.assertEqual(row["direct_reported_unresponsive"], 1)
+        self.assertEqual(row["direct_reported_empty"], 1)
+        self.assertEqual(row["direct_other_outcomes"], 1)
+        self.assertEqual(row["recovery_operations"], 1)
+        self.assertEqual(row["reported_unresponsive"], 2)
+        self.assertNotIn("SECRET_SEARCH_QUERY", str(report))
 
     def test_isolated_total_includes_engine_groups_beyond_display_limit(self):
         for i in range(provider.MAX_GROUPS + 1):

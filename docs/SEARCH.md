@@ -686,3 +686,25 @@ a power-cycle reboot or safe provider request-rate quotas. The separate
 read-only `scripts.engine_routing_preflight` still checks
 live inventory and recorded search evidence; a later operator-approved
 live test is needed before enabling pacing or evidence mode.
+
+## Direct engine outcome diagnostics (read-only)
+
+The 24-hour private search observation report distinguishes **direct** one-engine
+local `/search` outcomes: `direct_reported_empty` (HTTP 200 with no results
+and no matching SearXNG failure flag), `direct_reported_unresponsive`
+(SearXNG explicitly flagged the selected engine on an empty response), and
+`direct_other_outcomes` (HTTP/transport errors, invalid responses or unverifiable
+result attribution). Counts intentionally exclude `same_query_recovery` and
+`isolated_recovery` attempts, which remain recorded separately. The sum of
+these three outcomes and `direct_verified_results` equals `direct_operations`.
+
+The read-only `./.venv/bin/python -m scripts.engine_routing_preflight` displays
+these counts per configured candidate and lists
+`reported_unresponsive_engines_needing_review`. On missing, incomplete or
+unverified history, or older observation rows lacking the breakdown, values
+are `null` rather than assumed zero. The existing `fixed` and `evidence`
+eligibility, ordering, and operator pacing policy are unchanged.
+
+These are **local SearXNG responses**, not remote provider uptime, quotas,
+blocking diagnoses or search relevance measurements. No provider traffic,
+wake, policy writes or automatic engine suppression is performed.

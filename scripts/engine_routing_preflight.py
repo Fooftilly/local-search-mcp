@@ -68,6 +68,8 @@ def _plan(names: list[str], config: dict[str, int], history: dict | None,
     unknown = [
         {"engine": name, "direct_operations": None,
          "direct_verified_results": None, "verified_result_fraction_pct": None,
+         "direct_reported_empty": None,
+         "direct_reported_unresponsive": None, "direct_other_outcomes": None,
          "status": "history_unverified"} for name in fixed
     ]
     result = {
@@ -99,6 +101,9 @@ def _plan(names: list[str], config: dict[str, int], history: dict | None,
                 "engine": name, "direct_operations": attempts,
                 "direct_verified_results": successes,
                 "verified_result_fraction_pct": row["fraction"],
+                "direct_reported_empty": row["direct_reported_empty"],
+                "direct_reported_unresponsive": row["direct_reported_unresponsive"],
+                "direct_other_outcomes": row["direct_other_outcomes"],
                 "status": status,
             })
         result["engine_evidence"] = evidence_rows
@@ -228,11 +233,18 @@ def report() -> dict:
         if row["status"] == "zero_verified_results"
     }, key=str.casefold)
     output["zero_result_engines_needing_review"] = observed_zero_results
-    if observed_zero_results:
+    reported_unresponsive = sorted({
+        row["engine"] for plan in output["plans"]
+        for row in plan["engine_evidence"]
+        if type(row["direct_reported_unresponsive"]) is int
+        and row["direct_reported_unresponsive"] > 0
+    }, key=str.casefold)
+    output["reported_unresponsive_engines_needing_review"] = reported_unresponsive
+    if observed_zero_results or reported_unresponsive:
         output["next_step"] = (
-            "Review the configured engines with at least 10 direct searches "
-            "and zero verified results before enabling pacing. Do not infer "
-            "upstream outages or quotas from these observations.")
+            "Review configured engines with zero verified results or "
+            "SearXNG-reported unresponsive direct requests before enabling pacing. "
+            "These observations do not establish upstream outages or quotas.")
     elif any_eligible:
         output["next_step"] = (
             "Compare fixed and evidence routing using non-sensitive "

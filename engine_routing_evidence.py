@@ -52,6 +52,19 @@ def compare(policy_engines: dict[str, int], report: dict) -> dict:
                      or not math.isfinite(latency)
                      or not 0 <= latency <= 3_600_000))):
             raise ValueError("Invalid isolated search measurements")
+        # Older synthetic/retained summaries may not have the optional
+        # direct-outcome breakdown. Never guess missing outcomes are zero.
+        # Invalid or inconsistent summaries must not influence routing.
+        fields = ("direct_reported_empty", "direct_reported_unresponsive",
+                  "direct_other_outcomes")
+        if any(field in row for field in fields):
+            if (any(type(row.get(field)) is not int
+                    or not 0 <= row[field] <= attempts for field in fields)
+                    or sum(row[field] for field in fields) + successes != attempts):
+                raise ValueError("Invalid isolated search outcome breakdown")
+            breakdown = {field: row[field] for field in fields}
+        else:
+            breakdown = {field: None for field in fields}
         comparable = reliable and attempts >= MIN_DIRECT_OPERATIONS and successes > 0 and latency is not None
         rows.append({
             "name": name,
@@ -59,6 +72,7 @@ def compare(policy_engines: dict[str, int], report: dict) -> dict:
             "results": successes,
             "fraction": round(100 * successes / attempts, 1) if attempts else None,
             "mean_success_ms": latency,
+            **breakdown,
             "comparable": comparable,
         })
     # Unqualified engines stay in predictable name order. Eligible rows rank
