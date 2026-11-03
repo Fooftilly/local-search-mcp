@@ -708,3 +708,47 @@ eligibility, ordering, and operator pacing policy are unchanged.
 These are **local SearXNG responses**, not remote provider uptime, quotas,
 blocking diagnoses or search relevance measurements. No provider traffic,
 wake, policy writes or automatic engine suppression is performed.
+
+
+## Read-only SearXNG engine-error diagnostics
+
+To investigate repeated empty results or SearXNG-reported unresponsive
+engines, run on the **operator's existing host** while SearXNG is already
+running (no wake or restart is performed):
+
+```bash
+./.venv/bin/python -m scripts.engine_error_diagnostics
+./.venv/bin/python -m scripts.engine_error_diagnostics --engine brave
+```
+
+
+Without `--engine` it inspects the first eight exact engine names in
+case-insensitive sorted order from the saved pacing rules, whether the policy
+is enabled or disabled. A valid 9–64-engine policy remains supported, with
+`configured_engines_omitted` reporting the number not shown; use explicit
+`--engine NAME` to inspect the others. With `--engine` it
+inspects only that exact enabled non-Google engine. The command verifies
+the project-owned Docker container and its settings bind mount through the
+same guarded inventory reader as the engine-selection editor, then performs
+one **loopback-only**, bounded GET of SearXNG's existing `/stats/errors` JSON.
+No search query, provider request, history append, Docker wake, pacing
+reservation, settings write, cookie, redirect, or response logging occurs.
+
+The output includes only sanitized exception **categories** and bounded
+SearXNG-reported error percentages. Raw upstream log messages, code,
+filenames, parameters and exception strings are never included. Categories
+such as `access_denied`, `captcha`, `rate_limit`,
+`timeout`, `parser_or_response` and `network` are
+heuristic labels, not verified root causes. If statistics are disabled,
+the endpoint is unavailable or validation fails, the command reports
+`stats_unavailable` without making any changes.
+
+SearXNG metrics are process-local and reset across restarts. A missing
+error entry does **not** prove a provider is healthy; the percentages are
+not an upstream quota, uptime SLO, absolute request count or a match to the
+preflight's 24-hour window. The live search acceptance and
+`scripts.engine_routing_preflight` remain separate. Do not enable
+the adaptive pilot based on this diagnostic alone.
+
+References: SearXNG administrator engine settings and upstream webapp
+implementation of the existing stats error endpoint.
