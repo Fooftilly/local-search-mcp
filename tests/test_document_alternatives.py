@@ -93,7 +93,7 @@ class AdvertisedAlternativesTests(unittest.TestCase):
         self.assertEqual(extract(conflicting)["alternatives"], [])
         # Identical duplicate labels/URLs are not contradictory.
         identical = GROUP.replace(
-            "  * [PDF]", "  * [Compact HTML](https://www.rfc-editor.org/rfc/rfc9110.html),\\n  * [PDF]")
+            "  * [PDF]", "  * [Compact HTML](https://www.rfc-editor.org/rfc/rfc9110.html),\n  * [PDF]")
         self.assertEqual(len(extract(identical)["alternatives"]), 3)
 
     def test_separate_groups_are_not_conflated(self):
