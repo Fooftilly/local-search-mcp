@@ -657,3 +657,32 @@ admission, search behavior, provider choices, history retention and policy
 settings remain unchanged. 24-hour direct results measure neither provider
 uptime nor search relevance; host-side comparison and operator approval remain
 necessary. The preflight still sends zero searches and starts zero services.
+
+
+## Isolated on-host cross-process pacing acceptance
+
+To validate the **real production admission primitive** on the operator's
+current Linux host without changing the configured policy, run:
+
+```bash
+./.venv/bin/python -m scripts.engine_pacing_acceptance
+```
+
+The command creates a temporary owner-private `XDG_CONFIG_HOME` and launches
+separate Python processes using the repository's existing `engine_pacing.reserve`.
+It confirms that two processes cannot simultaneously admit the *same*
+engine; another engine remains independently admissible; the minimum
+inter-request gap persists after the first process exits; and an engine
+with a zero-second gap can be reused. It does not open a SearXNG search,
+read or edit the operator's policy, wake or restart services, open a
+port, install agents or change permissions. It deletes its isolated state
+before reporting success. A worker invoked outside the temporary
+owner-private sandbox fails closed.
+
+A `status: "passed"` only establishes local Linux process/file-lock and
+monotonic cooldown behavior. It does **not** establish real upstream
+availability, HTTP result quality, full MCP concurrency, backend restart,
+a power-cycle reboot or safe provider request-rate quotas. The separate
+read-only `scripts.engine_routing_preflight` still checks
+live inventory and recorded search evidence; a later operator-approved
+live test is needed before enabling pacing or evidence mode.
