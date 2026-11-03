@@ -277,7 +277,7 @@ def _advertised_alternatives(markdown: str, base: str, *, budget: int) -> list[d
     expected_rfc = None
     try:
         source = urlsplit(base)
-        if source.hostname == "www.rfc-editor.org":
+        if source.hostname and source.hostname.rstrip(".") == "www.rfc-editor.org":
             identified = re.fullmatch(r"/info/(rfc[0-9]+)/?", source.path,
                                       re.IGNORECASE)
             if identified:
