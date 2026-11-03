@@ -296,6 +296,20 @@ def observations(hours: int = 24, *, now: datetime | None = None) -> dict:
                 "direct_verified_results": sum(
                     x["source"] not in ("isolated_recovery", "same_query_recovery") and x["outcome"] == "results"
                     for x in items),
+                # Direct outcomes distinguish local empty responses from
+                # SearXNG-reported unresponsive providers. Never double-count
+                # same-query or isolated recovery attempts as independent
+                # observations or provider uptime evidence.
+                "direct_reported_empty": sum(
+                    x["source"] not in ("isolated_recovery", "same_query_recovery")
+                    and x["outcome"] == "empty" for x in items),
+                "direct_reported_unresponsive": sum(
+                    x["source"] not in ("isolated_recovery", "same_query_recovery")
+                    and x["outcome"] == "reported_unresponsive" for x in items),
+                "direct_other_outcomes": sum(
+                    x["source"] not in ("isolated_recovery", "same_query_recovery")
+                    and x["outcome"] not in ("results", "empty", "reported_unresponsive")
+                    for x in items),
                 "direct_verified_result_mean_ms": (
                     round(sum(x["roundtrip_ms"] for x in items
                               if x["source"] not in ("isolated_recovery", "same_query_recovery")

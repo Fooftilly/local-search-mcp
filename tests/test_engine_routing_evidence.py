@@ -69,6 +69,26 @@ class EngineEvidenceTests(unittest.TestCase):
             evidence.compare({"brave": 60}, report(
                 [entry("brave", 10, 8, 10), entry("brave", 10, 8, 10)]))
 
+    def test_optional_direct_outcomes_are_validated_and_do_not_rank_engines(self):
+        qwant = {**entry("qwant", 3, 0, None),
+                 "direct_reported_empty": 0,
+                 "direct_reported_unresponsive": 3,
+                 "direct_other_outcomes": 0}
+        result = evidence.compare({"qwant": 60}, report([qwant]))
+        self.assertFalse(result["rows"][0]["comparable"])
+        self.assertEqual(result["rows"][0]["direct_reported_unresponsive"], 3)
+        self.assertIsNone(evidence.compare(
+            {"qwant": 60}, report([entry("qwant", 3, 0, None)])
+        )["rows"][0]["direct_reported_unresponsive"])
+        for corrupt in (
+                {**qwant, "direct_reported_unresponsive": True},
+                {**qwant, "direct_reported_unresponsive": 4},
+                {**qwant, "direct_reported_empty": -1},
+                {**qwant, "direct_other_outcomes": None},
+                {**qwant, "direct_reported_unresponsive": 2}):
+            with self.subTest(corrupt=corrupt), self.assertRaises(ValueError):
+                evidence.compare({"qwant": 60}, report([corrupt]))
+
     def test_editor_escapes_names_no_backend_or_policy_mutations(self):
         configured = {"brave": 15, "<img onerror=alert(1)>": 15}
         observations = report([entry("brave", 10, 8, 310)])

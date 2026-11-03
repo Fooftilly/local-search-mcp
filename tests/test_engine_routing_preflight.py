@@ -217,11 +217,17 @@ class RoutingPreflightTests(unittest.TestCase):
         observed = history()
         observed["isolated_engine_operations"] = [
             {"name": "duckduckgo", "direct_operations": 10,
-             "direct_verified_results": 10, "direct_verified_result_mean_ms": 83.4},
+             "direct_verified_results": 10, "direct_verified_result_mean_ms": 83.4,
+             "direct_reported_empty": 0, "direct_reported_unresponsive": 0,
+             "direct_other_outcomes": 0},
             {"name": "qwant", "direct_operations": 3,
-             "direct_verified_results": 0, "direct_verified_result_mean_ms": None},
+             "direct_verified_results": 0, "direct_verified_result_mean_ms": None,
+             "direct_reported_empty": 0, "direct_reported_unresponsive": 3,
+             "direct_other_outcomes": 0},
             {"name": "bing images", "direct_operations": 10,
-             "direct_verified_results": 0, "direct_verified_result_mean_ms": None},
+             "direct_verified_results": 0, "direct_verified_result_mean_ms": None,
+             "direct_reported_empty": 10, "direct_reported_unresponsive": 0,
+             "direct_other_outcomes": 0},
         ]
         result = self._run(observed=observed)
         general = result["plans"][0]
@@ -230,12 +236,17 @@ class RoutingPreflightTests(unittest.TestCase):
         self.assertEqual(general["engine_evidence"], [
             {"engine": "duckduckgo", "direct_operations": 10,
              "direct_verified_results": 10, "verified_result_fraction_pct": 100.0,
-             "status": "comparable"},
+             "direct_reported_empty": 0, "direct_reported_unresponsive": 0,
+             "direct_other_outcomes": 0, "status": "comparable"},
             {"engine": "qwant", "direct_operations": 3,
              "direct_verified_results": 0, "verified_result_fraction_pct": 0.0,
-             "status": "needs_more_direct_operations"},
+             "direct_reported_empty": 0, "direct_reported_unresponsive": 3,
+             "direct_other_outcomes": 0, "status": "needs_more_direct_operations"},
         ])
         self.assertEqual(result["zero_result_engines_needing_review"], ["bing images"])
+        self.assertEqual(result["reported_unresponsive_engines_needing_review"],
+                         ["qwant"])
+        self.assertEqual(result["plans"][1]["engine_evidence"][0]["direct_reported_empty"], 10)
         self.assertIn("before enabling pacing", result["next_step"])
         self.assertEqual(result["plans"][1]["engine_evidence"][0]["status"],
                          "zero_verified_results")
@@ -255,7 +266,11 @@ class RoutingPreflightTests(unittest.TestCase):
                         self.assertIsNone(row["direct_operations"])
                         self.assertIsNone(row["direct_verified_results"])
                         self.assertIsNone(row["verified_result_fraction_pct"])
+                        self.assertIsNone(row["direct_reported_empty"])
+                        self.assertIsNone(row["direct_reported_unresponsive"])
+                        self.assertIsNone(row["direct_other_outcomes"])
                 self.assertEqual(report["zero_result_engines_needing_review"], [])
+                self.assertEqual(report["reported_unresponsive_engines_needing_review"], [])
                 self.assertFalse(report["plans"][0]["evidence_eligible"])
 
     def test_comparable_evidence_maintains_existing_ranking_and_eligibility(self):
