@@ -722,8 +722,11 @@ running (no wake or restart is performed):
 ```
 
 
-Without `--engine` it inspects up to eight exact engine names from the saved
-pacing rules, whether the policy is enabled or disabled. With `--engine` it
+Without `--engine` it inspects the first eight exact engine names in
+case-insensitive sorted order from the saved pacing rules, whether the policy
+is enabled or disabled. A valid 9–64-engine policy remains supported, with
+`configured_engines_omitted` reporting the number not shown; use explicit
+`--engine NAME` to inspect the others. With `--engine` it
 inspects only that exact enabled non-Google engine. The command verifies
 the project-owned Docker container and its settings bind mount through the
 same guarded inventory reader as the engine-selection editor, then performs

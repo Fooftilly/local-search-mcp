@@ -33,7 +33,7 @@ class DiagnosticError(ValueError):
     """Reject unexpected or unsafe upstream statistics without exposing them."""
 
 
-def _names(requested: list[str] | None) -> list[str]:
+def _names(requested: list[str] | None) -> tuple[list[str], int]:
     if requested is None:
         try:
             policy = engine_pacing_dashboard.snapshot()["engines"]
@@ -44,13 +44,18 @@ def _names(requested: list[str] | None) -> list[str]:
         names = list(policy)
     else:
         names = requested
-    if (not isinstance(names, list) or len(names) > _MAX_ENGINES
+    allowed_limit = 64 if requested is None else _MAX_ENGINES
+    if (not isinstance(names, list) or len(names) > allowed_limit
             or any(not isinstance(name, str) or not _NAME.fullmatch(name)
                    or name != name.strip()
                    or name.casefold().startswith("google") for name in names)
             or len({name.casefold() for name in names}) != len(names)):
         raise DiagnosticError("invalid_selection")
-    return sorted(names, key=str.casefold)
+    ordered = sorted(names, key=str.casefold)
+    # A valid policy may contain up to 64 engines. Avoid silently ignoring
+    # the remaining names; return the explicit omitted count alongside
+    # a bounded, deterministic slice for this one diagnostic read.
+    return ordered[:_MAX_ENGINES], max(0, len(ordered) - _MAX_ENGINES)
 
 
 def _error_category(value: object) -> str:
@@ -139,12 +144,14 @@ def report(requested: list[str] | None = None) -> dict:
         "services_started": 0,
         "settings_modified": False,
         "engine_errors": [],
+        "configured_engines_omitted": 0,
         "limitations": ("SearXNG in-memory error statistics are not a 24-hour "
                         "provider uptime or quota measurement; missing errors "
                         "do not prove an engine works."),
     }
     try:
-        names = _names(requested)
+        names, omitted = _names(requested)
+        output["configured_engines_omitted"] = omitted
     except DiagnosticError as exc:
         output["status"] = str(exc)
         return output

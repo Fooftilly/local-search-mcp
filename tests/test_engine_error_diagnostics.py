@@ -84,6 +84,38 @@ class EngineErrorDiagnosticsTests(unittest.TestCase):
         policy.assert_not_called()
         self.assertEqual(len(calls), 1)
 
+    def test_large_policy_is_bounded_and_omissions_are_explicit(self):
+        configured = {f"engine-{i:02d}": i for i in range(9)}
+        inventory = [
+            {"name": name, "enabled": True, "categories": ("general",)}
+            for name in configured
+        ]
+        original = httpx.Client
+        calls = []
+
+        def handler(request):
+            calls.append(str(request.url))
+            return httpx.Response(200, json={
+                name: [] for name in configured
+            })
+
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), **kwargs)
+
+        with (patch.object(diag.engine_dashboard, "verified_inventory",
+                           return_value=(inventory, "revision")),
+              patch.object(diag.engine_pacing_dashboard, "snapshot",
+                           return_value={"engines": configured}),
+              patch.object(diag.httpx, "Client", side_effect=factory)):
+            result = diag.report()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["configured_engines_omitted"], 1)
+        self.assertEqual(len(result["engine_errors"]), 8)
+        self.assertEqual([row["engine"] for row in result["engine_errors"]],
+                         sorted(configured)[:8])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["provider_searches_sent"], 0)
+
     def test_refuse_unknown_disabled_or_google_names_without_request(self):
         for names in (["google"], ["inactive"], ["not-enabled"]):
             with self.subTest(names=names):
