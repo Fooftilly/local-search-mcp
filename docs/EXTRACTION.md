@@ -155,7 +155,11 @@ guessing URLs from filenames:
   advertises a `View as:` group containing labelled `Plain Text`,
   `Compact HTML` and `PDF` links with the same literal path stem
   (`rfc9110.txt`, `rfc9110.html`, `rfc9110.pdf`). Its established evidence
-  label remains `source_labeled_view_as` and its prior behavior is unchanged.
+  label remains `source_labeled_view_as`. For an RFC Editor
+  `/info/rfcNNNN` page, the advertised files must also use that same RFC
+  number; a grouped link for a different RFC is not treated as an alternate.
+  Conflicting duplicate labels for different URLs are rejected, while
+  identical duplicate links remain harmless.
 - **W3C**: the [09 January 2003 DOM Level 2 HTML Recommendation](https://www.w3.org/TR/2003/REC-DOM-Level-2-HTML-20030109/)
   explicitly states `This document is also available in these non-normative
   formats:` and links `plain text`, `PDF file`, and `single HTML file`
