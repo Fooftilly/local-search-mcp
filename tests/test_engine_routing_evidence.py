@@ -104,6 +104,70 @@ class EngineEvidenceTests(unittest.TestCase):
         self.assertIn("preview only", page)
         self.assertIn("80.0%", page)
 
+    def test_evidence_panel_separates_direct_empty_and_reported_unresponsive(self):
+        rows = [
+            {**entry("bing", 10, 0, None),
+             "direct_reported_empty": 10,
+             "direct_reported_unresponsive": 0,
+             "direct_other_outcomes": 0},
+            {**entry("qwant", 3, 0, None),
+             "direct_reported_empty": 0,
+             "direct_reported_unresponsive": 3,
+             "direct_other_outcomes": 0},
+            {**entry("duckduckgo web", 10, 10, 123.4),
+             "direct_reported_empty": 0,
+             "direct_reported_unresponsive": 0,
+             "direct_other_outcomes": 0},
+        ]
+        with (patch.object(engine_pacing_dashboard.provider_observations,
+                           "observations", return_value=report(rows)) as reader,
+              patch.object(engine_pacing_dashboard.engine_dashboard,
+                           "snapshot", side_effect=AssertionError("must not wake"))):
+            rendered = engine_pacing_dashboard.evidence_preview(
+                {"bing": 30, "qwant": 60, "duckduckgo web": 15})
+        reader.assert_called_once_with(24)
+        # The fixed HTML row template deliberately includes formatting
+        # newlines between cells; test the semantic order, not whitespace.
+        rendered = rendered.replace("\n", "")
+        self.assertIn("<th>Reported unresponsive</th>", rendered)
+        self.assertIn("<td>bing</td><td>10</td><td>0</td>", rendered)
+        self.assertIn("<td>10</td><td>0</td><td>0</td><td>No verified results</td>", rendered)
+        self.assertIn("<td>qwant</td><td>3</td><td>0</td>", rendered)
+        self.assertIn("<td>0</td><td>3</td><td>0</td><td>Needs more direct searches</td>",
+                      rendered)
+        self.assertIn("<td>duckduckgo web</td><td>10</td><td>10</td>", rendered)
+        self.assertIn("<td>100.0%</td><td>123.4</td>", rendered)
+        self.assertIn("1 of 3", rendered)
+
+    def test_incomplete_history_withholds_all_numeric_evidence(self):
+        rows = [{**entry("duckduckgo web", 19, 17, 678.9),
+                 "direct_reported_empty": 1,
+                 "direct_reported_unresponsive": 0,
+                 "direct_other_outcomes": 1}]
+        for kwargs in ({"available": False}, {"locked": False},
+                       {"limited": True}, {"truncated": True}):
+            with self.subTest(kwargs=kwargs):
+                with patch.object(engine_pacing_dashboard.provider_observations,
+                                  "observations", return_value=report(rows, **kwargs)):
+                    rendered = engine_pacing_dashboard.evidence_preview(
+                        {"duckduckgo web": 15})
+                self.assertIn("History unverified", rendered)
+                self.assertIn("<td>duckduckgo web</td><td>-</td><td>-</td>", rendered)
+                self.assertIn("no comparative ranking", rendered)
+                for partial in ("<td>19</td>", "<td>17</td>",
+                                "89.5%", "678.9"):
+                    self.assertNotIn(partial, rendered)
+
+    def test_older_history_without_outcome_breakdown_displays_unknown(self):
+        with patch.object(engine_pacing_dashboard.provider_observations,
+                          "observations",
+                          return_value=report([entry("brave", 10, 8, 310)])):
+            rendered = engine_pacing_dashboard.evidence_preview({"brave": 30})
+        rendered = rendered.replace("\n", "")
+        self.assertIn("<td>80.0%</td><td>310</td>", rendered)
+        self.assertIn("<td>-</td><td>-</td><td>-</td><td>Comparable</td>",
+                      rendered)
+
     def test_unavailable_metrics_cannot_break_operator_settings(self):
         with patch.object(engine_pacing_dashboard.provider_observations,
                           "observations", side_effect=OSError("PRIVATE PATH")):
