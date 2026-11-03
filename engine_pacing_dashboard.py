@@ -179,17 +179,35 @@ def evidence_preview(configured: dict[str, int]) -> str:
         summary = engine_routing_evidence.compare(
             configured, provider_observations.observations(24))
         rows = []
+        complete = summary["complete_history"] is True
+
+        def observed(value: object) -> str:
+            # Incomplete, unlocked or truncated history must never expose
+            # partial counts as if they represent a complete 24-hour window.
+            return str(value) if complete and value is not None else "-"
+
         for item in summary["rows"]:
-            status = ("Comparable" if item["comparable"] else
-                      "Insufficient or incomplete sample")
+            if not complete:
+                status = "History unverified"
+            elif item["comparable"]:
+                status = "Comparable"
+            elif item["attempts"] < engine_routing_evidence.MIN_DIRECT_OPERATIONS:
+                status = "Needs more direct searches"
+            elif item["results"] == 0:
+                status = "No verified results"
+            else:
+                status = "Successful latency unavailable"
             rows.append(render_template(
                 "engine-evidence-row",
                 engine_name=escape(item["name"], quote=True),
-                attempts=str(item["attempts"]), results=str(item["results"]),
-                fraction=("-" if item["fraction"] is None
+                attempts=observed(item["attempts"]),
+                results=observed(item["results"]),
+                fraction=("-" if not complete or item["fraction"] is None
                           else str(item["fraction"]) + "%"),
-                mean_ms=("-" if item["mean_success_ms"] is None
-                         else str(item["mean_success_ms"])),
+                mean_ms=observed(item["mean_success_ms"]),
+                direct_empty=observed(item["direct_reported_empty"]),
+                direct_unresponsive=observed(item["direct_reported_unresponsive"]),
+                direct_other=observed(item["direct_other_outcomes"]),
                 status=escape(status, quote=True)))
         if not configured:
             note = "No configured engines. Stage a disabled policy to compare its engine names."

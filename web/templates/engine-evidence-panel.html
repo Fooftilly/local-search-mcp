@@ -4,7 +4,12 @@
 Only direct isolated local /search attempts count; recovery attempts and aggregate fanout
 results are excluded. The observed result fraction is not a provider uptime, accuracy
 or rate-limit measure. Successful-operation latency includes the local SearXNG round trip,
-not the remote provider's execution time.</p>
+not the remote provider's execution time. The direct empty, reported
+unresponsive and other outcome columns exclude recovery attempts and use
+SearXNG's local outcome labels, not verified upstream availability.
+A dash means unavailable evidence, including older records without this
+breakdown. If history is truncated, unlocked or otherwise incomplete,
+all counts, percentages and latency values are withheld.</p>
 <p>At least 10 direct operations and one verified-result operation are needed to compare
 an engine. The display sorts sufficiently sampled candidates by observed result fraction
 and then successful local latency. Insufficiently sampled entries remain alphabetically
@@ -13,6 +18,8 @@ make new providers eligible, start a backend or enable pacing.</p>
 <p class="subtle" role="status">${note}</p>
 <div class="scroll"><table><thead><tr>
 <th>Configured engine</th><th>Direct operations</th><th>Verified result operations</th>
-<th>Observed result fraction</th><th>Mean successful local ms</th><th>Evidence</th>
+<th>Observed result fraction</th><th>Mean successful local ms</th>
+<th>Direct empty</th><th>Reported unresponsive</th><th>Other direct outcomes</th>
+<th>Evidence</th>
 </tr></thead><tbody>${rows}</tbody></table></div>
 </section>

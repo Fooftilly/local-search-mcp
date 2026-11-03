@@ -778,3 +778,23 @@ requests, live agent session concurrency, confirmed upstream quotas,
 cold-boot recovery or a recommendation to enable the operator's pacing
 policy. The standalone, no-provider on-host acceptance command remains
 `./.venv/bin/python -m scripts.engine_pacing_acceptance`.
+
+## Engine pacing console: direct-outcome evidence fidelity
+
+The owner-loopback `/engine-pacing-settings` observation preview now uses the
+existing bounded 24-hour comparator to display three *direct-only* outcome
+counts per configured engine: local SearXNG empty responses, explicitly
+reported unresponsive engines, and other outcomes. As in
+`scripts.engine_routing_preflight`, recovery retries are excluded. Counts
+are diagnostic only; they are **not** upstream uptime, quota or search
+relevance evidence. The categories help distinguish Bing's observed empty
+results from Qwant's reported unresponsiveness.
+
+If the private history is incomplete, truncated, not lock-verified or
+otherwise unreliable, the console displays `-` for **all** attempt counts,
+verified results, fractions, failure counts and successful-call latency,
+with `History unverified` as the per-engine status. Older compatible
+observation records missing the new breakdown retain their verified
+attempt counts while showing `-` for unknown failure counts (not invented
+zeroes). None of this changes routing order, engine eligibility, pacing
+configuration, permissions, searches or backend lifecycle.
