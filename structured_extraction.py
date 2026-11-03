@@ -318,7 +318,8 @@ def _advertised_alternatives(markdown: str, base: str, *, budget: int) -> list[d
         # first per-format pair and claim it was an advertised equivalence.
         if len(observed_stems) != 1:
             continue
-        if expected_rfc is not None and next(iter(observed_stems)).rsplit("/", 1)[-1].casefold() != expected_rfc:
+        if (expected_rfc is not None
+                and next(iter(observed_stems)).rsplit("/", 1)[-1].casefold() != expected_rfc):
             continue
         # Do not infer equivalence from labels alone: the source must expose
         # a PDF and a text/HTML candidate for the same literal URL stem.
