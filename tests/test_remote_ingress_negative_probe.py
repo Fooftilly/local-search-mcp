@@ -4,12 +4,15 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+from pathlib import Path
+import subprocess
 import unittest
 from unittest.mock import patch
 
 import httpx
 
 from scripts import remote_ingress_negative_probe as probe
+from scripts import setup_wizard as wizard
 
 
 class RemoteIngressNegativeProbeTests(unittest.TestCase):
@@ -119,6 +122,78 @@ class RemoteIngressNegativeProbeTests(unittest.TestCase):
               contextlib.redirect_stdout(output)):
             self.assertEqual(probe.main([]), 1)
         self.assertEqual(json.loads(output.getvalue()), expected)
+
+
+class SetupWizardNegativeProbeTests(unittest.TestCase):
+    def test_wizard_command_uses_project_python_and_sanitized_output(self):
+        rows = [
+            {"target": "gateway", "check": "missing_bearer", "status": "passed"},
+            {"target": "origin", "check": "local_configuration",
+             "status": "not_configured"},
+        ]
+        child = {
+            "schema": probe.SCHEMA, "mode": "read-only",
+            "status": "incomplete", "negative_path_only": True,
+            "remote_access_verified": False, "positive_auth_verified": False,
+            "origin_configured": False, "requests_sent": 4, "checks": rows,
+            "extra_path": "/SECRET_PATH_MUST_NOT_ESCAPE",
+        }
+        completed = subprocess.CompletedProcess([], 1, stdout=json.dumps(child),
+                                                 stderr="SECRET_STDERR")
+        with (patch.object(wizard.os, "geteuid", return_value=1000),
+              patch.object(wizard, "project_python",
+                           return_value=Path("/fake/project/.venv/bin/python")),
+              patch.object(wizard.subprocess, "run", return_value=completed)
+              as runner):
+            report = wizard.cloudflare_portal_negative_probe()
+        self.assertEqual(report["status"], "incomplete")
+        self.assertEqual(report["checks"], rows)
+        self.assertNotIn("SECRET", json.dumps(report))
+        args = runner.call_args.args[0]
+        self.assertEqual(args[1:], ["-m", "scripts.remote_ingress_negative_probe"])
+        self.assertTrue(runner.call_args.kwargs["capture_output"])
+        self.assertFalse(runner.call_args.kwargs["check"])
+
+    def test_wizard_rejects_malformed_or_excess_child_report(self):
+        cases = [
+            subprocess.CompletedProcess([], 0, stdout='{"status": "passed"}'),
+            subprocess.CompletedProcess([], 0, stdout="SECRET_RAW_TEXT"),
+            subprocess.CompletedProcess([], 0, stdout=json.dumps({
+                "schema": probe.SCHEMA, "mode": "read-only",
+                "negative_path_only": True, "remote_access_verified": False,
+                "positive_auth_verified": False, "status": "passed",
+                "origin_configured": True, "requests_sent": 8,
+                "checks": [{"target": "origin", "check": "host_url",
+                            "status": "passed"}],
+            })),
+        ]
+        for completed in cases:
+            with self.subTest(returncode=completed.returncode,
+                              output=completed.stdout[:10]), (
+                    patch.object(wizard.os, "geteuid", return_value=1000),
+                    patch.object(wizard, "project_python",
+                                 return_value=Path("/fake/.venv/bin/python")),
+                    patch.object(wizard.subprocess, "run", return_value=completed)):
+                result = wizard.cloudflare_portal_negative_probe()
+            self.assertEqual(result["status"], "unavailable")
+            self.assertNotIn("SECRET", json.dumps(result))
+
+    def test_wizard_probe_does_not_fallback_to_system_python(self):
+        with (patch.object(wizard.os, "geteuid", return_value=1000),
+              patch.object(wizard, "project_python", return_value=None),
+              patch.object(wizard.subprocess, "run",
+                           side_effect=AssertionError("must not execute"))):
+            report = wizard.cloudflare_portal_negative_probe()
+        self.assertEqual(report["status"], "unavailable")
+
+    def test_setup_flag_is_noninteractive_and_preserves_failure_exit(self):
+        with patch.object(wizard, "cloudflare_portal_negative_probe",
+                          return_value={"status": "incomplete", "checks": []}):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = wizard.main(["--cloudflare-portal-probe"])
+        self.assertEqual(rc, 1)
+        self.assertEqual(json.loads(out.getvalue())["status"], "incomplete")
 
 
 if __name__ == "__main__":
