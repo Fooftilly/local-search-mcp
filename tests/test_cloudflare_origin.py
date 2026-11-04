@@ -466,8 +466,8 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
                 self.closed = False
 
             async def __aiter__(self):
-                yield b"data: allowed\\n\\n"
-                yield b"data: forbidden\\n\\n"
+                yield b"data: allowed\n\n"
+                yield b"data: forbidden\n\n"
 
             async def aclose(self):
                 self.closed = True
@@ -488,7 +488,7 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
             async def send(message):
                 messages.append(message)
                 if (message["type"] == "http.response.body"
-                        and message.get("body") == b"data: allowed\\n\\n"):
+                        and message.get("body") == b"data: allowed\n\n"):
                     active[0] = False
 
             got_body = False
@@ -520,7 +520,7 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [m.get("body") for m in messages
              if m["type"] == "http.response.body"],
-            [b"data: allowed\\n\\n"])
+            [b"data: allowed\n\n"])
 
     async def test_idle_sse_closes_when_portal_grant_revoked(self):
         first_chunk = asyncio.Event()
@@ -531,7 +531,7 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
                 self.closed = False
 
             async def __aiter__(self):
-                yield b"data: initial\\n\\n"
+                yield b"data: initial\n\n"
                 await asyncio.Event().wait()
 
             async def aclose(self):
@@ -589,7 +589,7 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [m.get("body") for m in messages
              if m["type"] == "http.response.body"],
-            [b"data: initial\\n\\n"])
+            [b"data: initial\n\n"])
 
     async def test_stream_does_not_disclose_fast_chunk_after_route_revocation(self):
         # The upstream emits both SSE frames without pausing long enough for
