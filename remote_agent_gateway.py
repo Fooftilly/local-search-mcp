@@ -480,6 +480,11 @@ class LoopbackMCPGateway:
             if not await self._fresh_guard_ok():
                 await _reply(send, 503)
                 return
+            # A grant can be revoked or expire during the root-guard probe.
+            # Initial authentication is not sufficient to authorize forwarding.
+            if not self._credential_still_valid(digest, client_id):
+                await _reply(send, 401)
+                return
 
             # This gateway *never* forwards Authorization, Cookie, Host,
             # Forwarded, Origin, X-Forwarded-*, or arbitrary client headers.
@@ -487,6 +492,12 @@ class LoopbackMCPGateway:
                 self._upstream, method, headers=safe_headers,
                 content=bytes(chunks),
             ) as response:
+                # Suppress a response if authorization disappeared while
+                # waiting for upstream headers. The upstream may already
+                # have processed the request; no proxy can undo that work.
+                if not self._credential_still_valid(digest, client_id):
+                    await _reply(send, 401)
+                    return
                 if 300 <= response.status_code < 400:
                     await _reply(send, 502)
                     return

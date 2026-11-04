@@ -120,6 +120,34 @@ class GatewayLimitTests(unittest.IsolatedAsyncioTestCase):
                                       json={"jsonrpc": "2.0", "id": 1,
                                             "method": "tools/list"})
 
+    async def test_revocation_during_guard_check_prevents_forwarding(self):
+        def revoke_during_guard():
+            self.grants.clear()
+            return True
+
+        self.gateway._guard_ready = revoke_during_guard
+        denied = await self.post()
+        self.assertEqual(denied.status_code, 401)
+        self.assertEqual(denied.text, "Request rejected")
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.gateway._budget._active_total, 0)
+        self.assertEqual(self.gateway.audit_snapshot()[-1].status, 401)
+
+    async def test_revocation_while_waiting_for_upstream_headers_blocks_response(self):
+        def revoke_after_request(request):
+            self.grants.clear()
+            return httpx.Response(200, json={"secret": "must not be returned"})
+
+        substitute = httpx.AsyncClient(
+            transport=httpx.MockTransport(revoke_after_request))
+        self.addAsyncCleanup(substitute.aclose)
+        self.gateway._upstream = substitute
+        denied = await self.post()
+        self.assertEqual(denied.status_code, 401)
+        self.assertNotIn("secret", denied.text)
+        self.assertEqual(self.gateway._budget._active_total, 0)
+        self.assertEqual(self.gateway.audit_snapshot()[-1].status, 401)
+
     async def test_admission_rate_limit_prevents_upstream_work(self):
         for _ in range(MAX_PER_CLIENT_PER_MINUTE):
             response = await self.post()

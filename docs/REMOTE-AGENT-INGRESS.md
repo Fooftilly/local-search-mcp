@@ -38,6 +38,13 @@
 
 **Choice 1 — narrow pilot for xAI API:** use an owned stable HTTPS hostname and an outbound-only tunnel terminating at a locally bound, **independently authenticated** MCP gateway. Accept a per-client, random, revocable bearer token only over TLS. Store token verifier material in an operator-owned mode-0600 secret store (not Git or a URL query string); compare securely, reject missing/invalid/revoked credentials **before** any HTTP forwarding or backend lease, and use no token in log output. A public name, tunnel account, and client token are operator-chosen at deployment time. Require a separate auth test confirming xAI API really forwards Authorization end-to-end; do **not** turn on a public tunnel merely because this option exists.
 
+The local gateway prototype rechecks the client grant after the bounded
+root-guard probe and again before exposing upstream response headers. This
+prevents a grant revoked while either operation is pending from authorizing
+later forwarding or response disclosure. It cannot retract work already sent
+to the upstream MCP; active stream revocation remains a separate periodic
+check. This is a local safety property, not proof of a deployed remote ingress.
+
 **Choice 2 — preferred for Grok website when supported:** a proper MCP OAuth 2.1/OIDC flow with protected-resource metadata, scoped access tokens, issuer/audience/expiry validation at the enforcing gateway, user-grant revocation, and validated callbacks. Cloudflare Managed OAuth is a candidate **only if** the gateway verifies its Access JWT/token or a trusted auth layer does so on every request. Verify Grok's actual auth flow and interoperability before choosing. Avoid a generic, unauthenticated quick tunnel or reliance on Cloudflare's browser login redirect for non-browser clients.
 
 **Choice 3 — no public ingress:** for Hermes, Cursor or Grok CLI on the owned host, use `127.0.0.1:8790/mcp` directly. For a trusted local/private second machine, use a tightly scoped SSH local-port forward or an authenticated private overlay tunnel. Neither allows hosted Grok's servers to reach localhost, but neither creates a new Internet-facing attack surface.
