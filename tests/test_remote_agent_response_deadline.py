@@ -287,6 +287,67 @@ class ResponseHeaderDeadlineTests(unittest.IsolatedAsyncioTestCase):
                     server.close()
                     await server.wait_closed()
 
+    async def test_short_read_deadline_reproduces_idle_sse_abort(self):
+        """Scaled negative control for the previous 15-second read deadline.
+
+        An 80-ms pause must exceed a deliberately short 20-ms per-read limit.
+        The companion test proves both real forwarding hops deliver both frames
+        when their production read limit is disabled.
+        """
+        first = b"data: first\n\n"
+        second = b"data: second\n\n"
+        first_seen = asyncio.Event()
+        server_finished = asyncio.Event()
+
+        async def delayed_server(reader, writer):
+            try:
+                await reader.readuntil(b"\r\n\r\n")
+                writer.write(
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: text/event-stream\r\n"
+                    b"Transfer-Encoding: chunked\r\n\r\n")
+                writer.write(f"{len(first):X}\r\n".encode("ascii")
+                             + first + b"\r\n")
+                await writer.drain()
+                await asyncio.wait_for(first_seen.wait(), 2)
+                await asyncio.sleep(0.08)
+                writer.write(f"{len(second):X}\r\n".encode("ascii")
+                             + second + b"\r\n0\r\n\r\n")
+                await writer.drain()
+            except (ConnectionResetError, BrokenPipeError,
+                    asyncio.IncompleteReadError):
+                pass
+            finally:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except (ConnectionResetError, BrokenPipeError):
+                    pass
+                server_finished.set()
+
+        server = await asyncio.start_server(
+            delayed_server, host="127.0.0.1", port=0)
+        try:
+            port = server.sockets[0].getsockname()[1]
+            async with httpx.AsyncClient(
+                    trust_env=False,
+                    timeout=httpx.Timeout(
+                        connect=1, read=0.02, write=1, pool=1)) as client:
+                async with client.stream(
+                        "GET", f"http://127.0.0.1:{port}/mcp") as response:
+                    self.assertEqual(response.status_code, 200)
+                    received = []
+                    with self.assertRaises(httpx.ReadTimeout):
+                        async for part in response.aiter_raw():
+                            received.append(part)
+                            first_seen.set()
+                    self.assertEqual(received, [first])
+            await asyncio.wait_for(server_finished.wait(), 2)
+        finally:
+            first_seen.set()
+            server.close()
+            await server.wait_closed()
+
     async def test_immediate_upstream_http_error_remains_502(self):
         async def failing(request):
             raise httpx.ConnectError("private upstream info", request=request)
