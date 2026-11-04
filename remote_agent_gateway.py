@@ -520,6 +520,11 @@ class LoopbackMCPGateway:
                 response_started = True
                 async def forward():
                     async for body in response.aiter_bytes():
+                        # The periodic watcher stops idle SSE, but a burst
+                        # can emit several frames before its next poll.
+                        # Reauthorize immediately before each disclosure.
+                        if not self._credential_still_valid(digest, client_id):
+                            return
                         if body:
                             await send({"type": "http.response.body",
                                         "body": body, "more_body": True})
@@ -549,6 +554,10 @@ class LoopbackMCPGateway:
                     if not completed or watcher in completed or revoked in completed:
                         return
                     await reader
+                    # A grant may be removed by the caller's send callback
+                    # after the last chunk, but before the terminal event.
+                    if not self._credential_still_valid(digest, client_id):
+                        return
                     await send({"type": "http.response.body", "body": b"",
                                 "more_body": False})
                 finally:
