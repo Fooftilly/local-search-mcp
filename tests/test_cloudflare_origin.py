@@ -15,7 +15,7 @@ import httpx
 
 from remote_agent_cloudflare_origin import (
     CLIENT_ID, CloudflarePrivateOrigin, ORIGIN_HOST, ORIGIN_PORT,
-    SCHEMA, StartupRefused, build_config, check_portal_grant,
+    GATEWAY_TIMEOUT, SCHEMA, StartupRefused, build_config, check_portal_grant,
     install_private_hostname, remove_private_hostname, read_private_hostname,
     validate_hostname,
 )
@@ -133,6 +133,14 @@ class PrivateOriginConfigTests(unittest.TestCase):
                                               time.time() - 1),)):
             with self.assertRaises(StartupRefused):
                 check_portal_grant()
+
+    def test_sse_read_timeout_defers_to_origin_stream_watchdog(self):
+        # The adapter must not drop an idle SSE solely due to per-read
+        # timeout; its 120-second absolute limit still applies separately.
+        self.assertIsNone(GATEWAY_TIMEOUT.read)
+        self.assertEqual(GATEWAY_TIMEOUT.connect, 3)
+        self.assertEqual(GATEWAY_TIMEOUT.write, 15)
+        self.assertEqual(GATEWAY_TIMEOUT.pool, 3)
 
     def test_local_only_service_config(self):
         cfg = build_config(object())
@@ -798,6 +806,10 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
                                                    timeout=2)
             discover.assert_awaited_once_with()
             server.return_value.serve.assert_awaited_once()
+            # Verify that the actual serving client uses the reviewed
+            # timeout, not just a disconnected module-level constant.
+            adapter = server.call_args.args[0].app
+            self.assertIsNone(adapter.upstream.timeout.read)
 
     async def test_unprivileged_discovery_validates_complete_tool_inventory(self):
         """Real bounded tools/list decoding, with no root probe or sudo."""
