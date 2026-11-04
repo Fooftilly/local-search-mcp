@@ -628,6 +628,66 @@ general engine; the interactive general-engine settings editor retains its
 existing separate general-only guard. Category-only routing therefore can
 be assessed while preserving the editor's original safety boundary.
 
+## Attended direct-engine evidence sampling (default-off; #256)
+
+The routing preflight above compares *already recorded* direct-engine operations,
+but cannot establish how the currently configured engines handle the **same
+public query**. For an **operator-attended**, very-low-volume evidence pass
+on the already-running local SearXNG instance:
+
+```bash
+# Pure preview: reads verified inventory and existing private history;
+# does not issue any search, reserve pacing, or start a service.
+./.venv/bin/python -m scripts.engine_live_comparison
+
+# Explicit active sampling; requires an interactive terminal and the
+# exact typed confirmation SEARCH. No user-supplied query or --query flag.
+./.venv/bin/python -m scripts.engine_live_comparison --sample --profile docs
+```
+
+The profiles are **fixed, non-sensitive public strings** in source: `docs`
+(Python documentation), `science` (open-access research), and `montenegro`
+(Montenegro public digital services). Each invocation samples at most **three**
+**already enabled, policy-listed, non-Google general engines**, using exactly
+the **same preset query** in deterministic order. More than three candidates,
+no enabled general route, inventory disagreement, a sleeping SearXNG instance,
+or a changed policy produces a blocker: reduce the selection deliberately
+using the existing guarded console if needed. The CLI does not configure
+providers, edit policy, activate pacing, access the crawler, approve domains,
+or add an MCP tool. Running it without `--sample` sends zero searches; it
+never accepts query strings in CLI arguments, stdin or environment variables.
+
+After a clear warning and explicit `SEARCH` confirmation, each selected
+engine is called **sequentially**, using the existing `web_search` tool with
+`engines=<one verified engine>`, `fresh=true`,
+`include_search_status=true`, `max_results=3` and
+`record_provider_diagnostics=false`. Between calls it adds a 2-second gap.
+Each tool call can perform **up to two** upstream /search attempts under the
+existing bounded same-query recovery path, so three eligible engines can
+cause **up to six** upstream search requests. A configured pacing policy
+continues to enforce cross-process admissions and cooldowns, including
+private reservation-state writes. Any changed owner/raw inventory or policy
+stops the next sample instead of silently widening selection. A running
+on-demand backend may still be leased by the normal search path; the script
+does not directly wake sleeping backends.
+
+The report includes only an engine label, coarse result status, bounded
+result count and **local end-to-end tool-call** duration (not upstream provider
+execution time), or sanitized failure status. It never displays result
+titles/URLs, raw provider errors, or the preset query. **Important:** the
+normal `web_search` audit path **does retain the fixed public query and
+sanitized result metadata in the local private history**; this script does
+not override, suppress, or change that history behavior. No sample metrics
+are uploaded by the script; provider requests still transmit the public
+preset query to the engine through SearXNG.
+
+After sampling, re-run `scripts.engine_routing_preflight` and compare its
+fixed vs provisional evidence order. This short test does **not** establish
+upstream quotas, genuine uptime, general relevance, fair statistical samples,
+or safe unattended adaptive routing. It intentionally makes no policy
+decision and must not be enabled in automation without separate design and
+operator approval.
+
 ## Diagnosing preflight inventory blockers
 
 The preflight now distinguishes these read-only failure stages instead of
