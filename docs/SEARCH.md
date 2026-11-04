@@ -662,9 +662,9 @@ engine is called **sequentially**, using the existing `web_search` tool with
 `engines=<one verified engine>`, `fresh=true`,
 `include_search_status=true`, `max_results=3` and
 `record_provider_diagnostics=false`. Between calls it adds a 2-second gap.
-Each tool call can perform **up to two** upstream /search attempts under the
-existing bounded same-query recovery path, so three eligible engines can
-cause **up to six** upstream search requests. A configured pacing policy
+Each tool call can perform **up to three** upstream /search attempts
+(two bounded initial attempts plus one same-query recovery when pacing
+is off), so three eligible engines can cause **up to nine** upstream search requests. A configured pacing policy
 continues to enforce cross-process admissions and cooldowns, including
 private reservation-state writes. Any changed owner/raw inventory or policy
 stops the next sample instead of silently widening selection. A running
