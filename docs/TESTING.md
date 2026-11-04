@@ -25,3 +25,19 @@ CI runs the operator's supported Python 3.14 runtime (also used by flaky-test de
 ## What still needs verification
 
 These tests do **not** run a real browser or untrusted Chromium subresources, verify private-network egress isolation, simulate real DNS rebinding during a page load, test the remote tunnel end to end, or prove reboot-time user-systemd recovery. Disposable real HTTP MCP transport and live operator-driven Docker isolation validation remain future work. Roadmap issues [#2](https://github.com/Fooftilly/local-search-mcp/issues/2), [#3](https://github.com/Fooftilly/local-search-mcp/issues/3) and [#4](https://github.com/Fooftilly/local-search-mcp/issues/4) have **already been closed**. This document does not reopen them or imply that their live-host acceptance tests were run. Any still-required end-to-end or operator validation should be tracked separately before claiming deployment-level assurance.
+
+## CI trigger scope and branch validation
+
+The `Test` workflow runs on **every pull request**, on **each push to
+`master`**, on its established weekly schedule, and through manual
+`workflow_dispatch`. It does not start a separate push workflow for commits
+to feature branches: when a PR is open, that duplicate run would compete for
+runners while running the same five jobs against the same proposed changes.
+Superseded PR runs are cancelled through workflow concurrency, while each
+`master` push keeps an independent non-cancelled check run.
+
+A feature branch **without a PR** therefore has no automatic push CI; open a
+draft PR to validate early, or explicitly run the workflow using the Actions
+interface if a manual check is required. Opening a PR does not reduce the
+Python 3.14, static security, nftables, generated Compose, or systemd test
+requirements. The scheduled fresh-dependency verification is unchanged.
