@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import time
 
 from history_log import history_path
 
@@ -24,6 +25,8 @@ MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_EVENT_BYTES = 65_536
 MAX_EVENTS = 20_000
 MAX_GROUPS = 24
+HISTORY_LOCK_ATTEMPTS = 5
+HISTORY_LOCK_RETRY_SECONDS = 0.01
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 () ._-]{0,39}\Z")
 _SECRET_WORDS = re.compile(r"(?i)(?:token|password|secret|bearer|cookie|apikey|api_key)")
 _CATEGORIES = frozenset(("general", "web", "images", "news", "videos", "music",
@@ -92,8 +95,20 @@ def _source_snapshot(files: list[Path]) -> tuple[list[tuple[list[bytes], bool]],
         if fd is not None:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise OSError("Invalid private history lock")
-            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-            locked = True
+            # The append/rotation writer holds this same lock exclusively.
+            # Brief overlap is normal and must not turn a healthy report
+            # into a spurious unavailable page. Retry only a few times;
+            # sustained contention still fails closed instead of blocking.
+            for attempt in range(HISTORY_LOCK_ATTEMPTS):
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    if attempt == HISTORY_LOCK_ATTEMPTS - 1:
+                        raise OSError("Private history snapshot busy") from None
+                    time.sleep(HISTORY_LOCK_RETRY_SECONDS)
+                else:
+                    locked = True
+                    break
         snapshot = []
         for source in files:
             try:
