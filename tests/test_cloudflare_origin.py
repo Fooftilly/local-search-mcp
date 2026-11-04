@@ -396,6 +396,86 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.gateway_requests), 1)
         self.assertEqual(len(self.bridge_requests), 1)
 
+    async def test_stream_does_not_disclose_fast_chunk_after_route_revocation(self):
+        # The upstream emits both SSE frames without pausing long enough for
+        # the periodic route watcher. Revocation before the second frame must
+        # still stop that frame at the per-chunk disclosure boundary.
+        seen = []
+
+        class BurstySSE(httpx.AsyncByteStream):
+            def __init__(self):
+                self.closed = False
+
+            async def __aiter__(self):
+                yield b"data: first\n\n"
+                yield b"data: forbidden\n\n"
+
+            async def aclose(self):
+                self.closed = True
+
+        stream = BurstySSE()
+
+        def upstream_handler(request):
+            seen.append(request)
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"},
+                stream=stream)
+
+        checks = 0
+
+        def read_route(_):
+            nonlocal checks
+            checks += 1
+            if checks >= 5:
+                raise StartupRefused("Route revoked after first SSE chunk")
+            return self.hostname
+
+        async with httpx.AsyncClient(
+                transport=httpx.MockTransport(upstream_handler),
+                trust_env=False) as upstream:
+            origin = CloudflarePrivateOrigin(
+                self.hostname, upstream,
+                config_path=Path("/synthetic/private-origin.json"))
+            messages = []
+
+            async def send(message):
+                messages.append(message)
+
+            consumed = False
+
+            async def receive():
+                nonlocal consumed
+                if not consumed:
+                    consumed = True
+                    return {
+                        "type": "http.request",
+                        "body": b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                        "more_body": False,
+                    }
+                await asyncio.Event().wait()
+
+            scope = {
+                "type": "http", "path": "/mcp",
+                "raw_path": b"/mcp", "query_string": b"",
+                "method": "POST", "client": ("127.0.0.1", 3456),
+                "headers": [
+                    (b"host", self.hostname.encode("ascii")),
+                    (b"authorization",
+                     ("Bearer " + self.token).encode("ascii")),
+                ],
+            }
+            with patch("remote_agent_cloudflare_origin.read_private_hostname",
+                       side_effect=read_route):
+                await asyncio.wait_for(origin(scope, receive, send), 2)
+
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(stream.closed)
+        self.assertGreaterEqual(checks, 5)
+        self.assertEqual(
+            [m.get("body") for m in messages
+             if m["type"] == "http.response.body"],
+            [b"data: first\n\n"])
+
     async def test_stream_stops_after_private_route_removal(self):
         # A silent SSE upstream must not continue indefinitely after the
         # operator removes the independent private hostname configuration.
