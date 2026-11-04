@@ -158,7 +158,9 @@ class LiveEngineComparisonTests(unittest.TestCase):
 
     def test_malformed_response_is_never_counted_as_success(self):
         for value in (
-            None, {"success": True, "status": "ok", "results": "SECRET"},
+            None, [False], {"success": True, "status": "ok",
+                            "results": [{"title": "SAFE"}, "bad"]},
+            {"success": True, "status": "ok", "results": "SECRET"},
             {"success": True, "status": "ok", "results": [1, 2, 3, 4]},
             {"status": "ok", "results": [{"title": "SECRET"}]},
         ):
