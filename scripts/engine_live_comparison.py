@@ -60,7 +60,7 @@ def preview() -> dict:
         "public_query_may_be_retained_in_private_history": False,
         "candidate_engines": [],
         "max_direct_engine_calls": MAX_ENGINES,
-        "max_possible_upstream_search_requests": MAX_ENGINES * 2,
+        "max_possible_upstream_search_requests": MAX_ENGINES * 3,
         "supported_profiles": list(PRESETS),
     }
     try:
@@ -125,7 +125,7 @@ def sample(profile: str, *, confirm=input) -> dict:
         return output
     print(
         "Will send one fixed PUBLIC query to each verified engine, at most "
-        f"{len(names)} tool calls (up to two upstream /search attempts each). "
+        f"{len(names)} tool calls (up to three upstream /search attempts each). "
         "These queries and result metadata are saved in private local history. "
         "No new providers or configuration changes. Type SEARCH to proceed.",
         file=sys.stderr,
