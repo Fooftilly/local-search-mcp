@@ -29,7 +29,8 @@ import uvicorn
 from remote_agent_credentials import default_store_path
 from remote_agent_gateway import (
     MAX_BODY_SECONDS, MAX_HEADER_BYTES, MAX_HEADERS, MAX_REQUEST_BYTES,
-    MAX_RESPONSE_SECONDS, MAX_RESPONSE_START_SECONDS, _BEARER, _reply,
+    MAX_RESPONSE_SECONDS, MAX_RESPONSE_START_SECONDS, REVOCATION_POLL_SECONDS,
+    _BEARER, _reply,
 )
 from remote_agent_prerequisites import (
     CredentialStoreError, _check_parent_chain, _unique_keys, load_client_grants,
@@ -346,6 +347,10 @@ class CloudflarePrivateOrigin:
             started = True
             async def forward():
                 async for chunk in response.aiter_raw():
+                    if not self._route_still_configured():
+                        # An upstream may deliver several chunks before the
+                        # poll timer runs; check each disclosure boundary.
+                        return
                     if chunk:
                         await send({"type": "http.response.body", "body": chunk,
                                     "more_body": True})
@@ -356,21 +361,41 @@ class CloudflarePrivateOrigin:
                     if event["type"] == "http.disconnect":
                         return
 
+            async def route_revoked():
+                # A config removed during an idle SSE stream must not leave
+                # this adapter disclosing chunks until the 120-second limit.
+                while True:
+                    await asyncio.sleep(REVOCATION_POLL_SECONDS)
+                    if not self._route_still_configured():
+                        return
+
             task = asyncio.create_task(forward())
             watcher = asyncio.create_task(disconnect())
+            revoker = (asyncio.create_task(route_revoked())
+                       if self.config_path is not None else None)
+            pending = [task, watcher]
+            if revoker is not None:
+                pending.append(revoker)
             try:
                 completed, _ = await asyncio.wait(
-                    (task, watcher), timeout=MAX_RESPONSE_SECONDS,
+                    pending, timeout=MAX_RESPONSE_SECONDS,
                     return_when=asyncio.FIRST_COMPLETED)
+                # Prefer connection/authorization teardown even if the reader
+                # happens to finish in the same event-loop iteration.
+                if (watcher in completed
+                        or (revoker is not None and revoker in completed)):
+                    return
                 if task in completed:
                     await task
+                    if not self._route_still_configured():
+                        return
                     await send({"type": "http.response.body", "body": b"",
                                 "more_body": False})
             finally:
-                for item in (task, watcher):
+                for item in pending:
                     if not item.done():
                         item.cancel()
-                await asyncio.gather(task, watcher, return_exceptions=True)
+                await asyncio.gather(*pending, return_exceptions=True)
         except (httpx.HTTPError, OSError, TimeoutError):
             if not started:
                 await _reply(send, 502)

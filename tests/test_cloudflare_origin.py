@@ -2,6 +2,7 @@
 
 No Cloudflare API, live listener, Docker, sudo or external network access.
 """
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -391,9 +392,181 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
                     headers={"authorization": "Bearer " + self.token},
                     content=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
         self.assertEqual(result.status_code, 200)
-        self.assertEqual(read.call_count, 3)
+        # Admission, post-body, pre-response, per-chunk and terminal
+        # checks are required. The concurrent revocation poll can add reads
+        # if scheduling delays the response; never require an exact count.
+        self.assertGreaterEqual(read.call_count, 5)
         self.assertEqual(len(self.gateway_requests), 1)
         self.assertEqual(len(self.bridge_requests), 1)
+
+    async def test_stream_does_not_disclose_fast_chunk_after_route_revocation(self):
+        # The upstream emits both SSE frames without pausing long enough for
+        # the periodic route watcher. Revocation before the second frame must
+        # still stop that frame at the per-chunk disclosure boundary.
+        seen = []
+
+        class BurstySSE(httpx.AsyncByteStream):
+            def __init__(self):
+                self.closed = False
+
+            async def __aiter__(self):
+                yield b"data: first\n\n"
+                yield b"data: forbidden\n\n"
+
+            async def aclose(self):
+                self.closed = True
+
+        stream = BurstySSE()
+
+        def upstream_handler(request):
+            seen.append(request)
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"},
+                stream=stream)
+
+        checks = 0
+
+        def read_route(_):
+            nonlocal checks
+            checks += 1
+            if checks >= 5:
+                raise StartupRefused("Route revoked after first SSE chunk")
+            return self.hostname
+
+        async with httpx.AsyncClient(
+                transport=httpx.MockTransport(upstream_handler),
+                trust_env=False) as upstream:
+            origin = CloudflarePrivateOrigin(
+                self.hostname, upstream,
+                config_path=Path("/synthetic/private-origin.json"))
+            messages = []
+
+            async def send(message):
+                messages.append(message)
+
+            consumed = False
+
+            async def receive():
+                nonlocal consumed
+                if not consumed:
+                    consumed = True
+                    return {
+                        "type": "http.request",
+                        "body": b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                        "more_body": False,
+                    }
+                await asyncio.Event().wait()
+
+            scope = {
+                "type": "http", "path": "/mcp",
+                "raw_path": b"/mcp", "query_string": b"",
+                "method": "POST", "client": ("127.0.0.1", 3456),
+                "headers": [
+                    (b"host", self.hostname.encode("ascii")),
+                    (b"authorization",
+                     ("Bearer " + self.token).encode("ascii")),
+                ],
+            }
+            with patch("remote_agent_cloudflare_origin.read_private_hostname",
+                       side_effect=read_route):
+                await asyncio.wait_for(origin(scope, receive, send), 2)
+
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(stream.closed)
+        self.assertGreaterEqual(checks, 5)
+        self.assertEqual(
+            [m.get("body") for m in messages
+             if m["type"] == "http.response.body"],
+            [b"data: first\n\n"])
+
+    async def test_stream_stops_after_private_route_removal(self):
+        # A silent SSE upstream must not continue indefinitely after the
+        # operator removes the independent private hostname configuration.
+        first_chunk = asyncio.Event()
+
+        class HeldSSE(httpx.AsyncByteStream):
+            def __init__(self):
+                self.closed = False
+                self.release = asyncio.Event()
+
+            async def __aiter__(self):
+                yield b"data: already-sent\n\n"
+                await self.release.wait()
+                yield b"data: must-not-leak\n\n"
+
+            async def aclose(self):
+                self.closed = True
+
+        stream = HeldSSE()
+        upstream_requests = []
+
+        def upstream_handler(request):
+            upstream_requests.append(request)
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"},
+                stream=stream)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            private = Path(tmp) / "private"
+            private.mkdir(mode=0o700)
+            path = private / "origin.json"
+            install_private_hostname(path, self.hostname)
+            async with httpx.AsyncClient(
+                    transport=httpx.MockTransport(upstream_handler),
+                    trust_env=False) as upstream:
+                origin = CloudflarePrivateOrigin(
+                    self.hostname, upstream, config_path=path)
+                messages = []
+
+                async def send(message):
+                    messages.append(message)
+                    if (message["type"] == "http.response.body"
+                            and message.get("body")):
+                        first_chunk.set()
+
+                got_request = False
+
+                async def receive():
+                    nonlocal got_request
+                    if not got_request:
+                        got_request = True
+                        return {
+                            "type": "http.request",
+                            "body": b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                            "more_body": False,
+                        }
+                    await asyncio.Event().wait()
+
+                scope = {
+                    "type": "http", "path": "/mcp",
+                    "raw_path": b"/mcp", "query_string": b"",
+                    "method": "POST", "client": ("127.0.0.1", 3456),
+                    "headers": [
+                        (b"host", self.hostname.encode("ascii")),
+                        (b"authorization",
+                         ("Bearer " + self.token).encode("ascii")),
+                    ],
+                }
+                running = asyncio.create_task(origin(scope, receive, send))
+                try:
+                    await asyncio.wait_for(first_chunk.wait(), 2)
+                    remove_private_hostname(path)
+                    await asyncio.wait_for(running, 2)
+                finally:
+                    if not running.done():
+                        running.cancel()
+                    await asyncio.gather(running, return_exceptions=True)
+        self.assertEqual(len(upstream_requests), 1)
+        self.assertEqual(str(upstream_requests[0].url),
+                         "http://127.0.0.1:18790/mcp")
+        self.assertTrue(stream.closed)
+        self.assertEqual(
+            [m["status"] for m in messages
+             if m["type"] == "http.response.start"], [200])
+        self.assertEqual(
+            [m.get("body") for m in messages
+             if m["type"] == "http.response.body"],
+            [b"data: already-sent\n\n"])
 
     async def test_live_config_removal_blocks_already_started_adapter(self):
         with tempfile.TemporaryDirectory() as tmp:
