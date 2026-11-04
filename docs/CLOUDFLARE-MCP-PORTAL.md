@@ -1,10 +1,17 @@
 # Optional Cloudflare MCP Server Portal private origin (#230, #246)
 
-**Status:** Locally implementable and independently testable; **not deployed or
-end-to-end accepted**. This implementation deliberately does not create DNS,
-a public hostname, a Cloudflare Access application, a Gateway route, or an
-Internet-facing listener. It neither changes the existing OpenAI secure tunnel
-nor authorizes another client to reuse the OpenAI control-plane credentials.
+**Implementation status (2026-11-04):** The optional private-origin adapter,
+authenticated gateway, owner-only configuration, and supporting local service
+recipes are implemented and independently testable. **Deployment is operator
+specific**, not automatic: this repository does not create public DNS, a
+Cloudflare Access application, Gateway routes, OAuth grants, or an
+Internet-facing listener by itself. A running local adapter is **not** proof
+of external Portal/Access authorization, remote tool discovery, or actual Grok
+client compatibility; those acceptance gates remain open in
+[#230](https://github.com/Fooftilly/local-search-mcp/issues/230),
+[#246](https://github.com/Fooftilly/local-search-mcp/issues/246), and
+[#231](https://github.com/Fooftilly/local-search-mcp/issues/231).
+The existing OpenAI secure tunnel and its control-plane credentials remain separate.
 
 ## Security boundaries
 
@@ -29,7 +36,14 @@ instance of this untrusted client metadata but never forwards or uses it for
 authentication. Other `X-Forwarded-*` and `Forwarded` headers remain rejected.
 The existing gateway
 independently validates its dedicated bearer, expiry, root-owned egress guard
-on each admitted request, size/rate limits and revocation. The adapter does not
+on each admitted request, size/rate limits and revocation.
+The adapter also independently checks the exact dedicated `cloudflare-portal`
+grant after request-body assembly, after upstream response headers, before each
+SSE chunk and terminal response, and periodically during idle streams. This
+post-[#287](https://github.com/Fooftilly/local-search-mcp/pull/287) behavior
+blocks subsequent disclosure after Portal grant removal or expiry, but cannot
+retract work or bytes already forwarded. Local checks do not replace external
+Cloudflare Access identity enforcement. The adapter does not
 trust `CF-Access-*` headers or impersonate Cloudflare identity. **The gateway
 knows only the `cloudflare-portal` principal; Cloudflare must enforce the
 actual end-user identity and keep suitable Access logs.** No request is
