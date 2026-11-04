@@ -2,6 +2,7 @@
 
 No Cloudflare API, live listener, Docker, sudo or external network access.
 """
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -394,6 +395,95 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(read.call_count, 3)
         self.assertEqual(len(self.gateway_requests), 1)
         self.assertEqual(len(self.bridge_requests), 1)
+
+    async def test_stream_stops_after_private_route_removal(self):
+        # A silent SSE upstream must not continue indefinitely after the
+        # operator removes the independent private hostname configuration.
+        first_chunk = asyncio.Event()
+
+        class HeldSSE(httpx.AsyncByteStream):
+            def __init__(self):
+                self.closed = False
+                self.release = asyncio.Event()
+
+            async def __aiter__(self):
+                yield b"data: already-sent\\n\\n"
+                await self.release.wait()
+                yield b"data: must-not-leak\\n\\n"
+
+            async def aclose(self):
+                self.closed = True
+
+        stream = HeldSSE()
+        upstream_requests = []
+
+        def upstream_handler(request):
+            upstream_requests.append(request)
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"},
+                stream=stream)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            private = Path(tmp) / "private"
+            private.mkdir(mode=0o700)
+            path = private / "origin.json"
+            install_private_hostname(path, self.hostname)
+            async with httpx.AsyncClient(
+                    transport=httpx.MockTransport(upstream_handler),
+                    trust_env=False) as upstream:
+                origin = CloudflarePrivateOrigin(
+                    self.hostname, upstream, config_path=path)
+                messages = []
+
+                async def send(message):
+                    messages.append(message)
+                    if (message["type"] == "http.response.body"
+                            and message.get("body")):
+                        first_chunk.set()
+
+                got_request = False
+
+                async def receive():
+                    nonlocal got_request
+                    if not got_request:
+                        got_request = True
+                        return {
+                            "type": "http.request",
+                            "body": b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                            "more_body": False,
+                        }
+                    await asyncio.Event().wait()
+
+                scope = {
+                    "type": "http", "path": "/mcp",
+                    "raw_path": b"/mcp", "query_string": b"",
+                    "method": "POST", "client": ("127.0.0.1", 3456),
+                    "headers": [
+                        (b"host", self.hostname.encode("ascii")),
+                        (b"authorization",
+                         ("Bearer " + self.token).encode("ascii")),
+                    ],
+                }
+                running = asyncio.create_task(origin(scope, receive, send))
+                try:
+                    await asyncio.wait_for(first_chunk.wait(), 2)
+                    remove_private_hostname(path)
+                    await asyncio.wait_for(running, 2)
+                finally:
+                    if not running.done():
+                        running.cancel()
+                    await asyncio.gather(running, return_exceptions=True)
+        self.assertEqual(len(upstream_requests), 1)
+        self.assertEqual(str(upstream_requests[0].url),
+                         "http://127.0.0.1:18790/mcp")
+        self.assertTrue(stream.closed)
+        self.assertEqual(
+            [m["status"] for m in messages
+             if m["type"] == "http.response.start"], [200])
+        self.assertEqual(
+            [m.get("body") for m in messages
+             if m["type"] == "http.response.body"],
+            [b"data: already-sent\\n\\n"])
 
     async def test_live_config_removal_blocks_already_started_adapter(self):
         with tempfile.TemporaryDirectory() as tmp:
