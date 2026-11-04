@@ -190,6 +190,50 @@ class ProviderObservationsTests(unittest.TestCase):
         self.assertIn(fcntl.LOCK_SH | fcntl.LOCK_NB, modes)
         self.assertIn(fcntl.LOCK_UN, modes)
 
+    def test_short_writer_lock_contention_retries_before_snapshot(self):
+        import fcntl
+        self.add(results=[{"engine": "yahoo"}])
+        real_flock = fcntl.flock
+        attempts = 0
+
+        def intermittent_writer_lock(fd, mode):
+            nonlocal attempts
+            if mode == fcntl.LOCK_SH | fcntl.LOCK_NB:
+                attempts += 1
+                if attempts <= 2:
+                    raise BlockingIOError(11, "Writer is appending")
+            return real_flock(fd, mode)
+
+        with (patch.object(provider.fcntl, "flock",
+                           side_effect=intermittent_writer_lock),
+              patch.object(provider.time, "sleep") as sleep):
+            answer = provider.observations(24, now=self.now)
+        self.assertEqual(attempts, 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertTrue(answer["source_snapshot_lock_acquired"])
+        self.assertTrue(answer["available"])
+        self.assertEqual(answer["sampled_search_calls"], 1)
+
+    def test_persistent_writer_lock_contention_fails_closed_bounded(self):
+        import fcntl
+        self.add()
+        calls = 0
+        real_flock = fcntl.flock
+
+        def busy_lock(fd, mode):
+            nonlocal calls
+            if mode == fcntl.LOCK_SH | fcntl.LOCK_NB:
+                calls += 1
+                raise BlockingIOError(11, "Writer still owns lock")
+            return real_flock(fd, mode)
+
+        with (patch.object(provider.fcntl, "flock", side_effect=busy_lock),
+              patch.object(provider.time, "sleep") as sleep):
+            with self.assertRaisesRegex(OSError, "Private history snapshot busy"):
+                provider.observations(24, now=self.now)
+        self.assertEqual(calls, provider.HISTORY_LOCK_ATTEMPTS)
+        self.assertEqual(sleep.call_count, calls - 1)
+
     def test_rotated_history_truncation_and_missing_timing(self):
         self.add(minutes=4, duration_ms=None, results=[{"engine": "yahoo"}])
         archive = self.path.with_name(self.path.name + ".1")
