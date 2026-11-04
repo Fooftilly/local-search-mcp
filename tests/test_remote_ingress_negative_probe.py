@@ -168,12 +168,12 @@ class SetupWizardNegativeProbeTests(unittest.TestCase):
             })),
         ]
         for completed in cases:
-            with self.subTest(returncode=completed.returncode,
-                              output=completed.stdout[:10]), (
-                    patch.object(wizard.os, "geteuid", return_value=1000),
-                    patch.object(wizard, "project_python",
-                                 return_value=Path("/fake/.venv/bin/python")),
-                    patch.object(wizard.subprocess, "run", return_value=completed)):
+            with (self.subTest(returncode=completed.returncode,
+                               output=completed.stdout[:10]),
+                  patch.object(wizard.os, "geteuid", return_value=1000),
+                  patch.object(wizard, "project_python",
+                               return_value=Path("/fake/.venv/bin/python")),
+                  patch.object(wizard.subprocess, "run", return_value=completed)):
                 result = wizard.cloudflare_portal_negative_probe()
             self.assertEqual(result["status"], "unavailable")
             self.assertNotIn("SECRET", json.dumps(result))
