@@ -218,6 +218,81 @@ class GatewayLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("http.response.body", events)
         self.assertEqual(self.gateway._budget._active_total, 0)
 
+    async def _run_fast_stream_grant_change(self, change: str, *, frames: int):
+        # A burst finishes before the periodic watcher wakes. The gateway
+        # must check every disclosure boundary, not just the 250ms poll.
+        emitted = []
+        outer = self
+
+        class BurstyStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.closed = False
+
+            async def __aiter__(self):
+                for index in range(frames):
+                    yield ("data: %d\\n\\n" % index).encode("ascii")
+
+            async def aclose(self):
+                self.closed = True
+
+        stream = BurstyStream()
+        self.stream[0] = stream
+        started = False
+        messages = []
+
+        async def receive():
+            nonlocal started
+            if not started:
+                started = True
+                return {"type": "http.request", "body": b"",
+                        "more_body": False}
+            await asyncio.Future()
+
+        async def send(message):
+            messages.append(message)
+            if (message["type"] == "http.response.body"
+                    and message.get("body") == b"data: 0\\n\\n"):
+                if change == "expire":
+                    outer.current_time[0] = 301.0
+                else:
+                    outer.grants.clear()
+
+        scope = {
+            "type": "http", "http_version": "1.1", "method": "GET",
+            "path": "/mcp", "raw_path": b"/mcp", "query_string": b"",
+            "headers": [(b"host", b"127.0.0.1:18790"),
+                        (b"authorization", b"Bearer " + b"a" * 48),
+                        (b"accept", b"text/event-stream")],
+            "client": ("127.0.0.1", 2000),
+            "server": ("127.0.0.1", 18790),
+            "scheme": "http", "root_path": "",
+        }
+        with patch("remote_agent_gateway.REVOCATION_POLL_SECONDS", 30):
+            await asyncio.wait_for(self.gateway(scope, receive, send), 1)
+        self.assertEqual(len(self.calls), 1)
+        self.assertTrue(stream.closed)
+        self.assertEqual(
+            [event["status"] for event in messages
+             if event["type"] == "http.response.start"], [200])
+        # Any bytes already sent before the change cannot be retracted.
+        # Neither a later SSE frame nor a clean terminal event is permitted.
+        self.assertEqual(
+            [event.get("body") for event in messages
+             if event["type"] == "http.response.body"],
+            [b"data: 0\\n\\n"])
+        self.assertEqual(self.gateway._budget._active_total, 0)
+        self.assertEqual(self.gateway.audit_snapshot()[-1].status, 200)
+        self.assertFalse(self.gateway.audit_snapshot()[-1].completed)
+
+    async def test_fast_sse_grant_revocation_prevents_second_chunk(self):
+        await self._run_fast_stream_grant_change("revoke", frames=2)
+
+    async def test_fast_sse_grant_expiration_prevents_second_chunk(self):
+        await self._run_fast_stream_grant_change("expire", frames=2)
+
+    async def test_grant_removed_after_last_frame_has_no_terminal_completion(self):
+        await self._run_fast_stream_grant_change("revoke", frames=1)
+
     async def test_active_stream_revocation_cancels_upstream(self):
         async def revoke():
             self.grants[:] = []
