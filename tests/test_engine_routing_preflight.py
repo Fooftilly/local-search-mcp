@@ -41,7 +41,7 @@ class RoutingPreflightTests(unittest.TestCase):
              observed=None):
         with (patch.object(preflight.engine_pacing_dashboard, "snapshot",
                            return_value={"enabled": enabled, "engines": POLICY,
-                                         "routing": routing}) as config,
+                                         "routing": routing, "state": "a" * 64}) as config,
               patch.object(preflight.engine_dashboard, "verified_inventory",
                            return_value=(inventory, "rev")) as live,
               patch.object(preflight, "_verified_raw_active_inventory",
@@ -62,6 +62,7 @@ class RoutingPreflightTests(unittest.TestCase):
         self.assertEqual(result["status"], "ready_for_attended_comparison")
         self.assertFalse(result["pacing_enabled"])
         self.assertEqual(result["routing"], "evidence")
+        self.assertEqual(result["policy_revision"], "a" * 64)
         self.assertTrue(result["history_complete"])
         self.assertEqual(result["plans"][0]["fixed"], ["duckduckgo", "qwant"])
         self.assertEqual(result["plans"][0]["evidence"], ["qwant", "duckduckgo"])

@@ -7,6 +7,7 @@ or claim that provider quotas or real network quality have been measured.
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
 import bridge
@@ -140,6 +141,16 @@ def report() -> dict:
         if (type(config["enabled"]) is not bool or not isinstance(policy, dict)
                 or routing not in ("fixed", "evidence")):
             raise ValueError("Invalid pacing state")
+
+        # This CAS digest comes from the SAME snapshot as the enabled,
+        # routing and per-engine spacing values. A later attended sample
+        # must reject even an interval-only edit, not just an engine change.
+        revision = config.get("state")
+        if revision is not None and (
+                not isinstance(revision, str)
+                or re.fullmatch(r"[0-9a-f]{64}", revision) is None):
+            raise ValueError("Invalid pacing policy revision")
+        output["policy_revision"] = revision
         output["pacing_enabled"] = config["enabled"]
         output["routing"] = routing
         output["configured_engines"] = len(policy)
