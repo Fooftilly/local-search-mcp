@@ -42,11 +42,15 @@ It is checked at request admission, again after the bounded request body
 and before forwarding to the authenticated gateway, and before returning
 upstream response headers. Removing or changing the config makes the running
 adapter return 503 at these boundaries: a removed route cannot authorize
-a not-yet-forwarded request or release an upstream response. Work already
-forwarded or streamed cannot be retracted; stop the service and revoke its
-independent grant for complete shutdown. No bearer is stored in the adapter
-config, systemd unit, CLI argument, GitHub, or logs. The independent bearer is issued using
-the existing credential manager, which stores only its SHA-256 verifier.
+a not-yet-forwarded request or release an upstream response. A separately
+bounded 0.25-second polling task also interrupts an active SSE response if
+the private configuration is removed or replaced; it closes the upstream
+stream and stops further forwarding. Bytes already emitted or upstream work
+already performed cannot be retracted. Stop the service and revoke its
+independent grant for full shutdown. No bearer is stored in the adapter
+config, systemd unit, CLI argument, GitHub, or logs. The independent
+bearer is issued using the existing credential manager, which stores
+only its SHA-256 verifier.
 
 ## Local operator workflow (no Cloudflare account changes)
 
