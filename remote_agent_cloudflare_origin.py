@@ -347,6 +347,10 @@ class CloudflarePrivateOrigin:
             started = True
             async def forward():
                 async for chunk in response.aiter_raw():
+                    if not self._route_still_configured():
+                        # An upstream may deliver several chunks before the
+                        # poll timer runs; check each disclosure boundary.
+                        return
                     if chunk:
                         await send({"type": "http.response.body", "body": chunk,
                                     "more_body": True})
