@@ -183,6 +183,24 @@ def check_portal_grant() -> None:
         raise StartupRefused("No active cloudflare-portal credential")
 
 
+def _portal_grant_still_valid(digest: bytes) -> bool:
+    """Reauthorize only the dedicated Portal identity at each disclosure boundary.
+
+    Local grant changes are live; an already-admitted request does not retain
+    permission to forward buffered headers/chunks after revocation.
+    """
+    try:
+        grants = load_client_grants(default_store_path())
+        now = time.time()
+        return any(
+            grant.client_id == CLIENT_ID and grant.expires_at > now
+            and hmac.compare_digest(grant.token_sha256, digest)
+            for grant in grants
+        )
+    except (CredentialStoreError, OSError, ValueError, TypeError):
+        return False
+
+
 class CloudflarePrivateOrigin:
     """Exact private-host ingress; all identity and guard decisions stay at 18790."""
 
@@ -263,19 +281,10 @@ class CloudflarePrivateOrigin:
         # A portal must never be able to present a different remote client's
         # valid gateway token. Bind this adapter to its OWN verifier and re-read
         # on every request, independently of the gateway's per-client checks.
-        try:
-            portal_grants = load_client_grants(default_store_path())
-            candidate = hashlib.sha256(
-                tokens[0].decode("ascii").split(" ", 1)[1].encode("ascii")
-            ).digest()
-            portal_valid = any(
-                g.client_id == CLIENT_ID and g.expires_at > time.time()
-                and hmac.compare_digest(g.token_sha256, candidate)
-                for g in portal_grants
-            )
-        except (CredentialStoreError, UnicodeDecodeError, ValueError):
-            portal_valid = False
-        if not portal_valid:
+        candidate = hashlib.sha256(
+            tokens[0].decode("ascii").split(" ", 1)[1].encode("ascii")
+        ).digest()
+        if not _portal_grant_still_valid(candidate):
             await _reply(send, 401)
             return
         selected: dict[str, str] = {}
@@ -319,6 +328,9 @@ class CloudflarePrivateOrigin:
         if not self._route_still_configured():
             await _reply(send, 503)
             return
+        if not _portal_grant_still_valid(candidate):
+            await _reply(send, 401)
+            return
         response = None
         started = False
         try:
@@ -331,6 +343,9 @@ class CloudflarePrivateOrigin:
             # header processing. This cannot undo work already forwarded.
             if not self._route_still_configured():
                 await _reply(send, 503)
+                return
+            if not _portal_grant_still_valid(candidate):
+                await _reply(send, 401)
                 return
             if 300 <= response.status_code < 400:
                 await _reply(send, 502)
@@ -347,9 +362,10 @@ class CloudflarePrivateOrigin:
             started = True
             async def forward():
                 async for chunk in response.aiter_raw():
-                    if not self._route_still_configured():
-                        # An upstream may deliver several chunks before the
-                        # poll timer runs; check each disclosure boundary.
+                    # Both route removal and Portal-grant revocation must
+                    # block already-buffered upstream chunks.
+                    if (not self._route_still_configured()
+                            or not _portal_grant_still_valid(candidate)):
                         return
                     if chunk:
                         await send({"type": "http.response.body", "body": chunk,
@@ -361,21 +377,19 @@ class CloudflarePrivateOrigin:
                     if event["type"] == "http.disconnect":
                         return
 
-            async def route_revoked():
-                # A config removed during an idle SSE stream must not leave
-                # this adapter disclosing chunks until the 120-second limit.
+            async def authorization_revoked():
+                # Tear down idle SSE on either route removal or Portal grant
+                # revocation, even when the upstream sends no more bytes.
                 while True:
                     await asyncio.sleep(REVOCATION_POLL_SECONDS)
-                    if not self._route_still_configured():
+                    if (not self._route_still_configured()
+                            or not _portal_grant_still_valid(candidate)):
                         return
 
             task = asyncio.create_task(forward())
             watcher = asyncio.create_task(disconnect())
-            revoker = (asyncio.create_task(route_revoked())
-                       if self.config_path is not None else None)
-            pending = [task, watcher]
-            if revoker is not None:
-                pending.append(revoker)
+            revoker = asyncio.create_task(authorization_revoked())
+            pending = [task, watcher, revoker]
             try:
                 completed, _ = await asyncio.wait(
                     pending, timeout=MAX_RESPONSE_SECONDS,
@@ -383,11 +397,12 @@ class CloudflarePrivateOrigin:
                 # Prefer connection/authorization teardown even if the reader
                 # happens to finish in the same event-loop iteration.
                 if (watcher in completed
-                        or (revoker is not None and revoker in completed)):
+                        or revoker in completed):
                     return
                 if task in completed:
                     await task
-                    if not self._route_still_configured():
+                    if (not self._route_still_configured()
+                            or not _portal_grant_still_valid(candidate)):
                         return
                     await send({"type": "http.response.body", "body": b"",
                                 "more_body": False})
