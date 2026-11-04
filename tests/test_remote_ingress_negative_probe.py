@@ -127,7 +127,10 @@ class RemoteIngressNegativeProbeTests(unittest.TestCase):
 class SetupWizardNegativeProbeTests(unittest.TestCase):
     def test_wizard_command_uses_project_python_and_sanitized_output(self):
         rows = [
-            {"target": "gateway", "check": "missing_bearer", "status": "passed"},
+            {"target": "gateway", "check": name, "status": "passed"}
+            for name in ("missing_bearer", "foreign_host", "foreign_origin",
+                         "unexpected_query")
+        ] + [
             {"target": "origin", "check": "local_configuration",
              "status": "not_configured"},
         ]
@@ -177,6 +180,25 @@ class SetupWizardNegativeProbeTests(unittest.TestCase):
                 result = wizard.cloudflare_portal_negative_probe()
             self.assertEqual(result["status"], "unavailable")
             self.assertNotIn("SECRET", json.dumps(result))
+
+    def test_wizard_rejects_partial_probe_claiming_full_pass(self):
+        wrong = {
+            "schema": probe.SCHEMA, "mode": "read-only",
+            "negative_path_only": True, "remote_access_verified": False,
+            "positive_auth_verified": False, "status": "passed",
+            "origin_configured": True, "requests_sent": 8,
+            "checks": [
+                {"target": "gateway", "check": "missing_bearer",
+                 "status": "passed"},
+            ],
+        }
+        proc = subprocess.CompletedProcess([], 0, stdout=json.dumps(wrong))
+        with (patch.object(wizard.os, "geteuid", return_value=1000),
+              patch.object(wizard, "project_python",
+                           return_value=Path("/fake/.venv/bin/python")),
+              patch.object(wizard.subprocess, "run", return_value=proc)):
+            result = wizard.cloudflare_portal_negative_probe()
+        self.assertEqual(result["status"], "unavailable")
 
     def test_wizard_probe_does_not_fallback_to_system_python(self):
         with (patch.object(wizard.os, "geteuid", return_value=1000),
