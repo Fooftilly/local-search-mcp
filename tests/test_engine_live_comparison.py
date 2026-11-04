@@ -32,7 +32,7 @@ class LiveEngineComparisonTests(unittest.TestCase):
         self.assertEqual(preview["web_search_calls_attempted"], 0)
         self.assertEqual(preview["candidate_engines"],
                          ["bing", "duckduckgo web", "qwant"])
-        self.assertEqual(preview["max_possible_upstream_search_requests"], 6)
+        self.assertEqual(preview["max_possible_upstream_search_requests"], 9)
         self.assertFalse(preview["policy_modified"])
 
     def test_denied_preflight_never_returns_unsafe_candidates(self):
