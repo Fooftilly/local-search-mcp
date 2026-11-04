@@ -327,6 +327,74 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(self.gateway_requests, [])
 
+    async def test_removed_private_route_during_body_never_reaches_gateway(self):
+        # The first read authorizes admission, but the operator removes the
+        # private route before the already-admitted request is forwarded.
+        origin = CloudflarePrivateOrigin(
+            self.hostname, self.gateway_client,
+            config_path=Path("/synthetic/private-route.json"))
+        with patch("remote_agent_cloudflare_origin.read_private_hostname",
+                   side_effect=[self.hostname,
+                                StartupRefused("route removed")]) as read:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(
+                    app=origin, client=("127.0.0.1", 3456)),
+                base_url="http://" + self.hostname,
+                trust_env=False) as client:
+                result = await client.post(
+                    "/mcp",
+                    headers={"authorization": "Bearer " + self.token},
+                    content=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
+        self.assertEqual(result.status_code, 503)
+        self.assertEqual(result.text, "Request rejected")
+        self.assertEqual(read.call_count, 2)
+        self.assertEqual(self.gateway_requests, [])
+        self.assertEqual(self.bridge_requests, [])
+
+    async def test_removed_route_during_upstream_headers_hides_response(self):
+        # Upstream work cannot be undone, but no response body or headers
+        # from the bridge may be disclosed after the route is disabled.
+        origin = CloudflarePrivateOrigin(
+            self.hostname, self.gateway_client,
+            config_path=Path("/synthetic/private-route.json"))
+        with patch("remote_agent_cloudflare_origin.read_private_hostname",
+                   side_effect=[self.hostname, self.hostname,
+                                StartupRefused("route removed")]) as read:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(
+                    app=origin, client=("127.0.0.1", 3456)),
+                base_url="http://" + self.hostname,
+                trust_env=False) as client:
+                result = await client.post(
+                    "/mcp",
+                    headers={"authorization": "Bearer " + self.token},
+                    content=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
+        self.assertEqual(result.status_code, 503)
+        self.assertEqual(result.text, "Request rejected")
+        self.assertEqual(read.call_count, 3)
+        self.assertEqual(len(self.gateway_requests), 1)
+        self.assertEqual(len(self.bridge_requests), 1)
+
+    async def test_current_route_is_checked_through_completion(self):
+        origin = CloudflarePrivateOrigin(
+            self.hostname, self.gateway_client,
+            config_path=Path("/synthetic/private-route.json"))
+        with patch("remote_agent_cloudflare_origin.read_private_hostname",
+                   return_value=self.hostname) as read:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(
+                    app=origin, client=("127.0.0.1", 3456)),
+                base_url="http://" + self.hostname,
+                trust_env=False) as client:
+                result = await client.post(
+                    "/mcp",
+                    headers={"authorization": "Bearer " + self.token},
+                    content=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(read.call_count, 3)
+        self.assertEqual(len(self.gateway_requests), 1)
+        self.assertEqual(len(self.bridge_requests), 1)
+
     async def test_live_config_removal_blocks_already_started_adapter(self):
         with tempfile.TemporaryDirectory() as tmp:
             private = Path(tmp) / "private"

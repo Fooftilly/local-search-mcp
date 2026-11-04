@@ -38,9 +38,14 @@ forwarded to the operator dashboard, crawler, SearXNG, Docker or LAN.
 The standalone adapter config file contains *only* the private hostname (no
 token). It is stored under the existing account-owned
 `~/.config/local-search-mcp/private/` directory with mode 0600.
-It is revalidated for every incoming request; removing it makes an already
-running adapter return 503. No bearer is stored in the adapter config, systemd
-unit, CLI argument, GitHub, or logs. The independent bearer is issued using
+It is checked at request admission, again after the bounded request body
+and before forwarding to the authenticated gateway, and before returning
+upstream response headers. Removing or changing the config makes the running
+adapter return 503 at these boundaries: a removed route cannot authorize
+a not-yet-forwarded request or release an upstream response. Work already
+forwarded or streamed cannot be retracted; stop the service and revoke its
+independent grant for complete shutdown. No bearer is stored in the adapter
+config, systemd unit, CLI argument, GitHub, or logs. The independent bearer is issued using
 the existing credential manager, which stores only its SHA-256 verifier.
 
 ## Local operator workflow (no Cloudflare account changes)
