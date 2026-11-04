@@ -1275,8 +1275,8 @@ def _run_fetch_network(url: str, mode: str, *,
         # misreported to the agent as a parsed PDF.
         cleaned = page.get("cleaned_html")
         if (not isinstance(cleaned, str)
-                or '<meta name="pdf-pages"' not in cleaned[:1024]
-                or '<div class="pdf-page"' not in cleaned[:2048]):
+                or 'name="pdf-pages"' not in cleaned[:1024]
+                or 'class="pdf-page"' not in cleaned[:2048]):
             return {"url": final_url, "success": False,
                     "status": "extraction_failed",
                     "reason": "Crawl4AI did not verify page-level PDF text extraction."}
