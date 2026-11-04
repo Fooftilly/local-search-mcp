@@ -191,18 +191,23 @@ class CloudflarePrivateOrigin:
         self.upstream = upstream
         self.config_path = config_path
 
+    def _route_still_configured(self) -> bool:
+        """Require the same owner-only private route at each forwarding boundary."""
+        if self.config_path is None:
+            return True
+        try:
+            return read_private_hostname(self.config_path) == self.hostname
+        except StartupRefused:
+            return False
+
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             if scope["type"] == "websocket":
                 await send({"type": "websocket.close", "code": 1008})
             return
-        if self.config_path is not None:
-            try:
-                if read_private_hostname(self.config_path) != self.hostname:
-                    raise StartupRefused("Private origin route changed")
-            except StartupRefused:
-                await _reply(send, 503)
-                return
+        if not self._route_still_configured():
+            await _reply(send, 503)
+            return
         if (scope.get("path") != "/mcp" or scope.get("raw_path", b"/mcp") != b"/mcp"
                 or scope.get("query_string", b"")):
             await _reply(send, 404)
@@ -308,6 +313,11 @@ class CloudflarePrivateOrigin:
         if (method == "POST" and not body) or (method != "POST" and body):
             await _reply(send, 400)
             return
+        # The operator can remove/replace the private hostname while a
+        # bounded request body is being received. Do not forward afterward.
+        if not self._route_still_configured():
+            await _reply(send, 503)
+            return
         response = None
         started = False
         try:
@@ -316,6 +326,11 @@ class CloudflarePrivateOrigin:
                 method, GATEWAY_URL, headers=selected, content=bytes(body))
             async with asyncio.timeout(MAX_RESPONSE_START_SECONDS):
                 response = await self.upstream.send(request, stream=True)
+            # Withhold a response after private-route removal during upstream
+            # header processing. This cannot undo work already forwarded.
+            if not self._route_still_configured():
+                await _reply(send, 503)
+                return
             if 300 <= response.status_code < 400:
                 await _reply(send, 502)
                 return
