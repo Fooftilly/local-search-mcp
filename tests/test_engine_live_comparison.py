@@ -29,7 +29,7 @@ class LiveEngineComparisonTests(unittest.TestCase):
             preview = probe.preview()
         reader.assert_called_once_with()
         self.assertEqual(preview["status"], "ready_for_operator_confirmation")
-        self.assertEqual(preview["provider_search_calls"], 0)
+        self.assertEqual(preview["web_search_calls_attempted"], 0)
         self.assertEqual(preview["candidate_engines"],
                          ["bing", "duckduckgo web", "qwant"])
         self.assertEqual(preview["max_possible_upstream_search_requests"], 6)
@@ -53,7 +53,7 @@ class LiveEngineComparisonTests(unittest.TestCase):
                 preview = probe.preview()
             self.assertEqual(preview["status"], "preflight_unavailable")
             self.assertEqual(preview["candidate_engines"], [])
-            self.assertEqual(preview["provider_search_calls"], 0)
+            self.assertEqual(preview["web_search_calls_attempted"], 0)
 
     def test_absent_or_wrong_confirmation_sends_nothing(self):
         for word in ("", "search", "YES"):
@@ -65,8 +65,8 @@ class LiveEngineComparisonTests(unittest.TestCase):
                                side_effect=AssertionError("no searches"))):
                 result = probe.sample("docs", confirm=lambda prompt: word)
             self.assertEqual(result["status"], "cancelled")
-            self.assertEqual(result["provider_search_calls"], 0)
-            self.assertFalse(result["public_query_saved_in_private_history"])
+            self.assertEqual(result["web_search_calls_attempted"], 0)
+            self.assertFalse(result["public_query_may_be_retained_in_private_history"])
 
     def test_refuses_root_and_unrecognized_presets(self):
         with (patch.object(probe.os, "geteuid", return_value=0),
@@ -100,7 +100,7 @@ class LiveEngineComparisonTests(unittest.TestCase):
               patch.object(probe.time, "sleep") as throttle):
             result = probe.sample("science", confirm=lambda prompt: "SEARCH")
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["provider_search_calls"], 3)
+        self.assertEqual(result["web_search_calls_attempted"], 3)
         self.assertEqual(inventory.call_count, 4)
         self.assertEqual(throttle.call_args_list, [
             call(probe.BETWEEN_CALL_SECONDS), call(probe.BETWEEN_CALL_SECONDS)])
@@ -140,7 +140,7 @@ class LiveEngineComparisonTests(unittest.TestCase):
               patch.object(probe.time, "sleep") as sleep):
             result = probe.sample("docs", confirm=lambda _: "SEARCH")
         self.assertEqual(result["status"], "preflight_changed")
-        self.assertEqual(result["provider_search_calls"], 1)
+        self.assertEqual(result["web_search_calls_attempted"], 1)
         search.assert_called_once()
         sleep.assert_not_called()
 
@@ -180,14 +180,14 @@ class LiveEngineComparisonTests(unittest.TestCase):
     def test_cli_without_sample_flag_only_reads_preflight(self):
         with (patch.object(probe, "preview", return_value={
                   "mode": "read-only", "status": "ready_for_operator_confirmation",
-                  "provider_search_calls": 0,
+                  "web_search_calls_attempted": 0,
               }),
               patch.object(probe.bridge, "web_search",
                            side_effect=AssertionError("must not execute")),
               contextlib.redirect_stdout(io.StringIO()) as out):
             code = probe.main([])
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out.getvalue())["provider_search_calls"], 0)
+        self.assertEqual(json.loads(out.getvalue())["web_search_calls_attempted"], 0)
 
 
 if __name__ == "__main__":
