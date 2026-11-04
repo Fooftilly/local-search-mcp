@@ -392,7 +392,9 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
                     headers={"authorization": "Bearer " + self.token},
                     content=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
         self.assertEqual(result.status_code, 200)
-        self.assertEqual(read.call_count, 3)
+        # Admission, post-body, pre-response, per-chunk, and terminal
+        # checks are all required for an authorized one-chunk response.
+        self.assertEqual(read.call_count, 5)
         self.assertEqual(len(self.gateway_requests), 1)
         self.assertEqual(len(self.bridge_requests), 1)
 
