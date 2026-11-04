@@ -544,7 +544,11 @@ def cloudflare_portal_preview() -> dict:
     report = {
         "mode": "read-only",
         "provider": "Cloudflare MCP Server Portal",
-        "cloudflared_installed_on_host": shutil.which("cloudflared") is not None,
+        # PATH discovery cannot prove whether an operator-owned Cloudflare
+        # connector runs in another user, systemd unit, container or host.
+        # Never render this as Cloudflare reachability or installation status.
+        "cloudflared_on_user_path": shutil.which("cloudflared") is not None,
+        "cloudflare_connector_runtime": "not_inspected",
         "credential": "not verified",
         "private_hostname_config": "not verified",
         "private_route": "unverified",
@@ -641,7 +645,9 @@ def cloudflare_portal_status() -> dict:
             report["loopback_tcp"][label] = "not_reachable"
     report["note"] = ("Local service/socket status does not verify root guard, "
                       "MCP authentication, Cloudflare private routing, Access "
-                      "policy, or Grok connectivity")
+                      "policy, or Grok connectivity. cloudflared_on_user_path "
+                      "checks only this user's PATH; a separate connector "
+                      "service or container is not inspected.")
     return report
 
 

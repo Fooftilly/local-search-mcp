@@ -344,6 +344,28 @@ class SetupWizardTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue())["private_route"],
                          "unverified")
 
+    def test_cloudflared_path_hint_is_not_live_connector_status(self):
+        # The Cloudflare tunnel may be owned by a separate systemd service,
+        # container or user and therefore absent from the setup user's PATH.
+        # Neither absence nor presence proves Cloudflare private routing.
+        for binary in (None, "/PRIVATE/bin/cloudflared"):
+            with (self.subTest(binary=bool(binary)),
+                  patch.object(wizard.shutil, "which", return_value=binary) as which,
+                  patch.object(wizard, "project_python", return_value=None),
+                  patch.object(wizard.subprocess, "run",
+                               side_effect=AssertionError("no child processes")),
+                  patch.object(wizard.socket, "create_connection",
+                               side_effect=AssertionError("no network probes"))):
+                preview = wizard.cloudflare_portal_preview()
+            which.assert_called_once_with("cloudflared")
+            self.assertEqual(preview["cloudflared_on_user_path"], binary is not None)
+            self.assertEqual(preview["cloudflare_connector_runtime"], "not_inspected")
+            self.assertEqual(preview["private_route"], "unverified")
+            self.assertFalse(preview["cloudflare_mutations"])
+            self.assertFalse(preview["service_mutations"])
+            self.assertNotIn("cloudflared_installed_on_host", preview)
+            self.assertNotIn("PRIVATE", json.dumps(preview))
+
     def test_cloudflare_preview_uses_project_venv_and_redacts_untrusted_stdout(self):
         valid = {"schema": "local-search-mcp/cloudflare-origin-status/v1",
                  "credential": "dedicated cloudflare-portal grant active",
