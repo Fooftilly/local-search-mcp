@@ -399,6 +399,198 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.gateway_requests), 1)
         self.assertEqual(len(self.bridge_requests), 1)
 
+    async def test_portal_grant_removed_during_body_never_reaches_gateway(self):
+        active = [True]
+        messages = []
+        scope = {
+            "type": "http", "path": "/mcp", "raw_path": b"/mcp",
+            "query_string": b"", "method": "POST",
+            "client": ("127.0.0.1", 3456),
+            "headers": [
+                (b"host", self.hostname.encode("ascii")),
+                (b"authorization", ("Bearer " + self.token).encode("ascii")),
+            ],
+        }
+
+        async def receive():
+            active[0] = False
+            return {"type": "http.request",
+                    "body": b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                    "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        with patch("remote_agent_cloudflare_origin.load_client_grants",
+                   side_effect=lambda _: ((self.portal_grant,)
+                                          if active[0] else ())):
+            await asyncio.wait_for(self.adapter(scope, receive, send), 2)
+        self.assertEqual(
+            [m["status"] for m in messages if m["type"] == "http.response.start"],
+            [401])
+        self.assertEqual(self.gateway_requests, [])
+
+    async def test_portal_grant_removed_during_upstream_headers_hides_response(self):
+        active = [True]
+        upstream_requests = []
+
+        def upstream_handler(request):
+            upstream_requests.append(request)
+            active[0] = False
+            return httpx.Response(200, json={"private": "must-not-disclose"})
+
+        async with httpx.AsyncClient(
+                transport=httpx.MockTransport(upstream_handler),
+                trust_env=False) as upstream:
+            origin = CloudflarePrivateOrigin(self.hostname, upstream)
+            async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(
+                        app=origin, client=("127.0.0.1", 3456)),
+                    base_url="http://" + self.hostname,
+                    trust_env=False) as client:
+                with patch("remote_agent_cloudflare_origin.load_client_grants",
+                           side_effect=lambda _: ((self.portal_grant,)
+                                                  if active[0] else ())):
+                    response = await client.post(
+                        "/mcp", headers={"authorization": "Bearer " + self.token},
+                        content=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
+        self.assertEqual(len(upstream_requests), 1)
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn("must-not-disclose", response.text)
+
+    async def test_portal_grant_revocation_blocks_bursty_buffered_sse(self):
+        active = [True]
+
+        class BurstySSE(httpx.AsyncByteStream):
+            def __init__(self):
+                self.closed = False
+
+            async def __aiter__(self):
+                yield b"data: allowed\\n\\n"
+                yield b"data: forbidden\\n\\n"
+
+            async def aclose(self):
+                self.closed = True
+
+        stream = BurstySSE()
+
+        def upstream_handler(request):
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"},
+                stream=stream)
+
+        async with httpx.AsyncClient(
+                transport=httpx.MockTransport(upstream_handler),
+                trust_env=False) as upstream:
+            origin = CloudflarePrivateOrigin(self.hostname, upstream)
+            messages = []
+
+            async def send(message):
+                messages.append(message)
+                if (message["type"] == "http.response.body"
+                        and message.get("body") == b"data: allowed\\n\\n"):
+                    active[0] = False
+
+            got_body = False
+
+            async def receive():
+                nonlocal got_body
+                if not got_body:
+                    got_body = True
+                    return {"type": "http.request",
+                            "body": b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                            "more_body": False}
+                await asyncio.Event().wait()
+
+            scope = {
+                "type": "http", "path": "/mcp", "raw_path": b"/mcp",
+                "query_string": b"", "method": "POST",
+                "client": ("127.0.0.1", 3456),
+                "headers": [
+                    (b"host", self.hostname.encode("ascii")),
+                    (b"authorization",
+                     ("Bearer " + self.token).encode("ascii")),
+                ],
+            }
+            with patch("remote_agent_cloudflare_origin.load_client_grants",
+                       side_effect=lambda _: ((self.portal_grant,)
+                                              if active[0] else ())):
+                await asyncio.wait_for(origin(scope, receive, send), 2)
+        self.assertTrue(stream.closed)
+        self.assertEqual(
+            [m.get("body") for m in messages
+             if m["type"] == "http.response.body"],
+            [b"data: allowed\\n\\n"])
+
+    async def test_idle_sse_closes_when_portal_grant_revoked(self):
+        first_chunk = asyncio.Event()
+        active = [True]
+
+        class HeldSSE(httpx.AsyncByteStream):
+            def __init__(self):
+                self.closed = False
+
+            async def __aiter__(self):
+                yield b"data: initial\\n\\n"
+                await asyncio.Event().wait()
+
+            async def aclose(self):
+                self.closed = True
+
+        stream = HeldSSE()
+        async with httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda _: httpx.Response(
+                    200, headers={"content-type": "text/event-stream"},
+                    stream=stream)),
+                trust_env=False) as upstream:
+            origin = CloudflarePrivateOrigin(self.hostname, upstream)
+            messages = []
+
+            async def send(message):
+                messages.append(message)
+                if (message["type"] == "http.response.body"
+                        and message.get("body")):
+                    first_chunk.set()
+
+            got_body = False
+
+            async def receive():
+                nonlocal got_body
+                if not got_body:
+                    got_body = True
+                    return {"type": "http.request",
+                            "body": b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                            "more_body": False}
+                await asyncio.Event().wait()
+
+            scope = {
+                "type": "http", "path": "/mcp", "raw_path": b"/mcp",
+                "query_string": b"", "method": "POST",
+                "client": ("127.0.0.1", 3456),
+                "headers": [
+                    (b"host", self.hostname.encode("ascii")),
+                    (b"authorization",
+                     ("Bearer " + self.token).encode("ascii")),
+                ],
+            }
+            with patch("remote_agent_cloudflare_origin.load_client_grants",
+                       side_effect=lambda _: ((self.portal_grant,)
+                                              if active[0] else ())):
+                running = asyncio.create_task(origin(scope, receive, send))
+                try:
+                    await asyncio.wait_for(first_chunk.wait(), 2)
+                    active[0] = False
+                    await asyncio.wait_for(running, 2)
+                finally:
+                    if not running.done():
+                        running.cancel()
+                    await asyncio.gather(running, return_exceptions=True)
+        self.assertTrue(stream.closed)
+        self.assertEqual(
+            [m.get("body") for m in messages
+             if m["type"] == "http.response.body"],
+            [b"data: initial\\n\\n"])
+
     async def test_stream_does_not_disclose_fast_chunk_after_route_revocation(self):
         # The upstream emits both SSE frames without pausing long enough for
         # the periodic route watcher. Revocation before the second frame must
