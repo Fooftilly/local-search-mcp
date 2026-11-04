@@ -1,5 +1,49 @@
 # Paged Crawl4AI extraction
 
+## Experimental opt-in PDF text extraction (#141; not yet host-accepted)
+
+The default `web_fetch` and `web_fetch_batch` behavior is unchanged. To
+request **text-only** extraction of an already-approved public PDF whose URL
+path ends in `.pdf`, use `web_fetch(url, extract_pdf=true, mode="raw")`.
+`extract_pdf` is **false by default**. The batch tool accepts
+`web_fetch_batch(urls, extract_pdf=true, mode="raw")`; within a mixed
+HTML/PDF batch, only the `.pdf` entries use the PDF strategy. The normal
+domain-approval, DNS/redirect protection, revocation and bounded continuation
+path remain authoritative. There is no direct file downloader or new MCP tool.
+
+The guarded Crawl4AI `/crawl` call selects the upstream's declarative
+`PDFContentScrapingStrategy` with fixed text-only options:
+`extract_images=false`, `save_images_locally=false`,
+`batch_size=2`, `max_pdf_bytes=16777216` (16 MiB) and
+`max_pdf_pages=150`. The strategy is never caller-configurable.
+The bridge still enforces its existing 1,000,000-character text limit
+and 24,000-character first-page/15-minute continuation policy, and never
+returns PDF bytes or media fields. It rejects empty/placeholder Markdown,
+embedded `data:image/` or `data:application/pdf;base64`, and unapproved
+redirects. PDF requests bypass the reusable short-fetch cache. Scanned,
+image-only, encrypted and malformed PDFs may return an extraction failure:
+this does not perform OCR.
+
+`extract_pdf=true` on a non-`.pdf` path, or combined with `mode="fit"`,
+links, tables, alternate-format extraction or JSON-LD, is rejected **before**
+requesting any domain permission or starting Crawl4AI. A redirect from an
+approved PDF URL to another host remains subject to that host's independent
+authorization; the suffix itself never grants permission.
+
+**Acceptance gate:** This is an offline implementation proposal, **not
+confirmation that the operator's installed Crawl4AI Docker server can execute
+the strategy**. Before merging/enabling it, run a bounded, approved official
+text PDF on the isolated test deployment to verify that the exact 0.9.5+
+Docker schema respects both lower resource limits, the pinned egress guard
+continues to protect redirects, and the installed image includes the PDF
+parser dependency. Verify graceful encrypted/image-only/oversize failure,
+mixed batches and comparable HTML fetch latency, and preserve existing
+rollback. No production-host or Cloudflare changes are made by the proposal.
+
+Reference: [Crawl4AI PDF processing](https://docs.crawl4ai.com/advanced/pdf-parsing/),
+[Crawl4AI 0.9.3 security release](https://github.com/unclecode/crawl4ai/blob/main/docs/blog/release-v0.9.3.md),
+[resource-exhaustion fix](https://github.com/unclecode/crawl4ai/security/advisories/GHSA-v2rm-hvrj-2x9q).
+
 The original `web_fetch(url)` call continues to return `url`, `success`, `markdown`, and `truncated`. On short pages it behaves as before, with optional public-page metadata when available.
 
 For a long **approved** document, the bridge returns the first 24,000 characters, `truncated: true`, a random `document_id`, `page_count`, `page: 1`, and `next_page: 2`. Subsequent pages are read using `web_fetch_page(document_id, page=2)` without any additional upstream Crawl4AI request. Keep reading `next_page` until it is `null`. Pages reconstruct the returned UTF-8-safe extraction without gaps or overlaps; invalid surrogate code points are replaced before paging.
