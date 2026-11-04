@@ -695,6 +695,25 @@ def cloudflare_portal_negative_probe() -> dict:
                        for row in data["checks"])
                 or proc.returncode != (0 if data["status"] == "passed" else 1)):
             return unavailable
+        required = {"missing_bearer", "foreign_host",
+                    "foreign_origin", "unexpected_query"}
+        expected = {("gateway", name) for name in required}
+        if data["origin_configured"]:
+            expected.update(("origin", name) for name in required)
+        else:
+            expected.add(("origin", "local_configuration"))
+        actual = [(row["target"], row["check"]) for row in data["checks"]]
+        outcomes = {row["status"] for row in data["checks"]}
+        computed = ("failed" if "unexpected_status" in outcomes
+                    else "passed" if outcomes == {"passed"} else "incomplete")
+        if (len(actual) != len(expected) or set(actual) != expected
+                or data["requests_sent"] != (8 if data["origin_configured"] else 4)
+                or (not data["origin_configured"]
+                    and any(row["status"] != "not_configured"
+                            for row in data["checks"]
+                            if row["target"] == "origin"))
+                or data["status"] != computed):
+            return unavailable
         return {
             "mode": "read-only", "status": data["status"],
             "negative_path_only": True, "remote_access_verified": False,
