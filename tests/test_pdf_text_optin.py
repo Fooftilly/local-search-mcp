@@ -19,6 +19,8 @@ import request_cache
 
 
 class PdfTextOptInTests(unittest.TestCase):
+    PDF_CLEANED = '<html><head><meta name="pdf-pages" content="1"></head><body><div class="pdf-page" data-page="1">Parsed</div></body></html>'
+
     def setUp(self):
         request_cache.reset_for_test()
         self.addCleanup(request_cache.reset_for_test)
@@ -48,6 +50,7 @@ class PdfTextOptInTests(unittest.TestCase):
             "url": url, "success": True, "status_code": 200,
             "markdown": {"raw_markdown": "# Sample document\n\nPDF content",
                          "fit_markdown": ""},
+            "cleaned_html": self.PDF_CLEANED,
         })
         return httpx.Response(200, json={"results": [page]})
 
@@ -117,6 +120,7 @@ class PdfTextOptInTests(unittest.TestCase):
             self.pages[url] = {
                 "url": url, "success": True, "status_code": 200,
                 "markdown": markdown,
+                "cleaned_html": self.PDF_CLEANED,
             }
             with self.subTest(markdown=markdown), patch.object(
                 bridge.httpx, "Client", side_effect=self.client_factory
@@ -126,6 +130,19 @@ class PdfTextOptInTests(unittest.TestCase):
             self.assertEqual(result["status"], "extraction_failed")
             self.assertNotIn("markdown", result)
             self.assertNotIn("Scraper will handle", repr(result))
+
+    def test_upstream_ignoring_pdf_strategy_cannot_claim_success(self):
+        url = "https://example.org/unverified.pdf"
+        self.pages[url] = {
+            "url": url, "success": True, "status_code": 200,
+            "markdown": "# HTML that was not parsed as PDF",
+            "cleaned_html": "<html><body>ordinary HTML</body></html>",
+        }
+        with patch.object(bridge.httpx, "Client",
+                          side_effect=self.client_factory):
+            result = bridge.web_fetch(url, extract_pdf=True, fresh=True)
+        self.assertEqual(result["status"], "extraction_failed")
+        self.assertNotIn("markdown", result)
 
     def test_pdf_binary_media_and_oversize_text_are_not_returned(self):
         url = "https://example.org/data.pdf"
@@ -139,7 +156,8 @@ class PdfTextOptInTests(unittest.TestCase):
         ]
         for body, expected in cases:
             self.pages[url] = {"url": url, "success": True,
-                               "status_code": 200, "markdown": body}
+                               "status_code": 200, "markdown": body,
+                               "cleaned_html": self.PDF_CLEANED}
             with self.subTest(expected=expected), patch.object(
                 bridge.httpx, "Client", side_effect=self.client_factory
             ):
