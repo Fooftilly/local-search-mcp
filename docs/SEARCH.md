@@ -387,8 +387,10 @@ private search history; no aggregate list of query text is persisted.
 Set `include_search_status=true` to see an independently fresh, bounded
 SearXNG provider-coverage diagnostic **for each query**, including partial
 provider failures on an otherwise successful search. The per-query `status`
-will be `ok` or `degraded` for successful entries, with their sanitized
-`search_status` details. Failed entries keep their existing bounded reason
+will be `ok`, `degraded`, or `unknown` for successful entries, depending on
+whether SearXNG reported failures, partial coverage, or unparseable metadata;
+these are **not** provider-uptime estimates. The entry also includes its
+bounded `search_status` details. Failed entries keep their existing bounded reason
 and may include `search_status` when supplied by the underlying search.
 This skips the in-memory search cache, without adding provider requests beyond
 the existing bounded individual-search recovery behavior. Coverage is not an
