@@ -22,8 +22,12 @@ UPSTREAM_LIMITS = httpx.Limits(
     max_keepalive_connections=2,
     keepalive_expiry=5.0,
 )
+# A per-read deadline would truncate an otherwise healthy idle SSE stream
+# before the gateway's explicit MAX_RESPONSE_SECONDS lifetime and revocation
+# watchers can manage it. Header start and total response duration are bounded
+# independently in LoopbackMCPGateway.
 UPSTREAM_TIMEOUT = httpx.Timeout(
-    connect=3.0, read=15.0, write=15.0, pool=3.0,
+    connect=3.0, read=None, write=15.0, pool=3.0,
 )
 
 
