@@ -1,6 +1,8 @@
 # External agent MCP ingress — architecture and security gate (#230)
 
-**Status: design only; not deployable.** This document is the security decision record for a future **separate, opt-in**, authenticated HTTPS ingress serving hosted clients such as Grok. No public listener, tunnel, token, DNS record, service, Docker container, firewall rule or approval is provisioned by this change. The existing OpenAI Secure MCP Tunnel stays installed and unchanged.
+**Current repository state (2026-11-04):** The separate authenticated loopback gateway, private credential lifecycle, readiness preflight, optional systemd services, and Cloudflare private-origin adapter have been implemented. [PR #287](https://github.com/Fooftilly/local-search-mcp/pull/287) adds independent Portal grant revalidation through active and idle streams. These components do **not** automatically provision public DNS, Cloudflare Access, OAuth, or an Internet-facing listener. The original OpenAI Secure MCP Tunnel remains a separate credential and trust boundary.
+
+**Document role:** This is the *historical architecture and development decision record*, not the current deployment or live-security acceptance checklist. Later sections preserve contemporary language such as "next slice", "not yet deployed", and "all pending" from earlier implementation stages. Consult [the Cloudflare Portal/private-origin guide](CLOUDFLARE-MCP-PORTAL.md), [the private endpoint guide](CLOUDFLARE-PRIVATE-ENDPOINT.md), and the live [#230 security](https://github.com/Fooftilly/local-search-mcp/issues/230) / [#246 Portal](https://github.com/Fooftilly/local-search-mcp/issues/246) issue status before acting. Whether optional local units run is host-specific; the operator's external Portal/Access enforcement and Grok client acceptance remain unverified.
 
 ## Verified starting point and client requirements
 
@@ -67,7 +69,7 @@ Do not implement multiple competing public gateways. Select one authenticator an
 
 ## Acceptance matrix / exact gates
 
-The twelve checks below are independent acceptance gates. **All are pending**; a passing design-document CI run is not proof that any live public endpoint is secure.
+The twelve checks below are the **initial design-stage acceptance checklist**. Their "Not tested" cells are preserved as a historical baseline, **not a current acceptance verdict**. Check [#230](https://github.com/Fooftilly/local-search-mcp/issues/230), [#246](https://github.com/Fooftilly/local-search-mcp/issues/246), and [#231](https://github.com/Fooftilly/local-search-mcp/issues/231) for subsequent implementation and actual client/host evidence. Passing offline CI is not proof that an external ingress is securely accepted.
 
 | Gate | Evidence required | State |
 | --- | --- | --- |
@@ -83,6 +85,10 @@ The twelve checks below are independent acceptance gates. **All are pending**; a
 | G10 — Guard and upstream failure modes | Missing/mismatched root egress guard, failed preflight/live probe, absent bridge and tunnel restarts fail closed in isolated tests; attended host check without destructive firewall changes | Not tested |
 | G11 — Credential lifecycle and rollback | Independent client identity, rotation and revocation block **new and existing** sessions as designed; disabling public ingress leaves existing OpenAI tunnel and local MCP unaffected | Not tested |
 | G12 — Audit and secret confidentiality | Authorized/rejected requests produce bounded client-identity/status audit events without bearer tokens, MCP session IDs, private queries, URLs or response bodies; errors and health pages leak no secrets | Not tested |
+
+## Development record (historical sequence)
+
+The subsections below record the individual implementation stages as they were originally delivered. Statements about absent runners, missing credentials, or pending steps describe **that stage**, not necessarily the present repository or an operator's host.
 
 ### Import-only loopback gateway proof (#230)
 
@@ -215,9 +221,9 @@ python -m unittest -v tests.test_remote_agent_preflight tests.test_remote_agent_
 
 A successful local preflight only establishes host prerequisites at **that moment**. It is **not** a secure hosted Grok connector, HTTPS ingress, service lifecycle/rollback test or proof of future runtime guard continuity. #230 and #231 remain open pending operator-selected authenticated ingress and real provider acceptance.
 
-### Deployment decision
+### Deployment decision (original design phase)
 
-**Do not deploy or expose any public ingress based on this document alone.** The provider-neutral gateway, its offline credential workflow, and an optional local-only runner are repository artifacts requiring further operator acceptance. No installation or public endpoint has been authorized or performed. After the operator chooses an authenticated tunnel provider and verifies which Grok client authentication mode is available, add an explicit opt-in installation/rollback workflow. #231 tracks actual Grok acceptance; #215 is already closed for ordinary MCP-client protocol compatibility.
+**Do not deploy or expose any public ingress based on this historical document alone.** The optional local runner, gateway and Cloudflare adapter now exist, but any operator deployment and external Access/OAuth security acceptance must be independently verified with the current [Cloudflare Portal/private-origin guide](CLOUDFLARE-MCP-PORTAL.md) and [private endpoint guide](CLOUDFLARE-PRIVATE-ENDPOINT.md). This design record did not provision a public endpoint. #231 still tracks actual Grok acceptance; #215 closed the original generic MCP-client protocol compatibility audit.
 
 Grok-specific CLI, hosted website, xAI API and sanitized client acceptance steps are tracked in [GROK-MCP-ACCEPTANCE.md](GROK-MCP-ACCEPTANCE.md) (#231). This procedure does not authorize any public endpoint or deployment.
 
