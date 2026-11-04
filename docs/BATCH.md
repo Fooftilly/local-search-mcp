@@ -46,3 +46,21 @@ fastmcp call http://127.0.0.1:8790/mcp web_fetch_batch urls='["https://example.c
 Unknown hosts return `approval_required` when queued or `approval_queue_full` when pending-queue rate/capacity limits are reached; denied hosts return `denied`. None reaches Crawl4AI. For a full queue, ask a local operator to approve deliberately or retry after capacity frees (retrying does not grant approval). Review requests and approve only intentional public domains in the **local** dashboard.
 
 Both `include_links=true` and `include_tables=true` are optional parameters to `web_fetch_batch`; each result contains only the requested, bounded structured fields from its already-approved Crawl4AI page. Defaults remain false, and an opt-in extraction bypasses the Markdown-only result cache. See [EXTRACTION.md](EXTRACTION.md).
+
+## Experimental PDF text batch option (#141)
+
+An opt-in `extract_pdf=true` applies the existing guarded PDF text
+strategy **only** to input URLs with a `.pdf` path suffix; HTML URLs in the
+same batch use the original crawler path. Default `extract_pdf=false`
+preserves existing response shape and cache behavior. PDF entries must use
+`mode="raw"` with links, tables and alternative formats disabled, and
+the PDF strategy is fixed to text-only with 16 MiB / 150-page upstream
+budgets. Each URL must still have existing reusable approval (batch fetches
+never consume single-use grants), and every redirect and returned result
+is rechecked under the original authorization rules. No PDF image, binary
+document, new host permission or separate provider is returned.
+
+This capability remains pending **installed-host** PDF-strategy and resource
+limit acceptance; passing mocked CI tests is not sufficient to claim that the
+currently installed Crawl4AI image can process PDFs.
+
