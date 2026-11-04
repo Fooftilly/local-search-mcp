@@ -150,6 +150,29 @@ All steps are run on your own Linux machine as its **unprivileged** owner.
    TCP ports accept connections. It does not prove peer identity, MCP
    authentication, Cloudflare private routing or Grok acceptance.
 
+   With both optional services already running, perform the credential-free
+   **local denial checks** from the normal user's terminal:
+
+   ```sh
+   ./setup.sh --cloudflare-portal-probe
+   ```
+
+   Or choose **Connections → Cloudflare MCP Portal → CHECK** in the setup
+   menu. This sends at most eight bounded, unauthenticated GET requests
+   *only* to 127.0.0.1:18790 and 127.0.0.1:18791; it sends no bearer, search,
+   fetch, provider request or Cloudflare API call. The probe expects 401 for
+   missing credentials, 403 for a foreign Host/Origin and 404 for an unexpected
+   query. It does not read response bodies and never prints the configured
+   private hostname, tokens, paths or upstream details.
+
+   `status=passed` means **only** that the two currently listening local
+   endpoints rejected these invalid requests. `status=incomplete` means a
+   listener or the private-origin configuration is absent/unavailable;
+   `status=failed` means an unexpected HTTP status was observed. These must
+   **not** be treated as successful login tests or evidence that Cloudflare
+   Access, authenticated requests, revocation or Grok actually work. The
+   external acceptance and negative-path gates remain separate.
+
    Both services use the project `.venv` Python and fail closed if grants,
    root guard or mandatory MCP tools are not ready. They do not configure the
    tunnel and do not wake sleeping backends merely by starting.

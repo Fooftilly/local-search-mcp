@@ -469,7 +469,7 @@ MENU_GROUPS = {
         ("2", "Connect ChatGPT (manual account steps)"),
         ("12", "Connect Cursor, Claude Code or Hermes (manual steps)"),
         ("11", "Install protected ChatGPT tunnel (sudo; requires SECURE)"),
-        ("18", "Cloudflare MCP Portal (preview / prepare / rollback)"),
+        ("18", "Cloudflare MCP Portal (preview / CHECK / prepare / rollback)"),
     )),
     "3": ("Status", (
         ("1", "Check existing setup / status (read-only)"),
@@ -518,7 +518,7 @@ def dry_run() -> dict:
              "action": "configure validated on-demand backends with operator confirmation"},
             {"menu": "2.3", "effect": "privileged system changes only after confirmation",
              "action": "validate dedicated backends; install fixed egress guard, restricted sudoers and protected ChatGPT tunnel"},
-            {"menu": "2.4", "effect": "read-only preview/status or confirmed local preparation/rollback",
+            {"menu": "2.4", "effect": "read-only preview/status/negative-path check or confirmed local preparation/rollback",
              "action": "operator-owned Cloudflare hostname and two disabled optional units; no remote Cloudflare changes"},
             {"menu": "2.2", "effect": "read-only",
              "action": "show optional local Cursor, Claude Code or Hermes HTTP MCP instructions; never edit third-party config"},
@@ -643,6 +643,91 @@ def cloudflare_portal_status() -> dict:
                       "MCP authentication, Cloudflare private routing, Access "
                       "policy, or Grok connectivity")
     return report
+
+
+def cloudflare_portal_negative_probe() -> dict:
+    """Opt-in, nonmutating denial checks on the two fixed localhost listeners.
+
+    Run with the project's venv and emit only an allowlisted structured
+    summary. Never render child stdout/stderr, URLs, private hostname,
+    response data or exception details from an invalid or failed report.
+    """
+    unavailable = {
+        "mode": "read-only", "status": "unavailable",
+        "negative_path_only": True, "remote_access_verified": False,
+        "positive_auth_verified": False, "checks": [],
+    }
+    if os.geteuid() == 0:
+        return unavailable
+    python = project_python()
+    if python is None:
+        return unavailable
+    try:
+        proc = subprocess.run(
+            [str(python), "-m", "scripts.remote_ingress_negative_probe"],
+            cwd=ROOT, capture_output=True, text=True, check=False, timeout=12,
+            env={**os.environ, "PYTHONNOUSERSITE": "1"},
+        )
+        data = json.loads(proc.stdout)
+        allowed_status = {"passed", "incomplete", "failed"}
+        allowed_targets = {"gateway", "origin"}
+        allowed_checks = {"missing_bearer", "foreign_host",
+                          "foreign_origin", "unexpected_query",
+                          "local_configuration"}
+        allowed_outcomes = {"passed", "unexpected_status", "unavailable",
+                            "not_configured"}
+        if (type(data) is not dict
+                or data.get("schema") != "local-search-mcp/ingress-negative-probe/v1"
+                or data.get("mode") != "read-only"
+                or data.get("negative_path_only") is not True
+                or data.get("remote_access_verified") is not False
+                or data.get("positive_auth_verified") is not False
+                or data.get("status") not in allowed_status
+                or type(data.get("origin_configured")) is not bool
+                or type(data.get("requests_sent")) is not int
+                or not 0 <= data["requests_sent"] <= 8
+                or type(data.get("checks")) is not list
+                or not 1 <= len(data["checks"]) <= 8
+                or any(type(row) is not dict
+                       or row.get("target") not in allowed_targets
+                       or row.get("check") not in allowed_checks
+                       or row.get("status") not in allowed_outcomes
+                       for row in data["checks"])
+                or proc.returncode != (0 if data["status"] == "passed" else 1)):
+            return unavailable
+        required = {"missing_bearer", "foreign_host",
+                    "foreign_origin", "unexpected_query"}
+        expected = {("gateway", name) for name in required}
+        if data["origin_configured"]:
+            expected.update(("origin", name) for name in required)
+        else:
+            expected.add(("origin", "local_configuration"))
+        actual = [(row["target"], row["check"]) for row in data["checks"]]
+        outcomes = {row["status"] for row in data["checks"]}
+        computed = ("failed" if "unexpected_status" in outcomes
+                    else "passed" if outcomes == {"passed"} else "incomplete")
+        if (len(actual) != len(expected) or set(actual) != expected
+                or data["requests_sent"] != (8 if data["origin_configured"] else 4)
+                or (not data["origin_configured"]
+                    and any(row["status"] != "not_configured"
+                            for row in data["checks"]
+                            if row["target"] == "origin"))
+                or data["status"] != computed):
+            return unavailable
+        return {
+            "mode": "read-only", "status": data["status"],
+            "negative_path_only": True, "remote_access_verified": False,
+            "positive_auth_verified": False,
+            "origin_configured": data["origin_configured"],
+            "requests_sent": data["requests_sent"],
+            "checks": [
+                {"target": row["target"], "check": row["check"],
+                 "status": row["status"]} for row in data["checks"]
+            ],
+        }
+    except (OSError, ValueError, TypeError, KeyError,
+            subprocess.TimeoutExpired):
+        return unavailable
 
 
 def cloudflare_portal_prepare() -> int:
@@ -1001,9 +1086,11 @@ def menu() -> int:
         elif choice == "18":
             print(json.dumps(cloudflare_portal_preview(), indent=2))
             try:
-                action = input("Cloudflare: STATUS, PREPARE, REMOVE, or Enter to cancel: ").strip().upper()
+                action = input("Cloudflare: STATUS, CHECK, PREPARE, REMOVE, or Enter to cancel: ").strip().upper()
                 if action == "STATUS":
                     print(json.dumps(cloudflare_portal_status(), indent=2))
+                elif action == "CHECK":
+                    print(json.dumps(cloudflare_portal_negative_probe(), indent=2))
                 elif action == "PREPARE":
                     print("Preparation exit:", cloudflare_portal_prepare())
                 elif action == "REMOVE":
@@ -1085,6 +1172,8 @@ def make_parser() -> argparse.ArgumentParser:
                                   Redacted local Cloudflare Portal readiness (offline)
   ./setup.sh --cloudflare-portal-status
                                   Read-only local systemd and TCP status (not Cloudflare)
+  ./setup.sh --cloudflare-portal-probe
+                                  Read-only loopback rejection checks; NOT remote authorization proof
   ./setup.sh --cloudflare-portal-prepare
                                   Explicit attended local hostname config and disabled units
   ./setup.sh --cloudflare-portal-rollback
@@ -1142,6 +1231,8 @@ The existing ./start.sh and ./stop.sh remain supported independently.""")
                          help="read-only local Cloudflare Portal status, not route verification")
     choices.add_argument("--cloudflare-portal-status", action="store_true",
                          help="read-only optional unit and TCP listener status; no remote proof")
+    choices.add_argument("--cloudflare-portal-probe", action="store_true",
+                         help="read-only unauthenticated loopback denial checks; no remote proof")
     choices.add_argument("--cloudflare-portal-prepare", action="store_true",
                          help="attended private hostname configuration and optional unit install")
     choices.add_argument("--cloudflare-portal-rollback", action="store_true",
@@ -1210,6 +1301,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.cloudflare_portal_status:
         print(json.dumps(cloudflare_portal_status(), indent=2))
         return 0
+    if args.cloudflare_portal_probe:
+        report = cloudflare_portal_negative_probe()
+        print(json.dumps(report, indent=2))
+        return 0 if report["status"] == "passed" else 1
     if args.cloudflare_portal_prepare:
         return cloudflare_portal_prepare()
     if args.cloudflare_portal_rollback:
