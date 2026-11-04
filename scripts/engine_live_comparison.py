@@ -56,8 +56,8 @@ def preview() -> dict:
     """No active provider request, pacing reservation or persistent mutation."""
     output = {
         "mode": "read-only", "status": "unavailable",
-        "provider_search_calls": 0, "policy_modified": False,
-        "public_query_saved_in_private_history": False,
+        "web_search_calls_attempted": 0, "policy_modified": False,
+        "public_query_may_be_retained_in_private_history": False,
         "candidate_engines": [],
         "max_direct_engine_calls": MAX_ENGINES,
         "max_possible_upstream_search_requests": MAX_ENGINES * 2,
@@ -107,8 +107,8 @@ def sample(profile: str, *, confirm=input) -> dict:
     output = {
         "mode": "attended", "status": "refused",
         "profile": profile if profile in PRESETS else "invalid",
-        "provider_search_calls": 0, "policy_modified": False,
-        "public_query_saved_in_private_history": False,
+        "web_search_calls_attempted": 0, "policy_modified": False,
+        "public_query_may_be_retained_in_private_history": False,
         "measurements": [],
         "limitations": ("These are local end-to-end tool-call measurements, "
                         "not provider response-time, uptime, quota, or evidence "
@@ -137,8 +137,9 @@ def sample(profile: str, *, confirm=input) -> dict:
         return output
 
     output["status"] = "completed"
-    output["public_query_saved_in_private_history"] = True
     for index, name in enumerate(names):
+        if index:
+            time.sleep(BETWEEN_CALL_SECONDS)
         # Recheck the two verified views before EACH operation. A concurrent
         # policy edit, backend sleep, or engine-category drift stops sampling.
         try:
@@ -150,10 +151,9 @@ def sample(profile: str, *, confirm=input) -> dict:
                 or current_enabled != enabled):
             output["status"] = "preflight_changed"
             break
-        if index:
-            time.sleep(BETWEEN_CALL_SECONDS)
         before = time.monotonic()
-        output["provider_search_calls"] += 1
+        output["web_search_calls_attempted"] += 1
+        output["public_query_may_be_retained_in_private_history"] = True
         try:
             result = bridge.web_search(
                 PRESETS[profile], engines=name,
@@ -188,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result["status"] == "ready_for_operator_confirmation" else 1
     if not sys.stdin.isatty() or not sys.stderr.isatty():
         print(json.dumps({"mode": "attended", "status": "tty_required",
-                          "provider_search_calls": 0}))
+                          "web_search_calls_attempted": 0}))
         return 1
     result = sample(args.profile)
     print(json.dumps(result, sort_keys=True))
