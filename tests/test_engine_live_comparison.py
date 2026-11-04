@@ -12,10 +12,10 @@ from scripts import engine_live_comparison as probe
 
 def prepared(names=("bing", "duckduckgo web", "qwant"), *,
              status="ready_for_attended_comparison",
-             routing="fixed", enabled=False):
+             routing="fixed", enabled=False, revision="a" * 64):
     return {
         "status": status, "routing": routing,
-        "pacing_enabled": enabled,
+        "pacing_enabled": enabled, "policy_revision": revision,
         "plans": [{"scope": "general", "fixed": list(names)}],
     }
 
@@ -46,6 +46,8 @@ class LiveEngineComparisonTests(unittest.TestCase):
             prepared(status="operator_inventory_unavailable"),
             prepared(status="raw_inventory_unavailable"),
             prepared(names=["bing"], routing="invalid"),
+            prepared(names=["bing"], revision=None),
+            prepared(names=["bing"], revision="MALFORMED"),
         )
         for item in malformed:
             with self.subTest(item=item), patch.object(
@@ -60,7 +62,7 @@ class LiveEngineComparisonTests(unittest.TestCase):
             with (self.subTest(word=word),
                   patch.object(probe.os, "geteuid", return_value=1000),
                   patch.object(probe, "_verified_plan",
-                               return_value=(["bing"], "fixed", False)),
+                               return_value=(["bing"], "fixed", False, "a" * 64)),
                   patch.object(probe.bridge, "web_search",
                                side_effect=AssertionError("no searches"))):
                 result = probe.sample("docs", confirm=lambda prompt: word)
@@ -95,7 +97,7 @@ class LiveEngineComparisonTests(unittest.TestCase):
         with (patch.object(probe.os, "geteuid", return_value=1000),
               patch.object(probe, "_verified_plan",
                            return_value=(["bing", "duckduckgo web", "qwant"],
-                                         "evidence", True)) as inventory,
+                                         "evidence", True, "a" * 64)) as inventory,
               patch.object(probe.bridge, "web_search", side_effect=fake_search),
               patch.object(probe.time, "sleep") as throttle):
             result = probe.sample("science", confirm=lambda prompt: "SEARCH")
@@ -131,9 +133,9 @@ class LiveEngineComparisonTests(unittest.TestCase):
     def test_policy_drift_stops_after_first_call(self):
         with (patch.object(probe.os, "geteuid", return_value=1000),
               patch.object(probe, "_verified_plan", side_effect=[
-                  (["bing", "qwant"], "fixed", False),
-                  (["bing", "qwant"], "fixed", False),
-                  (["bing"], "fixed", False),
+                  (["bing", "qwant"], "fixed", False, "a" * 64),
+                  (["bing", "qwant"], "fixed", False, "a" * 64),
+                  (["bing"], "fixed", False, "a" * 64),
               ]),
               patch.object(probe.bridge, "web_search", return_value=[],
                            ) as search,
@@ -142,12 +144,29 @@ class LiveEngineComparisonTests(unittest.TestCase):
         self.assertEqual(result["status"], "preflight_changed")
         self.assertEqual(result["web_search_calls_attempted"], 1)
         search.assert_called_once()
-        sleep.assert_not_called()
+        sleep.assert_called_once_with(probe.BETWEEN_CALL_SECONDS)
+
+    def test_spacing_only_policy_edit_aborts_with_same_candidate_names(self):
+        # The fingerprint is computed from the original private policy raw
+        # bytes: changing min_spacing_seconds changes the revision even when
+        # engine names, routing and enabled flags are unchanged.
+        unchanged = (["bing", "qwant"], "fixed", True, "a" * 64)
+        changed = (["bing", "qwant"], "fixed", True, "b" * 64)
+        with (patch.object(probe.os, "geteuid", return_value=1000),
+              patch.object(probe, "_verified_plan",
+                           side_effect=[unchanged, unchanged, changed]),
+              patch.object(probe.bridge, "web_search", return_value=[]) as search,
+              patch.object(probe.time, "sleep") as sleep):
+            result = probe.sample("docs", confirm=lambda _: "SEARCH")
+        self.assertEqual(result["status"], "preflight_changed")
+        self.assertEqual(result["web_search_calls_attempted"], 1)
+        search.assert_called_once()
+        sleep.assert_called_once_with(probe.BETWEEN_CALL_SECONDS)
 
     def test_unexpected_exception_stops_and_never_echoes_error(self):
         with (patch.object(probe.os, "geteuid", return_value=1000),
               patch.object(probe, "_verified_plan",
-                           return_value=(["bing", "qwant"], "fixed", False)),
+                           return_value=(["bing", "qwant"], "fixed", False, "a" * 64)),
               patch.object(probe.bridge, "web_search",
                            side_effect=OSError("PRIVATE_TOKEN_OR_URL")) as search):
             result = probe.sample("docs", confirm=lambda _: "SEARCH")
