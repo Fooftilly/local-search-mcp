@@ -1070,6 +1070,21 @@ def _crawl_metadata(page: dict, final_url: str) -> dict:
     return result
 
 
+# The upstream Docker server constrains PDF downloads and parsing on the
+# guarded crawler side; these are our stricter, caller-unconfigurable budgets.
+PDF_MAX_BYTES = 16 * 1024 * 1024
+PDF_MAX_PAGES = 150
+
+
+def _is_pdf_path(url: object) -> bool:
+    if not isinstance(url, str):
+        return False
+    try:
+        return urlsplit(url).path.lower().endswith(".pdf")
+    except ValueError:
+        return False
+
+
 def _run_fetch(url: str, mode: str, *,
                once_proof: tuple[str, str] | None = None,
                include_links: bool = False, include_tables: bool = False,
@@ -1077,17 +1092,19 @@ def _run_fetch(url: str, mode: str, *,
                include_alternatives: bool = False,
                compact_chars: int = document_pages.PAGE_CHARS,
                retain_for_evidence: bool = False,
-               include_jsonld: bool = False) -> dict:
+               include_jsonld: bool = False,
+               extract_pdf: bool = False) -> dict:
     try:
         with on_demand.lease("crawl4ai"):
             if (include_links or include_tables or include_outline or include_alternatives
-                    or retain_for_evidence or include_jsonld or compact_chars != document_pages.PAGE_CHARS):
+                    or retain_for_evidence or include_jsonld or extract_pdf
+                    or compact_chars != document_pages.PAGE_CHARS):
                 return _run_fetch_network(
                     url, mode, once_proof=once_proof,
                     include_links=include_links, include_tables=include_tables,
                     include_outline=include_outline, include_alternatives=include_alternatives,
                     compact_chars=compact_chars, retain_for_evidence=retain_for_evidence,
-                    include_jsonld=include_jsonld)
+                    include_jsonld=include_jsonld, extract_pdf=extract_pdf)
             return _run_fetch_network(url, mode, once_proof=once_proof)
     except on_demand.BackendUnavailable:
         return {"url": url, "success": False, "status": "upstream_unavailable",
@@ -1101,10 +1118,23 @@ def _run_fetch_network(url: str, mode: str, *,
                        include_alternatives: bool = False,
                        compact_chars: int = document_pages.PAGE_CHARS,
                        retain_for_evidence: bool = False,
-                       include_jsonld: bool = False) -> dict:
+                       include_jsonld: bool = False,
+                       extract_pdf: bool = False) -> dict:
     """Crawl only after the caller has passed current local policy checks."""
     headers = {"Authorization": f"Bearer {CRAWL4AI_TOKEN}"} if CRAWL4AI_TOKEN else {}
     crawler_params = {"stream": False}
+    if extract_pdf:
+        # The pinned Crawl4AI 0.9.5+ Docker API selects PDFCrawlerStrategy
+        # when this fixed scraping strategy is present. Its downloader and
+        # page parser enforce these LOWER limits inside the guarded container.
+        crawler_params["scraping_strategy"] = {
+            "type": "PDFContentScrapingStrategy",
+            "params": {
+                "extract_images": False, "save_images_locally": False,
+                "batch_size": 2,
+                "max_pdf_bytes": PDF_MAX_BYTES, "max_pdf_pages": PDF_MAX_PAGES,
+            },
+        }
     if mode == "fit":
         # Stock Crawl4AI only generates fit Markdown when a content filter
         # is configured. These are upstream-allowlisted safe config classes.
@@ -1238,8 +1268,18 @@ def _run_fetch_network(url: str, mode: str, *,
     if not isinstance(markdown, str):
         return {"url": final_url, "success": False, "status": "invalid_extraction",
                 "reason": "Crawl4AI returned an invalid Markdown representation"}
-    if not markdown.strip():
+    if not markdown.strip() or (
+            extract_pdf and markdown.strip() == "Scraper will handle the real work"
+        ):
+        if extract_pdf:
+            return {"url": final_url, "success": False,
+                    "status": "extraction_failed",
+                    "reason": "Crawl4AI did not produce text from the PDF document."}
         return _empty_extraction_diagnostic(page, final_url)
+    if extract_pdf and ("data:image/" in markdown.casefold()
+                        or "data:application/pdf;base64" in markdown.casefold()):
+        return {"url": final_url, "success": False, "status": "invalid_extraction",
+                "reason": "PDF extraction contained embedded binary media."}
     if len(markdown) > document_pages.MAX_DOCUMENT_CHARS:
         return {"url": final_url, "success": False, "status": "document_too_large",
                 "reason": "Document exceeds the bounded extraction limit; content was not silently truncated"}
@@ -1254,6 +1294,8 @@ def _run_fetch_network(url: str, mode: str, *,
         "markdown": markdown[:compact_chars],
         "truncated": len(markdown) > compact_chars,
     }
+    if extract_pdf:
+        output["extraction_format"] = "pdf_text"
     if metadata:
         output["metadata"] = metadata
     if include_outline:
@@ -1339,7 +1381,8 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
               include_retrieval_info: bool = False,
               include_alternatives: bool = False,
               retain_for_evidence: bool = False,
-              include_jsonld: bool = False) -> dict:
+              include_jsonld: bool = False,
+              extract_pdf: bool = False) -> dict:
     """Fetch an approved page; bounded memory cache for public short pages.
 
     Authorization runs before every cache hit. Fresh skips both cache and
@@ -1361,6 +1404,16 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
         raise ValueError("retain_for_evidence must be a boolean")
     if type(include_jsonld) is not bool:
         raise ValueError("include_jsonld must be a boolean")
+    if type(extract_pdf) is not bool:
+        raise ValueError("extract_pdf must be a boolean")
+    if extract_pdf:
+        # Restrict PDF processing to explicit, approved .pdf URL paths; query
+        # parameters must never determine format or authorize destinations.
+        if not _is_pdf_path(url):
+            raise ValueError("extract_pdf requires a URL path ending in .pdf")
+        if mode != "raw" or any((include_links, include_tables,
+                                 include_alternatives, include_jsonld)):
+            raise ValueError("PDF text requires raw mode without media, tables or JSON-LD")
     before = request_cache.policy_epoch()
     once_proof = None
     # Ordinary permanent grants take precedence: a one-use grant must not be
@@ -1396,13 +1449,13 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
     if once_proof is not None:
         # One-use access never reads, stores, refreshes or coalesces a reusable
         # fetch cache entry. Proof stays local to this invocation.
-        if include_links or include_tables or include_outline or include_alternatives or retain_for_evidence or include_jsonld or compact_chars != document_pages.PAGE_CHARS:
+        if include_links or include_tables or include_outline or include_alternatives or retain_for_evidence or include_jsonld or extract_pdf or compact_chars != document_pages.PAGE_CHARS:
             response = _run_fetch(
                 url, mode, once_proof=once_proof,
                 include_links=include_links, include_tables=include_tables,
                 include_outline=include_outline, include_alternatives=include_alternatives,
                 compact_chars=compact_chars, retain_for_evidence=retain_for_evidence,
-                include_jsonld=include_jsonld)
+                include_jsonld=include_jsonld, extract_pdf=extract_pdf)
         else:
             response = _run_fetch(url, mode, once_proof=once_proof)
         if include_retrieval_info:
@@ -1412,13 +1465,14 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
         # Opt-in structured data must not reuse the legacy Markdown-only
         # cache entry or populate it with mismatched response shape.
         opt_in = (include_links or include_tables or include_outline or include_alternatives or
-                  retain_for_evidence or include_jsonld or compact_chars != document_pages.PAGE_CHARS)
+                  retain_for_evidence or include_jsonld or extract_pdf
+                  or compact_chars != document_pages.PAGE_CHARS)
         key = None if opt_in else request_cache.fetch_key(url, mode)
         load = (lambda: _run_fetch(
             url, mode, include_links=include_links, include_tables=include_tables,
             include_outline=include_outline, include_alternatives=include_alternatives,
             compact_chars=compact_chars, retain_for_evidence=retain_for_evidence,
-            include_jsonld=include_jsonld)
+            include_jsonld=include_jsonld, extract_pdf=extract_pdf)
         ) if opt_in else (lambda: _run_fetch(url, mode))
         cached = request_cache.run(
             "fetch", key, load,
@@ -1535,17 +1589,19 @@ def _batch_fetch_without_once(url: str, mode: str, fresh: bool,
                               include_outline: bool = False,
                               compact_chars: int = document_pages.PAGE_CHARS,
                               include_retrieval_info: bool = False,
-                              include_alternatives: bool = False) -> dict:
+                              include_alternatives: bool = False,
+                              extract_pdf: bool = False) -> dict:
     """Preserve web_fetch logging, but prohibit one-use grants in batch workers."""
     token = _BATCH_PERMANENT_ONLY.set(True)
     try:
         if (include_links or include_tables or include_outline or include_alternatives or
-                compact_chars != document_pages.PAGE_CHARS or include_retrieval_info):
+                compact_chars != document_pages.PAGE_CHARS or include_retrieval_info or extract_pdf):
             return web_fetch(url, mode, fresh,
                              include_links=include_links, include_tables=include_tables,
                              include_outline=include_outline, compact_chars=compact_chars,
                              include_retrieval_info=include_retrieval_info,
-                             include_alternatives=include_alternatives)
+                             include_alternatives=include_alternatives,
+                             extract_pdf=extract_pdf)
         return web_fetch(url, mode, fresh)
     finally:
         _BATCH_PERMANENT_ONLY.reset(token)
@@ -1558,7 +1614,8 @@ async def web_fetch_batch(urls: list[str], mode: str = "raw",
                           include_outline: bool = False,
                           compact_chars: int = document_pages.PAGE_CHARS,
                           include_retrieval_info: bool = False,
-                          include_alternatives: bool = False) -> dict:
+                          include_alternatives: bool = False,
+                          extract_pdf: bool = False) -> dict:
     """Fetch 1–8 approved URLs, at most 3 concurrently, with ordered results.
 
     Each unique URL uses the existing guarded web_fetch path. If the MCP call
@@ -1573,9 +1630,14 @@ async def web_fetch_batch(urls: list[str], mode: str = "raw",
         raise ValueError("compact_chars must be an integer between 2048 and 24000")
     if not isinstance(include_retrieval_info, bool):
         raise ValueError("include_retrieval_info must be a boolean")
+    if type(extract_pdf) is not bool:
+        raise ValueError("extract_pdf must be a boolean")
+    if extract_pdf and (mode != "raw" or
+                        any((include_links, include_tables, include_alternatives))):
+        raise ValueError("PDF text batch requires raw mode without media or tables")
     cancelled = threading.Event()
     opt_in = (include_links or include_tables or include_outline or include_alternatives or
-              compact_chars != document_pages.PAGE_CHARS)
+              extract_pdf or compact_chars != document_pages.PAGE_CHARS)
     fetcher = (_batch_fetch_without_once
                if not opt_in and not include_retrieval_info
                else lambda url, mode, fresh: _batch_fetch_without_once(
@@ -1583,7 +1645,8 @@ async def web_fetch_batch(urls: list[str], mode: str = "raw",
                    include_links=include_links, include_tables=include_tables,
                    include_outline=include_outline, compact_chars=compact_chars,
                    include_retrieval_info=include_retrieval_info,
-                   include_alternatives=include_alternatives))
+                   include_alternatives=include_alternatives,
+                   extract_pdf=extract_pdf and _is_pdf_path(url)))
     try:
         return await asyncio.to_thread(
             fetch_many, urls, mode, fresh, fetcher,
