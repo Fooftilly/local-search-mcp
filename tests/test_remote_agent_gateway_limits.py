@@ -221,7 +221,6 @@ class GatewayLimitTests(unittest.IsolatedAsyncioTestCase):
     async def _run_fast_stream_grant_change(self, change: str, *, frames: int):
         # A burst finishes before the periodic watcher wakes. The gateway
         # must check every disclosure boundary, not just the 250ms poll.
-        emitted = []
         outer = self
 
         class BurstyStream(httpx.AsyncByteStream):
@@ -230,7 +229,7 @@ class GatewayLimitTests(unittest.IsolatedAsyncioTestCase):
 
             async def __aiter__(self):
                 for index in range(frames):
-                    yield ("data: %d\\n\\n" % index).encode("ascii")
+                    yield ("data: %d\n\n" % index).encode("ascii")
 
             async def aclose(self):
                 self.closed = True
@@ -251,7 +250,7 @@ class GatewayLimitTests(unittest.IsolatedAsyncioTestCase):
         async def send(message):
             messages.append(message)
             if (message["type"] == "http.response.body"
-                    and message.get("body") == b"data: 0\\n\\n"):
+                    and message.get("body") == b"data: 0\n\n"):
                 if change == "expire":
                     outer.current_time[0] = 301.0
                 else:
@@ -279,7 +278,7 @@ class GatewayLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [event.get("body") for event in messages
              if event["type"] == "http.response.body"],
-            [b"data: 0\\n\\n"])
+            [b"data: 0\n\n"])
         self.assertEqual(self.gateway._budget._active_total, 0)
         self.assertEqual(self.gateway.audit_snapshot()[-1].status, 200)
         self.assertFalse(self.gateway.audit_snapshot()[-1].completed)
