@@ -42,8 +42,12 @@ The local gateway prototype rechecks the client grant after the bounded
 root-guard probe and again before exposing upstream response headers. This
 prevents a grant revoked while either operation is pending from authorizing
 later forwarding or response disclosure. It cannot retract work already sent
-to the upstream MCP; active stream revocation remains a separate periodic
-check. This is a local safety property, not proof of a deployed remote ingress.
+to the upstream MCP or already delivered to a client. Active stream grants
+are checked by both a bounded periodic watcher (also catching idle SSE) and
+immediate revalidation before each streamed chunk and terminal completion.
+This covers bursts between polls without expanding the gateway's authorized
+origin or weakening existing limits. This is a local safety property, not
+proof of a deployed remote ingress.
 
 **Choice 2 — preferred for Grok website when supported:** a proper MCP OAuth 2.1/OIDC flow with protected-resource metadata, scoped access tokens, issuer/audience/expiry validation at the enforcing gateway, user-grant revocation, and validated callbacks. Cloudflare Managed OAuth is a candidate **only if** the gateway verifies its Access JWT/token or a trusted auth layer does so on every request. Verify Grok's actual auth flow and interoperability before choosing. Avoid a generic, unauthenticated quick tunnel or reliance on Cloudflare's browser login redirect for non-browser clients.
 
