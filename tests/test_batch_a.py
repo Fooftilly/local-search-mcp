@@ -2,6 +2,7 @@
 from collections import OrderedDict
 from contextlib import nullcontext
 from pathlib import Path
+import json
 import os
 import tempfile
 import unittest
@@ -217,6 +218,102 @@ class BatchAContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"query":"beta"', audit)
         self.assertIn('"query":"offline"', audit)
         self.assertNotIn('"query":"[', audit)
+
+
+    async def test_batch_opt_in_provider_status_and_private_audit(self):
+        original = httpx.Client
+        seen = []
+
+        def handler(request):
+            self.assertEqual(request.url.path, "/search")
+            query = request.url.params.get("q")
+            seen.append(query)
+            return httpx.Response(200, json={
+                "results": [{"title": query, "url": "https://example.org/" + query,
+                             "content": "PUBLIC_SNIPPET", "engine": "yahoo"}],
+                "unresponsive_engines": (
+                    [["qwant", "PRIVATE_UPSTREAM_EXCEPTION_TOKEN"]]
+                    if query == "degraded" else []),
+            })
+
+        def factory(**kwargs):
+            return original(transport=httpx.MockTransport(handler), trust_env=False)
+
+        path = Path(self.tmp.name) / "history.jsonl"
+        with (patch.object(bridge.httpx, "Client", side_effect=factory),
+              patch.object(bridge.on_demand, "lease",
+                           side_effect=lambda _: nullcontext())):
+            async with Client(bridge.mcp) as client:
+                tools = {tool.name: tool for tool in await client.list_tools()}
+                properties = tools["web_search_batch"].inputSchema["properties"]
+                self.assertIn("include_search_status", properties)
+                self.assertIn("record_provider_diagnostics", properties)
+                ordinary = (await client.call_tool("web_search_batch", {
+                    "queries": ["baseline"], "fresh": True})).data
+                self.assertTrue(ordinary["success"])
+                self.assertNotIn("status", ordinary["results"][0])
+                self.assertNotIn("search_status", ordinary["results"][0])
+                diagnostic = (await client.call_tool("web_search_batch", {
+                    "queries": ["degraded", "healthy"], "fresh": True,
+                    "include_search_status": True})).data
+                self.assertTrue(diagnostic["success"])
+                self.assertEqual([entry["status"] for entry in diagnostic["results"]],
+                                 ["degraded", "ok"])
+                self.assertEqual(
+                    diagnostic["results"][0]["search_status"]["unresponsive_engines"],
+                    ["qwant"])
+                self.assertEqual(
+                    diagnostic["results"][1]["search_status"]["coverage"],
+                    "no_failures_reported")
+                recorded = (await client.call_tool("web_search_batch", {
+                    "queries": ["degraded"], "fresh": True,
+                    "include_search_status": True,
+                    "record_provider_diagnostics": True})).data
+                self.assertTrue(recorded["success"])
+                self.assertEqual(recorded["results"][0]["status"], "degraded")
+        self.assertEqual(seen, ["baseline", "degraded", "healthy", "degraded"])
+        events = [json.loads(line) for line in path.read_text().splitlines()]
+        self.assertEqual(len(events), 4)
+        self.assertTrue(all("provider_diagnostics" not in event for event in events[:3]))
+        self.assertTrue(events[3]["provider_diagnostics_opt_in"])
+        self.assertEqual(
+            events[3]["provider_diagnostics"]["unresponsive_engines"], ["qwant"])
+        self.assertNotIn("PRIVATE_UPSTREAM_EXCEPTION_TOKEN", path.read_text())
+        self.assertNotIn("PUBLIC_SNIPPET", path.read_text())
+
+    async def test_batch_diagnostic_failures_and_input_validation(self):
+        diagnostic = {
+            "coverage": "partial", "reported_count": 1,
+            "unresponsive_engines": ["qwant"],
+            "unparsed_count": 0, "truncated": False}
+        calls = []
+
+        def search(query, *args, **kwargs):
+            calls.append((query, kwargs))
+            return {"success": False, "status": "upstream_unavailable",
+                    "reason": "Public upstream unavailable.",
+                    "search_status": diagnostic}
+
+        with patch.object(bridge, "web_search", side_effect=search):
+            result = await bridge.web_search_batch(
+                ["unavailable"], include_search_status=True)
+            self.assertFalse(result["success"])
+            self.assertEqual(result["results"][0]["status"], "upstream_unavailable")
+            self.assertEqual(result["results"][0]["search_status"], diagnostic)
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(calls[0][1]["include_search_status"])
+            self.assertFalse(calls[0][1]["record_provider_diagnostics"])
+            before = len(calls)
+            for kwargs in (
+                    {"include_search_status": 1},
+                    {"record_provider_diagnostics": 1},
+                    {"record_provider_diagnostics": True},
+                    {"include_search_status": "yes"},
+                    {"record_provider_diagnostics": None}):
+                with self.subTest(kwargs=kwargs):
+                    with self.assertRaises(ValueError):
+                        await bridge.web_search_batch(["public"], **kwargs)
+            self.assertEqual(len(calls), before)
 
 
 if __name__ == "__main__":
