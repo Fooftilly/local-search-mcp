@@ -1268,6 +1268,18 @@ def _run_fetch_network(url: str, mode: str, *,
     if not isinstance(markdown, str):
         return {"url": final_url, "success": False, "status": "invalid_extraction",
                 "reason": "Crawl4AI returned an invalid Markdown representation"}
+    if extract_pdf:
+        # Require PDFContentScrapingStrategy's page-count signature in the
+        # upstream cleaned HTML, not merely a successful crawl or arbitrary
+        # Markdown. A crawler that ignored the strategy must never be
+        # misreported to the agent as a parsed PDF.
+        cleaned = page.get("cleaned_html")
+        if (not isinstance(cleaned, str)
+                or '<meta name="pdf-pages"' not in cleaned[:1024]
+                or '<div class="pdf-page"' not in cleaned[:2048]):
+            return {"url": final_url, "success": False,
+                    "status": "extraction_failed",
+                    "reason": "Crawl4AI did not verify page-level PDF text extraction."}
     if not markdown.strip() or (
             extract_pdf and markdown.strip() == "Scraper will handle the real work"
         ):
