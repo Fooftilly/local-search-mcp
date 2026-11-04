@@ -1,6 +1,10 @@
 name: Test
 on:
+  # Feature branch changes receive the same checks through pull_request.
+  # Avoid running the full suite twice for every open-PR commit.
   push:
+    branches:
+      - master
   pull_request:
   # Weekly fresh-dependency check on the deployed Python runtime.
   # Monday 01:17 UTC is 02:17/03:17 in Montenegro (winter/summer).
@@ -9,8 +13,8 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-# Superseded PR commits should not generate duplicate check runs.
-# Keep each push run unique so even pending master checks are never cancelled.
+# Superseded PR commits cancel earlier PR runs; independent master pushes
+# keep unique run IDs and are never cancelled.
 concurrency:
   group: test-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
