@@ -917,11 +917,15 @@ def web_search(query: str, max_results: int = 8, language: str = "",
 async def web_search_batch(queries: list[str], max_results: int = 5,
                            language: str = "", categories: str = "",
                            time_range: str = "", engines: str = "",
-                           fresh: bool = False) -> dict:
+                           fresh: bool = False,
+                           include_search_status: bool = False,
+                           record_provider_diagnostics: bool = False) -> dict:
     """Search 1–4 distinct public queries using existing web_search safeguards.
 
     At most two underlying searches run concurrently. Each item uses existing
     engine/category validation, cache, lease, attribution and private audit.
+    Opt-in per-query status reuses uncached, sanitized web_search diagnostics;
+    private provider-failure audit requires independent explicit opt-in.
     Cancellation skips queued tasks but cannot stop already running threads.
     """
     if (not isinstance(queries, list) or not 1 <= len(queries) <= 4
@@ -931,6 +935,12 @@ async def web_search_batch(queries: list[str], max_results: int = 5,
         raise ValueError("max_results must be between 1 and 8 for batch search")
     if type(fresh) is not bool:
         raise ValueError("fresh must be a boolean")
+    if type(include_search_status) is not bool:
+        raise ValueError("include_search_status must be a boolean")
+    if type(record_provider_diagnostics) is not bool:
+        raise ValueError("record_provider_diagnostics must be a boolean")
+    if record_provider_diagnostics and not include_search_status:
+        raise ValueError("record_provider_diagnostics requires include_search_status=true")
     cleaned = []
     for query in queries:
         # A search batch never delegates to SearXNG bang shortcuts, even
@@ -950,7 +960,9 @@ async def web_search_batch(queries: list[str], max_results: int = 5,
             try:
                 output = await asyncio.to_thread(
                     web_search, query, max_results, language, categories,
-                    time_range, engines, 1, fresh)
+                    time_range, engines, 1, fresh,
+                    include_search_status=include_search_status,
+                    record_provider_diagnostics=record_provider_diagnostics)
             except Exception:
                 return {"query": query, "success": False, "status": "search_failed",
                         "reason": "The search could not complete."}
@@ -958,9 +970,26 @@ async def web_search_batch(queries: list[str], max_results: int = 5,
                 return {"query": query, "success": True,
                         "result_count": len(output), "results": output}
             if isinstance(output, dict):
-                return {"query": query, "success": False,
+                if output.get("success") is True:
+                    items = output.get("results")
+                    if not isinstance(items, list):
+                        return {"query": query, "success": False, "status": "invalid_response",
+                                "reason": "Search returned an invalid result."}
+                    item = {"query": query, "success": True,
+                            "result_count": len(items), "results": items}
+                    if include_search_status:
+                        # Only our own web_search diagnostic wrapper returns
+                        # successful dict results. Keep its bounded status.
+                        item["status"] = str(output.get("status", "ok"))[:64]
+                        if isinstance(output.get("search_status"), dict):
+                            item["search_status"] = output["search_status"]
+                    return item
+                item = {"query": query, "success": False,
                         "status": str(output.get("status", "search_failed"))[:64],
                         "reason": str(output.get("reason", "Search unavailable"))[:200]}
+                if include_search_status and isinstance(output.get("search_status"), dict):
+                    item["search_status"] = output["search_status"]
+                return item
             return {"query": query, "success": False, "status": "invalid_response",
                     "reason": "Search returned an invalid result."}
 

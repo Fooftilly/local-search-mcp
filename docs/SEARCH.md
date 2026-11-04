@@ -215,8 +215,8 @@ record bounded, sanitized SearXNG-reported unresponsive provider names in the
 existing private, rotating JSONL history. Recording is **off by default**,
 including when `include_search_status=true` is used by itself. The option
 requires diagnostic mode, returns the same opt-in response shape and does
-not add any provider search or cache layer. It is not exposed on the batch
-search tool.
+not add any provider search or cache layer. The batch tool supports the same
+explicit per-query opt-in; neither tool records provider failures by default.
 
 The stored `provider_diagnostics` contains at most 16 strictly validated
 engine labels (including parenthesized names), a declared coverage category,
@@ -375,7 +375,7 @@ case-insensitively; no automatic query expansion or additional providers.
 SearXNG bang provider shortcuts (`!engine`) are rejected in this new batch
 mode, including when no explicit category/engine filter was supplied.
 
-The new response contains `success` (all queries succeeded), `query_count`,
+The default response contains `success` (all queries succeeded), `query_count`,
 and ordered `results` entries each containing `query`, `success` and either
 `results`/`result_count` or a sanitized `status`/`reason`. A failure of
 one provider/search does not discard successful sibling queries. The tool
@@ -383,6 +383,26 @@ supports shared `language`, `categories`, `time_range`, `engines`, and
 `fresh` selectors; `categories` and `engines` remain mutually exclusive.
 Each underlying individual search is already audited through the existing
 private search history; no aggregate list of query text is persisted.
+
+Set `include_search_status=true` to see an independently fresh, bounded
+SearXNG provider-coverage diagnostic **for each query**, including partial
+provider failures on an otherwise successful search. The per-query `status`
+will be `ok`, `degraded`, or `unknown` for successful entries, depending on
+whether SearXNG reported failures, partial coverage, or unparseable metadata;
+these are **not** provider-uptime estimates. The entry also includes its
+bounded `search_status` details. Failed entries keep their existing bounded reason
+and may include `search_status` when supplied by the underlying search.
+This skips the in-memory search cache, without adding provider requests beyond
+the existing bounded individual-search recovery behavior. Coverage is not an
+upstream uptime measurement; a full MCP transport disconnect still cannot
+return any in-band diagnostic.
+
+If and only if `include_search_status=true`, additionally set
+`record_provider_diagnostics=true` to store bounded provider labels in
+private, rotating per-query audit history. Both flags are false by default.
+Invalid flags or recording without diagnostics reject the whole batch before
+network requests. This does **not** save upstream exception text or create a
+second batch-level query log.
 
 A cancelled batch skips queued work but cannot forcibly terminate a
 synchronous search already running in a worker thread. The normal
