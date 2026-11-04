@@ -43,9 +43,11 @@ and before forwarding to the authenticated gateway, and before returning
 upstream response headers. Removing or changing the config makes the running
 adapter return 503 at these boundaries: a removed route cannot authorize
 a not-yet-forwarded request or release an upstream response. A separately
-bounded 0.25-second polling task also interrupts an active SSE response if
-the private configuration is removed or replaced; it closes the upstream
-stream and stops further forwarding. Bytes already emitted or upstream work
+bounded 0.25-second polling task interrupts an idle SSE response after a
+private configuration removal or replacement; the adapter also checks the
+route immediately before forwarding each streamed chunk so a burst does not
+wait for the poll. It closes the upstream stream on revocation and stops
+further forwarding. Bytes already emitted or upstream work
 already performed cannot be retracted. Stop the service and revoke its
 independent grant for full shutdown. No bearer is stored in the adapter
 config, systemd unit, CLI argument, GitHub, or logs. The independent
