@@ -150,6 +150,17 @@ All steps are run on your own Linux machine as its **unprivileged** owner.
    TCP ports accept connections. It does not prove peer identity, MCP
    authentication, Cloudflare private routing or Grok acceptance.
 
+   The local preview/status field `cloudflared_on_user_path` means only
+   whether the command `cloudflared` is resolvable in the **setup user's**
+   PATH. It replaces the misleading `cloudflared_installed_on_host` name:
+   `false` does **not** mean the tunnel is down, absent from another
+   account's PATH, or missing from a separately managed systemd service,
+   container or Cloudflare device. `cloudflare_connector_runtime` is
+   deliberately `not_inspected`, even when a binary is present; the
+   separate private route, Access policy and OAuth remain `unverified`
+   until actual operator-specific acceptance. The preview does not call
+   systemd, Docker, Cloudflare APIs or a remote network target.
+
    With both optional services already running, perform the credential-free
    **local denial checks** from the normal user's terminal:
 
