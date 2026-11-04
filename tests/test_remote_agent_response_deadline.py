@@ -188,12 +188,12 @@ class ResponseHeaderDeadlineTests(unittest.IsolatedAsyncioTestCase):
                             b"HTTP/1.1 200 OK\r\n"
                             b"Content-Type: text/event-stream\r\n"
                             b"Transfer-Encoding: chunked\r\n\r\n")
-                        writer.write(b"B\r\n" + frame1 + b"\r\n")
+                        writer.write(f"{len(frame1):X}\r\n".encode("ascii") + frame1 + b"\r\n")
                         await writer.drain()
                         # Require receipt of frame one before delaying frame two.
                         await asyncio.wait_for(seen_first.wait(), 2)
                         await asyncio.sleep(0.08)
-                        writer.write(b"D\r\n" + frame2 + b"\r\n"
+                        writer.write(f"{len(frame2):X}\r\n".encode("ascii") + frame2 + b"\r\n"
                                      b"0\r\n\r\n")
                         await writer.drain()
                     except (ConnectionResetError, BrokenPipeError,
