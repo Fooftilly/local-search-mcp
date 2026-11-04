@@ -407,9 +407,9 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
                 self.release = asyncio.Event()
 
             async def __aiter__(self):
-                yield b"data: already-sent\\n\\n"
+                yield b"data: already-sent\n\n"
                 await self.release.wait()
-                yield b"data: must-not-leak\\n\\n"
+                yield b"data: must-not-leak\n\n"
 
             async def aclose(self):
                 self.closed = True
@@ -483,7 +483,7 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [m.get("body") for m in messages
              if m["type"] == "http.response.body"],
-            [b"data: already-sent\\n\\n"])
+            [b"data: already-sent\n\n"])
 
     async def test_live_config_removal_blocks_already_started_adapter(self):
         with tempfile.TemporaryDirectory() as tmp:
