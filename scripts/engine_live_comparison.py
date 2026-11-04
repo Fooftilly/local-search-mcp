@@ -76,14 +76,16 @@ def preview() -> dict:
 def _outcome(result: object) -> dict:
     """Redact everything except validated result count and coarse status."""
     if isinstance(result, list):
-        if len(result) > MAX_RESULTS:
+        if len(result) > MAX_RESULTS or any(not isinstance(row, dict)
+                                            for row in result):
             return {"status": "invalid_response", "result_count": None}
         return {"status": "results" if result else "empty",
                 "result_count": len(result)}
     if isinstance(result, dict):
         if result.get("success") is True:
             items = result.get("results")
-            if not isinstance(items, list) or len(items) > MAX_RESULTS:
+            if (not isinstance(items, list) or len(items) > MAX_RESULTS
+                    or any(not isinstance(row, dict) for row in items)):
                 return {"status": "invalid_response", "result_count": None}
             declared = result.get("status")
             return {"status": "results" if items else "empty",
