@@ -399,9 +399,35 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.gateway_requests), 1)
         self.assertEqual(len(self.bridge_requests), 1)
 
-    async def test_portal_grant_removed_during_body_never_reaches_gateway(self):
-        active = [True]
-        messages = []
+    class _RevocationSSE(httpx.AsyncByteStream):
+        def __init__(self, chunks, *, idle=False):
+            self.chunks = chunks
+            self.idle = idle
+            self.closed = False
+
+        async def __aiter__(self):
+            for chunk in self.chunks:
+                yield chunk
+            if self.idle:
+                await asyncio.Event().wait()
+
+        async def aclose(self):
+            self.closed = True
+
+    async def _call_origin_once(self, origin, send, *, on_body=None):
+        received = False
+
+        async def receive():
+            nonlocal received
+            if not received:
+                received = True
+                if on_body is not None:
+                    on_body()
+                return {"type": "http.request",
+                        "body": b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                        "more_body": False}
+            await asyncio.Event().wait()
+
         scope = {
             "type": "http", "path": "/mcp", "raw_path": b"/mcp",
             "query_string": b"", "method": "POST",
@@ -411,12 +437,11 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
                 (b"authorization", ("Bearer " + self.token).encode("ascii")),
             ],
         }
+        await origin(scope, receive, send)
 
-        async def receive():
-            active[0] = False
-            return {"type": "http.request",
-                    "body": b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
-                    "more_body": False}
+    async def test_portal_grant_removed_during_body_never_reaches_gateway(self):
+        active = [True]
+        messages = []
 
         async def send(message):
             messages.append(message)
@@ -424,7 +449,8 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
         with patch("remote_agent_cloudflare_origin.load_client_grants",
                    side_effect=lambda _: ((self.portal_grant,)
                                           if active[0] else ())):
-            await asyncio.wait_for(self.adapter(scope, receive, send), 2)
+            await asyncio.wait_for(self._call_origin_once(
+                self.adapter, send, on_body=lambda: active.__setitem__(0, False)), 2)
         self.assertEqual(
             [m["status"] for m in messages if m["type"] == "http.response.start"],
             [401])
@@ -443,44 +469,29 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
                 transport=httpx.MockTransport(upstream_handler),
                 trust_env=False) as upstream:
             origin = CloudflarePrivateOrigin(self.hostname, upstream)
-            async with httpx.AsyncClient(
-                    transport=httpx.ASGITransport(
-                        app=origin, client=("127.0.0.1", 3456)),
-                    base_url="http://" + self.hostname,
-                    trust_env=False) as client:
-                with patch("remote_agent_cloudflare_origin.load_client_grants",
-                           side_effect=lambda _: ((self.portal_grant,)
-                                                  if active[0] else ())):
-                    response = await client.post(
-                        "/mcp", headers={"authorization": "Bearer " + self.token},
-                        content=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
+            messages = []
+
+            async def send(message):
+                messages.append(message)
+
+            with patch("remote_agent_cloudflare_origin.load_client_grants",
+                       side_effect=lambda _: ((self.portal_grant,)
+                                              if active[0] else ())):
+                await asyncio.wait_for(self._call_origin_once(origin, send), 2)
         self.assertEqual(len(upstream_requests), 1)
-        self.assertEqual(response.status_code, 401)
-        self.assertNotIn("must-not-disclose", response.text)
+        self.assertEqual(
+            [m["status"] for m in messages if m["type"] == "http.response.start"],
+            [401])
+        self.assertNotIn("must-not-disclose", str(messages))
 
     async def test_portal_grant_revocation_blocks_bursty_buffered_sse(self):
         active = [True]
-
-        class BurstySSE(httpx.AsyncByteStream):
-            def __init__(self):
-                self.closed = False
-
-            async def __aiter__(self):
-                yield b"data: allowed\n\n"
-                yield b"data: forbidden\n\n"
-
-            async def aclose(self):
-                self.closed = True
-
-        stream = BurstySSE()
-
-        def upstream_handler(request):
-            return httpx.Response(
-                200, headers={"content-type": "text/event-stream"},
-                stream=stream)
-
+        stream = self._RevocationSSE([
+            b"data: allowed\n\n", b"data: forbidden\n\n"])
         async with httpx.AsyncClient(
-                transport=httpx.MockTransport(upstream_handler),
+                transport=httpx.MockTransport(lambda _: httpx.Response(
+                    200, headers={"content-type": "text/event-stream"},
+                    stream=stream)),
                 trust_env=False) as upstream:
             origin = CloudflarePrivateOrigin(self.hostname, upstream)
             messages = []
@@ -491,31 +502,10 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
                         and message.get("body") == b"data: allowed\n\n"):
                     active[0] = False
 
-            got_body = False
-
-            async def receive():
-                nonlocal got_body
-                if not got_body:
-                    got_body = True
-                    return {"type": "http.request",
-                            "body": b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
-                            "more_body": False}
-                await asyncio.Event().wait()
-
-            scope = {
-                "type": "http", "path": "/mcp", "raw_path": b"/mcp",
-                "query_string": b"", "method": "POST",
-                "client": ("127.0.0.1", 3456),
-                "headers": [
-                    (b"host", self.hostname.encode("ascii")),
-                    (b"authorization",
-                     ("Bearer " + self.token).encode("ascii")),
-                ],
-            }
             with patch("remote_agent_cloudflare_origin.load_client_grants",
                        side_effect=lambda _: ((self.portal_grant,)
                                               if active[0] else ())):
-                await asyncio.wait_for(origin(scope, receive, send), 2)
+                await asyncio.wait_for(self._call_origin_once(origin, send), 2)
         self.assertTrue(stream.closed)
         self.assertEqual(
             [m.get("body") for m in messages
@@ -525,19 +515,7 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def test_idle_sse_closes_when_portal_grant_revoked(self):
         first_chunk = asyncio.Event()
         active = [True]
-
-        class HeldSSE(httpx.AsyncByteStream):
-            def __init__(self):
-                self.closed = False
-
-            async def __aiter__(self):
-                yield b"data: initial\n\n"
-                await asyncio.Event().wait()
-
-            async def aclose(self):
-                self.closed = True
-
-        stream = HeldSSE()
+        stream = self._RevocationSSE([b"data: initial\n\n"], idle=True)
         async with httpx.AsyncClient(
                 transport=httpx.MockTransport(lambda _: httpx.Response(
                     200, headers={"content-type": "text/event-stream"},
@@ -552,31 +530,10 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
                         and message.get("body")):
                     first_chunk.set()
 
-            got_body = False
-
-            async def receive():
-                nonlocal got_body
-                if not got_body:
-                    got_body = True
-                    return {"type": "http.request",
-                            "body": b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
-                            "more_body": False}
-                await asyncio.Event().wait()
-
-            scope = {
-                "type": "http", "path": "/mcp", "raw_path": b"/mcp",
-                "query_string": b"", "method": "POST",
-                "client": ("127.0.0.1", 3456),
-                "headers": [
-                    (b"host", self.hostname.encode("ascii")),
-                    (b"authorization",
-                     ("Bearer " + self.token).encode("ascii")),
-                ],
-            }
             with patch("remote_agent_cloudflare_origin.load_client_grants",
                        side_effect=lambda _: ((self.portal_grant,)
                                               if active[0] else ())):
-                running = asyncio.create_task(origin(scope, receive, send))
+                running = asyncio.create_task(self._call_origin_once(origin, send))
                 try:
                     await asyncio.wait_for(first_chunk.wait(), 2)
                     active[0] = False
