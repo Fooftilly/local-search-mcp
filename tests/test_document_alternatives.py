@@ -67,6 +67,45 @@ class AdvertisedAlternativesTests(unittest.TestCase):
             "View as:\n[HTML](https://www.rfc-editor.org/rfc/rfc9110.html)\n"
         )["alternatives"], [])
 
+    def test_rfc_info_page_rejects_other_rfc_even_with_matching_link_stems(self):
+        other = """View as:
+[Plain Text](https://www.rfc-editor.org/rfc/rfc9111.txt)
+[PDF](https://www.rfc-editor.org/rfc/rfc9111.pdf)
+
+"""
+        self.assertEqual(extract(other)["alternatives"], [])
+        # An approved RFC Editor host with a trailing DNS root dot must
+        # obey the same RFC identity restriction.
+        with patch("domain_policy.socket.getaddrinfo",
+                   side_effect=AssertionError("Never fetch alternatives")):
+            dotted = subject.extract(
+                {"links": {"internal": []}, "tables": []},
+                "https://www.rfc-editor.org./info/rfc9110",
+                include_links=False, include_tables=False,
+                include_alternatives=True, markdown=other)
+        self.assertEqual(dotted["alternatives"], [])
+        # The trailing slash and case of the RFC Editor info route are valid.
+        with patch("domain_policy.socket.getaddrinfo",
+                   side_effect=AssertionError("Never fetch alternatives")):
+            matching = subject.extract(
+                {"links": {"internal": []}, "tables": []},
+                BASE + "/", include_links=False, include_tables=False,
+                include_alternatives=True, markdown=GROUP)
+        self.assertEqual(len(matching["alternatives"]), 3)
+
+    def test_rfc_group_rejects_conflicting_duplicate_format_links(self):
+        conflicting = """View as:
+[Compact HTML](https://www.rfc-editor.org/rfc/rfc9110.html)
+[Compact HTML](https://other.example/rfc/rfc9110.html)
+[PDF](https://www.rfc-editor.org/rfc/rfc9110.pdf)
+
+"""
+        self.assertEqual(extract(conflicting)["alternatives"], [])
+        # Identical duplicate labels/URLs are not contradictory.
+        identical = GROUP.replace(
+            "  * [PDF]", "  * [Compact HTML](https://www.rfc-editor.org/rfc/rfc9110.html),\n  * [PDF]")
+        self.assertEqual(len(extract(identical)["alternatives"]), 3)
+
     def test_separate_groups_are_not_conflated(self):
         markdown = """View as:
 [HTML](https://www.rfc-editor.org/rfc/rfc9110.html)

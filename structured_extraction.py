@@ -272,6 +272,18 @@ def _advertised_alternatives(markdown: str, base: str, *, budget: int) -> list[d
     """
     if not isinstance(markdown, str):
         return []
+    # RFC Editor /info/rfcNNNN pages identify one specific document.
+    # A grouped link to a different RFC is not an alternate format of this page.
+    expected_rfc = None
+    try:
+        source = urlsplit(base)
+        if source.hostname and source.hostname.rstrip(".") == "www.rfc-editor.org":
+            identified = re.fullmatch(r"/info/(rfc[0-9]+)/?", source.path,
+                                      re.IGNORECASE)
+            if identified:
+                expected_rfc = identified.group(1).casefold()
+    except (TypeError, ValueError):
+        return []
     markdown = _without_fenced_examples(markdown)
     for match_index, marker in enumerate(_ALT_MARKER.finditer(markdown)):
         if match_index >= 8:
@@ -280,6 +292,7 @@ def _advertised_alternatives(markdown: str, base: str, *, budget: int) -> list[d
         group = markdown[marker.end():marker.end() + 900].split("\n\n", 1)[0]
         candidates: dict[str, tuple[str, str]] = {}
         observed_stems: set[str] = set()
+        conflicting = False
         for link in _ALT_LINK.finditer(group):
             fmt = _ALT_LABELS.get(link.group(1).strip().casefold())
             if fmt is None:
@@ -295,11 +308,18 @@ def _advertised_alternatives(markdown: str, base: str, *, budget: int) -> list[d
             if not stem or stem.endswith("/"):
                 continue
             observed_stems.add(stem)
-            if fmt not in candidates:
-                candidates[fmt] = (stem, url)
+            if fmt in candidates and candidates[fmt] != (stem, url):
+                conflicting = True
+                break
+            candidates[fmt] = (stem, url)
+        if conflicting:
+            continue
         # Mixed-document groups are ambiguous: never arbitrarily select a
         # first per-format pair and claim it was an advertised equivalence.
         if len(observed_stems) != 1:
+            continue
+        if (expected_rfc is not None
+                and next(iter(observed_stems)).rsplit("/", 1)[-1].casefold() != expected_rfc):
             continue
         # Do not infer equivalence from labels alone: the source must expose
         # a PDF and a text/HTML candidate for the same literal URL stem.
