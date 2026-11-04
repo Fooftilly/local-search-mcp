@@ -30,7 +30,7 @@ BETWEEN_CALL_SECONDS = 2.0
 ENGINE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}\Z", re.ASCII)
 
 
-def _verified_plan() -> tuple[list[str], str, bool]:
+def _verified_plan() -> tuple[list[str], str, bool, str]:
     """Permit only the verified general candidates from the current preflight."""
     preview = engine_routing_preflight.report()
     if (not isinstance(preview, dict)
@@ -42,6 +42,9 @@ def _verified_plan() -> tuple[list[str], str, bool]:
             or not isinstance(preview["plans"][0], dict)
             or preview["plans"][0].get("scope") != "general"):
         raise ValueError("routing_preflight_unavailable")
+    revision = preview.get("policy_revision")
+    if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{64}", revision) is None:
+        raise ValueError("policy_revision_unavailable")
     names = preview["plans"][0].get("fixed")
     if (not isinstance(names, list)
             or not 1 <= len(names) <= MAX_ENGINES
@@ -49,7 +52,7 @@ def _verified_plan() -> tuple[list[str], str, bool]:
                    or name.casefold().startswith("google") for name in names)
             or len({name.casefold() for name in names}) != len(names)):
         raise ValueError("candidate_count_or_inventory_invalid")
-    return list(names), preview["routing"], preview["pacing_enabled"]
+    return list(names), preview["routing"], preview["pacing_enabled"], revision
 
 
 def preview() -> dict:
@@ -64,7 +67,7 @@ def preview() -> dict:
         "supported_profiles": list(PRESETS),
     }
     try:
-        names, routing, enabled = _verified_plan()
+        names, routing, enabled, revision = _verified_plan()
         output.update(status="ready_for_operator_confirmation",
                       candidate_engines=names, routing=routing,
                       pacing_enabled=enabled)
@@ -119,7 +122,7 @@ def sample(profile: str, *, confirm=input) -> dict:
     if profile not in PRESETS or os.geteuid() == 0:
         return output
     try:
-        names, routing, enabled = _verified_plan()
+        names, routing, enabled, revision = _verified_plan()
     except (OSError, ValueError, TypeError, KeyError):
         output["status"] = "preflight_unavailable"
         return output
@@ -145,12 +148,13 @@ def sample(profile: str, *, confirm=input) -> dict:
         # Recheck the two verified views before EACH operation. A concurrent
         # policy edit, backend sleep, or engine-category drift stops sampling.
         try:
-            current, current_routing, current_enabled = _verified_plan()
+            current, current_routing, current_enabled, current_revision = _verified_plan()
         except (OSError, ValueError, TypeError, KeyError):
             output["status"] = "preflight_changed"
             break
         if (current != names or current_routing != routing
-                or current_enabled != enabled):
+                or current_enabled != enabled
+                or current_revision != revision):
             output["status"] = "preflight_changed"
             break
         before = time.monotonic()
