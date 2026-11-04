@@ -399,6 +399,155 @@ class PrivateOriginHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.gateway_requests), 1)
         self.assertEqual(len(self.bridge_requests), 1)
 
+    class _RevocationSSE(httpx.AsyncByteStream):
+        def __init__(self, chunks, *, idle=False):
+            self.chunks = chunks
+            self.idle = idle
+            self.closed = False
+
+        async def __aiter__(self):
+            for chunk in self.chunks:
+                yield chunk
+            if self.idle:
+                await asyncio.Event().wait()
+
+        async def aclose(self):
+            self.closed = True
+
+    async def _call_origin_once(self, origin, send, *, on_body=None):
+        received = False
+
+        async def receive():
+            nonlocal received
+            if not received:
+                received = True
+                if on_body is not None:
+                    on_body()
+                return {"type": "http.request",
+                        "body": b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                        "more_body": False}
+            await asyncio.Event().wait()
+
+        scope = {
+            "type": "http", "path": "/mcp", "raw_path": b"/mcp",
+            "query_string": b"", "method": "POST",
+            "client": ("127.0.0.1", 3456),
+            "headers": [
+                (b"host", self.hostname.encode("ascii")),
+                (b"authorization", ("Bearer " + self.token).encode("ascii")),
+            ],
+        }
+        await origin(scope, receive, send)
+
+    async def test_portal_grant_removed_during_body_never_reaches_gateway(self):
+        active = [True]
+        messages = []
+
+        async def send(message):
+            messages.append(message)
+
+        with patch("remote_agent_cloudflare_origin.load_client_grants",
+                   side_effect=lambda _: ((self.portal_grant,)
+                                          if active[0] else ())):
+            await asyncio.wait_for(self._call_origin_once(
+                self.adapter, send, on_body=lambda: active.__setitem__(0, False)), 2)
+        self.assertEqual(
+            [m["status"] for m in messages if m["type"] == "http.response.start"],
+            [401])
+        self.assertEqual(self.gateway_requests, [])
+
+    async def test_portal_grant_removed_during_upstream_headers_hides_response(self):
+        active = [True]
+        upstream_requests = []
+
+        def upstream_handler(request):
+            upstream_requests.append(request)
+            active[0] = False
+            return httpx.Response(200, json={"private": "must-not-disclose"})
+
+        async with httpx.AsyncClient(
+                transport=httpx.MockTransport(upstream_handler),
+                trust_env=False) as upstream:
+            origin = CloudflarePrivateOrigin(self.hostname, upstream)
+            messages = []
+
+            async def send(message):
+                messages.append(message)
+
+            with patch("remote_agent_cloudflare_origin.load_client_grants",
+                       side_effect=lambda _: ((self.portal_grant,)
+                                              if active[0] else ())):
+                await asyncio.wait_for(self._call_origin_once(origin, send), 2)
+        self.assertEqual(len(upstream_requests), 1)
+        self.assertEqual(
+            [m["status"] for m in messages if m["type"] == "http.response.start"],
+            [401])
+        self.assertNotIn("must-not-disclose", str(messages))
+
+    async def test_portal_grant_revocation_blocks_bursty_buffered_sse(self):
+        active = [True]
+        stream = self._RevocationSSE([
+            b"data: allowed\n\n", b"data: forbidden\n\n"])
+        async with httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda _: httpx.Response(
+                    200, headers={"content-type": "text/event-stream"},
+                    stream=stream)),
+                trust_env=False) as upstream:
+            origin = CloudflarePrivateOrigin(self.hostname, upstream)
+            messages = []
+
+            async def send(message):
+                messages.append(message)
+                if (message["type"] == "http.response.body"
+                        and message.get("body") == b"data: allowed\n\n"):
+                    active[0] = False
+
+            with patch("remote_agent_cloudflare_origin.load_client_grants",
+                       side_effect=lambda _: ((self.portal_grant,)
+                                              if active[0] else ())):
+                await asyncio.wait_for(self._call_origin_once(origin, send), 2)
+        self.assertTrue(stream.closed)
+        self.assertEqual(
+            [m.get("body") for m in messages
+             if m["type"] == "http.response.body"],
+            [b"data: allowed\n\n"])
+
+    async def test_idle_sse_closes_when_portal_grant_revoked(self):
+        first_chunk = asyncio.Event()
+        active = [True]
+        stream = self._RevocationSSE([b"data: initial\n\n"], idle=True)
+        async with httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda _: httpx.Response(
+                    200, headers={"content-type": "text/event-stream"},
+                    stream=stream)),
+                trust_env=False) as upstream:
+            origin = CloudflarePrivateOrigin(self.hostname, upstream)
+            messages = []
+
+            async def send(message):
+                messages.append(message)
+                if (message["type"] == "http.response.body"
+                        and message.get("body")):
+                    first_chunk.set()
+
+            with patch("remote_agent_cloudflare_origin.load_client_grants",
+                       side_effect=lambda _: ((self.portal_grant,)
+                                              if active[0] else ())):
+                running = asyncio.create_task(self._call_origin_once(origin, send))
+                try:
+                    await asyncio.wait_for(first_chunk.wait(), 2)
+                    active[0] = False
+                    await asyncio.wait_for(running, 2)
+                finally:
+                    if not running.done():
+                        running.cancel()
+                    await asyncio.gather(running, return_exceptions=True)
+        self.assertTrue(stream.closed)
+        self.assertEqual(
+            [m.get("body") for m in messages
+             if m["type"] == "http.response.body"],
+            [b"data: initial\n\n"])
+
     async def test_stream_does_not_disclose_fast_chunk_after_route_revocation(self):
         # The upstream emits both SSE frames without pausing long enough for
         # the periodic route watcher. Revocation before the second frame must
