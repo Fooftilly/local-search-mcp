@@ -271,7 +271,11 @@ class BatchAContractTests(unittest.IsolatedAsyncioTestCase):
                     "record_provider_diagnostics": True})).data
                 self.assertTrue(recorded["success"])
                 self.assertEqual(recorded["results"][0]["status"], "degraded")
-        self.assertEqual(seen, ["baseline", "degraded", "healthy", "degraded"])
+        # The middle two worker threads can reach /search in either order;
+        # response ordering, not backend scheduling, is the API contract.
+        self.assertEqual(seen[0], "baseline")
+        self.assertEqual(sorted(seen[1:3]), ["degraded", "healthy"])
+        self.assertEqual(seen[3], "degraded")
         events = [json.loads(line) for line in path.read_text().splitlines()]
         self.assertEqual(len(events), 4)
         self.assertTrue(all("provider_diagnostics" not in event for event in events[:3]))
