@@ -12,7 +12,7 @@ from unittest.mock import patch
 import httpx
 
 from remote_agent_prerequisites import SCHEMA
-from remote_agent_runtime import open_guarded_runtime
+from remote_agent_runtime import UPSTREAM_TIMEOUT, open_guarded_runtime
 
 
 class GuardedRuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -53,6 +53,18 @@ class GuardedRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "/mcp", headers=self.headers(),
             json={"jsonrpc": "2.0", "method": "tools/list", "id": 1},
         )
+
+    async def test_sse_read_timeout_defers_to_total_lifetime_watchdog(self):
+        # A quiet SSE source can legally pause between frames. ReadTimeout
+        # must not cut it off before the gateway's bounded response lifetime.
+        self.assertIsNone(UPSTREAM_TIMEOUT.read)
+        self.assertEqual(UPSTREAM_TIMEOUT.connect, 3.0)
+        self.assertEqual(UPSTREAM_TIMEOUT.write, 15.0)
+        self.assertEqual(UPSTREAM_TIMEOUT.pool, 3.0)
+        async with open_guarded_runtime(
+                self.path, transport=self.transport,
+                guard_probe=lambda: True) as app:
+            self.assertIsNone(app._upstream.timeout.read)
 
     async def test_private_grants_and_fixed_guard_integrate(self):
         def guard():

@@ -40,6 +40,9 @@ from remote_agent_server import StartupRefused, verify_required_tools
 ORIGIN_HOST = "127.0.0.1"
 ORIGIN_PORT = 18791
 GATEWAY_URL = "http://127.0.0.1:18790/mcp"
+# Idle SSE is governed by MAX_RESPONSE_SECONDS and active route/grant watchers.
+# A 15-second per-read timeout would terminate a quiet, still-authorized stream.
+GATEWAY_TIMEOUT = httpx.Timeout(connect=3, read=None, write=15, pool=3)
 SCHEMA = "local-search-mcp/cloudflare-private-origin/v1"
 CLIENT_ID = "cloudflare-portal"
 REQUEST_HEADERS = (b"authorization", b"accept", b"content-type",
@@ -448,7 +451,7 @@ async def serve(path: Path) -> None:
     await verify_required_tools()
     async with httpx.AsyncClient(
         trust_env=False, follow_redirects=False,
-        timeout=httpx.Timeout(connect=3, read=15, write=15, pool=3),
+        timeout=GATEWAY_TIMEOUT,
         limits=httpx.Limits(max_connections=8, max_keepalive_connections=2),
     ) as client:
         await uvicorn.Server(build_config(CloudflarePrivateOrigin(

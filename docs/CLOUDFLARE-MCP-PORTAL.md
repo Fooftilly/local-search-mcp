@@ -68,6 +68,14 @@ config, systemd unit, CLI argument, GitHub, or logs. The independent
 bearer is issued using the existing credential manager, which stores
 only its SHA-256 verifier.
 
+Both fixed-loopback HTTP forwarding hops permit quiet SSE periods without an
+HTTPX per-read deadline. This does **not** mean an unbounded request: the
+gateway and private-origin adapter each enforce their existing 15-second
+response-header deadline and 120-second absolute response/stream lifetime;
+active revocation, disconnect, admission limits and guarded target remain in
+force. The change prevents the previous 15-second read timeout from closing a
+healthy but idle stream. No Cloudflare/remote-client acceptance is implied.
+
 ## Local operator workflow (no Cloudflare account changes)
 
 All steps are run on your own Linux machine as its **unprivileged** owner.
