@@ -248,14 +248,18 @@ class FreeProviderPilotTests(unittest.TestCase):
         clients = [you, firecrawl]
         constructors = []
         client_settings = []
+
+        def tracked_client(_transport, **kwargs):
+            client_settings.append(kwargs)
+            return clients.pop(0)
+
         def transport(*args, **kwargs):
             constructors.append((args, kwargs))
             return object()
         with (patch.object(pilot, "StreamableHttpTransport",
                            side_effect=transport),
               patch.object(pilot, "Client",
-                           side_effect=lambda _transport, **kwargs: (
-                               client_settings.append(kwargs), clients.pop(0))[1])):
+                           side_effect=tracked_client)):
             first = __import__("asyncio").run(pilot._one_request("you", "docs"))
             second = __import__("asyncio").run(
                 pilot._one_request("firecrawl", "science"))
