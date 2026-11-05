@@ -1,6 +1,6 @@
 # URL mapping feasibility gate (issue #298)
 
-**Status (2026-11-05):** installed-host API compatibility and the first representative sitemap comparison have been observed. Two further approved public sites are still required before a mapper decision. No web_map tool is implemented, and the existing 12 tools, permissions and defaults remain unchanged.
+**Status (2026-11-05):** installed-host API compatibility and an exploratory comparison on three distinct, operator-approved public sites have been observed. The comparison has partial pagination and XML-semantic limitations; it is **not a production URL-map acceptance**, nor a complete-site inventory. No `web_map` tool is implemented. The existing 12 tools, permissions, and defaults remain unchanged.
 
 ## Verified upstream source and operator host evidence
 
@@ -37,7 +37,7 @@ Run only against **three operator-selected, public, already-approved sites** and
 
 Any later opt-in mapping operation needs caps (initial proposal: 2 sitemap documents, 2 MiB aggregate, 100 returned URLs), time/depth limits, duplicate removal, and explicit distinction between partial and complete results. Reject DTD/entity expansion, malformed/ambiguous encodings, compression bombs, external namespaces/hosts, redirects to unapproved targets and unauthorized subdomains or paths. Check permissions and DNS/SSRF controls for every *requested* sitemap and revalidate grants before exposing cached or paged results. Discovered URL strings are never approved or fetched automatically. The preflight grants no permission and changes no production routing.
 
-**Remaining:** two other representative approved sites, full three-site coverage/latency evidence, independent live firewall-negative/public probes, reboot acceptance, and any production mapper. The running container was observed with image unclecode/crawl4ai:latest, image ID sha256:065f475c90ac75fe388141597b0cdba118ebf7e03f59e2a37456c89e6b864c59 (not signature/provenance verification). The installed 0.9.5 API exposed 33 authenticated OpenAPI paths, with no mapping-named route.
+**Remaining:** full pagination/structured-XML coverage (especially Peroniko 2/5 and Django 6/8), XML index/child-sitemap safety and semantics (especially MDN), independent live firewall-negative/public probes, reboot acceptance, and any production mapper. The running container was observed with image unclecode/crawl4ai:latest, image ID sha256:065f475c90ac75fe388141597b0cdba118ebf7e03f59e2a37456c89e6b864c59 (not signature/provenance verification). The installed 0.9.5 API exposed 33 authenticated OpenAPI paths, with no mapping-named route.
 
 
 ## Observed acceptance — 2026-11-05
@@ -78,10 +78,31 @@ line and the total input is capped. The script reports a structured failure
 instead of echoing private content when the input is invalid. No source path
 is accepted as a script argument.
 
-Repeat on three distinct operator-approved sites. The offline script cannot
+Repeat on operator-approved public sites as needed to validate completeness and parser behavior. The offline script cannot
 infer fetch latency: record the wall times separately. Use an owner-only
 directory and delete the capture files afterward. A shell reading private
 operator captures remains responsible for verifying the chosen files; do not
 feed it untrusted file paths.
 
 The analysis caps record count, bytes per input record, aggregate input bytes, and total extracted Markdown characters. It joins consecutive document pages with no inserted separators and excludes a potentially incomplete final URL token from partial captures; delimiters include spaces, tabs, and line breaks. It preserves trailing URL punctuation when comparing homepage and sitemap candidates, since punctuation may be a valid URL path character. These comparisons remain heuristic, not XML parsing. It never retrieves or authorizes discovered URLs. Input lines are validated and the helper never opens filesystem paths. The original XML structure has already been flattened by the existing Crawl4AI response; restoring exact XML sitemap semantics needs a separately reviewed, bounded upstream-source extraction approach, after the three-site benchmark.
+
+
+## Three-site exploratory benchmark — operator measurements (2026-11-05)
+
+The operator ran the existing guarded MCP `web_fetch(fresh=true,include_links=true)` homepage and `web_fetch(fresh=true)` sitemap requests, then used this PR's **offline NDJSON benchmark**. Both new benchmark runs exited with code **0**. Times below are shell/subprocess wall times including client overhead; they are one-off observations, **not controlled warm/cold latency distributions or total multi-page benchmark time**.
+
+| Site | Homepage fetch | Sitemap fetch | Observed unique same-host homepage links | Heuristic sitemap URL candidates | Sitemap candidates absent from observed homepage links | Sitemap pages supplied | Homepage link continuation |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `www.peroniko.xyz` | 4.719 s | 1.848 s | 12 **initial only** | 589 | 580 | **2/5** | **not supplied**; eight retained links previously reported |
+| `www.djangoproject.com` | 5.827 s | 1.958 s | 21 | 647 | 644 | **6/8** | Three pages supplied; all retained continuation entries received |
+| `developer.mozilla.org` | 4.364 s | 1.349 s | 98 | 11 | 11 | **1/1** | Ten pages supplied; all retained continuation entries received |
+
+**Interpretation and limitations**
+
+- **Django**: The 647 same-host URL-looking candidates in the **first six of eight** flattened sitemap pages exceed the 21 observed homepage links; 644 are absent from that homepage set. Full pagination and original XML validation were not performed. The homepage's structured link extractor reported 46 safe candidates examined before output/continuation limits, not 46 same-host links.
+- **Peroniko**: 589 unique same-host URL-looking strings across the **first two of five** sitemap pages, versus 12 *initial-response* internal homepage links; 580 were absent from those initial links. Because homepage continuation entries were not supplied, the reported difference is **not** the final homepage-versus-sitemap set difference. The homepage extractor previously reported 32 safe unique candidates examined (including out-of-scope links).
+- **MDN**: Its `/sitemap.xml` is a **sitemap index** with child `.xml.gz` sitemap references. The eleven extracted URLs are index references, **not eleven site-page URLs** or evidence of improved page coverage. No child sitemap was fetched; compressed/decompression and XML semantics were **not** exercised. The homepage extractor reported 118 safe candidates examined, with 98 distinct same-host links observed after all retained continuations.
+- All counts are **heuristic** strings in already-authorized Crawl4AI-flattened Markdown. They do not prove which XML `<loc>` elements are valid, robots-permitted, unique after normalization, or actually accessible. Sitemap source completeness remains **unknown** even where all extracted Markdown pages were supplied.
+- The operator's run did not crawl any URLs discovered within the sitemaps, grant extra permissions through the scripts, or bypass the root crawler egress. Domain approval was performed separately via the local dashboard before this benchmark.
+
+**Decision:** The installed Crawl4AI 0.9.5 authenticated OpenAPI inventory advertised no dedicated mapping route (33 routes inspected), and the three-site exploration shows that the current single-homepage links path misses substantial sitemap-discoverable URL-looking content on at least two sites. This supports **further design of an opt-in, bounded, guarded sitemap-XML extraction path** or a verified upstream-equivalent feature; it does **not** justify a generic crawler or an immediate unreviewed `web_map` addition. The downstream implementation still needs direct guarded XML bytes/structure, same-host/path approval and revocation checks, DTD/entity and compression-bomb protection, bounded sitemap indexes/depth/bytes/URLs, redirect and DNS/SSRF controls, and adversarial tests before deployment. The MDN compressed-child case must remain distinct from a page inventory. PR #305 remains research/benchmark infrastructure and does not close #298.
