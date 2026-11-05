@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 from pathlib import Path
 import re
 from urllib.parse import urlsplit, urlunsplit
@@ -146,28 +148,31 @@ def analyze(home: dict, sitemap_pages: list[dict],
 
 
 def _read(files: list[Path]) -> list[dict]:
+    """Open each local capture without following symlinks or changing state."""
     if len(files) > MAX_FILES:
         raise ValueError("Too many input files")
     total = 0
     results = []
     for path in files:
-        if path.is_symlink() or not path.is_file():
-            raise ValueError("Input must be a regular file")
-        size = path.stat().st_size
-        total += size
-        if size > MAX_FILE_BYTES or total > MAX_TOTAL_BYTES:
+        # Path.is_symlink() followed by Path.open() has a race. Open the
+        # actual descriptor with O_NOFOLLOW and check the opened inode.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_FILE_BYTES:
+                raise ValueError("Input must be a bounded regular file")
+            with os.fdopen(fd, "rb", closefd=False) as handle:
+                raw = handle.read(MAX_FILE_BYTES + 1)
+        finally:
+            os.close(fd)
+        total += len(raw)
+        if len(raw) > MAX_FILE_BYTES or total > MAX_TOTAL_BYTES:
             raise ValueError("Input exceeds benchmark resource caps")
-        # Bound actual read too, even if input changes between stat and open.
-        with path.open("rb") as handle:
-            raw = handle.read(MAX_FILE_BYTES + 1)
-        if len(raw) > MAX_FILE_BYTES:
-            raise ValueError("Input exceeds file limit")
         value = json.loads(raw.decode("utf-8"))
         if not isinstance(value, dict):
             raise ValueError("Expected a JSON object")
         results.append(value)
     return results
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
