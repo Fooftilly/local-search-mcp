@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from urllib.parse import urlsplit
@@ -38,6 +39,15 @@ PROVIDERS = {
         "limit_key": "limit",
         "free": ("Keyless: rate-limited free search; separate signed-up "
                  "Free plan renews 1,000 credits monthly"),
+    },
+    "exa": {
+        # Exa's official MCP supports anonymous rate-limited search. Scope
+        # discovery to search only; web_fetch_exa and paid agent_run stay absent.
+        "url": "https://mcp.exa.ai/mcp?tools=web_search_exa",
+        "tool": "web_search_exa",
+        "listed_tools": frozenset({"web_search_exa"}),
+        "limit_key": "numResults",
+        "free": "Anonymous MCP search is free and rate-limited; quota unspecified",
     },
 }
 MAX_RESULTS = 3
@@ -79,6 +89,8 @@ def client_config() -> dict:
             "you-free": {"type": "http", "url": PROVIDERS["you"]["url"]},
             "firecrawl-keyless": {
                 "type": "http", "url": PROVIDERS["firecrawl"]["url"]},
+            "exa-keyless": {
+                "type": "http", "url": PROVIDERS["exa"]["url"]},
         },
     }
 
@@ -129,7 +141,8 @@ def _schema_ok(tools: object, provider: str) -> bool:
         and isinstance(props["query"], dict)
         and props["query"].get("type") == "string"
         and isinstance(props[spec["limit_key"]], dict)
-        and props[spec["limit_key"]].get("type") == "integer"
+        and props[spec["limit_key"]].get("type") in (
+            ("integer", "number") if provider == "exa" else ("integer",))
         and isinstance(required, list)
         and set(required).issubset({"query"})
     ):
@@ -206,6 +219,54 @@ def _redacted_result(result: object) -> dict:
             "result_count": len(hits), "distinct_hosts": len(hosts)}
 
 
+_EXA_URL_LINE = re.compile(r"^URL:[ \t]*(https?://\S+)[ \t]*$", re.ASCII)
+
+
+def _redacted_exa_result(result: object) -> dict:
+    """Recognize Exa's text output without inventing exact hit counts.
+
+    Exa returns arbitrary page highlights in the same plaintext as its
+    result headers. Highlights can contain URL lines, Title lines and
+    markdown dividers indistinguishable from the search result format.
+    Only a true structured response can justify an exact count.
+    """
+    structured = _redacted_result(result)
+    if structured["status"] != "unverified_response":
+        return structured
+    content = getattr(result, "content", None)
+    if (not isinstance(content, list) or len(content) != 1
+            or not isinstance(getattr(content[0], "text", None), str)):
+        return structured
+    raw = content[0].text
+    if len(raw.encode("utf-8")) > MAX_TEXT_BYTES:
+        return structured
+    # The anonymous free-tier throttle may be an MCP-success text response.
+    if raw.startswith("You've hit Exa's free MCP rate limit."):
+        return {"status": "rate_limited", "result_count": None}
+    if raw.strip() == "No search results found. Please try a different query.":
+        return {"status": "empty", "result_count": 0, "distinct_hosts": 0}
+
+    # Validate only the start of a plausible Exa result. Never parse the
+    # remaining highlight text to infer how many results exist: doing so
+    # would silently over- or under-count arbitrary third-party Markdown.
+    lines = raw.splitlines()
+    if (len(lines) < 4 or not lines[0].startswith("Title: ")
+            or not lines[2].startswith("Published: ")
+            or not lines[3].startswith("Author: ")):
+        return structured
+    match = _EXA_URL_LINE.fullmatch(lines[1])
+    if match is None:
+        return structured
+    try:
+        parsed = urlsplit(match.group(1))
+        if (parsed.scheme not in ("https", "http") or not parsed.hostname
+                or parsed.username or parsed.password
+                or parsed.port not in (None, 80, 443)):
+            return structured
+    except ValueError:
+        return structured
+    return {"status": "text_results_unverified", "result_count": None}
+
 async def _discard_server_log(_message: object) -> None:
     """Never forward untrusted MCP logging notification contents to stderr."""
     return None
@@ -245,7 +306,8 @@ async def _one_request(provider: str, preset: str) -> dict:
         result = await client.call_tool(spec["tool"], args, raise_on_error=False)
         elapsed = max(0, round((time.monotonic() - before) * 1000))
         return {"tool_calls_attempted": 1, "local_call_ms": elapsed,
-                **_redacted_result(result)}
+                **(_redacted_exa_result(result) if provider == "exa"
+                   else _redacted_result(result))}
 
 
 def sample(provider: str, preset: str, *, confirm=input,
@@ -292,7 +354,8 @@ def sample(provider: str, preset: str, *, confirm=input,
                 or type(outcome.get("tool_calls_attempted")) is not int
                 or outcome["tool_calls_attempted"] not in (0, 1)
                 or outcome.get("status") not in (
-                    "results", "empty", "tool_error",
+                    "results", "empty", "tool_error", "rate_limited",
+                    "text_results_unverified",
                     "unverified_response", "unexpected_free_tool_contract")):
             return result
         result.update({
@@ -334,7 +397,8 @@ def main(argv: list[str] | None = None) -> int:
         result = preview()
     print(json.dumps(result, sort_keys=True, indent=2))
     return 0 if result.get("status") in (
-        "ready_for_explicit_consent", "results", "empty") or args.client_config else 1
+        "ready_for_explicit_consent", "results", "empty",
+        "text_results_unverified") or args.client_config else 1
 
 
 if __name__ == "__main__":

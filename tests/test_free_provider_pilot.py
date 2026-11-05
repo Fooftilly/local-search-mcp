@@ -69,14 +69,14 @@ class FreeProviderPilotTests(unittest.TestCase):
         self.assertEqual(view["provider_calls_attempted"], 0)
         self.assertTrue(view["third_party_boundary"])
         self.assertEqual(view["max_tool_calls_per_invocation"], 1)
-        self.assertEqual(len(view["providers"]), 2)
+        self.assertEqual(len(view["providers"]), 3)
         self.assertFalse(view["local_mcp_bridge_modified"])
         self.assertEqual(view["presets"], list(engine_live_comparison.PRESETS))
         with contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(pilot.main(["--client-config"]), 0)
         config = json.loads(output.getvalue())
         self.assertEqual(set(config["mcpServers"]),
-                         {"you-free", "firecrawl-keyless"})
+                         {"you-free", "firecrawl-keyless", "exa-keyless"})
         self.assertTrue(config["mcpServers"]["you-free"]["url"].endswith(
             "?profile=free&tools=you-search"))
         self.assertEqual(config["mcpServers"]["firecrawl-keyless"]["url"],
@@ -124,7 +124,7 @@ class FreeProviderPilotTests(unittest.TestCase):
                         "cancelled")
 
     def test_hardcoded_hosts_tools_and_query_preset_are_fixed(self):
-        self.assertEqual(set(pilot.PROVIDERS), {"you", "firecrawl"})
+        self.assertEqual(set(pilot.PROVIDERS), {"you", "firecrawl", "exa"})
         for spec in pilot.PROVIDERS.values():
             self.assertTrue(spec["url"].startswith("https://"))
             self.assertNotIn("oauth", spec["url"])
