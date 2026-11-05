@@ -86,7 +86,7 @@ class AnonymousExaPilotTests(unittest.TestCase):
             with self.subTest(value=str(value)):
                 self.assertFalse(pilot._schema_ok(value, "exa"))
 
-    def test_exa_text_results_count_only_urls_and_never_output_content(self):
+    def test_exa_text_results_never_claim_exact_counts_or_output_content(self):
         result = text_result(
             "Title: PRIVATE_TITLE\n"
             "URL: https://docs.python.org/3/?token=PRIVATE_QUERY\n"
@@ -99,12 +99,12 @@ class AnonymousExaPilotTests(unittest.TestCase):
             "Published: Never\nAuthor: Nobody\n"
         )
         parsed = pilot._redacted_exa_result(result)
-        self.assertEqual(parsed, {"status": "results", "result_count": 2,
-                                  "distinct_hosts": 2})
+        self.assertEqual(parsed, {
+            "status": "text_results_unverified", "result_count": None})
         for secret in ("PRIVATE_TITLE", "PRIVATE_QUERY", "PRIVATE_SNIPPET"):
             self.assertNotIn(secret, repr(parsed))
 
-    def test_subsequent_result_with_tab_url_is_counted(self):
+    def test_subsequent_result_with_tab_url_still_has_unverified_count(self):
         first = ("Title: One\nURL: https://one.example\n"
                  "Published: Never\nAuthor: Nobody\n")
         second = ("Title: Two\nURL:\thttps://two.example\n"
@@ -112,9 +112,9 @@ class AnonymousExaPilotTests(unittest.TestCase):
         self.assertEqual(
             pilot._redacted_exa_result(
                 text_result(first + "\n\n---\n\n" + second)),
-            {"status": "results", "result_count": 2, "distinct_hosts": 2})
+            {"status": "text_results_unverified", "result_count": None})
 
-    def test_invalid_second_result_never_silently_disappears(self):
+    def test_malformed_second_result_never_generates_a_false_count(self):
         first = ("Title: One\nURL: https://one.example\n"
                  "Published: Never\nAuthor: Nobody\n")
         malformed = ("Title: Two\nURL: file:///etc/passwd\n"
@@ -122,7 +122,7 @@ class AnonymousExaPilotTests(unittest.TestCase):
         self.assertEqual(
             pilot._redacted_exa_result(
                 text_result(first + "\n\n---\n\n" + malformed)),
-            {"status": "unverified_response", "result_count": None})
+            {"status": "text_results_unverified", "result_count": None})
 
     def test_exa_empty_and_throttled_text_are_not_conflated(self):
         empty = "No search results found. Please try a different query."
@@ -149,7 +149,6 @@ class AnonymousExaPilotTests(unittest.TestCase):
             header("https://[invalid"),
             header("https://example.org:9443/file"),
             header("javascript:alert(1)"),
-            "\n\n---\n\n".join([header("https://example.org")] * 4),
             header("https://example.org") + "X" * (pilot.MAX_TEXT_BYTES + 1),
         )
         for value in cases:
@@ -158,7 +157,13 @@ class AnonymousExaPilotTests(unittest.TestCase):
                                  {"status": "unverified_response",
                                   "result_count": None})
         self.assertEqual(pilot._redacted_exa_result(
-            text_result(header("https://example.org"))).get("result_count"), 1)
+            text_result(header("https://example.org"))), {
+                "status": "text_results_unverified", "result_count": None})
+        # Even four apparent result headers in plaintext cannot justify a
+        # precise count: page highlights are arbitrary Markdown.
+        self.assertEqual(pilot._redacted_exa_result(text_result(
+            "\n\n---\n\n".join([header("https://example.org")] * 4))),
+            {"status": "text_results_unverified", "result_count": None})
 
     def test_one_call_only_with_exact_bounded_args_and_handlers(self):
         fake = OfflineClient([exa_tool()], text_result(
@@ -172,8 +177,8 @@ class AnonymousExaPilotTests(unittest.TestCase):
                            return_value=object()) as transport,
               patch.object(pilot, "Client", side_effect=make_client)):
             output = asyncio.run(pilot._one_request("exa", "science"))
-        self.assertEqual(output["status"], "results")
-        self.assertEqual(output["result_count"], 1)
+        self.assertEqual(output["status"], "text_results_unverified")
+        self.assertIsNone(output["result_count"])
         self.assertEqual(output["tool_calls_attempted"], 1)
         self.assertEqual(fake.calls, [
             ("tools/list",),
@@ -189,6 +194,20 @@ class AnonymousExaPilotTests(unittest.TestCase):
         self.assertIs(settings[0]["log_handler"], pilot._discard_server_log)
         self.assertIs(settings[0]["progress_handler"],
                       pilot._discard_server_progress)
+
+    def test_structured_exa_results_retain_verified_exact_count(self):
+        structured = SimpleNamespace(
+            is_error=False,
+            data={"results": [
+                {"url": "https://docs.python.org/reference"},
+                {"url": "https://www.python.org/community"},
+            ]},
+            content=[SimpleNamespace(text="PRIVATE_UNSTRUCTURED_BODY")],
+        )
+        report = pilot._redacted_exa_result(structured)
+        self.assertEqual(report, {
+            "status": "results", "result_count": 2, "distinct_hosts": 2})
+        self.assertNotIn("PRIVATE_UNSTRUCTURED_BODY", repr(report))
 
     def test_wrong_live_schema_does_not_send_search(self):
         fake = OfflineClient(
