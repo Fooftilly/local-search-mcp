@@ -54,8 +54,9 @@ routing, start Docker services, or alter DNS/firewall or Cloudflare.
 For **each attended invocation**, there is exactly **one** fixed public
 `tools/call` (after MCP initialization and `tools/list`) to one
 explicitly selected provider. The request asks for at most three search
-results: You.com `query`, `count=3`, `extraction=none`; Firecrawl
-`query`, `limit=3` with **no scrape options**. The tool name and
+results: You.com `query` and `count=3` (also
+`extraction=none` **only when the discovered input schema supports it**);
+Firecrawl `query` and `limit=3` with **no scrape options**. The tool name and
 schema are verified against the provider's narrow keyless allowlist
 before the request. Unknown tool sets/required arguments fail closed;
 the script never tries an alternative billable provider, searches with
