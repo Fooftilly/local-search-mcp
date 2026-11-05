@@ -1,0 +1,289 @@
+"""Attended, keyless, free-only external MCP search comparison (#258).
+
+This is NOT a tool in the guarded local MCP bridge. By design it cannot
+fetch URLs, modify engine settings, send arbitrary queries, authenticate,
+start services, enroll for billing or perform unattended provider requests.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+import time
+from urllib.parse import urlsplit
+
+import httpx
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
+
+from scripts.public_search_queries import PRESETS
+
+# Fixed HTTPS origins; these are separate third-party hosted MCPs, never
+# alternatives for the guarded bridge's web_fetch or private-domain policy.
+PROVIDERS = {
+    "you": {
+        "url": "https://api.you.com/mcp?profile=free&tools=you-search",
+        "tool": "you-search",
+        "listed_tools": frozenset({"you-search", "you-discover"}),
+        "limit_key": "count",
+        "free": "Keyless profile: up to 100 search/discover requests per day",
+    },
+    "firecrawl": {
+        "url": "https://mcp.firecrawl.dev/v2/mcp",
+        "tool": "firecrawl_search",
+        "listed_tools": frozenset({
+            "firecrawl_search", "firecrawl_scrape", "firecrawl_parse"}),
+        "limit_key": "limit",
+        "free": ("Keyless: rate-limited free search; separate signed-up "
+                 "Free plan renews 1,000 credits monthly"),
+    },
+}
+MAX_RESULTS = 3
+MAX_TEXT_BYTES = 64 * 1024
+MAX_TOOLS = 4
+MAX_SECONDS = 30
+FORBIDDEN_HEADERS = frozenset({
+    "authorization", "proxy-authorization", "cookie", "x-api-key",
+    "payment-signature", "x-payment", "x-auth-token",
+})
+
+
+def preview() -> dict:
+    """Pure offline declaration, no discovery, provider traffic or host reads."""
+    return {
+        "mode": "offline-preview",
+        "status": "ready_for_explicit_consent",
+        "providers": [
+            {"name": key, "endpoint": value["url"], "tool": value["tool"],
+             "free_allowance": value["free"], "requires_key": False}
+            for key, value in PROVIDERS.items()
+        ],
+        "presets": list(PRESETS),
+        "max_tool_calls_per_invocation": 1,
+        "max_results_requested": MAX_RESULTS,
+        "provider_calls_attempted": 0,
+        "local_mcp_bridge_modified": False,
+        "third_party_boundary": True,
+        "note": ("Live sampling sends one fixed public query directly to an "
+                 "external MCP provider. It bypasses the local bridge's "
+                 "private history, domain approvals and root egress guard."),
+    }
+
+
+def client_config() -> dict:
+    """Manual separate-client configuration; no file writes or activation."""
+    return {
+        "mcpServers": {
+            "you-free": {"type": "http", "url": PROVIDERS["you"]["url"]},
+            "firecrawl-keyless": {
+                "type": "http", "url": PROVIDERS["firecrawl"]["url"]},
+        },
+    }
+
+
+def _transport_client(*, headers: dict | None = None,
+                      timeout: httpx.Timeout | None = None,
+                      auth: httpx.Auth | None = None) -> httpx.AsyncClient:
+    """Reject accidental credentials/proxies/redirects in this public trial."""
+    if auth is not None or any(
+            str(key).lower() in FORBIDDEN_HEADERS for key in (headers or {})):
+        raise ValueError("credentials_not_permitted_in_keyless_trial")
+    # The caller cannot supply headers or endpoints. Preserve only transport
+    # protocol headers; explicitly disable proxy/user auth inherited via env.
+    return httpx.AsyncClient(
+        headers=headers or {}, auth=None, trust_env=False,
+        follow_redirects=False, verify=True,
+        timeout=httpx.Timeout(12, connect=5, read=12, write=5),
+    )
+
+
+def _schema_ok(tools: object, provider: str) -> bool:
+    """No paid-capability discovery or tool-schema widening is accepted."""
+    if not isinstance(tools, list) or not 1 <= len(tools) <= MAX_TOOLS:
+        return False
+    spec = PROVIDERS[provider]
+    found = {}
+    for tool in tools:
+        name = getattr(tool, "name", None)
+        if (not isinstance(name, str) or name in found
+                or name not in spec["listed_tools"]):
+            return False
+        found[name] = tool
+    requested = found.get(spec["tool"])
+    if requested is None:
+        return False
+    schema = getattr(requested, "inputSchema", None)
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        return False
+    props = schema.get("properties")
+    required = schema.get("required", [])
+    return (
+        isinstance(props, dict) and "query" in props
+        and spec["limit_key"] in props
+        and isinstance(props["query"], dict)
+        and props["query"].get("type") == "string"
+        and isinstance(props[spec["limit_key"]], dict)
+        and props[spec["limit_key"]].get("type") == "integer"
+        and isinstance(required, list)
+        and set(required).issubset({"query"})
+    )
+
+
+def _safe_hits(data: object) -> list[dict] | None:
+    """Only count structured URL-bearing results; never expose their content."""
+    if isinstance(data, str):
+        if len(data.encode("utf-8")) > MAX_TEXT_BYTES:
+            return None
+        try:
+            data = json.loads(data)
+        except (ValueError, UnicodeError):
+            return None
+    if isinstance(data, dict):
+        if data.get("success") is False:
+            return None
+        choices = [data.get("results"), data.get("data"), data.get("web")]
+        for key in ("results", "data"):
+            nested = data.get(key)
+            if isinstance(nested, dict):
+                choices.extend((nested.get("web"), nested.get("results")))
+    else:
+        choices = [data]
+    for candidate in choices:
+        if not isinstance(candidate, list) or len(candidate) > MAX_RESULTS:
+            continue
+        if all(isinstance(row, dict) and isinstance(row.get("url"), str)
+               and urlsplit(row["url"]).scheme in ("https", "http")
+               and bool(urlsplit(row["url"]).hostname)
+               for row in candidate):
+            return candidate
+    return None
+
+
+def _redacted_result(result: object) -> dict:
+    if getattr(result, "is_error", True) is not False:
+        return {"status": "tool_error", "result_count": None}
+    data = getattr(result, "data", None)
+    hits = _safe_hits(data)
+    if hits is None:
+        content = getattr(result, "content", [])
+        if (isinstance(content, list) and len(content) == 1
+                and isinstance(getattr(content[0], "text", None), str)):
+            hits = _safe_hits(content[0].text)
+    if hits is None:
+        return {"status": "unverified_response", "result_count": None}
+    hosts = {urlsplit(row["url"]).hostname.casefold() for row in hits}
+    return {"status": "results" if hits else "empty",
+            "result_count": len(hits), "distinct_hosts": len(hosts)}
+
+
+async def _one_request(provider: str, preset: str) -> dict:
+    """One MCP initialization, one tools/list and at most one tools/call."""
+    spec = PROVIDERS[provider]
+    transport = StreamableHttpTransport(
+        spec["url"], headers={}, auth=None,
+        sse_read_timeout=12,
+        httpx_client_factory=_transport_client,
+    )
+    async with Client(transport) as client:
+        tools = await client.list_tools()
+        if not _schema_ok(tools, provider):
+            return {"status": "unexpected_free_tool_contract",
+                    "tool_calls_attempted": 0, "result_count": None}
+        args = {"query": PRESETS[preset], spec["limit_key"]: MAX_RESULTS}
+        if provider == "you":
+            # Explicitly decline page extraction and content billing.
+            args["extraction"] = "none"
+        before = time.monotonic()
+        result = await client.call_tool(spec["tool"], args)
+        elapsed = max(0, round((time.monotonic() - before) * 1000))
+        return {"tool_calls_attempted": 1, "local_call_ms": elapsed,
+                **_redacted_result(result)}
+
+
+def sample(provider: str, preset: str, *, confirm=input,
+           perform=_one_request) -> dict:
+    """One operator-approved public query, no background or caller query text."""
+    result = {
+        "mode": "attended-external",
+        "provider": provider if provider in PROVIDERS else "invalid",
+        "profile": preset if preset in PRESETS else "invalid",
+        "status": "refused", "tool_calls_attempted": 0,
+        "result_count": None, "third_party_boundary": True,
+        "local_mcp_bridge_modified": False,
+    }
+    if provider not in PROVIDERS or preset not in PRESETS or os.geteuid() == 0:
+        return result
+    print(
+        f"Provider: {provider}. One fixed PUBLIC query will be sent directly "
+        "to the provider's keyless external MCP. This is outside local "
+        "domain approval, root egress isolation and private query history. "
+        "No API key, OAuth, cookies, payment credentials or paid fallback. "
+        "The provider's own anonymous free quota applies. Type FREE to proceed.",
+        file=sys.stderr,
+    )
+    try:
+        approved = confirm("Confirmation: ")
+    except (EOFError, KeyboardInterrupt):
+        approved = ""
+    if approved != "FREE":
+        result["status"] = "cancelled"
+        return result
+    # Fail closed on network/protocol/schema exceptions. Never print
+    # third-party response text, URLs, upstream exceptions or credentials.
+    result["status"] = "connection_failed"
+    try:
+        outcome = asyncio.run(asyncio.wait_for(
+            perform(provider, preset), timeout=MAX_SECONDS))
+        if (not isinstance(outcome, dict)
+                or type(outcome.get("tool_calls_attempted")) is not int
+                or outcome["tool_calls_attempted"] not in (0, 1)
+                or outcome.get("status") not in (
+                    "results", "empty", "tool_error",
+                    "unverified_response", "unexpected_free_tool_contract")):
+            return result
+        result.update({
+            "status": outcome["status"],
+            "tool_calls_attempted": outcome["tool_calls_attempted"],
+            "result_count": outcome.get("result_count")
+            if type(outcome.get("result_count")) is int
+            and 0 <= outcome["result_count"] <= MAX_RESULTS else None,
+        })
+        if (type(outcome.get("distinct_hosts")) is int
+                and 0 <= outcome["distinct_hosts"] <= MAX_RESULTS):
+            result["distinct_hosts"] = outcome["distinct_hosts"]
+        if (type(outcome.get("local_call_ms")) is int
+                and 0 <= outcome["local_call_ms"] <= MAX_SECONDS * 1000):
+            result["local_call_ms"] = outcome["local_call_ms"]
+    except Exception:
+        pass
+    return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument("--sample", action="store_true")
+    actions.add_argument("--client-config", action="store_true")
+    parser.add_argument("--provider", choices=tuple(PROVIDERS))
+    parser.add_argument("--profile", choices=tuple(PRESETS), default="docs")
+    args = parser.parse_args(argv)
+    if args.client_config:
+        result = client_config()
+    elif args.sample:
+        if args.provider is None:
+            parser.error("--sample requires --provider")
+        if not sys.stdin.isatty() or not sys.stderr.isatty():
+            result = {"status": "tty_required", "tool_calls_attempted": 0}
+        else:
+            result = sample(args.provider, args.profile)
+    else:
+        result = preview()
+    print(json.dumps(result, sort_keys=True, indent=2))
+    return 0 if result.get("status") in (
+        "ready_for_explicit_consent", "results", "empty") or args.client_config else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
