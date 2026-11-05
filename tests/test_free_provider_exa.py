@@ -93,6 +93,7 @@ class AnonymousExaPilotTests(unittest.TestCase):
             "Published: Never\nAuthor: Nobody\nHighlights:\nPRIVATE_SNIPPET\n"
             "URL: https://example.org/highlight-should-not-count\n\n"
             "---\n\nMarkdown paragraph after a highlight divider.\n\n"
+            "---\n\nTitle: Background\nMore ordinary highlight prose.\n\n"
             "---\n\n"
             "Title: Second\nURL: https://www.python.org/about\n"
             "Published: Never\nAuthor: Nobody\n"
