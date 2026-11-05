@@ -25,7 +25,7 @@ Stable operator and feature guides live in this folder. Start with the [project 
 ## Research and dashboard features
 
 - [Search](SEARCH.md)
-- [Attended free-tier You.com and Firecrawl search comparisons](FREE-PROVIDER-PILOT.md)
+- [Attended free-tier You.com, Firecrawl and Exa search comparisons](FREE-PROVIDER-PILOT.md)
 - [Extraction and long documents](EXTRACTION.md)
 - [Temporary document comparison](DOCUMENT-COMPARISON.md)
 - [Batch fetching](BATCH.md)
