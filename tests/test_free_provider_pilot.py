@@ -12,13 +12,18 @@ from scripts import free_provider_pilot as pilot
 from scripts import engine_live_comparison
 
 
-def tool(name, *, limit_key="count", extra_required=()):
+def tool(name, *, limit_key="count", extra_required=(),
+         with_extraction=False):
+    properties = {
+        "query": {"type": "string"},
+        limit_key: {"type": "integer"},
+    }
+    if with_extraction:
+        properties["extraction"] = {
+            "type": "string", "enum": ["none", "highlights", "full_page"]}
     return SimpleNamespace(name=name, inputSchema={
-        "type": "object",
-        "properties": {
-            "query": {"type": "string"},
-            limit_key: {"type": "integer"},
-        },
+        "type": "object", "additionalProperties": False,
+        "properties": properties,
         "required": ["query", *extra_required],
     })
 
@@ -147,6 +152,8 @@ class FreeProviderPilotTests(unittest.TestCase):
     def test_schema_accepts_only_keyless_allowlisted_tool_set(self):
         good = [tool("you-search"), tool("you-discover")]
         self.assertTrue(pilot._schema_ok(good, "you"))
+        self.assertTrue(pilot._schema_ok(
+            [tool("you-search", with_extraction=True)], "you"))
         self.assertTrue(pilot._schema_ok([
             tool("firecrawl_search", limit_key="limit"),
             tool("firecrawl_scrape", limit_key="limit"),
@@ -187,8 +194,7 @@ class FreeProviderPilotTests(unittest.TestCase):
         self.assertEqual(you.calls, [
             ("tools/list",),
             ("tools/call", "you-search", {
-                "query": pilot.PRESETS["docs"], "count": 3,
-                "extraction": "none"})])
+                "query": pilot.PRESETS["docs"], "count": 3})])
         self.assertEqual(firecrawl.calls, [
             ("tools/list",),
             ("tools/call", "firecrawl_search", {
@@ -201,6 +207,20 @@ class FreeProviderPilotTests(unittest.TestCase):
                             for x in constructors))
         self.assertTrue(all(x[1]["httpx_client_factory"] is pilot._transport_client
                             for x in constructors))
+
+    def test_optional_extraction_none_only_if_declared(self):
+        fake = FakeClient([tool("you-search", with_extraction=True)])
+        with (patch.object(pilot, "StreamableHttpTransport",
+                           return_value=object()),
+              patch.object(pilot, "Client", return_value=fake)):
+            report = __import__("asyncio").run(pilot._one_request("you", "docs"))
+        self.assertEqual(report["status"], "results")
+        self.assertEqual(fake.calls[1], (
+            "tools/call", "you-search", {
+                "query": pilot.PRESETS["docs"], "count": 3,
+                "extraction": "none"}))
+        # A strict schema advertising only query/count must not receive
+        # an unknown extraction field; covered by the preceding test.
 
     def test_schema_mismatch_aborts_before_remote_search(self):
         fake = FakeClient([tool("firecrawl_crawl", limit_key="limit")])
