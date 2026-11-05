@@ -240,6 +240,9 @@ class FreeProviderPilotTests(unittest.TestCase):
             self.assertEqual(len(pilot._safe_hits(data)), 1)
         for value in (
             {"results": [{"url": "file:///etc/passwd"}]},
+            {"results": [{"url": "https://[malformed"}]},
+            {"results": [{"url": "https://user:password@example.org"}]},
+            {"results": [{"url": "https://example.org:5555"}]},
             {"results": [{"url": "https://example.org"}] * 4},
             "not-json" * 30000,
             {"success": False, "data": [{"url": "https://example.org"}]},
@@ -277,7 +280,8 @@ class FreeProviderPilotTests(unittest.TestCase):
         self.assertEqual(attempts, [("firecrawl", "docs")])
         self.assertEqual(result["status"], "connection_failed")
         self.assertNotIn("PRIVATE_TOKEN_TEST", repr(result))
-        self.assertEqual(result["tool_calls_attempted"], 0)
+        self.assertIsNone(result["tool_calls_attempted"])
+        self.assertTrue(result["remote_requests_may_have_started"])
 
 
 if __name__ == "__main__":
