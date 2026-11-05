@@ -103,6 +103,26 @@ class AnonymousExaPilotTests(unittest.TestCase):
         for secret in ("PRIVATE_TITLE", "PRIVATE_QUERY", "PRIVATE_SNIPPET"):
             self.assertNotIn(secret, repr(parsed))
 
+    def test_subsequent_result_with_tab_url_is_counted(self):
+        first = ("Title: One\nURL: https://one.example\n"
+                 "Published: Never\nAuthor: Nobody\n")
+        second = ("Title: Two\nURL:\thttps://two.example\n"
+                  "Published: Never\nAuthor: Nobody\n")
+        self.assertEqual(
+            pilot._redacted_exa_result(
+                text_result(first + "\n\n---\n\n" + second)),
+            {"status": "results", "result_count": 2, "distinct_hosts": 2})
+
+    def test_invalid_second_result_never_silently_disappears(self):
+        first = ("Title: One\nURL: https://one.example\n"
+                 "Published: Never\nAuthor: Nobody\n")
+        malformed = ("Title: Two\nURL: file:///etc/passwd\n"
+                     "Published: Never\nAuthor: Nobody\n")
+        self.assertEqual(
+            pilot._redacted_exa_result(
+                text_result(first + "\n\n---\n\n" + malformed)),
+            {"status": "unverified_response", "result_count": None})
+
     def test_exa_empty_and_throttled_text_are_not_conflated(self):
         empty = "No search results found. Please try a different query."
         self.assertEqual(pilot._redacted_exa_result(text_result(empty)),
