@@ -16,14 +16,10 @@ import time
 
 import bridge
 from scripts import engine_routing_preflight
+from scripts.public_search_queries import PRESETS
 
 # No operator input, CLI arguments or environment can supply search text.
 # Public, stable strings are intentionally saved by normal private history.
-PRESETS = {
-    "docs": "Python language official documentation",
-    "science": "open access scientific research",
-    "montenegro": "Montenegro government digital public services",
-}
 MAX_ENGINES = 3
 MAX_RESULTS = 3
 BETWEEN_CALL_SECONDS = 2.0
