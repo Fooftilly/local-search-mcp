@@ -83,7 +83,7 @@ class URLMappingBenchmarkTests(unittest.TestCase):
     def test_partial_newline_and_tab_separated_sitemap_keeps_complete_tokens(self):
         # The final URL is cut off. Previous code searched only for a space,
         # erroneously discarding all newline-separated complete URLs.
-        for separator in ("\\n", "\\t", "\\r\\n"):
+        for separator in ("\n", "\t", "\r\n"):
             with self.subTest(separator=repr(separator)):
                 raw = (f"https://www.example.org/a/{separator}"
                        f"https://www.example.org/b/{separator}"
