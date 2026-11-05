@@ -246,11 +246,21 @@ def _redacted_exa_result(result: object) -> dict:
     if raw.strip() == "No search results found. Please try a different query.":
         return {"status": "empty", "result_count": 0, "distinct_hosts": 0}
 
-    urls = []
-    for line in raw.splitlines():
-        if not line.startswith("URL:"):
-            continue
-        match = _EXA_URL_LINE.fullmatch(line)
+    # Exa formats each search hit as a result header containing Title,
+    # URL, Published and Author, separated from other hits by a divider.
+    # A page highlight can itself contain 'URL:' lines; do not scan the
+    # entire body for URLs or count highlight text as additional results.
+    blocks = raw.split("\n\n---\n\n")
+    if not 1 <= len(blocks) <= MAX_RESULTS:
+        return structured
+    hosts = []
+    for block in blocks:
+        lines = block.splitlines()
+        if (len(lines) < 4 or not lines[0].startswith("Title: ")
+                or not lines[2].startswith("Published: ")
+                or not lines[3].startswith("Author: ")):
+            return structured
+        match = _EXA_URL_LINE.fullmatch(lines[1])
         if match is None:
             return structured
         try:
@@ -261,13 +271,9 @@ def _redacted_exa_result(result: object) -> dict:
                 return structured
         except ValueError:
             return structured
-        urls.append(parsed.hostname.casefold())
-        if len(urls) > MAX_RESULTS:
-            return structured
-    if not urls:
-        return structured
-    return {"status": "results", "result_count": len(urls),
-            "distinct_hosts": len(set(urls))}
+        hosts.append(parsed.hostname.casefold())
+    return {"status": "results", "result_count": len(hosts),
+            "distinct_hosts": len(set(hosts))}
 
 
 async def _discard_server_log(_message: object) -> None:
