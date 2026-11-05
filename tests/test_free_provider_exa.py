@@ -90,9 +90,10 @@ class AnonymousExaPilotTests(unittest.TestCase):
         result = text_result(
             "Title: PRIVATE_TITLE\n"
             "URL: https://docs.python.org/3/?token=PRIVATE_QUERY\n"
-            "Published: Never\nHighlights:\nPRIVATE_SNIPPET\n\n---\n\n"
+            "Published: Never\nAuthor: Nobody\nHighlights:\nPRIVATE_SNIPPET\n"
+            "URL: https://example.org/highlight-should-not-count\n\n---\n\n"
             "Title: Second\nURL: https://www.python.org/about\n"
-            "Published: Never\n"
+            "Published: Never\nAuthor: Nobody\n"
         )
         parsed = pilot._redacted_exa_result(result)
         self.assertEqual(parsed, {"status": "results", "result_count": 2,
@@ -115,15 +116,18 @@ class AnonymousExaPilotTests(unittest.TestCase):
             text_result(throttled, is_error=True))["status"], "tool_error")
 
     def test_exa_untrusted_text_malformed_urls_and_excess_are_not_success(self):
+        def header(url):
+            return f"Title: A result\nURL: {url}\nPublished: Never\nAuthor: Nobody"
+
         cases = (
             "Search is unavailable - PRIVATE_ERROR",
-            "Title: Fake\nURL: file:///etc/passwd",
-            "URL: https://user:secret@internal.example/",
-            "URL: https://[invalid",
-            "URL: https://example.org:9443/file",
-            "URL: javascript:alert(1)",
-            "URL: https://example.org\n" * 4,
-            "URL: https://example.org\n" + "X" * (pilot.MAX_TEXT_BYTES + 1),
+            header("file:///etc/passwd"),
+            header("https://user:secret@internal.example/"),
+            header("https://[invalid"),
+            header("https://example.org:9443/file"),
+            header("javascript:alert(1)"),
+            "\n\n---\n\n".join([header("https://example.org")] * 4),
+            header("https://example.org") + "X" * (pilot.MAX_TEXT_BYTES + 1),
         )
         for value in cases:
             with self.subTest(value=value[:80]):
@@ -131,11 +135,12 @@ class AnonymousExaPilotTests(unittest.TestCase):
                                  {"status": "unverified_response",
                                   "result_count": None})
         self.assertEqual(pilot._redacted_exa_result(
-            text_result("URL: https://example.org\n")).get("result_count"), 1)
+            text_result(header("https://example.org"))).get("result_count"), 1)
 
     def test_one_call_only_with_exact_bounded_args_and_handlers(self):
         fake = OfflineClient([exa_tool()], text_result(
-            "Title: Example\nURL: https://example.org\n"))
+            "Title: Example\nURL: https://example.org\n"
+            "Published: Never\nAuthor: Nobody\n"))
         settings = []
         def make_client(_transport, **kwargs):
             settings.append(kwargs)
