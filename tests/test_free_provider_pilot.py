@@ -163,8 +163,9 @@ class FreeProviderPilotTests(unittest.TestCase):
         witnessed = []
 
         @contextlib.asynccontextmanager
-        async def offline_stream(url, *, http_client):
-            witnessed.append(("stream", url, http_client.follow_redirects))
+        async def offline_stream(url, *, http_client, max_sse_event_size):
+            witnessed.append(("stream", url, http_client.follow_redirects,
+                              max_sse_event_size))
             yield None, None
 
         class OfflineSession:
@@ -201,7 +202,8 @@ class FreeProviderPilotTests(unittest.TestCase):
         self.assertTrue(witnessed[0][1]["follow_redirects"])
         self.assertIsNone(witnessed[0][1]["auth"])
         self.assertEqual(
-            witnessed[1], ("stream", pilot.PROVIDERS["you"]["url"], False))
+            witnessed[1], ("stream", pilot.PROVIDERS["you"]["url"],
+                            False, transport.max_sse_event_size))
 
     def test_real_fastmcp_transport_rejects_injected_credentials(self):
         """The actual transport must not smuggle a bearer to the factory."""
