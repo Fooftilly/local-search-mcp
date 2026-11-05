@@ -55,16 +55,33 @@ From an approved public homepage and its separately verified sitemap URL, captur
 
 For each site, save the first homepage response in home.json and the first sitemap response in sitemap-1.json. If the first sitemap response returns a document_id and page_count greater than 1, use that **fresh temporary handle** to capture each web_fetch_page(page=2,3,...) response in consecutive sitemap-2.json etc. Retrieve any remaining homepage link results using web_links_page with the real link_id. Do not save bearer handles to a repository or publish the capture files. A handle expires after 15 minutes.
 
-Run from the PR #305 checkout:
+Run from the PR #305 checkout. The operator's shell selects the capture files,
+while the Python comparison script accepts **only bounded newline-delimited JSON
+on standard input**; it cannot open a caller-selected filesystem path:
 
 ~~~sh
-python3 -m scripts.url_mapping_benchmark \
-  --homepage /path/to/private/home.json \
-  --sitemap-page /path/to/private/sitemap-1.json \
-  --sitemap-page /path/to/private/sitemap-2.json \
-  --link-page /path/to/private/links-0.json
+{
+  jq -c . /path/to/private/home.json
+  jq -c . /path/to/private/sitemap-1.json
+  jq -c . /path/to/private/sitemap-2.json
+  jq -c . /path/to/private/links-0.json
+} | python3 -m scripts.url_mapping_benchmark \
+      --sitemap-pages 2 --link-pages 1
 ~~~
 
-Pass one --sitemap-page per actual page, in order, and omit optional arguments when no corresponding page exists. Repeat on three distinct operator-approved hosts. The offline script cannot infer fetch latency: record the wall times separately. Use an owner-only directory and delete the capture files afterward.
+Supply one homepage object, followed by exactly the declared number of
+consecutive sitemap page objects and then the declared number of link
+continuation objects. This example uses two sitemap pages and one link page;
+adjust both counts and the shell-side inputs to the actual captures. Omit
+--link-pages when there are none. Inputs must each be a single compact JSON
+line and the total input is capped. The script reports a structured failure
+instead of echoing private content when the input is invalid. No source path
+is accepted as a script argument.
 
-The analysis has caps for input count, file bytes, and total extracted Markdown; it joins consecutive document pages with no separators so URL fragments crossing page boundaries are not invented as standalone complete URLs. It never retrieves or authorizes discovered URLs. The original XML structure has already been flattened by the existing Crawl4AI response; restoring exact XML sitemap semantics needs a separately reviewed, bounded upstream-source extraction approach, after the three-site benchmark.
+Repeat on three distinct operator-approved sites. The offline script cannot
+infer fetch latency: record the wall times separately. Use an owner-only
+directory and delete the capture files afterward. A shell reading private
+operator captures remains responsible for verifying the chosen files; do not
+feed it untrusted file paths.
+
+The analysis has caps for input count, file bytes, and total extracted Markdown; it joins consecutive document pages with no separators so URL fragments crossing page boundaries are not invented as standalone complete URLs. It never retrieves or authorizes discovered URLs. Input lines are validated and the helper never opens filesystem paths. The original XML structure has already been flattened by the existing Crawl4AI response; restoring exact XML sitemap semantics needs a separately reviewed, bounded upstream-source extraction approach, after the three-site benchmark.
