@@ -7,14 +7,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import stat
-from pathlib import Path
 import re
+import sys
 from urllib.parse import urlsplit, urlunsplit
 
 MAX_FILES = 45
-MAX_FILE_BYTES = 256_000
+MAX_RECORD_BYTES = 256_000
 MAX_TOTAL_BYTES = 1_500_000
 MAX_SITEMAP_CHARS = 1_000_000
 URL_RE = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
@@ -147,49 +145,43 @@ def analyze(home: dict, sitemap_pages: list[dict],
     }
 
 
-def _read(files: list[Path]) -> list[dict]:
-    """Open each local capture without following symlinks or changing state."""
-    if len(files) > MAX_FILES:
-        raise ValueError("Too many input files")
+def _read(stream, count: int) -> list[dict]:
+    """Read bounded newline-delimited JSON from stdin; never open a path."""
+    if type(count) is not int or not 2 <= count <= MAX_FILES:
+        raise ValueError("Invalid benchmark record count")
     total = 0
     results = []
-    for path in files:
-        # Path.is_symlink() followed by Path.open() has a race. Open the
-        # actual descriptor with O_NOFOLLOW and check the opened inode.
-        try:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        except OSError as exc:
-            # A symlink, missing file, or denied open is invalid input.
-            # Never expose the operator's private capture path in errors.
-            raise ValueError("Input cannot be safely opened") from exc
-        try:
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_FILE_BYTES:
-                raise ValueError("Input must be a bounded regular file")
-            with os.fdopen(fd, "rb", closefd=False) as handle:
-                raw = handle.read(MAX_FILE_BYTES + 1)
-        finally:
-            os.close(fd)
+    for _ in range(count):
+        raw = stream.readline(MAX_RECORD_BYTES + 1)
         total += len(raw)
-        if len(raw) > MAX_FILE_BYTES or total > MAX_TOTAL_BYTES:
-            raise ValueError("Input exceeds benchmark resource caps")
+        if (not raw or not raw.endswith(b"\n") or
+                len(raw) > MAX_RECORD_BYTES or total > MAX_TOTAL_BYTES):
+            raise ValueError("Missing, truncated, or oversized JSON record")
         value = json.loads(raw.decode("utf-8"))
         if not isinstance(value, dict):
             raise ValueError("Expected a JSON object")
         results.append(value)
+    if stream.read(1):
+        raise ValueError("Unexpected extra JSON record")
     return results
 
-def main(argv: list[str] | None = None) -> int:
+
+def main(argv: list[str] | None = None, *, stdin=None) -> int:
     parser = argparse.ArgumentParser(
-        description="Analyze already-captured guarded MCP JSON offline; no URLs fetched")
-    parser.add_argument("--homepage", type=Path, required=True)
-    parser.add_argument("--sitemap-page", type=Path, action="append", required=True,
-                        help="JSON from web_fetch then each web_fetch_page, in order")
-    parser.add_argument("--link-page", type=Path, action="append", default=[])
+        description="Analyze already-captured guarded MCP JSON from stdin; no files or URLs fetched")
+    parser.add_argument("--sitemap-pages", type=int, required=True,
+                        help="Number of consecutive sitemap JSON records after homepage")
+    parser.add_argument("--link-pages", type=int, default=0,
+                        help="Number of link continuation JSON records after sitemap")
     args = parser.parse_args(argv)
     try:
-        data = _read([args.homepage, *args.sitemap_page, *args.link_page])
-        boundary = 1 + len(args.sitemap_page)
+        if (not 1 <= args.sitemap_pages <= 42
+                or not 0 <= args.link_pages <= 2
+                or 1 + args.sitemap_pages + args.link_pages > MAX_FILES):
+            raise ValueError("Invalid page counts")
+        stream = sys.stdin.buffer if stdin is None else stdin
+        data = _read(stream, 1 + args.sitemap_pages + args.link_pages)
+        boundary = 1 + args.sitemap_pages
         print(json.dumps(analyze(data[0], data[1:boundary], data[boundary:]),
                          indent=2, ensure_ascii=False))
         return 0
