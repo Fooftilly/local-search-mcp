@@ -220,11 +220,11 @@ def _redacted_result(result: object) -> dict:
 
 
 _EXA_URL_LINE = re.compile(r"^URL:[ \t]*(https?://\S+)[ \t]*$", re.ASCII)
-# A markdown highlight may contain horizontal rules or literal URL lines.
-# Recognize a result divider only when followed by an entire valid header.
-_EXA_RESULT_SEPARATOR = re.compile(
-    r"\n\n---\n\n(?=Title: [^\n]*\nURL: [^\n]*\nPublished: [^\n]*\nAuthor: )"
-)
+# A highlight may contain markdown horizontal rules, but a divider
+# followed by "Title:" indicates the start of another result. Split there
+# even if the rest of the header is malformed: the strict validator below
+# must reject that result, not silently ignore it and undercount hits.
+_EXA_RESULT_SEPARATOR = re.compile(r"\n\n---\n\n(?=Title: )")
 
 
 def _redacted_exa_result(result: object) -> dict:
