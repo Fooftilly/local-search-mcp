@@ -1,12 +1,15 @@
 """Offline regressions for attended keyless provider trials (#258)."""
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import io
 import json
+
+from fastmcp.client.transports import http as fastmcp_http
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from scripts import free_provider_pilot as pilot
 from scripts import engine_live_comparison
@@ -49,8 +52,8 @@ class FakeClient:
         self.calls.append(("tools/list",))
         return self.items
 
-    async def call_tool(self, name, args):
-        self.calls.append(("tools/call", name, args))
+    async def call_tool(self, name, args, *, raise_on_error=True):
+        self.calls.append(("tools/call", name, args, raise_on_error))
         return self.result
 
 
@@ -133,10 +136,11 @@ class FreeProviderPilotTests(unittest.TestCase):
 
     def test_factory_disables_proxies_redirects_and_auth(self):
         dummy = object()
-        with patch.object(pilot.httpx, "AsyncClient",
+        with patch.object(pilot.httpx2, "AsyncClient",
                           return_value=dummy) as maker:
             self.assertIs(pilot._transport_client(
-                headers={"accept": "application/json"}), dummy)
+                headers={"accept": "application/json"},
+                follow_redirects=True), dummy)
         self.assertFalse(maker.call_args.kwargs["trust_env"])
         self.assertFalse(maker.call_args.kwargs["follow_redirects"])
         self.assertTrue(maker.call_args.kwargs["verify"])
@@ -148,6 +152,70 @@ class FreeProviderPilotTests(unittest.TestCase):
         ):
             with self.subTest(headers=list(headers)), self.assertRaises(ValueError):
                 pilot._transport_client(headers=headers)
+
+    def test_real_fastmcp_transport_factory_contract_is_redirect_safe(self):
+        """Exercise the actual FastMCP 4 connect_session -> factory boundary.
+
+        No network and no fake StreamableHttpTransport constructor: entering
+        the actual transport invokes our real SDK-compatible client factory.
+        A fake stream and session prevent remote initialize or MCP calls.
+        """
+        witnessed = []
+
+        @contextlib.asynccontextmanager
+        async def offline_stream(url, *, http_client):
+            witnessed.append(("stream", url, http_client.follow_redirects))
+            yield None, None
+
+        class OfflineSession:
+            def __init__(self, read, write, **kwargs):
+                self.arguments = (read, write, kwargs)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+        def checked_factory(**kwargs):
+            witnessed.append(("factory", kwargs))
+            actual = pilot._transport_client(**kwargs)
+            self.assertFalse(actual.follow_redirects)
+            self.assertIsNone(actual.auth)
+            return actual
+
+        transport = pilot.StreamableHttpTransport(
+            pilot.PROVIDERS["you"]["url"], headers={}, auth=None,
+            httpx_client_factory=checked_factory,
+        )
+        opts = SimpleNamespace(
+            forward_incoming_headers=False, session_class=OfflineSession)
+
+        async def run():
+            async with transport.connect_session(transport_options=opts) as session:
+                self.assertIsInstance(session, OfflineSession)
+
+        with patch.object(fastmcp_http, "streamable_http_client", offline_stream):
+            asyncio.run(run())
+        self.assertEqual(witnessed[0][0], "factory")
+        self.assertTrue(witnessed[0][1]["follow_redirects"])
+        self.assertIsNone(witnessed[0][1]["auth"])
+        self.assertEqual(
+            witnessed[1], ("stream", pilot.PROVIDERS["you"]["url"], False))
+
+    def test_real_fastmcp_transport_rejects_injected_credentials(self):
+        """The actual transport must not smuggle a bearer to the factory."""
+        transport = pilot.StreamableHttpTransport(
+            pilot.PROVIDERS["you"]["url"], headers={"Authorization": "SECRET"},
+            auth=None, httpx_client_factory=pilot._transport_client)
+        opts = SimpleNamespace(
+            forward_incoming_headers=False,
+            session_class=lambda *args, **kwargs: None)
+        async def run():
+            async with transport.connect_session(transport_options=opts):
+                self.fail("Unauthorized transport unexpectedly connected")
+        with self.assertRaisesRegex(ValueError, "credentials_not_permitted"):
+            asyncio.run(run())
 
     def test_schema_accepts_only_keyless_allowlisted_tool_set(self):
         good = [tool("you-search"), tool("you-discover")]
@@ -194,11 +262,11 @@ class FreeProviderPilotTests(unittest.TestCase):
         self.assertEqual(you.calls, [
             ("tools/list",),
             ("tools/call", "you-search", {
-                "query": pilot.PRESETS["docs"], "count": 3})])
+                "query": pilot.PRESETS["docs"], "count": 3}, False)])
         self.assertEqual(firecrawl.calls, [
             ("tools/list",),
             ("tools/call", "firecrawl_search", {
-                "query": pilot.PRESETS["science"], "limit": 3})])
+                "query": pilot.PRESETS["science"], "limit": 3}, False)])
         self.assertEqual(
             [x[0][0] for x in constructors],
             [pilot.PROVIDERS["you"]["url"],
@@ -218,9 +286,34 @@ class FreeProviderPilotTests(unittest.TestCase):
         self.assertEqual(fake.calls[1], (
             "tools/call", "you-search", {
                 "query": pilot.PRESETS["docs"], "count": 3,
-                "extraction": "none"}))
+                "extraction": "none"}, False))
         # A strict schema advertising only query/count must not receive
         # an unknown extraction field; covered by the preceding test.
+
+    def test_definite_free_quota_tool_error_retains_known_call_count(self):
+        quota_error = SimpleNamespace(
+            is_error=True, data={"error": "PRIVATE_PROVIDER_QUOTA_DETAILS"},
+            content=[SimpleNamespace(text="SECRET")])
+        fake = FakeClient([tool("you-search")], result=quota_error)
+        with (patch.object(pilot, "StreamableHttpTransport",
+                           return_value=object()),
+              patch.object(pilot, "Client", return_value=fake)):
+            outcome = asyncio.run(pilot._one_request("you", "docs"))
+        self.assertEqual(outcome["status"], "tool_error")
+        self.assertEqual(outcome["tool_calls_attempted"], 1)
+        self.assertIsNone(outcome["result_count"])
+        self.assertEqual(fake.calls[-1], (
+            "tools/call", "you-search",
+            {"query": pilot.PRESETS["docs"], "count": 3}, False))
+        self.assertNotIn("PRIVATE_PROVIDER_QUOTA_DETAILS", repr(outcome))
+        async def completed(provider, profile):
+            return outcome
+        with patch.object(pilot.os, "geteuid", return_value=1000):
+            report = pilot.sample("you", "docs",
+                                  confirm=lambda _: "FREE", perform=completed)
+        self.assertEqual(report["status"], "tool_error")
+        self.assertEqual(report["tool_calls_attempted"], 1)
+        self.assertNotIn("PRIVATE_PROVIDER_QUOTA_DETAILS", repr(report))
 
     def test_schema_mismatch_aborts_before_remote_search(self):
         fake = FakeClient([tool("firecrawl_crawl", limit_key="limit")])
