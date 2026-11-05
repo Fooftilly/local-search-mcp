@@ -153,10 +153,22 @@ def _safe_hits(data: object) -> list[dict] | None:
     for candidate in choices:
         if not isinstance(candidate, list) or len(candidate) > MAX_RESULTS:
             continue
-        if all(isinstance(row, dict) and isinstance(row.get("url"), str)
-               and urlsplit(row["url"]).scheme in ("https", "http")
-               and bool(urlsplit(row["url"]).hostname)
-               for row in candidate):
+        accepted = True
+        for row in candidate:
+            if not isinstance(row, dict) or not isinstance(row.get("url"), str):
+                accepted = False
+                break
+            try:
+                parts = urlsplit(row["url"])
+                if (parts.scheme not in ("http", "https")
+                        or not parts.hostname or parts.username or parts.password
+                        or parts.port not in (None, 80, 443)):
+                    accepted = False
+                    break
+            except ValueError:
+                accepted = False
+                break
+        if accepted:
             return candidate
     return None
 
@@ -211,6 +223,7 @@ def sample(provider: str, preset: str, *, confirm=input,
         "profile": preset if preset in PRESETS else "invalid",
         "status": "refused", "tool_calls_attempted": 0,
         "result_count": None, "third_party_boundary": True,
+        "remote_requests_may_have_started": False,
         "local_mcp_bridge_modified": False,
     }
     if provider not in PROVIDERS or preset not in PRESETS or os.geteuid() == 0:
@@ -232,7 +245,12 @@ def sample(provider: str, preset: str, *, confirm=input,
         return result
     # Fail closed on network/protocol/schema exceptions. Never print
     # third-party response text, URLs, upstream exceptions or credentials.
+    # A failed MCP exchange might still have sent the tool request before
+    # the transport disconnected. Never claim zero upstream calls from an
+    # exception; accurately mark the accounting as unknown in that case.
     result["status"] = "connection_failed"
+    result["tool_calls_attempted"] = None
+    result["remote_requests_may_have_started"] = True
     try:
         outcome = asyncio.run(asyncio.wait_for(
             perform(provider, preset), timeout=MAX_SECONDS))
