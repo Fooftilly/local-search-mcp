@@ -126,7 +126,7 @@ class URLMappingBenchmarkTests(unittest.TestCase):
                                 "--sitemap-pages", "1"], stdin=io.BytesIO())
         for args in (["--sitemap-pages", "0"],
                      ["--sitemap-pages", "43"],
-                     ["--sitemap-pages", "1", "--link-pages", "3"]):
+                     ["--sitemap-pages", "1", "--link-pages", "11"]):
             with self.subTest(args=args):
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):
