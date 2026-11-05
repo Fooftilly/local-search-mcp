@@ -84,12 +84,17 @@ reported metrics. No actual external request occurs in CI.
 Exa MCP's anonymous rate limits can be reported as text with **MCP success**
 instead of a structured error. This pilot recognizes the documented
 free-rate-limit notice, reports `rate_limited` with one definite tool call,
-and never mistakes it for an empty result. Exa search returns a text format
-with `URL:` lines; the script counts only a bounded set of valid HTTP(S)
-source hosts without printing URLs, titles or highlights. Unrecognized
-shapes and additional required arguments fail closed, and no API key or
-OAuth is injected. The anonymous free quota has no reliably verified
-remaining-credit interface, so this is **not** a fixed 1,000-request allowance.
+and never mistakes it for an empty result. Exa's normal search output is
+**plaintext** containing both result headers and arbitrary page highlights.
+Highlight text can imitate `Title:`, `URL:` and markdown result separators,
+so **an exact result count or distinct-host count cannot be trusted** from
+this text. When the first result header looks valid, the pilot reports
+`text_results_unverified` and a `null` count, not an invented number.
+It reports exact counts only for verified structured result objects.
+Unknown formats, malformed first headers, and extra required tool arguments
+fail closed. No URLs, titles or highlights are ever printed. The anonymous
+quota has no reliably verified remaining-credit interface, so this is
+**not** a fixed monthly allowance.
 
 ## Important security boundary
 
