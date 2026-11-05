@@ -156,7 +156,12 @@ def _read(files: list[Path]) -> list[dict]:
     for path in files:
         # Path.is_symlink() followed by Path.open() has a race. Open the
         # actual descriptor with O_NOFOLLOW and check the opened inode.
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except OSError as exc:
+            # A symlink, missing file, or denied open is invalid input.
+            # Never expose the operator's private capture path in errors.
+            raise ValueError("Input cannot be safely opened") from exc
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_FILE_BYTES:
