@@ -1,0 +1,284 @@
+"""Offline regressions for attended keyless provider trials (#258)."""
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+from types import SimpleNamespace
+import unittest
+from unittest.mock import Mock, patch
+
+from scripts import free_provider_pilot as pilot
+from scripts import engine_live_comparison
+
+
+def tool(name, *, limit_key="count", extra_required=()):
+    return SimpleNamespace(name=name, inputSchema={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            limit_key: {"type": "integer"},
+        },
+        "required": ["query", *extra_required],
+    })
+
+
+class FakeClient:
+    def __init__(self, items, result=None):
+        self.items = items
+        self.result = result or SimpleNamespace(
+            is_error=False, data={"results": {"web": [
+                {"url": "https://docs.python.org/3/"},
+                {"url": "https://www.python.org/about"},
+                {"url": "https://docs.python.org/3/library"},
+            ]}})
+        self.calls = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return None
+
+    async def list_tools(self):
+        self.calls.append(("tools/list",))
+        return self.items
+
+    async def call_tool(self, name, args):
+        self.calls.append(("tools/call", name, args))
+        return self.result
+
+
+class FreeProviderPilotTests(unittest.TestCase):
+    def test_offline_preview_and_config_are_exact_and_nonmutating(self):
+        with (patch.object(pilot, "_one_request",
+                           side_effect=AssertionError("no network")),
+              patch.object(pilot, "StreamableHttpTransport",
+                           side_effect=AssertionError("no transport")),
+              contextlib.redirect_stdout(io.StringIO()) as output):
+            self.assertEqual(pilot.main([]), 0)
+        view = json.loads(output.getvalue())
+        self.assertEqual(view["provider_calls_attempted"], 0)
+        self.assertTrue(view["third_party_boundary"])
+        self.assertEqual(view["max_tool_calls_per_invocation"], 1)
+        self.assertEqual(len(view["providers"]), 2)
+        self.assertFalse(view["local_mcp_bridge_modified"])
+        self.assertEqual(view["presets"], list(engine_live_comparison.PRESETS))
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(pilot.main(["--client-config"]), 0)
+        config = json.loads(output.getvalue())
+        self.assertEqual(set(config["mcpServers"]),
+                         {"you-free", "firecrawl-keyless"})
+        self.assertTrue(config["mcpServers"]["you-free"]["url"].endswith(
+            "?profile=free&tools=you-search"))
+        self.assertEqual(config["mcpServers"]["firecrawl-keyless"]["url"],
+                         "https://mcp.firecrawl.dev/v2/mcp")
+        self.assertNotIn("Authorization", str(config))
+        self.assertNotIn("Bearer", str(config))
+
+    def test_noninteractive_and_invalid_flags_never_call_any_provider(self):
+        with (patch.object(pilot.sys.stdin, "isatty", return_value=False),
+              patch.object(pilot, "_one_request",
+                           side_effect=AssertionError("must be offline")),
+              contextlib.redirect_stdout(io.StringIO()) as output):
+            code = pilot.main(["--sample", "--provider", "you"])
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(output.getvalue())["status"],
+                         "tty_required")
+        with self.assertRaises(SystemExit):
+            pilot.main(["--sample", "--client-config"])
+        with self.assertRaises(SystemExit):
+            pilot.main(["--sample"])
+        with self.assertRaises(SystemExit):
+            pilot.main(["--sample", "--provider", "paid"])
+        with self.assertRaises(SystemExit):
+            pilot.main(["--sample", "--provider", "you",
+                        "--profile", "secret_query"])
+
+    def test_refuses_root_unknown_inputs_and_wrong_consent(self):
+        with (patch.object(pilot.os, "geteuid", return_value=0),
+              patch.object(pilot, "_one_request",
+                           side_effect=AssertionError("no provider"))):
+            self.assertEqual(pilot.sample(
+                "you", "docs", confirm=lambda _: "FREE")["status"], "refused")
+        with (patch.object(pilot.os, "geteuid", return_value=1000),
+              patch.object(pilot, "_one_request",
+                           side_effect=AssertionError("no provider"))):
+            self.assertEqual(pilot.sample(
+                "EXA", "docs", confirm=lambda _: "FREE")["status"], "refused")
+            self.assertEqual(pilot.sample(
+                "you", "my private query", confirm=lambda _: "FREE")["status"],
+                "refused")
+            for answer in ("free", "YES", "", "FREE "):
+                with self.subTest(answer=answer):
+                    self.assertEqual(pilot.sample(
+                        "you", "docs", confirm=lambda _: answer)["status"],
+                        "cancelled")
+
+    def test_hardcoded_hosts_tools_and_query_preset_are_fixed(self):
+        self.assertEqual(set(pilot.PROVIDERS), {"you", "firecrawl"})
+        for spec in pilot.PROVIDERS.values():
+            self.assertTrue(spec["url"].startswith("https://"))
+            self.assertNotIn("oauth", spec["url"])
+            self.assertNotIn("api_key", spec["url"])
+            self.assertNotIn("google", spec["url"])
+        self.assertEqual(pilot.PRESETS, engine_live_comparison.PRESETS)
+        self.assertFalse(any("password" in q.casefold()
+                             for q in pilot.PRESETS.values()))
+
+    def test_factory_disables_proxies_redirects_and_auth(self):
+        dummy = object()
+        with patch.object(pilot.httpx, "AsyncClient",
+                          return_value=dummy) as maker:
+            self.assertIs(pilot._transport_client(
+                headers={"accept": "application/json"}), dummy)
+        self.assertFalse(maker.call_args.kwargs["trust_env"])
+        self.assertFalse(maker.call_args.kwargs["follow_redirects"])
+        self.assertTrue(maker.call_args.kwargs["verify"])
+        self.assertIsNone(maker.call_args.kwargs["auth"])
+        for headers in (
+            {"Authorization": "SECRET"}, {"Cookie": "SECRET"},
+            {"X-Payment": "SECRET"}, {"Payment-Signature": "SECRET"},
+            {"X-API-Key": "SECRET"},
+        ):
+            with self.subTest(headers=list(headers)), self.assertRaises(ValueError):
+                pilot._transport_client(headers=headers)
+
+    def test_schema_accepts_only_keyless_allowlisted_tool_set(self):
+        good = [tool("you-search"), tool("you-discover")]
+        self.assertTrue(pilot._schema_ok(good, "you"))
+        self.assertTrue(pilot._schema_ok([
+            tool("firecrawl_search", limit_key="limit"),
+            tool("firecrawl_scrape", limit_key="limit"),
+            tool("firecrawl_parse", limit_key="limit")], "firecrawl"))
+        invalid = (
+            good + [tool("you-finance")],
+            good + [tool("you-search")],
+            [tool("you-search", extra_required=("credit_card",))],
+            [tool("you-search", limit_key="invalid_count")],
+            [],
+            None,
+        )
+        for case in invalid:
+            with self.subTest(case=case):
+                self.assertFalse(pilot._schema_ok(case, "you"))
+        self.assertFalse(pilot._schema_ok(
+            [tool("firecrawl_crawl", limit_key="limit")], "firecrawl"))
+
+    def test_remote_client_only_searches_one_free_tool_with_bounded_args(self):
+        you = FakeClient([tool("you-search")])
+        firecrawl = FakeClient([tool("firecrawl_search", limit_key="limit")])
+        clients = [you, firecrawl]
+        constructors = []
+        def transport(*args, **kwargs):
+            constructors.append((args, kwargs))
+            return object()
+        with (patch.object(pilot, "StreamableHttpTransport",
+                           side_effect=transport),
+              patch.object(pilot, "Client",
+                           side_effect=lambda _: clients.pop(0))):
+            first = __import__("asyncio").run(pilot._one_request("you", "docs"))
+            second = __import__("asyncio").run(
+                pilot._one_request("firecrawl", "science"))
+        self.assertEqual(first["status"], "results")
+        self.assertEqual(first["result_count"], 3)
+        self.assertEqual(first["distinct_hosts"], 2)
+        self.assertEqual(second["status"], "results")
+        self.assertEqual(you.calls, [
+            ("tools/list",),
+            ("tools/call", "you-search", {
+                "query": pilot.PRESETS["docs"], "count": 3,
+                "extraction": "none"})])
+        self.assertEqual(firecrawl.calls, [
+            ("tools/list",),
+            ("tools/call", "firecrawl_search", {
+                "query": pilot.PRESETS["science"], "limit": 3})])
+        self.assertEqual(
+            [x[0][0] for x in constructors],
+            [pilot.PROVIDERS["you"]["url"],
+             pilot.PROVIDERS["firecrawl"]["url"]])
+        self.assertTrue(all(x[1]["headers"] == {} and x[1]["auth"] is None
+                            for x in constructors))
+        self.assertTrue(all(x[1]["httpx_client_factory"] is pilot._transport_client
+                            for x in constructors))
+
+    def test_schema_mismatch_aborts_before_remote_search(self):
+        fake = FakeClient([tool("firecrawl_crawl", limit_key="limit")])
+        with (patch.object(pilot, "StreamableHttpTransport",
+                           return_value=object()),
+              patch.object(pilot, "Client", return_value=fake)):
+            result = __import__("asyncio").run(
+                pilot._one_request("firecrawl", "docs"))
+        self.assertEqual(result["status"], "unexpected_free_tool_contract")
+        self.assertEqual(result["tool_calls_attempted"], 0)
+        self.assertEqual(fake.calls, [("tools/list",)])
+
+    def test_results_are_sanitized_even_with_private_remote_fields(self):
+        response = SimpleNamespace(is_error=False, data={"results": {"web": [
+            {"url": "https://python.org/PRIVATE_SECRET",
+             "title": "INTERNAL_DATA", "snippet": "DO_NOT_LOG"},
+        ]}})
+        sanitized = pilot._redacted_result(response)
+        self.assertEqual(sanitized["result_count"], 1)
+        self.assertEqual(sanitized["distinct_hosts"], 1)
+        for secret in ("PRIVATE_SECRET", "INTERNAL_DATA", "DO_NOT_LOG"):
+            self.assertNotIn(secret, json.dumps(sanitized))
+        malformed = SimpleNamespace(
+            is_error=False, data={"results": "SECRET"},
+            content=[SimpleNamespace(text="PRIVATE")])
+        self.assertEqual(pilot._redacted_result(malformed)["status"],
+                         "unverified_response")
+        self.assertEqual(pilot._redacted_result(SimpleNamespace(
+            is_error=True, data={"error": "SECRET"}))["status"], "tool_error")
+
+    def test_structured_and_text_result_formats_are_bounded(self):
+        for data in (
+            {"data": {"web": [{"url": "https://example.org/page"}]}},
+            {"data": [{"url": "https://example.org/page"}]},
+            [{"url": "https://example.org/page"}],
+        ):
+            self.assertEqual(len(pilot._safe_hits(data)), 1)
+        for value in (
+            {"results": [{"url": "file:///etc/passwd"}]},
+            {"results": [{"url": "https://example.org"}] * 4},
+            "not-json" * 30000,
+            {"success": False, "data": [{"url": "https://example.org"}]},
+        ):
+            self.assertIsNone(pilot._safe_hits(value))
+        from_text = SimpleNamespace(
+            is_error=False, data=None,
+            content=[SimpleNamespace(text=json.dumps({
+                "web": [{"url": "https://example.org"}]}))])
+        self.assertEqual(pilot._redacted_result(from_text)["result_count"], 1)
+
+    def test_one_attended_call_no_content_leaks_or_followup_calls(self):
+        async def ok(provider, profile):
+            self.assertEqual((provider, profile), ("you", "science"))
+            return {"status": "results", "result_count": 2, "distinct_hosts": 1,
+                    "local_call_ms": 500, "tool_calls_attempted": 1,
+                    "private": "UNTRUSTED_SEARCH_RESULT"}
+        with patch.object(pilot.os, "geteuid", return_value=1000):
+            result = pilot.sample("you", "science", confirm=lambda _: "FREE",
+                                  perform=ok)
+        self.assertEqual(result["status"], "results")
+        self.assertEqual(result["result_count"], 2)
+        self.assertEqual(result["tool_calls_attempted"], 1)
+        self.assertNotIn("UNTRUSTED_SEARCH_RESULT", str(result))
+        self.assertNotIn(pilot.PRESETS["science"], str(result))
+
+    def test_no_exception_details_or_arbitrary_network_retry(self):
+        attempts = []
+        async def broken(provider, profile):
+            attempts.append((provider, profile))
+            raise RuntimeError("PRIVATE_TOKEN_TEST")
+        with patch.object(pilot.os, "geteuid", return_value=1000):
+            result = pilot.sample("firecrawl", "docs",
+                                  confirm=lambda _: "FREE", perform=broken)
+        self.assertEqual(attempts, [("firecrawl", "docs")])
+        self.assertEqual(result["status"], "connection_failed")
+        self.assertNotIn("PRIVATE_TOKEN_TEST", repr(result))
+        self.assertEqual(result["tool_calls_attempted"], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
