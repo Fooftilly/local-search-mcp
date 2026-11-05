@@ -176,7 +176,7 @@ def main(argv: list[str] | None = None, *, stdin=None) -> int:
     args = parser.parse_args(argv)
     try:
         if (not 1 <= args.sitemap_pages <= 42
-                or not 0 <= args.link_pages <= 2
+                or not 0 <= args.link_pages <= 10
                 or 1 + args.sitemap_pages + args.link_pages > MAX_FILES):
             raise ValueError("Invalid page counts")
         stream = sys.stdin.buffer if stdin is None else stdin
