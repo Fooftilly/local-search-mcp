@@ -67,7 +67,9 @@ bounded search-result count, distinct source-host count and
 **local tool-call latency**. It never prints raw results, snippets,
 URLs, provider exception text, HTTP bodies, or the public query. An
 unrecognized provider response reports `unverified_response`, **not**
-zero results or success. The official provider APIs may evolve; validate
+zero results or success. If transport fails after consent, the script marks
+remote request accounting **unknown** rather than asserting that no search
+was sent. The official provider APIs may evolve; validate
 the live contracts on an attended test host before relying on the
 reported metrics. No actual external request occurs in CI.
 
