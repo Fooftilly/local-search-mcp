@@ -72,6 +72,26 @@ class URLMappingBenchmarkTests(unittest.TestCase):
         self.assertIsNone(benchmark._candidate(
             "https://u:p@www.example.org/", "www.example.org"))
 
+    def test_valid_trailing_url_punctuation_does_not_hide_sitemap_gain(self):
+        # The crawler's structured homepage links are already URLs, not
+        # prose; trailing punctuation is a valid part of their paths.
+        for suffix in (".", ")", ";", ","):
+            with self.subTest(suffix=suffix):
+                home = {**self.home, "links": [
+                    {"url": f"https://www.example.org/guide{suffix}"}]}
+                sitemap = [self.page(1, 1,
+                    "https://www.example.org/guide ")]
+                outcome = benchmark.analyze(home, sitemap)
+                self.assertEqual(
+                    outcome["homepage"]["observed_unique_in_scope_links"], 1)
+                self.assertEqual(
+                    outcome["sitemap"]["heuristic_candidates_not_in_observed_homepage_links"], 1)
+                self.assertEqual(
+                    benchmark._candidate(
+                        f"https://www.example.org/guide{suffix}",
+                        "www.example.org"),
+                    f"https://www.example.org/guide{suffix}")
+
     def test_last_non_delimited_url_not_claimed_complete(self):
         complete = benchmark.analyze(self.home, [
             self.page(1, 1, "https://www.example.org/z/ ")])
