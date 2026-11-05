@@ -65,7 +65,10 @@ automate more calls. No new background jobs or telemetry are written.
 
 The response is intentionally limited to coarse status, verified
 bounded search-result count, distinct source-host count and
-**local tool-call latency**. It never prints raw results, snippets,
+**local tool-call latency**. FastMCP's default log and progress handlers
+can emit **server-controlled** notification contents through Python logging;
+this pilot replaces both with asynchronous discard handlers so upstream
+notifications cannot bypass its redacted output policy. It never prints raw results, snippets,
 URLs, provider exception text, HTTP bodies, or the public query. An
 unrecognized provider response reports `unverified_response`, **not**
 zero results or success. If transport fails after consent, the script marks
