@@ -36,7 +36,9 @@ def _candidate(url: object, host: str) -> str | None:
     if not isinstance(url, str) or len(url) > 2048:
         return None
     try:
-        p = urlsplit(url.rstrip(".,;)"))
+        # Preserve literal URL punctuation. A period or closing parenthesis
+        # can be part of a real path; stripping it would corrupt overlap counts.
+        p = urlsplit(url)
         if (p.scheme not in ("http", "https") or p.hostname != host
                 or p.username is not None or p.password is not None
                 or p.port not in (None, 80, 443)):
