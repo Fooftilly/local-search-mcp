@@ -206,6 +206,17 @@ def _redacted_result(result: object) -> dict:
             "result_count": len(hits), "distinct_hosts": len(hosts)}
 
 
+async def _discard_server_log(_message: object) -> None:
+    """Never forward untrusted MCP logging notification contents to stderr."""
+    return None
+
+
+async def _discard_server_progress(
+        _progress: float, _total: float | None, _message: str | None) -> None:
+    """Provider progress text may include URLs, errors or result snippets."""
+    return None
+
+
 async def _one_request(provider: str, preset: str) -> dict:
     """One MCP initialization, one tools/list and at most one tools/call."""
     spec = PROVIDERS[provider]
@@ -213,7 +224,12 @@ async def _one_request(provider: str, preset: str) -> dict:
         spec["url"], headers={}, auth=None,
         httpx_client_factory=_transport_client,
     )
-    async with Client(transport) as client:
+    # FastMCP's default log handler writes server-controlled data to Python
+    # logging; its default progress handler can also log provider messages.
+    # Neither may bypass the pilot's deliberately redacted output contract.
+    async with Client(
+            transport, log_handler=_discard_server_log,
+            progress_handler=_discard_server_progress) as client:
         tools = await client.list_tools()
         if not _schema_ok(tools, provider):
             return {"status": "unexpected_free_tool_contract",
