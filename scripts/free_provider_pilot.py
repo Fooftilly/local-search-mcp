@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from urllib.parse import urlsplit
@@ -38,6 +39,15 @@ PROVIDERS = {
         "limit_key": "limit",
         "free": ("Keyless: rate-limited free search; separate signed-up "
                  "Free plan renews 1,000 credits monthly"),
+    },
+    "exa": {
+        # Exa's official MCP supports anonymous rate-limited search. Scope
+        # discovery to search only; web_fetch_exa and paid agent_run stay absent.
+        "url": "https://mcp.exa.ai/mcp?tools=web_search_exa",
+        "tool": "web_search_exa",
+        "listed_tools": frozenset({"web_search_exa"}),
+        "limit_key": "numResults",
+        "free": "Anonymous MCP search is free and rate-limited; quota unspecified",
     },
 }
 MAX_RESULTS = 3
@@ -79,6 +89,8 @@ def client_config() -> dict:
             "you-free": {"type": "http", "url": PROVIDERS["you"]["url"]},
             "firecrawl-keyless": {
                 "type": "http", "url": PROVIDERS["firecrawl"]["url"]},
+            "exa-keyless": {
+                "type": "http", "url": PROVIDERS["exa"]["url"]},
         },
     }
 
@@ -129,7 +141,8 @@ def _schema_ok(tools: object, provider: str) -> bool:
         and isinstance(props["query"], dict)
         and props["query"].get("type") == "string"
         and isinstance(props[spec["limit_key"]], dict)
-        and props[spec["limit_key"]].get("type") == "integer"
+        and props[spec["limit_key"]].get("type") in (
+            ("integer", "number") if provider == "exa" else ("integer",))
         and isinstance(required, list)
         and set(required).issubset({"query"})
     ):
@@ -206,6 +219,57 @@ def _redacted_result(result: object) -> dict:
             "result_count": len(hits), "distinct_hosts": len(hosts)}
 
 
+_EXA_URL_LINE = re.compile(r"^URL:[ \\t]*(https?://\\S+)[ \\t]*$", re.ASCII)
+
+
+def _redacted_exa_result(result: object) -> dict:
+    """Count Exa's official text results without printing page content.
+
+    Exa web_search_exa returns Title/URL/Published/Highlights blocks, not
+    necessarily structured JSON. An anonymous quota refusal can also be a
+    successful MCP response containing explanatory text rather than isError.
+    """
+    structured = _redacted_result(result)
+    if structured["status"] != "unverified_response":
+        return structured
+    content = getattr(result, "content", None)
+    if (not isinstance(content, list) or len(content) != 1
+            or not isinstance(getattr(content[0], "text", None), str)):
+        return structured
+    raw = content[0].text
+    if len(raw.encode("utf-8")) > MAX_TEXT_BYTES:
+        return structured
+    # This documented free-tier throttle sometimes arrives with MCP isError
+    # unset. Never misreport it as an empty or successful search.
+    if raw.startswith("You've hit Exa's free MCP rate limit."):
+        return {"status": "rate_limited", "result_count": None}
+    if raw.strip() == "No search results found. Please try a different query.":
+        return {"status": "empty", "result_count": 0, "distinct_hosts": 0}
+
+    urls = []
+    for line in raw.splitlines():
+        if not line.startswith("URL:"):
+            continue
+        match = _EXA_URL_LINE.fullmatch(line)
+        if match is None:
+            return structured
+        try:
+            parsed = urlsplit(match.group(1))
+            if (parsed.scheme not in ("https", "http")
+                    or not parsed.hostname or parsed.username or parsed.password
+                    or parsed.port not in (None, 80, 443)):
+                return structured
+        except ValueError:
+            return structured
+        urls.append(parsed.hostname.casefold())
+        if len(urls) > MAX_RESULTS:
+            return structured
+    if not urls:
+        return structured
+    return {"status": "results", "result_count": len(urls),
+            "distinct_hosts": len(set(urls))}
+
+
 async def _discard_server_log(_message: object) -> None:
     """Never forward untrusted MCP logging notification contents to stderr."""
     return None
@@ -245,7 +309,8 @@ async def _one_request(provider: str, preset: str) -> dict:
         result = await client.call_tool(spec["tool"], args, raise_on_error=False)
         elapsed = max(0, round((time.monotonic() - before) * 1000))
         return {"tool_calls_attempted": 1, "local_call_ms": elapsed,
-                **_redacted_result(result)}
+                **(_redacted_exa_result(result) if provider == "exa"
+                   else _redacted_result(result))}
 
 
 def sample(provider: str, preset: str, *, confirm=input,
@@ -292,7 +357,7 @@ def sample(provider: str, preset: str, *, confirm=input,
                 or type(outcome.get("tool_calls_attempted")) is not int
                 or outcome["tool_calls_attempted"] not in (0, 1)
                 or outcome.get("status") not in (
-                    "results", "empty", "tool_error",
+                    "results", "empty", "tool_error", "rate_limited",
                     "unverified_response", "unexpected_free_tool_contract")):
             return result
         result.update({
