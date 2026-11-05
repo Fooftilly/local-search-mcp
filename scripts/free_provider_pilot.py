@@ -219,7 +219,7 @@ def _redacted_result(result: object) -> dict:
             "result_count": len(hits), "distinct_hosts": len(hosts)}
 
 
-_EXA_URL_LINE = re.compile(r"^URL:[ \\t]*(https?://\\S+)[ \\t]*$", re.ASCII)
+_EXA_URL_LINE = re.compile(r"^URL:[ \t]*(https?://\S+)[ \t]*$", re.ASCII)
 
 
 def _redacted_exa_result(result: object) -> dict:
