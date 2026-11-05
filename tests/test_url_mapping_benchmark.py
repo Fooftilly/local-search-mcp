@@ -20,19 +20,22 @@ class URLMappingBenchmarkTests(unittest.TestCase):
                       {"url": "https://other.example.org/"}],
             "structured_info": {"links": {
                 "unique_safe_candidates_examined": 2, "truncated": True}},
-            "link_continuation": {"retained_links": 1},
+            "link_continuation": {"retained_links": 1, "link_id": "L" * 32},
         }
         self.sitemap_url = "https://www.example.org/sitemap.xml"
 
     def page(self, number, count, text):
         return {"success": True, "url": self.sitemap_url,
-                "page": number, "page_count": count, "markdown": text}
+                "page": number, "page_count": count, "markdown": text,
+                "document_id": "D" * 32}
 
     def test_split_url_reconstructed_only_after_concatenating_pages(self):
         first = self.page(1, 2, "https://www.example.org/a/ https://www.exa")
         second = self.page(2, 2, "mple.org/new/ https://other.org/no/ ")
         result = benchmark.analyze(self.home, [first, second], [
-            {"success": True, "links": [{"url": "https://www.example.org/x/"}]}])
+            {"success": True, "url": self.home["url"], "link_id": "L" * 32,
+             "offset": 0, "retained_links": 1,
+             "links": [{"url": "https://www.example.org/x/"}]}])
         self.assertEqual(result["homepage"]["observed_unique_in_scope_links"], 2)
         self.assertEqual(result["sitemap"]["heuristic_unique_same_host_url_candidates"], 2)
         self.assertEqual(result["sitemap"]["heuristic_candidates_not_in_observed_homepage_links"], 1)
@@ -109,6 +112,26 @@ class URLMappingBenchmarkTests(unittest.TestCase):
             link.symlink_to(source)
             with self.assertRaises(ValueError):
                 benchmark._read([link])
+
+    def test_mixed_continuation_handles_and_offsets_fail_closed(self):
+        first = self.page(1, 2, "https://www.example.org/a/ ")
+        second = {**self.page(2, 2, "https://www.example.org/b/ "),
+                  "document_id": "other"}
+        with self.assertRaises(ValueError):
+            benchmark.analyze(self.home, [first, second])
+        link = {"success": True, "url": self.home["url"],
+                "link_id": "L" * 32, "offset": 0, "retained_links": 1,
+                "links": [{"url": "https://www.example.org/x/"}]}
+        for changed in (
+            {"url": "https://bad.example.org/"},
+            {"link_id": "other"},
+            {"offset": 10},
+            {"retained_links": 2},
+            {"links": []},
+        ):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                benchmark.analyze(self.home, [self.page(1, 1, "")],
+                                  [{**link, **changed}])
 
     def test_invalid_optional_fields_cannot_crash_or_overstate_counts(self):
         malformed = dict(self.home)
