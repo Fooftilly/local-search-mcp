@@ -220,22 +220,15 @@ def _redacted_result(result: object) -> dict:
 
 
 _EXA_URL_LINE = re.compile(r"^URL:[ \t]*(https?://\S+)[ \t]*$", re.ASCII)
-# Treat a divider as a new result only when followed by the two
-# distinctive result-header labels. A highlight often contains markdown
-# rules and a "Title:" line; those alone must not create a false hit.
-# The URL field is deliberately not validated here, so tab spacing and
-# invalid second URLs still reach the strict validator and fail closed.
-_EXA_RESULT_SEPARATOR = re.compile(
-    r"\n\n---\n\n(?=Title: [^\n]*\nURL:[^\n]*(?:\n|$))"
-)
 
 
 def _redacted_exa_result(result: object) -> dict:
-    """Count Exa's official text results without printing page content.
+    """Recognize Exa's text output without inventing exact hit counts.
 
-    Exa web_search_exa returns Title/URL/Published/Highlights blocks, not
-    necessarily structured JSON. An anonymous quota refusal can also be a
-    successful MCP response containing explanatory text rather than isError.
+    Exa returns arbitrary page highlights in the same plaintext as its
+    result headers. Highlights can contain URL lines, Title lines and
+    markdown dividers indistinguishable from the search result format.
+    Only a true structured response can justify an exact count.
     """
     structured = _redacted_result(result)
     if structured["status"] != "unverified_response":
@@ -247,42 +240,32 @@ def _redacted_exa_result(result: object) -> dict:
     raw = content[0].text
     if len(raw.encode("utf-8")) > MAX_TEXT_BYTES:
         return structured
-    # This documented free-tier throttle sometimes arrives with MCP isError
-    # unset. Never misreport it as an empty or successful search.
+    # The anonymous free-tier throttle may be an MCP-success text response.
     if raw.startswith("You've hit Exa's free MCP rate limit."):
         return {"status": "rate_limited", "result_count": None}
     if raw.strip() == "No search results found. Please try a different query.":
         return {"status": "empty", "result_count": 0, "distinct_hosts": 0}
 
-    # Exa formats each search hit as a result header containing Title,
-    # URL, Published and Author, separated from other hits by a divider.
-    # A page highlight can itself contain 'URL:' lines; do not scan the
-    # entire body for URLs or count highlight text as additional results.
-    blocks = _EXA_RESULT_SEPARATOR.split(raw)
-    if not 1 <= len(blocks) <= MAX_RESULTS:
+    # Validate only the start of a plausible Exa result. Never parse the
+    # remaining highlight text to infer how many results exist: doing so
+    # would silently over- or under-count arbitrary third-party Markdown.
+    lines = raw.splitlines()
+    if (len(lines) < 4 or not lines[0].startswith("Title: ")
+            or not lines[2].startswith("Published: ")
+            or not lines[3].startswith("Author: ")):
         return structured
-    hosts = []
-    for block in blocks:
-        lines = block.splitlines()
-        if (len(lines) < 4 or not lines[0].startswith("Title: ")
-                or not lines[2].startswith("Published: ")
-                or not lines[3].startswith("Author: ")):
+    match = _EXA_URL_LINE.fullmatch(lines[1])
+    if match is None:
+        return structured
+    try:
+        parsed = urlsplit(match.group(1))
+        if (parsed.scheme not in ("https", "http") or not parsed.hostname
+                or parsed.username or parsed.password
+                or parsed.port not in (None, 80, 443)):
             return structured
-        match = _EXA_URL_LINE.fullmatch(lines[1])
-        if match is None:
-            return structured
-        try:
-            parsed = urlsplit(match.group(1))
-            if (parsed.scheme not in ("https", "http")
-                    or not parsed.hostname or parsed.username or parsed.password
-                    or parsed.port not in (None, 80, 443)):
-                return structured
-        except ValueError:
-            return structured
-        hosts.append(parsed.hostname.casefold())
-    return {"status": "results", "result_count": len(hosts),
-            "distinct_hosts": len(set(hosts))}
-
+    except ValueError:
+        return structured
+    return {"status": "text_results_unverified", "result_count": None}
 
 async def _discard_server_log(_message: object) -> None:
     """Never forward untrusted MCP logging notification contents to stderr."""
@@ -372,6 +355,7 @@ def sample(provider: str, preset: str, *, confirm=input,
                 or outcome["tool_calls_attempted"] not in (0, 1)
                 or outcome.get("status") not in (
                     "results", "empty", "tool_error", "rate_limited",
+                    "text_results_unverified",
                     "unverified_response", "unexpected_free_tool_contract")):
             return result
         result.update({
@@ -413,7 +397,8 @@ def main(argv: list[str] | None = None) -> int:
         result = preview()
     print(json.dumps(result, sort_keys=True, indent=2))
     return 0 if result.get("status") in (
-        "ready_for_explicit_consent", "results", "empty") or args.client_config else 1
+        "ready_for_explicit_consent", "results", "empty",
+        "text_results_unverified") or args.client_config else 1
 
 
 if __name__ == "__main__":
