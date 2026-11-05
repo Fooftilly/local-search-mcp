@@ -14,7 +14,7 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-import httpx
+import httpx2
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
@@ -84,18 +84,22 @@ def client_config() -> dict:
 
 
 def _transport_client(*, headers: dict | None = None,
-                      timeout: httpx.Timeout | None = None,
-                      auth: httpx.Auth | None = None) -> httpx.AsyncClient:
+                      timeout: httpx2.Timeout | None = None,
+                      auth: httpx2.Auth | None = None,
+                      follow_redirects: bool = False) -> httpx2.AsyncClient:
     """Reject accidental credentials/proxies/redirects in this public trial."""
     if auth is not None or any(
             str(key).lower() in FORBIDDEN_HEADERS for key in (headers or {})):
         raise ValueError("credentials_not_permitted_in_keyless_trial")
-    # The caller cannot supply headers or endpoints. Preserve only transport
-    # protocol headers; explicitly disable proxy/user auth inherited via env.
-    return httpx.AsyncClient(
+    # FastMCP 4 passes follow_redirects=True to custom client factories.
+    # Accept its keyword for API compatibility, but never honor it: a
+    # redirect would leave the explicitly pinned keyless MCP endpoint.
+    # Use the SDK v2's httpx2 client, not the separate httpx v0.28 client.
+    # Ignore the SDK timeout request in favor of stricter fixed bounds.
+    return httpx2.AsyncClient(
         headers=headers or {}, auth=None, trust_env=False,
         follow_redirects=False, verify=True,
-        timeout=httpx.Timeout(12, connect=5, read=12, write=5),
+        timeout=httpx2.Timeout(12, connect=5, read=12, write=5),
     )
 
 
@@ -207,7 +211,6 @@ async def _one_request(provider: str, preset: str) -> dict:
     spec = PROVIDERS[provider]
     transport = StreamableHttpTransport(
         spec["url"], headers={}, auth=None,
-        sse_read_timeout=12,
         httpx_client_factory=_transport_client,
     )
     async with Client(transport) as client:
@@ -223,7 +226,7 @@ async def _one_request(provider: str, preset: str) -> dict:
                 # undeclared argument to a strict input schema.
                 args["extraction"] = "none"
         before = time.monotonic()
-        result = await client.call_tool(spec["tool"], args)
+        result = await client.call_tool(spec["tool"], args, raise_on_error=False)
         elapsed = max(0, round((time.monotonic() - before) * 1000))
         return {"tool_calls_attempted": 1, "local_call_ms": elapsed,
                 **_redacted_result(result)}
