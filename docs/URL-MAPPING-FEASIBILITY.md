@@ -1,8 +1,8 @@
 # URL mapping feasibility gate (issue #298)
 
-**Status:** research and installed-host acceptance are pending. No web_map MCP tool is implemented, and the existing 12 tools, permissions and defaults remain unchanged.
+**Status (2026-11-05):** installed-host API compatibility and the first representative sitemap comparison have been observed. Two further approved public sites are still required before a mapper decision. No web_map tool is implemented, and the existing 12 tools, permissions and defaults remain unchanged.
 
-## Verified upstream source, not installed-host evidence
+## Verified upstream source and operator host evidence
 
 - Crawl4AI [v0.9.5 Docker server.py](https://github.com/unclecode/crawl4ai/blob/v0.9.5/deploy/docker/server.py) declares /crawl and /crawl/stream but no dedicated /map, /seed, /sitemap or /scan endpoint. This finding applies to that versioned public source, not necessarily to the operator's installed image or a future release.
 - [AsyncUrlSeeder](https://docs.crawl4ai.com/core/url-seeding/) and [DomainMapper](https://docs.crawl4ai.com/core/domain-mapping/) are in the Python SDK. The library APIs are not implicitly callable through the self-hosted Docker REST API. Their default discovery can request robots files, sitemap indexes, Common Crawl and other hosts beyond the original authorized URL.
@@ -37,4 +37,34 @@ Run only against **three operator-selected, public, already-approved sites** and
 
 Any later opt-in mapping operation needs caps (initial proposal: 2 sitemap documents, 2 MiB aggregate, 100 returned URLs), time/depth limits, duplicate removal, and explicit distinction between partial and complete results. Reject DTD/entity expansion, malformed/ambiguous encodings, compression bombs, external namespaces/hosts, redirects to unapproved targets and unauthorized subdomains or paths. Check permissions and DNS/SSRF controls for every *requested* sitemap and revalidate grants before exposing cached or paged results. Discovered URL strings are never approved or fetched automatically. The preflight grants no permission and changes no production routing.
 
-**Not completed by this PR:** live installed-host verification, exact image/digest confirmation, a three-site benchmark, any verified improvement in mapping quality, or operator acceptance. The offline tests for the probe do not call remote providers.
+**Remaining:** two other representative approved sites, full three-site coverage/latency evidence, independent live firewall-negative/public probes, reboot acceptance, and any production mapper. The running container was observed with image unclecode/crawl4ai:latest, image ID sha256:065f475c90ac75fe388141597b0cdba118ebf7e03f59e2a37456c89e6b864c59 (not signature/provenance verification). The installed 0.9.5 API exposed 33 authenticated OpenAPI paths, with no mapping-named route.
+
+
+## Observed acceptance — 2026-11-05
+
+- The operator verified two sleeping, owner-controlled Docker backends, restart policy no, and zero unverified project containers. The root firewall service was active and the boot audit passed all static checks, but reported ready_for_manual_reboot_test: a live negative/public egress probe and actual reboot recovery remain unproven.
+- An approved public fetch triggered guarded Crawl4AI cold wake. The installed health endpoint returned version 0.9.5. The authenticated read-only preflight reported advertised_path_count=33 and route_status=no_advertised_mapping_route. This establishes no *advertised mapping-named route*, not absence of all hidden or differently named API operations.
+- The first representative approved public host, www.peroniko.xyz, yielded 32 safe homepage link candidates (24 initially returned, eight in continuation; 4.719 seconds shell wall time). Its sitemap.xml was retrieved successfully (1.848 seconds) as *flattened Markdown*, split over five 24,000-character pages. The second page was fetched successfully. URL strings are split at page boundaries by the existing generic document paginator; this is not a data-loss defect, but XML location tags/metadata are no longer preserved in the emitted Markdown. The sitemap contains visibly more candidate URLs than the homepage, but these are not validated XML locations.
+- The earlier example.com/sitemap.xml returned HTTP 404 and is only an error-path smoke test. It is not a representative sitemap benchmark.
+
+## Bounded offline comparison helper
+
+Use scripts/url_mapping_benchmark.py on **JSON captured from the existing guarded** web_fetch, web_links_page, and web_fetch_page tools. It performs no network calls, checks no live permissions, writes no approvals, and registers no MCP tools. It only reports exploratory unique same-host URL-looking strings, cross-source overlap, page completeness and truncated continuation status; it never calls the heuristic results XML-validated locations.
+
+From an approved public homepage and its separately verified sitemap URL, capture the full JSON responses as private files. Use the real URLs, not placeholders. Before any capture, verify approval and the publisher's robots/access rules in the operator dashboard. A wrongly chosen unapproved URL can create a normal pending request; the offline analysis script cannot prevent that when you capture the responses manually.
+
+For each site, save the first homepage response in home.json and the first sitemap response in sitemap-1.json. If the first sitemap response returns a document_id and page_count greater than 1, use that **fresh temporary handle** to capture each web_fetch_page(page=2,3,...) response in consecutive sitemap-2.json etc. Retrieve any remaining homepage link results using web_links_page with the real link_id. Do not save bearer handles to a repository or publish the capture files. A handle expires after 15 minutes.
+
+Run from the PR #305 checkout:
+
+~~~sh
+python3 -m scripts.url_mapping_benchmark \
+  --homepage /path/to/private/home.json \
+  --sitemap-page /path/to/private/sitemap-1.json \
+  --sitemap-page /path/to/private/sitemap-2.json \
+  --link-page /path/to/private/links-0.json
+~~~
+
+Pass one --sitemap-page per actual page, in order, and omit optional arguments when no corresponding page exists. Repeat on three distinct operator-approved hosts. The offline script cannot infer fetch latency: record the wall times separately. Use an owner-only directory and delete the capture files afterward.
+
+The analysis has caps for input count, file bytes, and total extracted Markdown; it joins consecutive document pages with no separators so URL fragments crossing page boundaries are not invented as standalone complete URLs. It never retrieves or authorizes discovered URLs. The original XML structure has already been flattened by the existing Crawl4AI response; restoring exact XML sitemap semantics needs a separately reviewed, bounded upstream-source extraction approach, after the three-site benchmark.
