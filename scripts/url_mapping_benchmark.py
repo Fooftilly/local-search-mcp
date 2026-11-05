@@ -81,7 +81,12 @@ def analyze(home: dict, sitemap_pages: list[dict],
     # Markdown pages divide strings at character offsets, even inside URLs.
     # Avoid treating a final incomplete token as a valid location.
     if text and (not all_pages or not text[-1].isspace()):
-        text = text[:text.rfind(" ") + 1] if " " in text else ""
+        # An incomplete final URL may run across pages; keep everything
+        # through the last whitespace, not just the last literal space.
+        # XML-to-Markdown may separate URLs by newlines or tabs as well.
+        last_boundary = max((i for i, char in enumerate(text) if char.isspace()),
+                            default=-1)
+        text = text[:last_boundary + 1]
     sitemap_urls = {x for m in URL_RE.finditer(text)
                     if (x := _candidate(m.group(), host)) is not None}
 
@@ -119,13 +124,17 @@ def analyze(home: dict, sitemap_pages: list[dict],
     info = info if isinstance(info, dict) else {}
     links_info = info.get("links")
     links_info = links_info if isinstance(links_info, dict) else {}
+    # Never echo raw metadata fields from possibly edited capture JSON.
+    # The bridge normally emits an integer, but CLI input is untrusted.
+    examined = links_info.get("unique_safe_candidates_examined")
+    if type(examined) is not int or not 0 <= examined <= 1_000_000:
+        examined = None
     links_missing = bool(cont and expected_offset < retained)
     return {
         "homepage": {
             "observed_unique_in_scope_links": len(home_urls),
-            "reported_unique_safe_candidates_examined": links_info.get(
-                "unique_safe_candidates_examined"),
-            "initial_links_truncated": bool(links_info.get("truncated")),
+            "reported_unique_safe_candidates_examined": examined,
+            "initial_links_truncated": links_info.get("truncated") is True,
             "link_continuation_pages_supplied": len(link_pages or []),
             "link_continuation_incomplete": links_missing,
             "source_completeness": "unknown",
