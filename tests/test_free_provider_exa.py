@@ -91,7 +91,9 @@ class AnonymousExaPilotTests(unittest.TestCase):
             "Title: PRIVATE_TITLE\n"
             "URL: https://docs.python.org/3/?token=PRIVATE_QUERY\n"
             "Published: Never\nAuthor: Nobody\nHighlights:\nPRIVATE_SNIPPET\n"
-            "URL: https://example.org/highlight-should-not-count\n\n---\n\n"
+            "URL: https://example.org/highlight-should-not-count\n\n"
+            "---\n\nMarkdown paragraph after a highlight divider.\n\n"
+            "---\n\n"
             "Title: Second\nURL: https://www.python.org/about\n"
             "Published: Never\nAuthor: Nobody\n"
         )
