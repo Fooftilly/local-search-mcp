@@ -119,7 +119,7 @@ def _schema_ok(tools: object, provider: str) -> bool:
         return False
     props = schema.get("properties")
     required = schema.get("required", [])
-    return (
+    if not (
         isinstance(props, dict) and "query" in props
         and spec["limit_key"] in props
         and isinstance(props["query"], dict)
@@ -128,7 +128,19 @@ def _schema_ok(tools: object, provider: str) -> bool:
         and props[spec["limit_key"]].get("type") == "integer"
         and isinstance(required, list)
         and set(required).issubset({"query"})
-    )
+    ):
+        return False
+    # Some valid You.com search-only contracts do not expose extraction.
+    # Send 'none' only if explicitly advertised; never send undocumented
+    # arguments when additionalProperties is false.
+    if provider == "you" and "extraction" in props:
+        setting = props["extraction"]
+        if (not isinstance(setting, dict)
+                or setting.get("type") != "string"
+                or ("enum" in setting
+                    and "none" not in setting["enum"])):
+            return False
+    return True
 
 
 def _safe_hits(data: object) -> list[dict] | None:
@@ -205,8 +217,11 @@ async def _one_request(provider: str, preset: str) -> dict:
                     "tool_calls_attempted": 0, "result_count": None}
         args = {"query": PRESETS[preset], spec["limit_key"]: MAX_RESULTS}
         if provider == "you":
-            # Explicitly decline page extraction and content billing.
-            args["extraction"] = "none"
+            declared = next(t for t in tools if t.name == spec["tool"])
+            if "extraction" in declared.inputSchema["properties"]:
+                # Never enable full-page extraction, and never send an
+                # undeclared argument to a strict input schema.
+                args["extraction"] = "none"
         before = time.monotonic()
         result = await client.call_tool(spec["tool"], args)
         elapsed = max(0, round((time.monotonic() - before) * 1000))
