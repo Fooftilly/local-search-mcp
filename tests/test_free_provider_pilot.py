@@ -247,13 +247,15 @@ class FreeProviderPilotTests(unittest.TestCase):
         firecrawl = FakeClient([tool("firecrawl_search", limit_key="limit")])
         clients = [you, firecrawl]
         constructors = []
+        client_settings = []
         def transport(*args, **kwargs):
             constructors.append((args, kwargs))
             return object()
         with (patch.object(pilot, "StreamableHttpTransport",
                            side_effect=transport),
               patch.object(pilot, "Client",
-                           side_effect=lambda _: clients.pop(0))):
+                           side_effect=lambda _transport, **kwargs: (
+                               client_settings.append(kwargs), clients.pop(0))[1])):
             first = __import__("asyncio").run(pilot._one_request("you", "docs"))
             second = __import__("asyncio").run(
                 pilot._one_request("firecrawl", "science"))
@@ -277,6 +279,11 @@ class FreeProviderPilotTests(unittest.TestCase):
                             for x in constructors))
         self.assertTrue(all(x[1]["httpx_client_factory"] is pilot._transport_client
                             for x in constructors))
+        self.assertEqual(len(client_settings), 2)
+        for options in client_settings:
+            self.assertIs(options["log_handler"], pilot._discard_server_log)
+            self.assertIs(options["progress_handler"],
+                          pilot._discard_server_progress)
 
     def test_optional_extraction_none_only_if_declared(self):
         fake = FakeClient([tool("you-search", with_extraction=True)])
@@ -291,6 +298,33 @@ class FreeProviderPilotTests(unittest.TestCase):
                 "extraction": "none"}, False))
         # A strict schema advertising only query/count must not receive
         # an unknown extraction field; covered by the preceding test.
+
+    def test_actual_fastmcp_notifications_never_log_provider_text(self):
+        """Exercise the genuine FastMCP Client's callback wiring offline."""
+        token = "UPSTREAM_PRIVATE_NOTIFY_TOKEN"
+        transport = pilot.StreamableHttpTransport(
+            pilot.PROVIDERS["you"]["url"], auth=None,
+            httpx_client_factory=pilot._transport_client)
+        # Constructor only; no network or transport connect. Inspect the
+        # callback FastMCP 4.1.6 actually registers with ClientSession.
+        client = pilot.Client(
+            transport, log_handler=pilot._discard_server_log,
+            progress_handler=pilot._discard_server_progress)
+        notification = SimpleNamespace(
+            level="error", logger="untrusted-provider",
+            data={"message": token, "details": "https://secret.example/"})
+        with (contextlib.redirect_stderr(io.StringIO()) as err,
+              contextlib.redirect_stdout(io.StringIO()) as out,
+              patch("fastmcp.client.logging.from_server_logger") as log,
+              patch("fastmcp.client.progress.logger") as progress_log):
+            asyncio.run(client._session_kwargs["logging_callback"](
+                notification))
+            asyncio.run(client._progress_handler(1.0, 2.0, token))
+        self.assertNotIn(token, err.getvalue() + out.getvalue())
+        self.assertNotIn("secret.example", err.getvalue() + out.getvalue())
+        log.error.assert_not_called()
+        log.warning.assert_not_called()
+        progress_log.debug.assert_not_called()
 
     def test_definite_free_quota_tool_error_retains_known_call_count(self):
         quota_error = SimpleNamespace(
