@@ -152,8 +152,8 @@ class AnonymousExaPilotTests(unittest.TestCase):
             ("tools/call", "web_search_exa",
              {"query": pilot.PRESETS["science"], "numResults": 3}, False),
         ])
-        self.assertEqual(transport.call_args.args, ())
-        self.assertEqual(transport.call_args.args.__len__(), 0)
+        self.assertEqual(transport.call_args.args,
+                         (pilot.PROVIDERS["exa"]["url"],))
         self.assertEqual(transport.call_args.kwargs["headers"], {})
         self.assertIsNone(transport.call_args.kwargs["auth"])
         self.assertIs(transport.call_args.kwargs["httpx_client_factory"],
