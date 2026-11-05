@@ -62,11 +62,15 @@ def analyze(home: dict, sitemap_pages: list[dict],
     count = sitemap_pages[0].get("page_count", 1)
     if type(count) is not int or not 1 <= count <= 42 or len(sitemap_pages) > count:
         raise ValueError("Invalid sitemap page count")
+    document_id = sitemap_pages[0].get("document_id")
+    if count > 1 and (not isinstance(document_id, str) or not document_id):
+        raise ValueError("Missing sitemap continuation handle")
     chunks = []
     for n, p in enumerate(sitemap_pages, 1):
         if (p.get("success") is not True or p.get("url") != source
                 or type(p.get("page", 1)) is not int or p.get("page", 1) != n
                 or p.get("page_count", 1) != count
+                or (n > 1 and p.get("document_id") != document_id)
                 or not isinstance(p.get("markdown"), str)):
             raise ValueError("Sitemap pages must be sequential with matching provenance")
         chunks.append(p["markdown"])
@@ -85,30 +89,37 @@ def analyze(home: dict, sitemap_pages: list[dict],
     if not isinstance(rows, list):
         raise ValueError("Malformed homepage link list")
     rows = list(rows)
-    for p in link_pages or []:
-        if not isinstance(p, dict) or p.get("success", True) is not True:
-            raise ValueError("Invalid link continuation")
-        extra = p.get("links")
-        if not isinstance(extra, list):
-            raise ValueError("Invalid link continuation entries")
-        rows.extend(extra)
-    if len(rows) > 250:
-        raise ValueError("Homepage link list exceeds limit")
-    home_urls = {x for r in rows if isinstance(r, dict)
-                 if (x := _candidate(r.get("url"), host)) is not None}
-    info = home.get("structured_info")
-    info = info if isinstance(info, dict) else {}
-    links_info = info.get("links")
-    links_info = links_info if isinstance(links_info, dict) else {}
     cont = home.get("link_continuation")
     if cont is not None and not isinstance(cont, dict):
         raise ValueError("Invalid link continuation metadata")
     retained = cont.get("retained_links", 0) if cont else 0
     if type(retained) is not int or not 0 <= retained <= 250:
         raise ValueError("Invalid retained link count")
-    # Link pages may be partial. Never say the homepage inventory is complete.
-    links_missing = bool(cont and sum(
-        len(p.get("links", [])) for p in link_pages or []) < retained)
+    if link_pages and (not cont or not isinstance(cont.get("link_id"), str)):
+        raise ValueError("Unexpected link continuation page")
+    expected_offset = 0
+    for p in link_pages or []:
+        if (not isinstance(p, dict) or p.get("success") is not True
+                or p.get("url") != home["url"]
+                or p.get("link_id") != cont["link_id"]
+                or type(p.get("offset")) is not int
+                or p.get("offset") != expected_offset
+                or p.get("retained_links") != retained):
+            raise ValueError("Link continuation provenance/offset mismatch")
+        extra = p.get("links")
+        if not isinstance(extra, list) or not 1 <= len(extra) <= 10:
+            raise ValueError("Invalid link continuation entries")
+        rows.extend(extra)
+        expected_offset += len(extra)
+    if len(rows) > 250 or expected_offset > retained:
+        raise ValueError("Homepage link list exceeds retention limit")
+    home_urls = {x for r in rows if isinstance(r, dict)
+                 if (x := _candidate(r.get("url"), host)) is not None}
+    info = home.get("structured_info")
+    info = info if isinstance(info, dict) else {}
+    links_info = info.get("links")
+    links_info = links_info if isinstance(links_info, dict) else {}
+    links_missing = bool(cont and expected_offset < retained)
     return {
         "homepage": {
             "observed_unique_in_scope_links": len(home_urls),
