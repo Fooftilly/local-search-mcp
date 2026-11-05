@@ -80,6 +80,45 @@ class URLMappingBenchmarkTests(unittest.TestCase):
         self.assertEqual(complete["sitemap"]["heuristic_unique_same_host_url_candidates"], 1)
         self.assertEqual(fragment["sitemap"]["heuristic_unique_same_host_url_candidates"], 0)
 
+    def test_partial_newline_and_tab_separated_sitemap_keeps_complete_tokens(self):
+        # The final URL is cut off. Previous code searched only for a space,
+        # erroneously discarding all newline-separated complete URLs.
+        for separator in ("\\n", "\\t", "\\r\\n"):
+            with self.subTest(separator=repr(separator)):
+                raw = (f"https://www.example.org/a/{separator}"
+                       f"https://www.example.org/b/{separator}"
+                       "https://www.exa")
+                result = benchmark.analyze(
+                    self.home, [self.page(1, 2, raw)])
+                self.assertEqual(
+                    result["sitemap"]["heuristic_unique_same_host_url_candidates"], 2)
+                self.assertFalse(
+                    result["sitemap"]["all_extracted_pages_supplied"])
+
+    def test_reported_link_count_is_numeric_and_never_echoes_capture_text(self):
+        malicious = dict(self.home)
+        malicious["structured_info"] = {
+            "links": {
+                "unique_safe_candidates_examined": "PRIVATE_SECRET_URL",
+                "truncated": "false",
+            }
+        }
+        result = benchmark.analyze(malicious, [
+            self.page(1, 1, "https://www.example.org/a/ ")
+        ])
+        self.assertIsNone(
+            result["homepage"]["reported_unique_safe_candidates_examined"])
+        self.assertFalse(result["homepage"]["initial_links_truncated"])
+        self.assertNotIn("PRIVATE_SECRET_URL", json.dumps(result))
+        for invalid in (True, -1, 1_000_001, [], {"token": "SECRET"}):
+            with self.subTest(invalid=invalid):
+                malicious["structured_info"]["links"][
+                    "unique_safe_candidates_examined"] = invalid
+                summary = benchmark.analyze(
+                    malicious, [self.page(1, 1, "https://www.example.org/a/ ")])
+                self.assertIsNone(
+                    summary["homepage"]["reported_unique_safe_candidates_examined"])
+
     def _lines(self, *items):
         return b"".join(
             json.dumps(item).encode("utf-8") + b"\n" for item in items)
