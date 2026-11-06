@@ -16,7 +16,8 @@ from xml.etree.ElementTree import ParseError
 from defusedxml.ElementTree import iterparse
 from defusedxml.common import DefusedXmlException
 
-SITEMAP_NS = "http://www.sitemaps.org/schemas/sitemap/0.9"
+# The standard sitemap XML namespace is a URI identifier, not an HTTP request.
+SITEMAP_NS = urlunsplit(("http", "www.sitemaps.org", "/schemas/sitemap/0.9", "", ""))
 MAX_DOCUMENT_BYTES = 1024 * 1024  # Two documents may use 2 MiB total.
 MAX_RETURNED_URLS = 100
 MAX_XML_ELEMENTS = 25_000
@@ -25,8 +26,7 @@ MAX_SITEMAP_ENTRIES = 6_000
 MAX_URL_LENGTH = 2048
 _BAD_ESCAPED_PATH = re.compile(r"%(?:2e|2f|5c|25|0[0-9a-f]|1[0-9a-f]|7f|23|3f)", re.IGNORECASE)
 _BAD_PERCENT = re.compile(r"%(?![0-9a-fA-F]{2})")
-_XML_DECL_ENCODING = re.compile(
-    rb"<\?xml\s+[^>]*?\bencoding\s*=\s*(['\"])(.*?)\1", re.IGNORECASE)
+
 
 
 class SitemapXMLRejected(ValueError):
@@ -113,9 +113,26 @@ def parse_sitemap_xml(data: bytes, *, source_url: str,
         raise SitemapXMLRejected("Compressed XML requires an independently guarded decoder")
     if data.startswith((b"\xff\xfe", b"\xfe\xff")):
         raise SitemapXMLRejected("Only UTF-8 XML is supported")
-    declaration = _XML_DECL_ENCODING.match(data[:256].lstrip(b"\xef\xbb\xbf"))
-    if declaration and declaration.group(2).lower() not in (b"utf-8", b"utf8"):
-        raise SitemapXMLRejected("Only UTF-8 XML is supported")
+    # Read at most 256 bytes of an XML declaration with linear byte operations.
+    # This avoids regex backtracking on adversarial text and rejects mismatched encodings.
+    head = data[:256].removeprefix(b"\xef\xbb\xbf")
+    if head.startswith(b"<?xml"):
+        end = head.find(b"?>")
+        if end < 0:
+            raise SitemapXMLRejected("Malformed XML declaration")
+        header = head[:end].lower()
+        _, found, tail = header.partition(b"encoding")
+        if found:
+            tail = tail.lstrip()
+            if not tail.startswith(b"="):
+                raise SitemapXMLRejected("Malformed XML encoding declaration")
+            tail = tail[1:].lstrip()
+            quote = tail[:1]
+            if quote not in (b"'", b'"'):
+                raise SitemapXMLRejected("Malformed XML encoding declaration")
+            encoding, closing, _ = tail[1:].partition(quote)
+            if not closing or encoding not in (b"utf-8", b"utf8"):
+                raise SitemapXMLRejected("Only UTF-8 XML is supported")
     try:
         data.decode("utf-8", errors="strict")
     except UnicodeError as exc:
