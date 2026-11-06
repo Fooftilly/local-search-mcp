@@ -23,7 +23,7 @@ MAX_XML_ELEMENTS = 25_000
 MAX_XML_DEPTH = 12
 MAX_SITEMAP_ENTRIES = 6_000
 MAX_URL_LENGTH = 2048
-_BAD_ESCAPED_PATH = re.compile(r"%(?:2e|2f|5c)", re.IGNORECASE)
+_BAD_ESCAPED_PATH = re.compile(r"%(?:2e|2f|5c|25|0[0-9a-f]|1[0-9a-f]|7f|23|3f)", re.IGNORECASE)
 _BAD_PERCENT = re.compile(r"%(?![0-9a-fA-F]{2})")
 _XML_DECL_ENCODING = re.compile(
     rb"<\?xml\s+[^>]*?\bencoding\s*=\s*(['\"])(.*?)\1", re.IGNORECASE)
@@ -55,7 +55,7 @@ def _scope_host(host: str) -> str:
 
 
 def _path_safe(path: str) -> bool:
-    if (not path.startswith("/") or "\\" in path or "//" in path
+    if (not path.startswith("/") or "\\" in path or "//" in path or "?" in path or "#" in path
             or _BAD_ESCAPED_PATH.search(path) or _BAD_PERCENT.search(path)):
         return False
     return not any(part in (".", "..") for part in path.split("/"))
@@ -128,6 +128,7 @@ def parse_sitemap_xml(data: bytes, *, source_url: str,
     rejected = 0
     duplicates = 0
     root_kind: str | None = None
+    root_ns_prefix = ""
     record_kind: str | None = None
     location: str | None = None
     saw_location = False
@@ -146,11 +147,13 @@ def parse_sitemap_xml(data: bytes, *, source_url: str,
                     raise SitemapXMLRejected("XML structural limits exceeded")
                 if depth == 1:
                     root_kind = tag
+                    root_ns_prefix = ("{" + SITEMAP_NS + "}"
+                                      if element.tag.startswith("{") else "")
                     if root_kind not in ("urlset", "sitemapindex"):
                         raise SitemapXMLRejected("Not a sitemap XML root")
                     record_kind = "url" if root_kind == "urlset" else "sitemap"
                 elif depth == 2:
-                    if tag != record_kind:
+                    if element.tag != root_ns_prefix + record_kind:
                         raise SitemapXMLRejected("Unsupported sitemap root child")
                     scanned += 1
                     if scanned > MAX_SITEMAP_ENTRIES:
@@ -158,7 +161,7 @@ def parse_sitemap_xml(data: bytes, *, source_url: str,
                     location = None
                     saw_location = False
             else:
-                if depth == 3 and tag == "loc":
+                if depth == 3 and element.tag == root_ns_prefix + "loc":
                     # Only one direct child location; ignore any nested
                     # extension locs or non-text location bodies.
                     if saw_location or len(element) != 0 or element.text is None:
