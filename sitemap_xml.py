@@ -18,7 +18,9 @@ from defusedxml.common import DefusedXmlException
 
 # The standard sitemap XML namespace is a URI identifier, not an HTTP request.
 SITEMAP_NS = urlunsplit(("http", "www.sitemaps.org", "/schemas/sitemap/0.9", "", ""))
-MAX_DOCUMENT_BYTES = 1024 * 1024  # Two documents may use 2 MiB total.
+MAX_DOCUMENT_BYTES = 1024 * 1024  # Strict per-document inflation cap.
+MAX_SITEMAP_DOCUMENTS = 2
+MAX_TOTAL_SITEMAP_BYTES = 2 * 1024 * 1024
 MAX_RETURNED_URLS = 100
 MAX_XML_ELEMENTS = 25_000
 MAX_XML_DEPTH = 12
@@ -226,4 +228,58 @@ def parse_sitemap_xml(data: bytes, *, source_url: str,
         "all_supplied_xml_parsed": True,
         "source_completeness": "unknown",
         "fetch_permissions_verified": False,
+    }
+
+
+def parse_sitemap_documents(documents: list[tuple[str, bytes]], *, scope_host: str,
+                            path_prefix: str = "/",
+                            max_urls: int = MAX_RETURNED_URLS) -> dict:
+    """Aggregate at most two caller-supplied XML documents, without fetching.
+
+    Enforce total raw-byte and global output caps before releasing results.
+    Caller still must establish source provenance and live permissions.
+    No index-to-child relationship is inferred; no child URL is followed.
+    """
+    if (not isinstance(documents, (list, tuple)) or not 1 <= len(documents) <= MAX_SITEMAP_DOCUMENTS
+            or type(max_urls) is not int or not 1 <= max_urls <= MAX_RETURNED_URLS):
+        raise ValueError("Invalid document or output limits")
+    total = 0
+    for document in documents:
+        if (not isinstance(document, tuple) or len(document) != 2
+                or not isinstance(document[0], str) or not isinstance(document[1], bytes)):
+            raise ValueError("Invalid supplied XML document")
+        total += len(document[1])
+        if total > MAX_TOTAL_SITEMAP_BYTES:
+            raise SitemapXMLRejected("Aggregate sitemap XML byte budget exceeded")
+
+    results = []
+    seen: set[tuple[str, str]] = set()
+    visible = []
+    incomplete = False
+    for source, content in documents:
+        parsed = parse_sitemap_xml(content, source_url=source, scope_host=scope_host,
+                                   path_prefix=path_prefix, max_urls=MAX_RETURNED_URLS)
+        results.append({"source_url": source, "source_type": parsed["source_type"],
+                        "entries_examined": parsed["entries_examined"],
+                        "truncated": parsed["truncated"]})
+        incomplete = incomplete or parsed["truncated"]
+        for row in parsed["urls"]:
+            # A reference to a child sitemap is never a page URL.
+            key = parsed["entry_type"], row["url"]
+            if key in seen:
+                continue
+            seen.add(key)
+            if len(visible) < max_urls:
+                visible.append({"url": row["url"],
+                                "entry_type": parsed["entry_type"],
+                                "source_method": row["source_method"],
+                                "source_url": source})
+
+    return {
+        "success": True, "documents_parsed": len(results),
+        "raw_xml_bytes_parsed": total, "documents": results,
+        "urls": visible, "unique_retained_candidates_observed": len(seen),
+        "truncated": incomplete or len(seen) > len(visible),
+        "all_supplied_documents_parsed": True,
+        "source_completeness": "unknown", "fetch_permissions_verified": False,
     }
