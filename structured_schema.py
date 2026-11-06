@@ -158,6 +158,18 @@ def normalize_extracted_content(raw: object, validated_spec: dict) -> dict:
     expected = {field["name"] for field in canonical["fields"]}
     normalized: list[dict[str, str | None]] = []
     clipped = False
+    method = "crawl4ai_json_" + canonical["strategy"]
+    # Measure the COMPLETE public-shaped envelope, not only the records:
+    # metadata fields also consume the output budget.
+    def output_size(records: list[dict[str, str | None]]) -> int:
+        envelope = {
+            "records": records, "rows_observed_in_response": len(rows),
+            "rows_returned": len(records), "truncated": True,
+            "extraction_method": method, "site_completeness": "unknown",
+            "authorization_verified": False,
+        }
+        return len(json.dumps(envelope, ensure_ascii=True,
+                              separators=(",", ":")).encode("utf-8"))
     for row in rows[:MAX_ROWS]:
         if type(row) is not dict or not set(row).issubset(expected):
             raise StructuredSchemaRejected("Unexpected extracted row fields")
@@ -168,13 +180,16 @@ def normalize_extracted_content(raw: object, validated_spec: dict) -> dict:
             if value is not None and type(value) is not str:
                 raise StructuredSchemaRejected("Extracted value is not text")
             if value is not None:
+                try:
+                    value.encode("utf-8", "strict")
+                except UnicodeError as exc:
+                    raise StructuredSchemaRejected("Invalid extracted Unicode") from exc
                 clean = _CONTROLS.sub(" ", value)
                 if len(clean) > MAX_CELL_CHARS:
                     clipped = True
                 value = clean[:MAX_CELL_CHARS]
             item[name] = value
-        if len(json.dumps({"records": normalized + [item]}, ensure_ascii=True,
-                          separators=(",", ":")).encode("utf-8")) > MAX_OUTPUT_BYTES:
+        if output_size(normalized + [item]) > MAX_OUTPUT_BYTES:
             clipped = True
             break
         normalized.append(item)
@@ -183,7 +198,7 @@ def normalize_extracted_content(raw: object, validated_spec: dict) -> dict:
         "rows_observed_in_response": len(rows),
         "rows_returned": len(normalized),
         "truncated": clipped or len(rows) > len(normalized),
-        "extraction_method": "crawl4ai_json_" + canonical["strategy"],
+        "extraction_method": method,
         "site_completeness": "unknown",
         "authorization_verified": False,
     }
