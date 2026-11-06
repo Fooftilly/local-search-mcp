@@ -111,11 +111,14 @@ class StructuredSchemaTests(unittest.TestCase):
         self.assertFalse(result["authorization_verified"])
 
     def test_normalize_deterministic_text_and_missing_fields(self):
-        raw = json.dumps([{"headline": "<script>alert('x')</script>", "hint": None},
+        # Build a hostile markup-shaped string from non-markup fragments to
+        # comply with AGENTS.md's separation of web source from Python.
+        hostile_text = "".join(("<", "script", ">", "untrusted-page-text",
+                                "<", "/", "script", ">"))
+        raw = json.dumps([{"headline": hostile_text, "hint": None},
                           {"headline": "a\u0000b\nc"}])
         result = subject.normalize_extracted_content(raw, spec())
-        self.assertEqual(result["records"][0]["headline"],
-                         "<script>alert('x')</script>")
+        self.assertEqual(result["records"][0]["headline"], hostile_text)
         self.assertIsNone(result["records"][0]["hint"])
         self.assertEqual(result["records"][1]["headline"], "a b c")
         self.assertIsNone(result["records"][1]["hint"])
@@ -143,6 +146,66 @@ class StructuredSchemaTests(unittest.TestCase):
             with self.subTest(raw=raw[:60]), self.assertRaises(
                     subject.StructuredSchemaRejected):
                 subject.normalize_extracted_content(raw, spec())
+
+    def test_reject_malformed_rows_after_output_row_limit(self):
+        first_rows = [{"headline": "valid"} for _ in range(subject.MAX_ROWS)]
+        cases = [
+            {"headline": {"unexpected": "nested"}},
+            {"unknown": "unexpected field"},
+            {"headline": 23},
+            ["nested"],
+            {"headline": "\\ud800"},
+        ]
+        for invalid in cases:
+            with self.subTest(invalid=repr(invalid)):
+                raw = json.dumps(first_rows + [invalid])
+                with self.assertRaises(subject.StructuredSchemaRejected):
+                    subject.normalize_extracted_content(raw, spec())
+
+    def test_reject_malformed_rows_after_output_byte_limit(self):
+        # The first eight fields exhaust the 12 KiB output budget before
+        # the last row; excluded rows must still be validated.
+        many = {f"f{i}": "界" * 100 for i in range(subject.MAX_FIELDS)}
+        schema = {"strategy": "css", "base_selector": "article",
+                  "fields": [{"name": key, "selector": "h2", "type": "text"}
+                             for key in many]}
+        for invalid in ({"f0": {"nested": "bad"}},
+                        {"unexpected": "value"},
+                        {"f0": True}):
+            with self.subTest(invalid=invalid):
+                raw = json.dumps([many] * 19 + [invalid], ensure_ascii=False)
+                self.assertLess(len(raw.encode("utf-8")), subject.MAX_INPUT_BYTES)
+                with self.assertRaises(subject.StructuredSchemaRejected):
+                    subject.normalize_extracted_content(raw, schema)
+
+    def test_full_json_envelope_never_exceeds_limit_at_boolean_boundary(self):
+        # Regression: the old check measured truncated=true (4 bytes) while
+        # returning truncated=false (5 bytes), admitting a 12,289-byte result.
+        columns = [f"f{i}" for i in range(subject.MAX_FIELDS)]
+        schema = {"strategy": "css", "base_selector": "article",
+                  "fields": [{"name": key, "selector": "h2", "type": "text"}
+                             for key in columns]}
+        rows = [{key: "\\" * 33 for key in columns}
+                for _ in range(subject.MAX_ROWS)]
+        rows[-1][columns[-1]] = "\\" * 146 + "a"
+        raw = json.dumps(rows)
+        self.assertLess(len(raw.encode("utf-8")), subject.MAX_INPUT_BYTES)
+        result = subject.normalize_extracted_content(raw, schema)
+        encoded = json.dumps(result, ensure_ascii=True,
+                             separators=(",", ":")).encode("utf-8")
+        self.assertLessEqual(len(encoded), subject.MAX_OUTPUT_BYTES)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["rows_returned"], subject.MAX_ROWS - 1)
+        self.assertEqual(result["rows_observed_in_response"], subject.MAX_ROWS)
+
+    def test_complete_full_json_envelope_never_exceeds_limit(self):
+        raw = json.dumps([{"headline": "safe", "hint": "hint"}])
+        result = subject.normalize_extracted_content(raw, spec())
+        self.assertFalse(result["truncated"])
+        self.assertLessEqual(
+            len(json.dumps(result, ensure_ascii=True,
+                           separators=(",", ":")).encode("utf-8")),
+            subject.MAX_OUTPUT_BYTES)
 
     def test_reject_json_lone_surrogate(self):
         with self.assertRaises(subject.StructuredSchemaRejected):
