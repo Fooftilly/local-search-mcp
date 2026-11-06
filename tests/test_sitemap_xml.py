@@ -151,12 +151,12 @@ class ParserTests(unittest.TestCase):
                          'utf-32-le', 'utf-32-be'):
             with self.subTest(encoding=encoding):
                 raw = original.encode(encoding)
-                self.assertIn(b'\\x00', raw)
+                self.assertIn(b'\x00', raw)
                 with self.assertRaises(sm.SitemapXMLRejected):
                     self.parse(raw)
         # A UTF-8 NUL is likewise not a valid XML input.
         with self.assertRaises(sm.SitemapXMLRejected):
-            self.parse(b'<urlset>\\x00</urlset>')
+            self.parse(b'<urlset>\x00</urlset>')
 
     def test_malformed_source_scope_and_invalid_args(self):
         for params in ({'source_url':'http://other.example.org/sitemap.xml'},
