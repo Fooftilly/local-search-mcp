@@ -26,6 +26,7 @@ Stable operator and feature guides live in this folder. Start with the [project 
 
 - [Search](SEARCH.md)
 - [Attended free-tier You.com, Firecrawl and Exa search comparisons](FREE-PROVIDER-PILOT.md)
+- [URL mapping feasibility and operator benchmark](URL-MAPPING-FEASIBILITY.md)
 - [Extraction and long documents](EXTRACTION.md)
 - [Temporary document comparison](DOCUMENT-COMPARISON.md)
 - [Batch fetching](BATCH.md)
