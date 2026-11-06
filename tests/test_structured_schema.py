@@ -154,7 +154,7 @@ class StructuredSchemaTests(unittest.TestCase):
             {"unknown": "unexpected field"},
             {"headline": 23},
             ["nested"],
-            {"headline": "\\ud800"},
+            {"headline": chr(0xD800)},
         ]
         for invalid in cases:
             with self.subTest(invalid=repr(invalid)):
