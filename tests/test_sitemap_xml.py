@@ -57,6 +57,16 @@ class ParserTests(unittest.TestCase):
         for data in inputs:
             with self.subTest(sample=data[:30]),self.assertRaises(sm.SitemapXMLRejected):self.parse(data)
 
+    def test_utf8_xml_declaration_only(self):
+        valid=(b'<?xml version="1.0" encoding="UTF-8"?>'
+               + xmlset(['https://www.example.org/valid']))
+        self.assertEqual(self.parse(valid)['discovered_in_scope'],1)
+        for prolog in (b'<?xml version="1.0" encoding="utf-16"?>',
+                       b'<?xml version="1.0" encoding=UTF-8?>',
+                       b'<?xml version="1.0" encoding="UTF-8"'):
+            with self.subTest(prolog=prolog),self.assertRaises(sm.SitemapXMLRejected):
+                self.parse(prolog+xmlset([]))
+
     def test_mixed_invalid_urls_scope_and_duplicates(self):
         urls=['https://www.example.org/docs/a','https://www.example.org/docs/a',
               'https://other.example.org/docs/z', 'http://www.example.org/docs/b',
