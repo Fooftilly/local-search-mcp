@@ -116,6 +116,48 @@ class ParserTests(unittest.TestCase):
                 self.assertEqual(r['urls'],[])
                 self.assertEqual(r['rejected_entries'],1)
 
+    def test_trailing_slash_scope_excludes_parent_page(self):
+        # Prefix syntax is significant: /docs/ excludes /docs itself,
+        # while /docs includes both exact page and descendants.
+        urls = [
+            'https://www.example.org/docs',
+            'https://www.example.org/docs/',
+            'https://www.example.org/docs/guide',
+            'https://www.example.org/docs2',
+        ]
+        with_slash = self.parse(xmlset(urls), path_prefix='/docs/')
+        self.assertEqual(
+            [row['url'] for row in with_slash['urls']],
+            ['https://www.example.org/docs/',
+             'https://www.example.org/docs/guide'])
+        without_slash = self.parse(xmlset(urls), path_prefix='/docs')
+        self.assertEqual(
+            [row['url'] for row in without_slash['urls']],
+            ['https://www.example.org/docs',
+             'https://www.example.org/docs/',
+             'https://www.example.org/docs/guide'])
+        # The aggregate helper must use the same strict path scope.
+        aggregated = sm.parse_sitemap_documents(
+            [(BASE, xmlset(urls))], scope_host=HOST, path_prefix='/docs/')
+        self.assertEqual(
+            [row['url'] for row in aggregated['urls']],
+            [row['url'] for row in with_slash['urls']])
+
+    def test_rejects_bomless_utf16_and_utf32_encodings(self):
+        # Explicitly exercise code points whose UTF-16/32 byte streams
+        # also decode as UTF-8 containing NULs; Expat must not re-detect them.
+        original = '<urlset><url><loc>https://www.example.org/a</loc></url></urlset>'
+        for encoding in ('utf-16-le', 'utf-16-be',
+                         'utf-32-le', 'utf-32-be'):
+            with self.subTest(encoding=encoding):
+                raw = original.encode(encoding)
+                self.assertIn(b'\\x00', raw)
+                with self.assertRaises(sm.SitemapXMLRejected):
+                    self.parse(raw)
+        # A UTF-8 NUL is likewise not a valid XML input.
+        with self.assertRaises(sm.SitemapXMLRejected):
+            self.parse(b'<urlset>\\x00</urlset>')
+
     def test_malformed_source_scope_and_invalid_args(self):
         for params in ({'source_url':'http://other.example.org/sitemap.xml'},
                        {'scope_host':'EXAMPLE.org'},{'path_prefix':'/docs/../secret'},
