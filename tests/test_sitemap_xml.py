@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import sitemap_xml as sm
 
@@ -141,9 +142,39 @@ class ParserTests(unittest.TestCase):
         r=self.parse(data)
         self.assertEqual(r['urls'][0]['url'],'https://www.example.org/p?a=1&b=2')
 
+    def test_invalid_query_percent_empty_fragment_and_default_ports(self):
+        urls=['https://www.example.org/p?a=%GZ',
+              'https://www.example.org/p?a=%',
+              'https://www.example.org/p?a=%0A',
+              'https://www.example.org/p#',
+              'https://www.example.org/p#frag',
+              'https://www.example.org/p',
+              'https://www.example.org:443/p',
+              'http://www.example.org/a',
+              'http://www.example.org:80/a']
+        r=self.parse(xmlset(urls))
+        self.assertEqual(r['discovered_in_scope'],2)
+        self.assertEqual(r['duplicate_entries'],2)
+        self.assertEqual(r['rejected_entries'],5)
+        self.assertEqual([x['url'] for x in r['urls']],
+                         ['https://www.example.org/p','http://www.example.org/a'])
+
+    def test_long_xml_declaration_cannot_bypass_utf8_check(self):
+        # A large declaration past the fixed prefix is rejected, not parsed
+        # using a conflicting claimed encoding.
+        long_decl=(b'<?xml version="1.0" '+b' '*400+
+                   b'encoding="ISO-8859-1"?>')
+        with self.assertRaises(sm.SitemapXMLRejected):
+            self.parse(long_decl+xmlset(['https://www.example.org/a']))
+
     def test_no_auto_network_or_io_side_effect(self):
-        # Parser consumes only caller-supplied byte arrays and has no I/O entry.
-        r=self.parse(xmlset(['https://www.example.org/a']))
+        # Fail if code introduces a filesystem, socket, HTTP or process hop.
+        with (patch('builtins.open',side_effect=AssertionError('filesystem access')),
+              patch('os.open',side_effect=AssertionError('file descriptor access')),
+              patch('socket.socket',side_effect=AssertionError('network access')),
+              patch('urllib.request.urlopen',side_effect=AssertionError('HTTP access')),
+              patch('subprocess.Popen',side_effect=AssertionError('process execution'))):
+            r=self.parse(xmlset(['https://www.example.org/a']))
         self.assertTrue(r['success'])
         self.assertFalse(r['fetch_permissions_verified'])
 
