@@ -1,0 +1,127 @@
+"""Offline safety and semantics regression tests for bounded XML sitemap parser."""
+from __future__ import annotations
+
+import unittest
+
+import sitemap_xml as sm
+
+HOST = "www.example.org"
+BASE = "https://www.example.org/sitemap.xml"
+NS = 'xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'
+
+
+def xmlset(items, *, ns=NS):
+    return (f'<urlset {ns}>' + ''.join(f'<url><loc>{url}</loc></url>' for url in items)
+            + '</urlset>').encode()
+
+
+def index(items):
+    return ('<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            + ''.join(f'<sitemap><loc>{url}</loc></sitemap>' for url in items)
+            + '</sitemapindex>').encode()
+
+
+class ParserTests(unittest.TestCase):
+    def parse(self, data, **kwargs):
+        return sm.parse_sitemap_xml(data, source_url=BASE, scope_host=HOST, **kwargs)
+
+    def test_urls_valid_namespace_and_no_namespace(self):
+        for namespace in (NS, ''):
+            with self.subTest(namespace=namespace):
+                r=self.parse(xmlset(['https://www.example.org/a','https://www.example.org/b'],ns=namespace))
+                self.assertEqual(r['entry_type'], 'page_url')
+                self.assertEqual([v['url'] for v in r['urls']], [f'https://www.example.org/{c}' for c in 'ab'])
+                self.assertFalse(r['fetch_permissions_verified'])
+                self.assertEqual(r['source_completeness'],'unknown')
+
+    def test_index_is_not_page_urls(self):
+        r=self.parse(index(['https://www.example.org/maps/en.xml.gz']))
+        self.assertEqual(r['entry_type'], 'sitemap_reference')
+        self.assertEqual(r['source_type'], 'sitemap_index')
+        self.assertEqual(len(r['urls']), 1)
+        self.assertEqual(r['urls'][0]['source_method'], 'sitemap_index')
+
+    def test_rejects_dtd_and_internal_entities(self):
+        for data in (
+            b'<!DOCTYPE urlset [<!ENTITY x "oops">]><urlset></urlset>',
+            b'<!DOCTYPE urlset SYSTEM "file:///etc/passwd"><urlset></urlset>',
+            b'<!DOCTYPE urlset><urlset></urlset>',
+        ):
+            with self.subTest(xml=data),self.assertRaises(sm.SitemapXMLRejected):self.parse(data)
+
+    def test_oversized_binary_compressed_encoding_and_malformed(self):
+        inputs=[b'', b'x'*(sm.MAX_DOCUMENT_BYTES+1),b'\x1f\x8bGZIP',b'PK\x03\x04Zip',
+                b'\xff\xfe<\x00',b'\xfe\xff\x00<',b'<urlset><url>',
+                b'<?xml version="1.0" encoding="ISO-8859-1"?><urlset/>',
+                b'<urlset>\xff</urlset>',b'<not-a-sitemap/>',b'<urlset><sitemap/></urlset>']
+        for data in inputs:
+            with self.subTest(sample=data[:30]),self.assertRaises(sm.SitemapXMLRejected):self.parse(data)
+
+    def test_mixed_invalid_urls_scope_and_duplicates(self):
+        urls=['https://www.example.org/docs/a','https://www.example.org/docs/a',
+              'https://other.example.org/docs/z', 'http://www.example.org/docs/b',
+              'https://www.example.org/docs/../secret',
+              'https://www.example.org/docs%2f..%2fsecret',
+              'https://www.example.org/docs/../secret',
+              'https://www.example.org/docs/ok#fragment',
+              'https://www.example.org/docs','https://www.example.org/docs2',
+              'https://u:p@www.example.org/docs/forbidden',
+              'https://www.example.org:8080/docs/nope',
+              '/docs/relative']
+        r=self.parse(xmlset(urls),path_prefix='/docs')
+        self.assertEqual(r['discovered_in_scope'],3)
+        self.assertEqual(r['duplicate_entries'],1)
+        self.assertEqual(r['rejected_entries'],len(urls)-4)
+        self.assertEqual(r['entry_type'],'page_url')
+
+    def test_truncates_output_without_claiming_complete_site(self):
+        r=self.parse(xmlset([f'https://www.example.org/p{i}' for i in range(8)]),max_urls=3)
+        self.assertEqual(len(r['urls']),3)
+        self.assertEqual(r['discovered_in_scope'],8)
+        self.assertTrue(r['truncated'])
+        self.assertTrue(r['all_supplied_xml_parsed'])
+        self.assertEqual(r['source_completeness'],'unknown')
+
+    def test_nested_xml_and_extensions_do_not_inject_locations(self):
+        data=(f'<urlset {NS} xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">'
+              '<url><loc>https://www.example.org/yes</loc>'
+              '<image:image><image:loc>https://www.example.org/no</image:loc></image:image>'
+              '</url></urlset>').encode()
+        r=self.parse(data)
+        self.assertEqual(r['discovered_in_scope'],1)
+        self.assertEqual(r['urls'][0]['url'],'https://www.example.org/yes')
+
+    def test_malformed_source_scope_and_invalid_args(self):
+        for params in ({'source_url':'http://other.example.org/sitemap.xml'},
+                       {'scope_host':'EXAMPLE.org'},{'path_prefix':'/docs/../secret'},
+                       {'path_prefix':'/docs%2f'},{'max_urls':True},{'max_urls':101}):
+            with self.subTest(params=params),self.assertRaises(ValueError):
+                inputs={'source_url': BASE, 'scope_host': HOST, **params}
+                sm.parse_sitemap_xml(xmlset([]),**inputs)
+
+    def test_reject_overdepth_and_too_many_entries(self):
+        deep=(f'<urlset {NS}>'+'<url>'+'<a>'*15+'<loc>https://www.example.org/a</loc>'+'</a>'*15+'</url></urlset>').encode()
+        with self.assertRaises(sm.SitemapXMLRejected): self.parse(deep)
+        # Each duplicate still counts toward the input scan cap.
+        many=xmlset(['https://www.example.org/a']*(sm.MAX_SITEMAP_ENTRIES+1))
+        with self.assertRaises(sm.SitemapXMLRejected): self.parse(many)
+
+    def test_invalid_loc_does_not_use_descendant_text(self):
+        data=(f'<urlset {NS}><url><loc><x>https://www.example.org/a</x></loc></url></urlset>').encode()
+        r=self.parse(data)
+        self.assertEqual(r['urls'],[])
+        self.assertEqual(r['rejected_entries'],1)
+
+    def test_escaped_xml_ampersand_in_query_is_preserved(self):
+        data=xmlset(['https://www.example.org/p?a=1&amp;b=2'])
+        r=self.parse(data)
+        self.assertEqual(r['urls'][0]['url'],'https://www.example.org/p?a=1&b=2')
+
+    def test_no_auto_network_or_io_side_effect(self):
+        # Parser consumes only caller-supplied byte arrays and has no I/O entry.
+        r=self.parse(xmlset(['https://www.example.org/a']))
+        self.assertTrue(r['success'])
+        self.assertFalse(r['fetch_permissions_verified'])
+
+
+if __name__=='__main__': unittest.main()
