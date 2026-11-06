@@ -51,6 +51,34 @@ class StructuredSchemaTests(unittest.TestCase):
                     subject.StructuredSchemaRejected):
                 subject.validate_spec(value)
 
+    def test_reject_oversized_spec_mappings_before_key_set_allocation(self):
+        huge = {f"unexpected_{i}": i for i in range(10000)}
+        with self.assertRaises(subject.StructuredSchemaRejected):
+            subject.validate_spec({**spec(), **huge})
+        field = {**spec()["fields"][0], **huge}
+        with self.assertRaises(subject.StructuredSchemaRejected):
+            subject.validate_spec({**spec(), "fields": [field]})
+
+    def test_reject_non_string_field_kind_even_if_equal_to_text(self):
+        class PretendsToBeText:
+            def __eq__(self, other):
+                return other == "text"
+
+        field = {**spec()["fields"][0], "type": PretendsToBeText()}
+        with self.assertRaises(subject.StructuredSchemaRejected):
+            subject.validate_spec({**spec(), "fields": [field]})
+        with self.assertRaises(subject.StructuredSchemaRejected):
+            subject.to_crawl4ai_config({**spec(), "fields": [field]})
+
+    def test_reject_oversized_text_before_utf8_allocation(self):
+        too_big = "界" * (subject.MAX_INPUT_BYTES + 1)
+        with self.assertRaisesRegex(subject.StructuredSchemaRejected, "input budget"):
+            subject.normalize_extracted_content(too_big, spec())
+        # A short character count can still exceed the UTF-8 byte budget.
+        multibyte = "界" * (subject.MAX_INPUT_BYTES // 3 + 1)
+        with self.assertRaisesRegex(subject.StructuredSchemaRejected, "input budget"):
+            subject.normalize_extracted_content(multibyte, spec())
+
     def test_reject_css_selectors_with_js_css_functions_and_complexity(self):
         invalid = ["", "h2:hover", "div:has(.private)", "div[onclick]",
                    "div,script", "div *", "div > a", "div + a",
@@ -194,6 +222,9 @@ class StructuredSchemaTests(unittest.TestCase):
         encoded = json.dumps(result, ensure_ascii=True,
                              separators=(",", ":")).encode("utf-8")
         self.assertLessEqual(len(encoded), subject.MAX_OUTPUT_BYTES)
+        # A consumer using Python's default JSON separators must also fit.
+        self.assertLessEqual(len(json.dumps(result, ensure_ascii=True).encode("utf-8")),
+                             subject.MAX_OUTPUT_BYTES)
         self.assertTrue(result["truncated"])
         self.assertEqual(result["rows_returned"], subject.MAX_ROWS - 1)
         self.assertEqual(result["rows_observed_in_response"], subject.MAX_ROWS)
@@ -203,8 +234,7 @@ class StructuredSchemaTests(unittest.TestCase):
         result = subject.normalize_extracted_content(raw, spec())
         self.assertFalse(result["truncated"])
         self.assertLessEqual(
-            len(json.dumps(result, ensure_ascii=True,
-                           separators=(",", ":")).encode("utf-8")),
+            len(json.dumps(result, ensure_ascii=True).encode("utf-8")),
             subject.MAX_OUTPUT_BYTES)
 
     def test_reject_json_lone_surrogate(self):
