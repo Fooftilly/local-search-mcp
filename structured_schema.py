@@ -159,18 +159,23 @@ def normalize_extracted_content(raw: object, validated_spec: dict) -> dict:
     normalized: list[dict[str, str | None]] = []
     clipped = False
     method = "crawl4ai_json_" + canonical["strategy"]
-    # Measure the COMPLETE public-shaped envelope, not only the records:
-    # metadata fields also consume the output budget.
+    # Measure the COMPLETE public-shaped envelope, not only the records.
+    # JSON 'false' is one byte longer than 'true': use the larger literal
+    # during admission so the final output remains bounded either way.
     def output_size(records: list[dict[str, str | None]]) -> int:
         envelope = {
             "records": records, "rows_observed_in_response": len(rows),
-            "rows_returned": len(records), "truncated": True,
+            "rows_returned": len(records), "truncated": False,
             "extraction_method": method, "site_completeness": "unknown",
             "authorization_verified": False,
         }
         return len(json.dumps(envelope, ensure_ascii=True,
                               separators=(",", ":")).encode("utf-8"))
-    for row in rows[:MAX_ROWS]:
+
+    accepting = True
+    # Validate EVERY parsed row, including rows excluded by the record cap
+    # or the output budget. The 64 KiB input cap bounds this inspection.
+    for index, row in enumerate(rows):
         if type(row) is not dict or not set(row).issubset(expected):
             raise StructuredSchemaRejected("Unexpected extracted row fields")
         item: dict[str, str | None] = {}
@@ -184,14 +189,22 @@ def normalize_extracted_content(raw: object, validated_spec: dict) -> dict:
                     value.encode("utf-8", "strict")
                 except UnicodeError as exc:
                     raise StructuredSchemaRejected("Invalid extracted Unicode") from exc
+            # Full-response validation must not depend on whether an item
+            # will be included in the bounded public-shaped output.
+            if index >= MAX_ROWS or not accepting:
+                continue
+            if value is not None:
                 clean = _CONTROLS.sub(" ", value)
                 if len(clean) > MAX_CELL_CHARS:
                     clipped = True
                 value = clean[:MAX_CELL_CHARS]
             item[name] = value
+        if index >= MAX_ROWS or not accepting:
+            continue
         if output_size(normalized + [item]) > MAX_OUTPUT_BYTES:
             clipped = True
-            break
+            accepting = False
+            continue
         normalized.append(item)
     return {
         "records": normalized,
