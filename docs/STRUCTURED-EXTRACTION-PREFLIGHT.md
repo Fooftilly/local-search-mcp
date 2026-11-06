@@ -57,7 +57,17 @@ The first command checks only the existing fixed-loopback crawler health endpoin
 
 Only fixed outcome labels and the installed version are printed; never paste API tokens, raw response bodies, HTTP headers or unredacted private URLs in reports. Token credentials are read from the existing environment and used only to contact the fixed loopback service. There are no redirects, proxy environment inheritance or external network destinations. Responses are capped at 128 KiB and untrusted raw data is not printed.
 
-**Observed installed-host result (2026-11-06):** the operator verified the managed crawler was sleeping, then successfully used the existing authorized `web_fetch(fresh=true)` for the previously approved Peroniko homepage. The probe then reported `health=supported_and_healthy`, `installed_version=0.9.5`, and **`css=config_echo_not_verified` / `xpath=config_echo_not_verified`**. This proves the probe reached the schema comparison; it did **not** prove whether the backend rejected the strategy or the checker failed to recognize the response. Upstream v0.9.5 `to_serializable_dict()` wraps all plain nested dictionaries as `{"type":"dict","value":{...}}`, including the top-level schema and each field spec. The original preflight compared those against raw dictionaries, a false-negative validation bug. This PR now matches the *exact fixed schema* in either documented wrapped or legacy plain form and rejects added fields, wrong classes, altered selectors, or malformed responses. The user must rerun the updated probe to confirm the installed image.
+**Installed-host compatibility verified (2026-11-06, PR head `23195c9`):** the operator first verified that both managed Docker backends were sleeping, then woke Crawl4AI using the **existing authorized** `web_fetch(fresh=true)` of the previously approved Peroniko homepage. On the installed Crawl4AI **v0.9.5** server, the authenticated fixed-config probe returned:
+
+- `health=supported_and_healthy`
+- `config_status=both_config_echoes_verified`
+- `strategy_results.css=declarative_config_echo_verified`
+- `strategy_results.xpath=declarative_config_echo_verified`
+- Within the **preflight only**: `public_crawls=0`, `external_requests=0`, `services_started=0`, `approvals_modified=false`, and `settings_modified=false`. The separate guarded wake did fetch one public page.
+
+The operator also ran **9/9 focused offline tests successfully** from the updated PR worktree. The initial probe had returned `config_echo_not_verified` for both strategies because the validator expected unwrapped schemas. Upstream v0.9.5 `to_serializable_dict()` wraps plain nested dictionaries as `{"type":"dict","value":{...}}`. The fixed validator recognizes that serialization while rejecting modified selectors, unexpected schema fields and wrong strategy types. **The operator reran the fixed probe successfully**, superseding the earlier false-negative observation.
+
+**Scope of this result:** the installed Docker server accepts and preserves both fixed declarative configuration objects. It does **not** demonstrate executing the selectors on live HTML, validating arbitrary schemas, bounding `extracted_content`, or testing network authorization, redirects, revocation, or egress. Those remain future work under issue #300.
 
 **Success requires** `health=supported_and_healthy`, `config_status=both_config_echoes_verified`, and an exit code of 0. Treat `config_echo_not_verified` or `config_probe_unavailable` as inconclusive, **not** as proof that upstream extraction is absent. If absent, first verify whether the installed image/API matches stable v0.9.5; do not disable token checks, untrusted deserialization protections or crawler egress rules.
 
