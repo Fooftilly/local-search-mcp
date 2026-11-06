@@ -85,9 +85,14 @@ def _candidate(value: str, host: str, path_prefix: str) -> str | None:
     path = url.path or "/"
     if not _path_safe(path) or _BAD_PERCENT.search(url.query) or _BAD_QUERY_CONTROL.search(url.query):
         return None
-    prefix = path_prefix.rstrip("/") or "/"
-    if prefix != "/" and path != prefix and not path.startswith(prefix + "/"):
-        return None
+    # A trailing slash is a meaningful boundary: "/docs/" must not
+    # accidentally include the sibling resource "/docs".
+    if path_prefix != "/":
+        if path_prefix.endswith("/"):
+            if not path.startswith(path_prefix):
+                return None
+        elif path != path_prefix and not path.startswith(path_prefix + "/"):
+            return None
     # An explicitly written default port is equivalent to an implicit one.
     # Normalize only default ports, preserving allowed non-default combinations.
     default_port = 443 if url.scheme == "https" else 80
@@ -141,9 +146,14 @@ def parse_sitemap_xml(data: bytes, *, source_url: str,
             if not closing or encoding not in (b"utf-8", b"utf8"):
                 raise SitemapXMLRejected("Only UTF-8 XML is supported")
     try:
-        data.decode("utf-8", errors="strict")
+        decoded = data.decode("utf-8", errors="strict")
     except UnicodeError as exc:
         raise SitemapXMLRejected("Only valid UTF-8 XML is supported") from exc
+    # NUL is illegal in XML 1.0. In particular, BOM-less UTF-16/UTF-32
+    # XML can otherwise pass a UTF-8 decode (with embedded NULs) while
+    # Expat independently auto-detects and parses the other encoding.
+    if "\x00" in decoded:
+        raise SitemapXMLRejected("NUL bytes or non-UTF-8 XML encoding")
 
     entries: list[dict[str, str]] = []
     seen: set[str] = set()
