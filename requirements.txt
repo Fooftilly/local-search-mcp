@@ -3,4 +3,5 @@ httpx>=0.28,<1
 httpx2>=2.5,<3  # FastMCP 4 / MCP SDK 2 Streamable HTTP transport
 idna>=3,<4
 defusedxml>=0.7.1,<1  # Bounded untrusted sitemap XML parsing
+packaging>=24,<27  # Version-safe dependency probe for prepared venvs
 uvicorn>=0.34,<1
