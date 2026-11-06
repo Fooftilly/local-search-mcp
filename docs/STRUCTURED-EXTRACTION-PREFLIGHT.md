@@ -18,6 +18,41 @@ From the **installed and configured** repository checkout on the operator's Arch
 ./.venv/bin/python -m scripts.structured_extraction_preflight --probe-configs
 ```
 
+### On-demand crawler: make the backend available first
+
+A crawler that is **verified sleeping** will return `health=unavailable` in **both** commands above, including `--probe-configs`. No schema probe or token authentication is attempted in that case. This is **inconclusive**, not a CSS/XPath compatibility failure.
+
+On the installed main checkout, first run the project's existing **read-only** operator diagnostics:
+
+```bash
+cd ~/local-search-mcp
+./setup.sh --on-demand-status
+./setup.sh --docker-status
+```
+
+If the verified managed `crawl4ai` backend is `sleeping`, wake it through the **existing authorized MCP tool**, not `docker start`, direct /crawl calls, a new scraper, or weakened firewall rules. For example, replace this URL with an **already currently approved** public page and invoke the bridge at its existing local endpoint:
+
+```bash
+~/local-search-mcp/.venv/bin/fastmcp call \
+  http://127.0.0.1:8790/mcp web_fetch \
+  url='https://www.peroniko.xyz/' fresh=true --auth none
+```
+
+This is a **real, operator-directed public fetch** with existing approval/egress checks, unlike the preflight. The example host is not preapproved automatically; check current authorization before running. `fresh=true` bypasses process fetch caching. If the bridge reports denied/unavailable or the supervisor reports failed/unverified, diagnose that status first; do not manually bypass the guard.
+
+Immediately after a successful, authorized wake, rerun the preflight in the separate PR worktree. For the authenticated config echo, load the saved token through the existing private configuration reader **without printing it to the terminal**:
+
+```bash
+cd ~/local-search-mcp-pr307
+CRAWL4AI_API_TOKEN="$(cd ~/local-search-mcp && \
+  ./.venv/bin/python -c 'import sys; from bootstrap import read_config; sys.stdout.write(read_config().get("CRAWL4AI_API_TOKEN", ""))')" \
+  ~/local-search-mcp/.venv/bin/python -m scripts.structured_extraction_preflight --probe-configs
+```
+
+The token is passed only to that process; it is not stored in the PR worktree or printed by the probe. The user-owned config reader rejects insecure private configuration permissions and symlinks. If the result is `operator_token_required`, inspect the redacted source information with `python3 bootstrap.py --show-config` from the installed checkout; **do not paste credentials**.
+
+If `health=unavailable` persists, share the sanitized `--on-demand-status` and `--docker-status` results plus the preflight result, not tokens, raw HTTP headers, or Docker environment dumps. The crawler may have returned to sleep between commands; the preflight itself intentionally does not acquire a wake lease.
+
 The first command checks only the existing fixed-loopback crawler health endpoint. The second command opt-in submits exactly two hardcoded, **non-LLM, no-regex, no-JS** typed configuration objects to the authenticated `http://127.0.0.1:11235/config/dump` endpoint (one CSS, one XPath). It does not make any request to a public URL, does not start containers or grant domains, does not modify persisted server configuration and does not execute selectors against fetched content. It refuses unsupported/unknown crawler versions according to the existing health verifier; if the crawler is sleeping, it does not automatically wake it.
 
 Only fixed outcome labels and the installed version are printed; never paste API tokens, raw response bodies, HTTP headers or unredacted private URLs in reports. Token credentials are read from the existing environment and used only to contact the fixed loopback service. There are no redirects, proxy environment inheritance or external network destinations. Responses are capped at 128 KiB and untrusted raw data is not printed.
