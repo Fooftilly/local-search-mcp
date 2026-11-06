@@ -26,6 +26,7 @@ MAX_SITEMAP_ENTRIES = 6_000
 MAX_URL_LENGTH = 2048
 _BAD_ESCAPED_PATH = re.compile(r"%(?:2e|2f|5c|25|0[0-9a-f]|1[0-9a-f]|7f|23|3f)", re.IGNORECASE)
 _BAD_PERCENT = re.compile(r"%(?![0-9a-fA-F]{2})")
+_BAD_QUERY_CONTROL = re.compile(r"%(?:0[0-9a-f]|1[0-9a-f]|7f)", re.IGNORECASE)
 
 
 
@@ -75,17 +76,21 @@ def _candidate(value: str, host: str, path_prefix: str) -> str | None:
         url = urlsplit(value)
         if (url.scheme not in ("http", "https") or url.username is not None
                 or url.password is not None or url.port not in (None, 80, 443)
-                or url.hostname != host or url.fragment):
+                or url.hostname != host or "#" in value):
             return None
     except ValueError:
         return None
     path = url.path or "/"
-    if not _path_safe(path):
+    if not _path_safe(path) or _BAD_PERCENT.search(url.query) or _BAD_QUERY_CONTROL.search(url.query):
         return None
     prefix = path_prefix.rstrip("/") or "/"
     if prefix != "/" and path != prefix and not path.startswith(prefix + "/"):
         return None
-    return urlunsplit((url.scheme, url.netloc.lower(), path, url.query, ""))
+    # An explicitly written default port is equivalent to an implicit one.
+    # Normalize only default ports, preserving allowed non-default combinations.
+    default_port = 443 if url.scheme == "https" else 80
+    netloc = host if url.port in (None, default_port) else f"{host}:{url.port}"
+    return urlunsplit((url.scheme, netloc, path, url.query, ""))
 
 
 def parse_sitemap_xml(data: bytes, *, source_url: str,
