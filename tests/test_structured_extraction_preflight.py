@@ -20,6 +20,17 @@ class FakeResponse:
         return self.body[:amount]
 
 
+def _upstream_serialized_plain(value):
+    """Mimic v0.9.5 to_serializable_dict's nested plain dict wrapping."""
+    if type(value) is dict:
+        return {"type": "dict",
+                "value": {key: _upstream_serialized_plain(child)
+                          for key, child in value.items()}}
+    if type(value) is list:
+        return [_upstream_serialized_plain(item) for item in value]
+    return value
+
+
 class FakeConnection:
     instances = []
     response_override = None
@@ -38,8 +49,13 @@ class FakeConnection:
         if self.response_override is not None:
             self.response = self.response_override
         else:
-            # Simulate /config/dump returning the typed, declarative config.
-            self.response = FakeResponse(body=json.dumps(json.loads(body)).encode())
+            # v0.9.5 serializes every plain dict inside the schema as
+            # {"type":"dict","value":...}, including field dictionaries.
+            returned = json.loads(body)
+            strategy = returned["params"]["extraction_strategy"]
+            strategy["params"]["schema"] = _upstream_serialized_plain(
+                strategy["params"]["schema"])
+            self.response = FakeResponse(body=json.dumps(returned).encode())
 
     def getresponse(self):
         return self.response
@@ -147,6 +163,39 @@ class StructuredPreflightTests(unittest.TestCase):
                 preflight._probe(token, "JsonCssExtractionStrategy")
         with self.assertRaises(ValueError):
             preflight._fixed_payload("LLMExtractionStrategy")
+
+    def test_upstream_wrapped_and_legacy_plain_schema_echo(self):
+        for strategy in preflight.STRATEGIES:
+            expected = preflight._fixed_payload(strategy)
+            result = json.loads(json.dumps(expected))
+            result["params"]["extraction_strategy"]["params"]["schema"] = (
+                _upstream_serialized_plain(
+                    expected["params"]["extraction_strategy"]["params"]["schema"]))
+            with self.subTest(strategy=strategy):
+                self.assertTrue(preflight._echo_supported(result, strategy, expected))
+                self.assertTrue(preflight._echo_supported(expected, strategy, expected))
+                wrapped = result["params"]["extraction_strategy"]["params"]["schema"]
+                self.assertEqual(wrapped["type"], "dict")
+                self.assertEqual(
+                    wrapped["value"]["fields"][0]["type"], "dict")
+                # A malicious typed object or modified nested field must never
+                # be considered a successful schema echo.
+                import copy
+                corrupt = copy.deepcopy(result)
+                corrupt["params"]["extraction_strategy"]["params"]["schema"][
+                    "value"]["fields"][0]["value"]["selector"] = "script"
+                self.assertFalse(preflight._echo_supported(corrupt, strategy, expected))
+                injected = copy.deepcopy(result)
+                injected["params"]["extraction_strategy"]["params"]["schema"][
+                    "value"]["unapproved"] = "extra"
+                self.assertFalse(preflight._echo_supported(injected, strategy, expected))
+                fake_class = copy.deepcopy(result)
+                fake_class["params"]["extraction_strategy"]["params"]["schema"][
+                    "type"] = "LLMExtractionStrategy"
+                self.assertFalse(preflight._echo_supported(fake_class, strategy, expected))
+                fake_strategy = copy.deepcopy(result)
+                fake_strategy["params"]["extraction_strategy"]["type"] = "RegexExtractionStrategy"
+                self.assertFalse(preflight._echo_supported(fake_strategy, strategy, expected))
 
     def test_echo_requires_same_typed_schema(self):
         payload = preflight._fixed_payload("JsonCssExtractionStrategy")
