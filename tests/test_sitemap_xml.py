@@ -91,6 +91,20 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(r['discovered_in_scope'],1)
         self.assertEqual(r['urls'][0]['url'],'https://www.example.org/yes')
 
+    def test_mixed_sitemap_namespaces_and_encoded_dangerous_paths(self):
+        root=(f'<urlset {NS}><url xmlns=""><loc>https://www.example.org/a</loc></url></urlset>').encode()
+        with self.assertRaises(sm.SitemapXMLRejected): self.parse(root)
+        wrong=(f'<urlset {NS}><url><loc xmlns="">https://www.example.org/a</loc></url></urlset>').encode()
+        r=self.parse(wrong)
+        self.assertEqual(r['urls'],[])
+        self.assertEqual(r['rejected_entries'],1)
+        for path in ('/docs/%252e%252e', '/docs/%00secret', '/docs/%0aok', '/docs/%7fcontrol',
+                     '/docs/%23hash', '/docs/%3fquery'):
+            with self.subTest(path=path):
+                r=self.parse(xmlset(['https://www.example.org'+path]),path_prefix='/docs')
+                self.assertEqual(r['urls'],[])
+                self.assertEqual(r['rejected_entries'],1)
+
     def test_malformed_source_scope_and_invalid_args(self):
         for params in ({'source_url':'http://other.example.org/sitemap.xml'},
                        {'scope_host':'EXAMPLE.org'},{'path_prefix':'/docs/../secret'},
