@@ -64,6 +64,9 @@ class BootstrapIDNTests(unittest.TestCase):
         verified_script = run.call_args.args[0][2]
         self.assertIn("3 <= int(m.version('idna').split('.')[0]) < 4",
                       verified_script)
+        self.assertIn("defusedxml", verified_script)
+        self.assertIn("Version('0.7.1') <= Version(m.version('defusedxml')) < Version('1')",
+                      verified_script)
         self.assertEqual(command.call_count, 2)
         self.assertEqual(command.call_args_list[0].args[0],
                          [str(python), "-m", "pip", "install", "-r",
