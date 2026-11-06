@@ -167,6 +167,35 @@ class ParserTests(unittest.TestCase):
         with self.assertRaises(sm.SitemapXMLRejected):
             self.parse(long_decl+xmlset(['https://www.example.org/a']))
 
+    def test_aggregate_budget_and_cross_document_semantics(self):
+        first=xmlset([f'https://www.example.org/p{i}' for i in range(70)])
+        second=xmlset([f'https://www.example.org/p{i}' for i in range(70,140)])
+        r=sm.parse_sitemap_documents([(BASE,first),('https://www.example.org/map2.xml',second)],
+                                    scope_host=HOST,max_urls=100)
+        self.assertEqual(r['documents_parsed'],2)
+        self.assertEqual(len(r['urls']),100)
+        self.assertEqual(r['unique_retained_candidates_observed'],140)
+        self.assertTrue(r['truncated'])
+        self.assertEqual(r['raw_xml_bytes_parsed'],len(first)+len(second))
+        self.assertEqual(r['source_completeness'],'unknown')
+        self.assertFalse(r['fetch_permissions_verified'])
+        mixed=sm.parse_sitemap_documents([(BASE,index(['https://www.example.org/map2.xml'])),
+                                           ('https://www.example.org/map2.xml',xmlset(['https://www.example.org/p']))],
+                                          scope_host=HOST)
+        self.assertEqual([v['entry_type'] for v in mixed['urls']],
+                         ['sitemap_reference','page_url'])
+
+    def test_aggregate_fails_closed_on_extra_budget_and_invalid_second_document(self):
+        good=xmlset(['https://www.example.org/a'])
+        with self.assertRaises(ValueError):
+            sm.parse_sitemap_documents([(BASE,good)]*3,scope_host=HOST)
+        with patch.object(sm,'MAX_TOTAL_SITEMAP_BYTES',len(good)*2-1):
+            with self.assertRaises(sm.SitemapXMLRejected):
+                sm.parse_sitemap_documents([(BASE,good),(BASE,good)],scope_host=HOST)
+        with self.assertRaises(sm.SitemapXMLRejected):
+            sm.parse_sitemap_documents([(BASE,good),(BASE,b'<!DOCTYPE urlset><urlset/>')],
+                                        scope_host=HOST)
+
     def test_no_auto_network_or_io_side_effect(self):
         # Fail if code introduces a filesystem, socket, HTTP or process hop.
         with (patch('builtins.open',side_effect=AssertionError('filesystem access')),
