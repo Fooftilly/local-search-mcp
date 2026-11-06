@@ -50,8 +50,32 @@ def _fixed_payload(strategy: str) -> dict:
     }
 
 
+def _matches_serialized_schema(actual: object, expected: object) -> bool:
+    """Compare only the fixed probe's primitives and containers.
+
+    Crawl4AI v0.9.5 to_serializable_dict() wraps EVERY plain dict as
+    {"type": "dict", "value": {...}}, including each schema field.
+    A raw dict is also accepted for older compatible server serialization,
+    but arbitrary typed objects, added fields and changed values are rejected.
+    The *expected* hardcoded shape bounds the entire comparison.
+    """
+    if type(expected) is dict:
+        if (type(actual) is dict and actual.get("type") == "dict"
+                and set(actual) == {"type", "value"}):
+            actual = actual["value"]
+        if type(actual) is not dict or actual.keys() != expected.keys():
+            return False
+        return all(_matches_serialized_schema(actual[key], value)
+                   for key, value in expected.items())
+    if type(expected) is list:
+        return (type(actual) is list and len(actual) == len(expected)
+                and all(_matches_serialized_schema(got, want)
+                        for got, want in zip(actual, expected)))
+    return type(actual) is type(expected) and actual == expected
+
+
 def _echo_supported(data: object, strategy: str, expected: dict) -> bool:
-    """Confirm nested *declarative config* preservation, not extraction output."""
+    """Verify schema identity after safe Crawl4AI configuration serialization."""
     if not isinstance(data, dict) or data.get("type") != "CrawlerRunConfig":
         return False
     params = data.get("params")
@@ -63,7 +87,10 @@ def _echo_supported(data: object, strategy: str, expected: dict) -> bool:
     strategy_params = extracted.get("params")
     if not isinstance(strategy_params, dict):
         return False
-    return strategy_params.get("schema") == expected["params"]["extraction_strategy"]["params"]["schema"]
+    return _matches_serialized_schema(
+        strategy_params.get("schema"),
+        expected["params"]["extraction_strategy"]["params"]["schema"],
+    )
 
 
 def _probe(token: str, strategy: str) -> bool:
