@@ -68,7 +68,8 @@ def validate_spec(spec: object) -> dict:
     transformations, custom JS, nested/list fields, or arbitrary Crawl4AI
     configuration is ever forwarded.
     """
-    if type(spec) is not dict or set(spec) != {"strategy", "base_selector", "fields"}:
+    if (type(spec) is not dict or len(spec) != 3
+            or set(spec) != {"strategy", "base_selector", "fields"}):
         raise StructuredSchemaRejected("Invalid extraction specification keys")
     strategy = spec["strategy"]
     if type(strategy) is not str or strategy not in _CLASSES:
@@ -81,12 +82,16 @@ def validate_spec(spec: object) -> dict:
     normalized = []
     seen: set[str] = set()
     for field in fields:
-        if type(field) is not dict or field.get("type") not in ("text", "attribute"):
+        if type(field) is not dict or len(field) not in (3, 4):
             raise StructuredSchemaRejected("Invalid field")
-        name, kind = field.get("name"), field["type"]
+        kind = field.get("type")
+        if type(kind) is not str or kind not in ("text", "attribute"):
+            raise StructuredSchemaRejected("Invalid field type")
+        name = field.get("name")
         allowed = ({"name", "selector", "type"} if kind == "text"
                    else {"name", "selector", "type", "attribute"})
-        if set(field) != allowed:
+        # Bound mapping cardinality before allocating the key set.
+        if len(field) != len(allowed) or set(field) != allowed:
             raise StructuredSchemaRejected("Unexpected field property")
         if (type(name) is not str or not _FIELD_NAME.fullmatch(name)
                 or name in seen):
@@ -142,6 +147,10 @@ def normalize_extracted_content(raw: object, validated_spec: dict) -> dict:
     canonical = validate_spec(validated_spec)
     if type(raw) is not str:
         raise StructuredSchemaRejected("Expected upstream JSON text")
+    # Every Unicode code point requires at least one UTF-8 byte. Reject a
+    # giant string before allocating an encoded copy proportional to its size.
+    if len(raw) > MAX_INPUT_BYTES:
+        raise StructuredSchemaRejected("Extracted content exceeds input budget")
     try:
         total_input_bytes = len(raw.encode("utf-8", "strict"))
     except UnicodeError as exc:
@@ -160,8 +169,10 @@ def normalize_extracted_content(raw: object, validated_spec: dict) -> dict:
     clipped = False
     method = "crawl4ai_json_" + canonical["strategy"]
     # Measure the COMPLETE public-shaped envelope, not only the records.
-    # JSON 'false' is one byte longer than 'true': use the larger literal
-    # during admission so the final output remains bounded either way.
+    # JSON 'false' is one byte longer than 'true'. Use that larger literal
+    # and default JSON spacing during admission. This bounds canonical
+    # json.dumps(envelope, ensure_ascii=True) as well as compact JSON;
+    # callers must not add arbitrarily verbose pretty-printing.
     def output_size(records: list[dict[str, str | None]]) -> int:
         envelope = {
             "records": records, "rows_observed_in_response": len(rows),
@@ -169,8 +180,7 @@ def normalize_extracted_content(raw: object, validated_spec: dict) -> dict:
             "extraction_method": method, "site_completeness": "unknown",
             "authorization_verified": False,
         }
-        return len(json.dumps(envelope, ensure_ascii=True,
-                              separators=(",", ":")).encode("utf-8"))
+        return len(json.dumps(envelope, ensure_ascii=True).encode("utf-8"))
 
     accepting = True
     # Validate EVERY parsed row, including rows excluded by the record cap
