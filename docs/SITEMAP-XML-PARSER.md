@@ -4,11 +4,25 @@ This is a **parser-only** security slice after the exploratory three-site URL-ma
 
 ## What is included
 
-The parse_sitemap_xml(xml_bytes, source_url=..., scope_host=..., path_prefix="/", max_urls=100) function parses at most 1 MiB of *original UTF-8 XML bytes* using [defusedxml](https://github.com/tiran/defusedxml) with DTD, internal-entity and external-entity processing explicitly forbidden. It recognizes standard sitemap urlset and sitemapindex roots (default sitemap namespace or no namespace), and only the direct loc element of each url or sitemap entry. It does not confuse image/extension loc elements with webpage URLs. A sitemap index yields entry_type=sitemap_reference, not page URLs, and references are **never followed**.
+The parse_sitemap_xml(data, source_url=..., scope_host=..., path_prefix="/", max_urls=100) function parses at most 1 MiB of *original UTF-8 XML bytes* using [defusedxml](https://github.com/tiran/defusedxml) with DTD, internal-entity and external-entity processing explicitly forbidden. It recognizes standard sitemap urlset and sitemapindex roots (default sitemap namespace or no namespace), and only the direct loc element of each url or sitemap entry. It does not confuse image/extension loc elements with webpage URLs. A sitemap index yields entry_type=sitemap_reference, not page URLs, and references are **never followed**.
 
 The parser rejects malformed XML, compressed bytes, unsupported encodings, overly deep/complex documents, and excessive source entries. It rejects cross-host, credential-bearing, relative, fragmented, malformed-path, out-of-prefix, and non-HTTP(S) entries, deduplicates accepted same-host strings, and returns at most 100 URL records. It reports both the number of accepted candidates and whether the **output** was truncated. all_supplied_xml_parsed=true means only that this one input document passed the XML parser; source_completeness=unknown does not claim that the publisher's website is fully indexed. Parsing a URL **does not constitute permission to fetch or release it**. The fetch_permissions_verified=false field is intentional.
 
 The caller-supplied host and prefix are *filters*, not proof of local dashboard decisions. The existing domain-policy and crawler egress guards remain the only authorization and network boundaries.
+
+## Existing upstream compatibility and three-site evidence
+
+The authoritative source is the [merged #305 feasibility and operator benchmark](URL-MAPPING-FEASIBILITY.md). On the operator's installed **Crawl4AI Docker 0.9.5**, the authenticated OpenAPI inventory advertised **33 paths** and **no dedicated mapping, sitemap-seeding, or domain-mapping route**. The upstream Python SDK has AsyncUrlSeeder and DomainMapper, but these were not shown to be exposed by the installed Docker REST service; the hosted Crawl4AI scan API is a different service. This supports an independently bounded parser, **not** a second unguarded downloader.
+
+The operator compared the existing guarded homepage links with sitemap Markdown using three separately approved public hosts (single-run wall times, **not** full end-to-end multi-page timings):
+
+| Host | Homepage fetch | Sitemap fetch | Observed same-host homepage links | Heuristic sitemap URL strings not in observed homepage links | Sitemap text pages analyzed |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Peroniko | 4.719 s | 1.848 s | 12 initial only | 580 | 2 of 5; no link continuation analyzed |
+| Django | 5.827 s | 1.958 s | 21 | 644 | 6 of 8; link continuation supplied |
+| MDN | 4.364 s | 1.349 s | 98 | 11 | 1 of 1; child sitemap references, **not page URLs** |
+
+The observations support the existence of a real discovery gap for Peroniko and Django, but their URL counts are **not schema-validated XML loc records** and pagination/coverage is partial. MDN demonstrates that a sitemap *index* must never be misrepresented as individual website pages. These are exploratory results, not accuracy guarantees, permission grants, production-map validation, or evidence that compressed child sitemaps can be processed safely.
 
 ## Deliberate integration gate
 
