@@ -49,6 +49,7 @@ class BridgeTests(unittest.TestCase):
         env = patch.dict(os.environ, {
             "XDG_STATE_HOME": state.name,
             "ALLOWED_CRAWL_DOMAINS": "example.com",
+            "LOCAL_SEARCH_STRUCTURED_EXTRACT_PILOT": "1",
         })
         env.start()
         self.addCleanup(env.stop)
