@@ -1097,6 +1097,11 @@ def _run_fetch(url: str, mode: str, *,
                 "reason": "On-demand crawler unavailable; verify Docker ownership and the live egress probe, then retry."}
 
 
+def _structured_deadline_expired(started: float) -> bool:
+    """Bound opt-in response streaming; one blocking read may add up to 30s."""
+    return time.monotonic() - started > 90
+
+
 def _run_fetch_network(url: str, mode: str, *,
                        once_proof: tuple[str, str] | None = None,
                        include_links: bool = False, include_tables: bool = False,
@@ -1167,7 +1172,7 @@ def _run_fetch_network(url: str, mode: str, *,
                                 "reason": "Structured crawl response encoding is unsupported."}
                     body = bytearray()
                     for chunk in response.iter_raw(chunk_size=64 * 1024):
-                        if time.monotonic() - started > 90:
+                        if _structured_deadline_expired(started):
                             return {"url": url, "success": False,
                                     "status": "upstream_unavailable",
                                     "reason": "Structured crawl response exceeded the time budget."}
@@ -1176,7 +1181,7 @@ def _run_fetch_network(url: str, mode: str, *,
                                     "status": "document_too_large",
                                     "reason": "Structured crawl response exceeds the bounded input budget."}
                         body.extend(chunk)
-                if time.monotonic() - started > 90:
+                if _structured_deadline_expired(started):
                     return {"url": url, "success": False, "status": "upstream_unavailable",
                             "reason": "Structured crawl response exceeded the time budget."}
                 result = json.loads(body)
@@ -1435,6 +1440,11 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
         if mode != "raw":
             raise ValueError("structured_spec requires mode='raw'")
         structured_spec = structured_schema.validate_spec(structured_spec)
+        # Operator-gated pilot: do not activate the new browser extraction
+        # workload until the server-side CPU/time and host safety gates in
+        # issue #300 have been reviewed. Never use tool input as the toggle.
+        if os.getenv("LOCAL_SEARCH_STRUCTURED_EXTRACT_PILOT") != "1":
+            raise ValueError("Structured extraction pilot is disabled by operator")
     before = request_cache.policy_epoch()
     once_proof = None
     # Ordinary permanent grants take precedence: a one-use grant must not be
