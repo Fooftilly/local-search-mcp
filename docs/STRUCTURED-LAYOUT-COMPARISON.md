@@ -41,20 +41,22 @@ The CSS/XPath schema is intentionally restrictive; **the example table mapping i
 
 For typed baselines, the optional `baseline_fields` mapping declares **canonical schema field name → raw baseline key**. This avoids falsely counting a JSON-LD date as missing when the safe schema uses `date_published` but JSON-LD exposes `datePublished`. For example, on the `jsonld` case set `"baseline_fields": {"date_published": "datePublished"}`; the corresponding `spec.fields[].name` and `expected` must use `date_published`. The input validator rejects undeclared, duplicate or unsafe aliases; `baseline_fields` is unnecessary when names are already identical. Typed table headers are normalized to lowercase with spaces replaced by underscores before applying optional aliases. Do not add baseline aliases to the `cards` case, which uses Markdown evidence rather than inventing a typed card API.
 
-From the existing detached PR #309 worktree:
+From the existing detached PR #309 worktree, save the annotated manifest to the **one fixed local operator config path** `~/.config/local-search-mcp/structured-layouts.json` (owner-controlled file; not a URL and never a CLI argument). Do not use symlinks or store sensitive source values there. Any `--manifest` or other arbitrary-path argument is rejected to prevent filesystem traversal.
 
 ```bash
 cd ~/local-search-mcp-pr309
 git fetch origin pull/309/head
 git merge --ff-only FETCH_HEAD
 
-./.venv/bin/python -m scripts.structured_layout_comparison \
-  --manifest /path/to/three-approved-layouts.json --preview
+mkdir -p ~/.config/local-search-mcp
+# Create/edit your reviewed public-only JSON using your normal editor:
+${EDITOR:-vi} ~/.config/local-search-mcp/structured-layouts.json
+
+./.venv/bin/python -m scripts.structured_layout_comparison --preview
 
 # After preview confirms approvals, and only with your explicit consent to
 # six fresh guarded crawls (baseline + isolated worker for each of 3 URLs):
-./.venv/bin/python -m scripts.structured_layout_comparison \
-  --manifest /path/to/three-approved-layouts.json --live-approved
+./.venv/bin/python -m scripts.structured_layout_comparison --live-approved
 ```
 
 **Metric definitions and limitations.** The script compares exact normalized field/value occurrences against operator annotations, with duplicates counted. `structured.precision_pct` is the fraction of extracted field/value pairs matching the annotated corpus; `structured.completeness_pct` is the fraction of annotated pairs recovered. This **field-level** measure cannot tell when two card records have swapped their date/title associations. The additional `structured_record_alignment` uses maximum one-to-one matching of whole annotated records against extracted records (requiring each annotated field/value pair to be present **in the same record**), so swapped fields are not scored as correct records. The typed table and JSON-LD baselines include `baseline_record_alignment` and `baseline_typed_values` with the same caveats about source fields and manual annotation. These comparisons do **not** imply verified publisher claims.
