@@ -23,6 +23,12 @@ import document_pages
 import request_cache
 import upstream_settings
 
+def _selector_fixture(name="structured_selector_test_page.html"):
+    # Web markup lives only in web/templates; Python tests read bytes as data.
+    return (Path(__file__).resolve().parents[1] / "web" / "templates" / name
+            ).read_text(encoding="utf-8")
+
+
 def _mock_streaming_response(*, data=None, content=None, headers=None):
     """Return an unconsumed HTTPX byte stream for the guarded crawl tests.
 
@@ -259,8 +265,7 @@ class BridgeTests(unittest.TestCase):
             posts.append(payload)
             return _mock_streaming_response(data={"results": [{
                 "url": "https://example.com/items", "success": True,
-                "markdown": "Public items", "extracted_content":
-                    json.dumps([{"headline": "Public headline"}]),
+                "markdown": "Public items", "html": _selector_fixture(),
             }]})
         def client(**kwargs):
             return original_client(transport=httpx.MockTransport(handler), trust_env=False)
@@ -285,10 +290,10 @@ class BridgeTests(unittest.TestCase):
                          "crawl4ai_json_xpath")
         self.assertEqual(len(posts), 3)
         self.assertNotIn("extraction_strategy", posts[0]["crawler_config"]["params"])
-        for payload, kind in zip(posts[1:],
-                                 ("JsonCssExtractionStrategy", "JsonXPathExtractionStrategy")):
+        for payload in posts[1:]:
             params = payload["crawler_config"]["params"]
-            self.assertEqual(params["extraction_strategy"]["type"], kind)
+            # This is a guarded HTML fetch, never server-side extraction.
+            self.assertNotIn("extraction_strategy", params)
             self.assertEqual(params["page_timeout"], 20_000)
             self.assertEqual(params["stream"], False)
             self.assertEqual(payload["urls"], ["https://example.com/items"])
@@ -339,15 +344,15 @@ class BridgeTests(unittest.TestCase):
                 return _mock_streaming_response(data={"results": [{
                     "url": "https://example.com/items", "success": True,
                     "markdown": "SENSITIVE_STRUCTURED_SENTINEL",
-                    "extracted_content": '[{"headline":"safe"}]'}],
+                    "html": _selector_fixture()}],
                     "padding": "x" * (4 * 1024 * 1024)})
             page = {"url": "https://example.com/items", "success": True,
                     "markdown": "SENSITIVE_STRUCTURED_SENTINEL",
-                    "extracted_content": '[{"headline":"safe"}]'}
+                    "html": _selector_fixture()}
             if variant[0] == "bad":
-                page["extracted_content"] = '[{"headline":{"private":"SENSITIVE_STRUCTURED_SENTINEL"}}]'
+                page["html"] = {"unexpected": "SENSITIVE_STRUCTURED_SENTINEL"}
             if variant[0] == "missing":
-                del page["extracted_content"]
+                del page["html"]
             if variant[0] == "redirect":
                 page["redirected_url"] = "https://unapproved.example/data"
             return _mock_streaming_response(data={"results": [page]})
@@ -394,8 +399,7 @@ class BridgeTests(unittest.TestCase):
                 return _mock_streaming_response(data={"status": "ok", "version": "0.9.5"})
             return _mock_streaming_response(data={"results": [{
                 "url": "https://example.com/items", "success": True,
-                "markdown": "  ",
-                "extracted_content": '[{"headline":"Usable"}]'}]})
+                "markdown": "  ", "html": _selector_fixture()}]})
         def client(**kwargs):
             return original_client(transport=httpx.MockTransport(handler), trust_env=False)
         schema = {"strategy": "css", "base_selector": "body",
@@ -422,7 +426,7 @@ class BridgeTests(unittest.TestCase):
                 raise httpx.ReadTimeout("simulated backend timeout", request=request)
             return _mock_streaming_response(data={"results": [{
                 "url": "https://example.com/items", "success": True,
-                "markdown": "text", "extracted_content": '[{"headline":"OK"}]'}]})
+                "markdown": "text", "html": _selector_fixture()}]})
         def client(**kwargs):
             return original_client(transport=httpx.MockTransport(handler), trust_env=False)
         schema = {"strategy": "css", "base_selector": "body",
@@ -452,15 +456,13 @@ class BridgeTests(unittest.TestCase):
     def test_structured_bridge_enforces_output_budget_on_large_records(self):
         import structured_schema
         original_client = httpx.Client
-        records = [{"headline": "界" * 140, "hint": "界" * 140}
-                   for _ in range(20)]
         def handler(request):
             if request.url.path == "/health":
                 return _mock_streaming_response(data={"status": "ok", "version": "0.9.5"})
             return _mock_streaming_response(data={"results": [{
                 "url": "https://example.com/items", "success": True,
                 "markdown": "text",
-                "extracted_content": json.dumps(records, ensure_ascii=False)}]})
+                "html": _selector_fixture("structured_selector_test_many.html")}]})
         def client(**kwargs):
             return original_client(transport=httpx.MockTransport(handler), trust_env=False)
         schema = {"strategy": "css", "base_selector": "article",
@@ -474,7 +476,7 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(result["success"])
         extracted = result["structured_extraction"]
         self.assertTrue(extracted["truncated"])
-        self.assertLess(extracted["rows_returned"], len(records))
+        self.assertLess(extracted["rows_returned"], 24)
         self.assertLessEqual(len(json.dumps(extracted, ensure_ascii=True).encode("utf-8")),
                              structured_schema.MAX_OUTPUT_BYTES)
 
