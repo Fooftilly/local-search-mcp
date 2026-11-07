@@ -125,12 +125,12 @@ class LayoutComparisonTests(unittest.TestCase):
     def test_baseline_comparison_row_cap_is_reported_separately(self):
         def guarded(url, **kwargs):
             if "structured_spec" in kwargs:
-                return {"success": True, "structured_extraction": {
+                return {"success": True, "url": url, "structured_extraction": {
                     "records": [{"title": "public entry"}],
                     "authorization_verified": False,
                     "provenance": {"fact_verification": "not_verified"}}}
             return {
-                "success": True, "markdown": "public entry",
+                "success": True, "url": url, "markdown": "public entry",
                 "tables": [{"headers": ["title"],
                             "rows": [["public entry"]] * 10}
                            for _ in range(3)],
@@ -192,7 +192,7 @@ class LayoutComparisonTests(unittest.TestCase):
             calls.append((url, kwargs))
             if "structured_spec" in kwargs:
                 return {
-                    "success": True,
+                    "success": True, "url": url,
                     "structured_extraction": {
                         "records": [{"title": "public entry"}],
                         "authorization_verified": False,
@@ -200,7 +200,7 @@ class LayoutComparisonTests(unittest.TestCase):
                     },
                 }
             return {
-                "success": True, "markdown": "public entry",
+                "success": True, "url": url, "markdown": "public entry",
                 "truncated": True,
                 "tables": [{"headers": ["title"], "rows": [["public entry"]]}],
                 "jsonld": [{"fields": {"title": "public entry"}}],
@@ -248,11 +248,11 @@ class LayoutComparisonTests(unittest.TestCase):
         # completed 3-layout evaluation from three heading-only pages.
         def guarded(url, **kwargs):
             if "structured_spec" in kwargs:
-                return {"success": True, "structured_extraction": {
+                return {"success": True, "url": url, "structured_extraction": {
                     "records": [{"title": "public entry"}],
                     "authorization_verified": False,
                     "provenance": {"fact_verification": "not_verified"}}}
-            return {"success": True, "markdown": "public entry",
+            return {"success": True, "url": url, "markdown": "public entry",
                     "tables": [], "jsonld": [],
                     "structured_info": {}, "jsonld_info": {}}
         with (patch.object(subject, "_preflight_permissions"),
@@ -270,10 +270,10 @@ class LayoutComparisonTests(unittest.TestCase):
         def guarded(url, **kwargs):
             if "structured_spec" in kwargs:
                 rows = [] if url.endswith("/cards") else [{"title": "public entry"}]
-                return {"success": True, "structured_extraction": {
+                return {"success": True, "url": url, "structured_extraction": {
                     "records": rows, "authorization_verified": False,
                     "provenance": {"fact_verification": "not_verified"}}}
-            return {"success": True, "markdown": "public entry",
+            return {"success": True, "url": url, "markdown": "public entry",
                     "tables": [{"headers": ["title"], "rows": [["public entry"]]}],
                     "jsonld": [{"fields": {"title": "public entry"}}],
                     "structured_info": {}, "jsonld_info": {}}
@@ -285,6 +285,49 @@ class LayoutComparisonTests(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertEqual(report["evaluated"], 2)
         self.assertEqual(report["results"][1]["status"], "card_records_not_observed")
+
+    def test_comparison_requires_same_authorized_final_url(self):
+        # Two independent approved crawls may redirect to DIFFERENT public
+        # pages. Scoring their values against one annotation is invalid,
+        # regardless of both individual fetches reporting success.
+        def run_with_targets(baseline_target, candidate_target):
+            def guarded(url, **kwargs):
+                if "structured_spec" in kwargs:
+                    return {"success": True, "url": candidate_target,
+                            "structured_extraction": {
+                                "records": [{"title": "public entry"}],
+                                "authorization_verified": False,
+                                "provenance": {"fact_verification": "not_verified"}}}
+                return {"success": True, "url": baseline_target,
+                        "markdown": "public entry",
+                        "tables": [{"headers": ["title"], "rows": [["public entry"]]}],
+                        "jsonld": [{"fields": {"title": "public entry"}}]}
+            with (patch.object(subject, "_preflight_permissions"),
+                  patch.object(subject, "_load_local_credentials"),
+                  patch.dict(sys.modules, {"bridge": types.SimpleNamespace(
+                      web_fetch=guarded)})):
+                return subject.compare(CASES)
+
+        original = "https://example.com/approved"
+        other = "https://example.com/other"
+        mismatch = run_with_targets(original, other)
+        self.assertFalse(mismatch["passed"])
+        self.assertEqual(mismatch["evaluated"], 0)
+        self.assertTrue(all(x["status"] == "inconsistent_final_url"
+                            for x in mismatch["results"]))
+        self.assertNotIn(original, json.dumps(mismatch))
+        self.assertNotIn(other, json.dumps(mismatch))
+
+        missing = run_with_targets(original, None)
+        self.assertFalse(missing["passed"])
+        self.assertTrue(all(x["status"] == "inconsistent_final_url"
+                            for x in missing["results"]))
+
+        # A stable authorized redirect does not invalidate the comparison:
+        # both fresh crawls measured the same final document.
+        stable = run_with_targets(other, other)
+        self.assertTrue(stable["passed"])
+        self.assertEqual(stable["evaluated"], 3)
 
     def test_failure_cannot_claim_completeness(self):
         def denied(url, **kwargs):
