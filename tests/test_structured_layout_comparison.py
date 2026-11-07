@@ -114,6 +114,48 @@ class LayoutComparisonTests(unittest.TestCase):
         self.assertEqual(partial["matched"], 1)
         self.assertEqual(partial["completeness_pct"], 50)
 
+    def test_baseline_alias_cannot_overwrite_existing_publisher_field(self):
+        # Existing publisher headline must never be replaced by an aliased
+        # secondary name value just to inflate the comparison score.
+        response = {"jsonld": [{"fields": {
+            "headline": "Original", "name": "Alternate"}}]}
+        with self.assertRaisesRegex(ValueError, "Ambiguous"):
+            subject._baseline_rows(response, "jsonld", {"name": "headline"})
+
+    def test_baseline_comparison_row_cap_is_reported_separately(self):
+        def guarded(url, **kwargs):
+            if "structured_spec" in kwargs:
+                return {"success": True, "structured_extraction": {
+                    "records": [{"title": "public entry"}],
+                    "authorization_verified": False,
+                    "provenance": {"fact_verification": "not_verified"}}}
+            return {
+                "success": True, "markdown": "public entry",
+                "tables": [{"headers": ["title"],
+                            "rows": [["public entry"]] * 10}
+                           for _ in range(3)],
+                "jsonld": [{"fields": {"title": "public entry"}}],
+                "structured_info": {"tables": {
+                    "truncated": False, "input_scan_capped": False,
+                    "table_limits": [{"rows_truncated": False,
+                                      "columns_truncated": False}] * 3}},
+            }
+        with (patch.object(subject, "_preflight_permissions"),
+              patch.object(subject, "_load_local_credentials"),
+              patch.dict(sys.modules, {"bridge": types.SimpleNamespace(
+                  web_fetch=guarded)})):
+            report = subject.compare(CASES)
+        self.assertTrue(report["passed"])
+        table_limits = report["results"][0]["baseline_limits"]
+        self.assertEqual(table_limits["comparison_rows_observed"], 30)
+        self.assertEqual(table_limits["comparison_rows_scored"], 20)
+        self.assertTrue(table_limits["comparison_row_cap_applied"])
+        self.assertFalse(table_limits["table_candidates_truncated"])
+        self.assertFalse(table_limits["table_row_or_column_preview_capped"])
+        # JSON-LD's independently bounded six-record parser is unaffected.
+        self.assertFalse(report["results"][2]["baseline_limits"][
+            "comparison_row_cap_applied"])
+
     def test_duplicate_keys_and_oversized_file_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "manifest.json"
