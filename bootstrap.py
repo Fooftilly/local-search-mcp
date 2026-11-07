@@ -285,12 +285,15 @@ def make_venv() -> Path:
         info("Creating Python virtual environment ...")
         run_command([sys.executable, "-m", "venv", str(ROOT / ".venv")])
     verify = (
-        "import fastmcp, httpx, idna, defusedxml, importlib.metadata as m; "
+        "import fastmcp, httpx, idna, defusedxml, lxml, cssselect, importlib.metadata as m; "
+        "from lxml.cssselect import CSSSelector; "
         "from packaging.version import Version; "
         "assert 4 <= int(m.version('fastmcp').split('.')[0]) < 5; "
         "assert int(m.version('httpx').split('.')[0]) == 0; "
         "assert 3 <= int(m.version('idna').split('.')[0]) < 4; "
-        "assert Version('0.7.1') <= Version(m.version('defusedxml')) < Version('1')"
+        "assert Version('0.7.1') <= Version(m.version('defusedxml')) < Version('1'); "
+        "assert Version('6.0.2') <= Version(m.version('lxml')) < Version('7'); "
+        "assert Version('1.3') <= Version(m.version('cssselect')) < Version('2')"
     )
     probe = subprocess.run([str(venvpy), "-c", verify], capture_output=True, timeout=15)
     if probe.returncode != 0:
