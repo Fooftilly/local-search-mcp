@@ -61,6 +61,59 @@ class LayoutComparisonTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     subject._validate_manifest(manifest)
 
+    def test_explicit_camel_case_jsonld_field_mapping(self):
+        example = {**CASES[2], "spec": {
+            "strategy": "css", "base_selector": "article",
+            "fields": [{"name": "date_published", "selector": "time",
+                        "type": "text"}]},
+            "expected": [{"date_published": "2026-11-07"}],
+            "baseline_fields": {"date_published": "datePublished"}}
+        cases = subject._validate_manifest({
+            "cases": [CASES[0], CASES[1], example]})
+        self.assertEqual(cases[2]["baseline_fields"],
+                         {"datePublished": "date_published"})
+        baseline = {"jsonld": [{"fields": {"datePublished": "2026-11-07"}}]}
+        converted = subject._baseline_rows(baseline, "jsonld",
+                                            cases[2]["baseline_fields"])
+        score = subject._match(subject._field_counter(cases[2]["expected"]),
+                               subject._field_counter(converted))
+        self.assertEqual(score["precision_pct"], 100)
+        self.assertEqual(score["completeness_pct"], 100)
+        with self.assertRaises(ValueError):
+            subject._validate_manifest({"cases": [
+                CASES[0], CASES[1], {**example,
+                "baseline_fields": {"date_published": "datePublished", "unknown": "name"}}]})
+
+    def test_reject_ambiguous_typed_baseline_aliases(self):
+        first = {**CASES[2], "spec": {
+            "strategy": "css", "base_selector": "article",
+            "fields": [
+                {"name": "one", "selector": "h2", "type": "text"},
+                {"name": "two", "selector": "p", "type": "text"}]},
+            "expected": [{"one": "A", "two": "B"}],
+            "baseline_fields": {"one": "datePublished", "two": "datePublished"}}
+        with self.assertRaises(ValueError):
+            subject._validate_manifest({"cases": [CASES[0], CASES[1], first]})
+
+    def test_record_alignment_detects_swapped_associations(self):
+        truth = [{"title": "A", "date_published": "2026-01-01"},
+                 {"title": "B", "date_published": "2026-01-02"}]
+        swapped = [{"title": "A", "date_published": "2026-01-02"},
+                   {"title": "B", "date_published": "2026-01-01"}]
+        self.assertEqual(
+            subject._match(subject._field_counter(truth),
+                           subject._field_counter(swapped))["precision_pct"], 100)
+        alignment = subject._record_alignment(truth, swapped)
+        self.assertEqual(alignment["matched"], 0)
+        self.assertEqual(alignment["completeness_pct"], 0)
+        self.assertEqual(alignment["precision_pct"], 0)
+        # Partial annotations should match a complete observed row exactly
+        # once, not claim two copies from a single candidate record.
+        partial = subject._record_alignment(
+            [{"title": "A"}, {"title": "A"}], [{"title": "A", "extra": "value"}])
+        self.assertEqual(partial["matched"], 1)
+        self.assertEqual(partial["completeness_pct"], 50)
+
     def test_duplicate_keys_and_oversized_file_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "manifest.json"
@@ -105,8 +158,14 @@ class LayoutComparisonTests(unittest.TestCase):
                 }
             return {
                 "success": True, "markdown": "public entry",
+                "truncated": True,
                 "tables": [{"headers": ["title"], "rows": [["public entry"]]}],
                 "jsonld": [{"fields": {"title": "public entry"}}],
+                "structured_info": {"tables": {
+                    "truncated": True, "input_scan_capped": False,
+                    "table_limits": [{"rows_truncated": True}]}},
+                "jsonld_info": {"source_html_scan_truncated": False,
+                                "limits_applied": True},
             }
         with (patch.object(subject, "_preflight_permissions"),
               patch.object(subject, "_load_local_credentials"),
@@ -122,12 +181,18 @@ class LayoutComparisonTests(unittest.TestCase):
         for entry in report["results"]:
             self.assertEqual(entry["structured"]["precision_pct"], 100)
             self.assertEqual(entry["structured"]["completeness_pct"], 100)
+            self.assertEqual(entry["structured_record_alignment"]["completeness_pct"], 100)
             self.assertEqual(entry["markdown_evidence"]["evidence_coverage_pct"], 100)
+            self.assertTrue(entry["baseline_limits"]["markdown_truncated"])
+            self.assertTrue(entry["baseline_limits"]["table_candidates_truncated"])
+            self.assertTrue(entry["baseline_limits"]["table_row_or_column_preview_capped"])
+            self.assertTrue(entry["baseline_limits"]["jsonld_limits_applied"])
             self.assertEqual(entry["llm_calls"], 0)
             self.assertEqual(entry["crawl_requests"], 2)
             self.assertIsNotNone(entry["baseline_seconds"])
             self.assertIsNotNone(entry["structured_seconds"])
         self.assertIsNone(report["results"][1]["baseline_typed_values"])
+        self.assertIsNone(report["results"][1]["baseline_record_alignment"])
         self.assertEqual(report["results"][0]["baseline_typed_values"]["precision_pct"], 100)
         self.assertEqual(report["results"][2]["baseline_typed_values"]["precision_pct"], 100)
         encoded = json.dumps(report)
