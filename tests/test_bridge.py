@@ -300,6 +300,44 @@ class BridgeTests(unittest.TestCase):
             self.assertNotIn("url", params)
             self.assertEqual(structured_schema.MAX_OUTPUT_BYTES, 12 * 1024)
 
+    def test_structured_provenance_tracks_requested_and_authorized_final_url(self):
+        original_client = httpx.Client
+        source = "https://example.com/start"
+        target = "https://example.com/after-redirect"
+        def handler(request):
+            if request.url.path == "/health":
+                return _mock_streaming_response(
+                    data={"status": "ok", "version": "0.9.5"})
+            return _mock_streaming_response(data={"results": [{
+                "url": source, "redirected_url": target,
+                "success": True, "markdown": "Public headline",
+                "html": _selector_fixture(),
+            }]})
+        def client(**kwargs):
+            return original_client(
+                transport=httpx.MockTransport(handler), trust_env=False)
+        schema = {"strategy": "css", "base_selector": "article.card",
+                  "fields": [{"name": "headline", "selector": "h2",
+                              "type": "text"}]}
+        with (patch.object(self.module, "_check_public_target",
+                           return_value=None) as authorization,
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            response = self.module.web_fetch(source, structured_spec=schema)
+        self.assertTrue(response["success"])
+        self.assertEqual(response["url"], target)
+        provenance = response["structured_extraction"]["provenance"]
+        self.assertEqual(provenance["requested_url"], source)
+        self.assertEqual(provenance["final_url"], target)
+        self.assertEqual(provenance["base_selector"], "article.card")
+        self.assertEqual(provenance["fields"]["headline"],
+                         {"selector": "h2", "type": "text"})
+        self.assertEqual(provenance["fact_verification"], "not_verified")
+        self.assertFalse(response["structured_extraction"]["authorization_verified"])
+        self.assertGreaterEqual(authorization.call_count, 2)
+        self.assertLessEqual(
+            len(json.dumps(response["structured_extraction"],
+                           ensure_ascii=True).encode("utf-8")), 12 * 1024)
+
     def test_structured_spec_fails_validation_before_policy_or_crawler(self):
         invalid = {"strategy": "xpath", "base_selector": "//article[1]", "fields":
                    [{"name": "headline", "selector": ".//h2", "type": "text"}]}
