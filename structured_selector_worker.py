@@ -129,6 +129,10 @@ def _extract(payload: object) -> dict:
                 value = "".join(matches[0].itertext()).strip()
             if value is not None and type(value) is not str:
                 raise ValueError("Invalid field value")
+            if value is not None and len(value) > MAX_CELL_CHARS:
+                # The parent cannot infer truncation after a worker clipped
+                # the string. Preserve this evidence for the final response.
+                source_capped = True
             row[field["name"]] = value[:MAX_CELL_CHARS] if value is not None else None
         # Keep the entire worker JSON far below its hard file-size limit.
         candidate = json.dumps({"rows": rows + [row], "source_capped": True},
