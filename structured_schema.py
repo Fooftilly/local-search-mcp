@@ -96,8 +96,12 @@ def validate_spec(spec: object) -> dict:
         if (type(name) is not str or not _FIELD_NAME.fullmatch(name)
                 or name in seen):
             raise StructuredSchemaRejected("Invalid or duplicate field name")
-        if not _safe_selector(field.get("selector"), strategy):
-            raise StructuredSchemaRejected("Unsafe field selector")
+        if (not _safe_selector(field.get("selector"), strategy)
+                or (strategy == "xpath" and field["selector"].startswith("//"))):
+            # XPath //field searches from the document root even when invoked
+            # on an article node. Field extraction must remain relative to
+            # each selected base record; require ./field or .//field.
+            raise StructuredSchemaRejected("Unsafe or unscoped field selector")
         item = {"name": name, "selector": field["selector"], "type": kind}
         if kind == "attribute":
             if type(field["attribute"]) is not str or field["attribute"] not in _ATTRIBUTES:
