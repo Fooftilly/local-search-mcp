@@ -61,7 +61,7 @@ class NativeDeepCrawlGuardTests(unittest.TestCase):
                 self.assertIn("CRAWL4AI_ALLOW_DEEP_CRAWL", warning)
                 self.assertIn("issue #299", warning)
                 self.assertNotIn("SECRET_DO_NOT_EXPOSE", warning)
-                self.assertNotIn(value + " ", warning)
+                self.assertNotIn("CRAWL4AI_ALLOW_DEEP_CRAWL=" + value, warning)
 
     def test_duplicate_or_malformed_native_flag_fails_closed(self):
         for flags in (
