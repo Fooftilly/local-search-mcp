@@ -35,6 +35,28 @@ On success the response includes `structured_extraction` with `records`, `rows_o
 
 The opt-in bypasses the reusable default Markdown-only cache to prevent schema/result mismatch or replay under changed authorization. It does not persist structured extraction results. No source-discovered URL or attribute value is independently fetched.
 
+## Attended host smoke test without replacing the installed bridge
+
+Use the isolated PR worktree that already passed the six worker-isolation tests. **Do not deploy this draft or restart the installed MCP service.** Install the bridge's remaining Python dependencies into the isolated PR venv, then run its explicit single-process acceptance runner:
+
+```bash
+cd ~/local-search-mcp-pr309
+git status --short
+git fetch origin pull/309/head
+git merge --ff-only FETCH_HEAD
+./.venv/bin/python -m pip install -r requirements.txt
+
+./.venv/bin/python -m scripts.structured_fetch_attended \
+  --live-approved \
+  --url 'https://www.peroniko.xyz/' \
+  --url 'https://www.peroniko.xyz/bookmarks/' \
+  --url 'https://www.peroniko.xyz/projects/'
+```
+
+This does **three** fresh, explicitly requested HTTPS fetches on the same already-approved public host, using CSS, XPath and CSS heading selectors. It first checks the existing local approval database **without creating a pending request**. The runner loads the existing token from owner-only local config without echoing it, activates the pilot flag **only inside its own process**, and reuses the ordinary authorized `bridge.web_fetch` logic, on-demand lease and egress verification. It does not start another MCP listening server, rewrite permissions or persist the opt-in flag. The final public pages must contain `h1` elements for this test to pass; the runner prints no raw HTML/Markdown or extracted values. It shows one result per case, the extraction method, status, elapsed time, record counts and whether the result was truncated. A nonzero exit code or `passed=false` means **do not deploy**; supply the sanitized JSON result for diagnosis. Do not replace the URLs with unapproved hosts or pages that may need additional approval.
+
+This smoke test is **not** the full security acceptance: repeat the broader preexisting automated negative tests for redirects, revocation/expiry, slow/oversized responses, and concurrent worker cancellation; verify the installed Docker guard under the operator's existing dedicated guarded-preflight/negative-probe process before approving a release. Three page paths on one site exercise the integration, but do not prove accuracy across three independently different page layouts. All additional sites require separate explicit approval.
+
 ## Acceptance gates still open
 
 - [ ] CI and review findings clean on the exact PR head, including no changes to the 12-tool count.
