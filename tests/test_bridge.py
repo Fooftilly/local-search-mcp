@@ -356,7 +356,7 @@ class BridgeTests(unittest.TestCase):
         schema = {"strategy": "css", "base_selector": "article",
                   "fields": [{"name": "headline", "selector": "h2", "type": "text"}]}
         def fake_crawler(url, mode, **kw):
-            self.module.request_cache.bump_policy_epoch()
+            self.module.request_cache.invalidate_fetch()
             return {"url": url, "success": True, "markdown": "private",
                     "structured_extraction": {"records": [{"headline": "private"}]}}
         with (patch.object(self.module, "_check_public_target", return_value=None),
