@@ -30,6 +30,7 @@ import document_comparison
 import request_cache
 import structured_extraction
 import structured_schema
+import structured_selector_host
 import jsonld_extraction
 import cache_settings
 import upstream_settings
@@ -1117,11 +1118,9 @@ def _run_fetch_network(url: str, mode: str, *,
     headers = {"Authorization": f"Bearer {CRAWL4AI_TOKEN}"} if CRAWL4AI_TOKEN else {}
     crawler_params = {"stream": False}
     if validated_spec is not None:
-        # Revalidated declarative non-LLM schema, never arbitrary backend opts.
-        # Retain the existing guarded HTTP target and on-demand crawler lease.
-        crawler_params["extraction_strategy"] = (
-            structured_schema.to_crawl4ai_config(validated_spec)
-            ["params"]["extraction_strategy"])
+        # Fetch HTML once through the normal guarded /crawl route. NO
+        # extraction_strategy is sent into the long-lived Crawl4AI process:
+        # the after-fetch selectors run only in a killable local worker.
         crawler_params["page_timeout"] = 20_000
     if mode == "fit":
         # Stock Crawl4AI only generates fit Markdown when a content filter
@@ -1304,15 +1303,19 @@ def _run_fetch_network(url: str, mode: str, *,
                 "reason": "Document exceeds the bounded extraction limit; content was not silently truncated"}
     structured_result = None
     if validated_spec is not None:
-        # Fail closed on absent, malformed or oversized upstream extraction;
-        # do not release partial Markdown or metadata on schema failure.
+        # The HTML came from this single previously authorized Crawl4AI
+        # /crawl call, after verifying its final URL, HTTP status and success.
+        # Only HTML and a canonical schema cross the worker boundary; no URL,
+        # token, one-use proof, approval state or HTTP client is passed.
+        # The worker is a short-lived Linux process with seccomp network
+        # denial, CPU/memory limits, a wall deadline and process-group kill.
         try:
-            structured_result = structured_schema.normalize_extracted_content(
-                page.get("extracted_content"), validated_spec)
-        except structured_schema.StructuredSchemaRejected:
+            structured_result = structured_selector_host.run_isolated_selectors(
+                page.get("html"), validated_spec)
+        except structured_selector_host.StructuredWorkerUnavailable:
             return {"url": final_url, "success": False,
                     "status": "invalid_extraction",
-                    "reason": "Crawl4AI did not return valid bounded structured JSON."}
+                    "reason": "Bounded local structured extraction was unavailable."}
         if not markdown.strip() and not structured_result["rows_returned"]:
             return _empty_extraction_diagnostic(page, final_url)
     # Invalid surrogate code points cannot safely be encoded as UTF-8 in MCP
