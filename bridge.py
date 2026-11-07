@@ -1333,7 +1333,13 @@ def _run_fetch_network(url: str, mode: str, *,
         try:
             structured_result = structured_selector_host.run_isolated_selectors(
                 raw_html, validated_spec)
-        except structured_selector_host.StructuredWorkerUnavailable:
+            # Document the exact approved source, final redirect target and
+            # field selectors without providing URLs to the worker. This
+            # metadata is itself included in the 12 KiB extraction envelope.
+            structured_result = structured_schema.attach_provenance(
+                structured_result, validated_spec, url, final_url)
+        except (structured_selector_host.StructuredWorkerUnavailable,
+                structured_schema.StructuredSchemaRejected):
             return {"url": final_url, "success": False,
                     "status": "invalid_extraction",
                     "reason": "Bounded local structured extraction was unavailable."}
