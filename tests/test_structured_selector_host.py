@@ -56,6 +56,23 @@ class IsolatedSelectorWorkerTests(unittest.TestCase):
         self.assertFalse(result["truncated"])
         self.assertEqual(result["extraction_method"], "crawl4ai_json_xpath")
 
+    def test_xpath_field_is_scoped_to_its_article_not_document(self):
+        page = (FIXTURES / "structured_selector_test_multiple_articles.html").read_text()
+        scoped = schema("xpath")
+        result = host.run_isolated_selectors(page, scoped)
+        self.assertEqual(
+            [row["headline"] for row in result["records"]],
+            ["First article", "Second article", None],
+        )
+        # A // field selector would scan from the document root and copy
+        # the outside heading into every row. Reject before spawning.
+        unscoped = {**scoped, "fields": [
+            {**scoped["fields"][0], "selector": "//h2"}]}
+        with patch.object(host.subprocess, "Popen",
+                          side_effect=AssertionError("invalid selector reached child")):
+            with self.assertRaises(structured_schema.StructuredSchemaRejected):
+                host.run_isolated_selectors(page, unscoped)
+
     def test_worker_cell_clipping_is_explicit_and_result_stays_bounded(self):
         page = (FIXTURES / "structured_selector_test_long_cell.html").read_text()
         result = host.run_isolated_selectors(page, schema())
