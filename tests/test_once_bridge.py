@@ -28,6 +28,7 @@ class GuardedOnceFetchTests(unittest.TestCase):
         env = patch.dict(os.environ, {
             "XDG_STATE_HOME": tmp.name,
             "ALLOWED_CRAWL_DOMAINS": "example.com",
+            "LOCAL_SEARCH_STRUCTURED_EXTRACT_PILOT": "1",
         })
         env.start()
         self.addCleanup(env.stop)
