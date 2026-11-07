@@ -67,6 +67,9 @@ class BootstrapIDNTests(unittest.TestCase):
         self.assertIn("defusedxml", verified_script)
         self.assertIn("Version('0.7.1') <= Version(m.version('defusedxml')) < Version('1')",
                       verified_script)
+        self.assertIn("from lxml.cssselect import CSSSelector", verified_script)
+        self.assertIn("Version(\'6.0.2\') <= Version(m.version(\'lxml\')) < Version(\'7\')", verified_script)
+        self.assertIn("Version(\'1.3\') <= Version(m.version(\'cssselect\')) < Version(\'2\')", verified_script)
         self.assertEqual(command.call_count, 2)
         self.assertEqual(command.call_args_list[0].args[0],
                          [str(python), "-m", "pip", "install", "-r",
