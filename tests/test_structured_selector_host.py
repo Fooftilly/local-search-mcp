@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 import subprocess
 import sys
 import tempfile
@@ -62,6 +64,46 @@ class IsolatedSelectorWorkerTests(unittest.TestCase):
         self.assertTrue(result["truncated"])
         self.assertLessEqual(len(json.dumps(result, ensure_ascii=True).encode("utf-8")),
                              structured_schema.MAX_OUTPUT_BYTES)
+
+    def test_stale_charset_and_malformed_markup_preserve_unicode_and_text(self):
+        # Source declarations can be stale once Crawl4AI has decoded HTML.
+        # The test fixture also has recoverable malformed markup and escaped
+        # script-shaped text, kept outside Python per AGENTS.md.
+        page = (FIXTURES / "structured_selector_test_malformed_charset.html").read_text()
+        spec = {"strategy": "css", "base_selector": "article.card",
+                "fields": [
+                    {"name": "headline", "selector": "h2", "type": "text"},
+                    {"name": "alt_text", "selector": "img",
+                     "type": "attribute", "attribute": "alt"},
+                    {"name": "source_text", "selector": "p", "type": "text"},
+                ]}
+        out = host.run_isolated_selectors(page, spec)
+        record = out["records"][0]
+        self.assertEqual(record["headline"], "Café résumé")
+        self.assertEqual(record["alt_text"], "Crème brûlée")
+        self.assertIn("<script>never-execute</script>", record["source_text"])
+        self.assertFalse(out["authorization_verified"])
+        self.assertFalse(out["truncated"])
+
+    def test_concurrent_worker_requests_respect_capacity(self):
+        # Real simultaneous subprocess attempts must enforce the two-worker
+        # gate even when no task goes through the ordinary bridge cache.
+        with tempfile.TemporaryDirectory() as temp:
+            script = Path(temp, "slow_worker.py")
+            script.write_text("import time\ntime.sleep(0.65)\n", encoding="utf-8")
+            barrier = Barrier(5)
+            def run(_):
+                barrier.wait(timeout=5)
+                try:
+                    host.run_isolated_selectors("public", schema())
+                except host.StructuredWorkerUnavailable as exc:
+                    return str(exc)
+                return "unexpected-success"
+            with (patch.object(host, "_WORKER_FILE", script),
+                  ThreadPoolExecutor(max_workers=5) as executor):
+                results = list(executor.map(run, range(5)))
+        self.assertGreaterEqual(results.count("Selector worker capacity exhausted"), 2)
+        self.assertNotIn("unexpected-success", results)
 
     def test_html_input_caps_before_any_process_or_network(self):
         page = "x" * (host.MAX_HTML_BYTES + 1)
