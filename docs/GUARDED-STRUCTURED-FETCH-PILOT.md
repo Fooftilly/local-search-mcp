@@ -61,6 +61,12 @@ This does **three** fresh, explicitly requested HTTPS fetches on the same alread
 
 This smoke test is **not** the full security acceptance: repeat the broader preexisting automated negative tests for redirects, revocation/expiry, slow/oversized responses, and concurrent worker cancellation; verify the installed Docker guard under the operator's existing dedicated guarded-preflight/negative-probe process before approving a release. Three page paths on one site exercise the integration, but do not prove accuracy across three independently different page layouts. All additional sites require separate explicit approval.
 
+## Reproducible quality comparison and upstream safety decision
+
+The new [three-layout comparison guide](STRUCTURED-LAYOUT-COMPARISON.md) includes an explicit-approval, annotated `table` / `cards` / `jsonld` manifest and an attended runner. It performs one normal baseline and one isolated structured fetch for each independently approved source, measuring field-value precision/completeness, Markdown evidence coverage, method-specific latency and zero LLM calls, without storing/printing page values. Offline tests verify consent and approval checks; **no three-layout live benchmark has been run**. The approved Peroniko pages do not currently yield table or JSON-LD records and cannot substantiate that broader acceptance.
+
+The earlier [Crawl4AI config echo verification (#307)](STRUCTURED-EXTRACTION-PREFLIGHT.md) confirmed typed CSS/XPath **configuration compatibility**, not safe execution or returned `extracted_content`. Upstream v0.9.5 executes these strategies in unkillable Python worker threads. At the operator's explicit request, #309 uses a killable, resource-limited local selector process instead of sending `extraction_strategy` to the long-lived crawler; doing otherwise would reintroduce the high-severity CPU risk. [Issue #300](https://github.com/Fooftilly/local-search-mcp/issues/300) records this superseding design decision. A future comparison of *actual upstream extracted_content* requires a separately reviewed killable upstream sandbox and cannot be treated as completed by #309.
+
 ## Acceptance gates still open
 
 - [x] Prior exact-head CI passed on `06e3f2d`; **reverify on every subsequent code commit** and review findings before merge. The default 12-tool inventory was preserved.
