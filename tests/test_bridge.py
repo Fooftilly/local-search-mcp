@@ -23,6 +23,18 @@ import document_pages
 import request_cache
 import upstream_settings
 
+def _mock_streaming_response(*, data=None, content=None, headers=None):
+    """Return an unconsumed HTTPX byte stream for the guarded crawl tests.
+
+    HTTPX MockTransport responses built with json= or content= are already
+    buffered/consumed before Client.stream() reaches iter_raw().
+    """
+    body = (json.dumps(data, ensure_ascii=False).encode("utf-8")
+            if data is not None else content)
+    return httpx.Response(200, stream=httpx.ByteStream(body),
+                          headers=headers or {"Content-Type": "application/json"})
+
+
 class FakeFastMCP:
     def __init__(self, *_args, **_kwargs):pass
     def tool(self, **_kwargs):
@@ -241,11 +253,11 @@ class BridgeTests(unittest.TestCase):
         posts = []
         def handler(request):
             if request.url.path == "/health":
-                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+                return _mock_streaming_response(data={"status": "ok", "version": "0.9.5"})
             self.assertEqual(request.url.path, "/crawl")
             payload = json.loads(request.content)
             posts.append(payload)
-            return httpx.Response(200, json={"results": [{
+            return _mock_streaming_response(data={"results": [{
                 "url": "https://example.com/items", "success": True,
                 "markdown": "Public items", "extracted_content":
                     json.dumps([{"headline": "Public headline"}]),
@@ -320,11 +332,11 @@ class BridgeTests(unittest.TestCase):
         variant = ["bad"]
         def handler(request):
             if request.url.path == "/health":
-                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+                return _mock_streaming_response(data={"status": "ok", "version": "0.9.5"})
             if variant[0] == "oversize":
                 # Valid JSON must be rejected by the streaming 4 MiB cap,
                 # not by the fallback malformed-JSON error.
-                return httpx.Response(200, json={"results": [{
+                return _mock_streaming_response(data={"results": [{
                     "url": "https://example.com/items", "success": True,
                     "markdown": "SENSITIVE_STRUCTURED_SENTINEL",
                     "extracted_content": '[{"headline":"safe"}]'}],
@@ -338,7 +350,7 @@ class BridgeTests(unittest.TestCase):
                 del page["extracted_content"]
             if variant[0] == "redirect":
                 page["redirected_url"] = "https://unapproved.example/data"
-            return httpx.Response(200, json={"results": [page]})
+            return _mock_streaming_response(data={"results": [page]})
         def client(**kwargs):
             return original_client(transport=httpx.MockTransport(handler), trust_env=False)
         def authorize(url):
@@ -379,8 +391,8 @@ class BridgeTests(unittest.TestCase):
         original_client = httpx.Client
         def handler(request):
             if request.url.path == "/health":
-                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
-            return httpx.Response(200, json={"results": [{
+                return _mock_streaming_response(data={"status": "ok", "version": "0.9.5"})
+            return _mock_streaming_response(data={"results": [{
                 "url": "https://example.com/items", "success": True,
                 "markdown": "  ",
                 "extracted_content": '[{"headline":"Usable"}]'}]})
@@ -401,14 +413,14 @@ class BridgeTests(unittest.TestCase):
         requests = []
         def handler(request):
             if request.url.path == "/health":
-                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+                return _mock_streaming_response(data={"status": "ok", "version": "0.9.5"})
             requests.append(request)
             if scenario[0] == "encoding":
-                return httpx.Response(200, content=b"not decompressed",
+                return _mock_streaming_response(content=b"not decompressed",
                                       headers={"Content-Encoding": "gzip"})
             if scenario[0] == "timeout":
                 raise httpx.ReadTimeout("simulated backend timeout", request=request)
-            return httpx.Response(200, json={"results": [{
+            return _mock_streaming_response(data={"results": [{
                 "url": "https://example.com/items", "success": True,
                 "markdown": "text", "extracted_content": '[{"headline":"OK"}]'}]})
         def client(**kwargs):
@@ -444,8 +456,8 @@ class BridgeTests(unittest.TestCase):
                    for _ in range(20)]
         def handler(request):
             if request.url.path == "/health":
-                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
-            return httpx.Response(200, json={"results": [{
+                return _mock_streaming_response(data={"status": "ok", "version": "0.9.5"})
+            return _mock_streaming_response(data={"results": [{
                 "url": "https://example.com/items", "success": True,
                 "markdown": "text",
                 "extracted_content": json.dumps(records, ensure_ascii=False)}]})
