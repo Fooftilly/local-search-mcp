@@ -97,7 +97,11 @@ def _extract(payload: object) -> dict:
         raise ValueError("Invalid worker strategy/fields")
 
     # No external entities, no external resources, no giant-tree override.
-    parser = etree.HTMLParser(no_network=True, recover=True, huge_tree=False)
+    # Crawl4AI already decoded the source HTML into a Python str. After
+    # re-encoding it as UTF-8 for lxml, override any stale meta charset
+    # declaration in that markup to avoid mojibake in text/attributes.
+    parser = etree.HTMLParser(encoding="utf-8", no_network=True,
+                              recover=True, huge_tree=False)
     document = lxml_html.document_fromstring(encoded, parser=parser)
     if strategy == "css":
         base_nodes = CSSSelector(spec["base_selector"])(document)
