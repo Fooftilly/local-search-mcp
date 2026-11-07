@@ -242,6 +242,50 @@ class LayoutComparisonTests(unittest.TestCase):
         self.assertNotIn("public entry", encoded)
         self.assertNotIn("https://example.com/", encoded)
 
+    def test_unverified_typed_layouts_cannot_make_benchmark_pass(self):
+        # A manifest label is not evidence that the actual response contains
+        # a typed table or JSON-LD layout. The benchmark must not advertise a
+        # completed 3-layout evaluation from three heading-only pages.
+        def guarded(url, **kwargs):
+            if "structured_spec" in kwargs:
+                return {"success": True, "structured_extraction": {
+                    "records": [{"title": "public entry"}],
+                    "authorization_verified": False,
+                    "provenance": {"fact_verification": "not_verified"}}}
+            return {"success": True, "markdown": "public entry",
+                    "tables": [], "jsonld": [],
+                    "structured_info": {}, "jsonld_info": {}}
+        with (patch.object(subject, "_preflight_permissions"),
+              patch.object(subject, "_load_local_credentials"),
+              patch.dict(sys.modules, {"bridge": types.SimpleNamespace(
+                  web_fetch=guarded)})):
+            report = subject.compare(CASES)
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["evaluated"], 1)
+        self.assertEqual([r["status"] for r in report["results"]], [
+            "typed_layout_not_observed", "evaluated", "typed_layout_not_observed"])
+        self.assertNotIn("public entry", json.dumps(report))
+
+    def test_empty_card_records_are_not_valid_comparison_evidence(self):
+        def guarded(url, **kwargs):
+            if "structured_spec" in kwargs:
+                rows = [] if url.endswith("/cards") else [{"title": "public entry"}]
+                return {"success": True, "structured_extraction": {
+                    "records": rows, "authorization_verified": False,
+                    "provenance": {"fact_verification": "not_verified"}}}
+            return {"success": True, "markdown": "public entry",
+                    "tables": [{"headers": ["title"], "rows": [["public entry"]]}],
+                    "jsonld": [{"fields": {"title": "public entry"}}],
+                    "structured_info": {}, "jsonld_info": {}}
+        with (patch.object(subject, "_preflight_permissions"),
+              patch.object(subject, "_load_local_credentials"),
+              patch.dict(sys.modules, {"bridge": types.SimpleNamespace(
+                  web_fetch=guarded)})):
+            report = subject.compare(CASES)
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["evaluated"], 2)
+        self.assertEqual(report["results"][1]["status"], "card_records_not_observed")
+
     def test_failure_cannot_claim_completeness(self):
         def denied(url, **kwargs):
             return {"success": False, "status": "approval_required",
