@@ -1305,13 +1305,29 @@ def _run_fetch_network(url: str, mode: str, *,
     if validated_spec is not None:
         # The HTML came from this single previously authorized Crawl4AI
         # /crawl call, after verifying its final URL, HTTP status and success.
+        # Do not pass oversized HTML to the child or weaken its CPU/memory
+        # isolation to accommodate a large public index page. Inspect the
+        # character count before allocating any temporary UTF-8 copy.
+        raw_html = page.get("html")
+        if type(raw_html) is str:
+            too_large = len(raw_html) > structured_selector_host.MAX_HTML_BYTES
+            if not too_large:
+                try:
+                    too_large = (len(raw_html.encode("utf-8", "strict"))
+                                 > structured_selector_host.MAX_HTML_BYTES)
+                except UnicodeError:
+                    raw_html = None  # Invalid Unicode must fail closed.
+            if too_large:
+                return {"url": final_url, "success": False,
+                        "status": "document_too_large",
+                        "reason": "HTML exceeds the structured extraction input budget."}
         # Only HTML and a canonical schema cross the worker boundary; no URL,
         # token, one-use proof, approval state or HTTP client is passed.
         # The worker is a short-lived Linux process with seccomp network
         # denial, CPU/memory limits, a wall deadline and process-group kill.
         try:
             structured_result = structured_selector_host.run_isolated_selectors(
-                page.get("html"), validated_spec)
+                raw_html, validated_spec)
         except structured_selector_host.StructuredWorkerUnavailable:
             return {"url": final_url, "success": False,
                     "status": "invalid_extraction",
