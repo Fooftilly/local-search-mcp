@@ -29,6 +29,7 @@ import document_pages
 import document_comparison
 import request_cache
 import structured_extraction
+import structured_schema
 import jsonld_extraction
 import cache_settings
 import upstream_settings
@@ -1077,17 +1078,19 @@ def _run_fetch(url: str, mode: str, *,
                include_alternatives: bool = False,
                compact_chars: int = document_pages.PAGE_CHARS,
                retain_for_evidence: bool = False,
-               include_jsonld: bool = False) -> dict:
+               include_jsonld: bool = False,
+               structured_spec: dict | None = None) -> dict:
     try:
         with on_demand.lease("crawl4ai"):
             if (include_links or include_tables or include_outline or include_alternatives
-                    or retain_for_evidence or include_jsonld or compact_chars != document_pages.PAGE_CHARS):
+                    or retain_for_evidence or include_jsonld or structured_spec is not None
+                    or compact_chars != document_pages.PAGE_CHARS):
                 return _run_fetch_network(
                     url, mode, once_proof=once_proof,
                     include_links=include_links, include_tables=include_tables,
                     include_outline=include_outline, include_alternatives=include_alternatives,
                     compact_chars=compact_chars, retain_for_evidence=retain_for_evidence,
-                    include_jsonld=include_jsonld)
+                    include_jsonld=include_jsonld, structured_spec=structured_spec)
             return _run_fetch_network(url, mode, once_proof=once_proof)
     except on_demand.BackendUnavailable:
         return {"url": url, "success": False, "status": "upstream_unavailable",
@@ -1101,10 +1104,20 @@ def _run_fetch_network(url: str, mode: str, *,
                        include_alternatives: bool = False,
                        compact_chars: int = document_pages.PAGE_CHARS,
                        retain_for_evidence: bool = False,
-                       include_jsonld: bool = False) -> dict:
+                       include_jsonld: bool = False,
+                       structured_spec: dict | None = None) -> dict:
     """Crawl only after the caller has passed current local policy checks."""
+    validated_spec = (structured_schema.validate_spec(structured_spec)
+                      if structured_spec is not None else None)
     headers = {"Authorization": f"Bearer {CRAWL4AI_TOKEN}"} if CRAWL4AI_TOKEN else {}
     crawler_params = {"stream": False}
+    if validated_spec is not None:
+        # Revalidated declarative non-LLM schema, never arbitrary backend opts.
+        # Retain the existing guarded HTTP target and on-demand crawler lease.
+        crawler_params["extraction_strategy"] = (
+            structured_schema.to_crawl4ai_config(validated_spec)
+            ["params"]["extraction_strategy"])
+        crawler_params["page_timeout"] = 20_000
     if mode == "fit":
         # Stock Crawl4AI only generates fit Markdown when a content filter
         # is configured. These are upstream-allowlisted safe config classes.
@@ -1133,15 +1146,37 @@ def _run_fetch_network(url: str, mode: str, *,
             return {"url": url, "success": False, "status": "blocked", "reason": f"Crawl4AI security check unavailable: {type(exc).__name__}"}
         if health_error:
             return {"url": url, "success": False, "status": "blocked", "reason": health_error}
-        response = _retry_request(lambda: client.post(
-            f"{CRAWL4AI_URL}/crawl", json=payload, headers=headers), method="POST")
-        if response is None or response.status_code >= 400:
-            return {"url": url, **_upstream_error(response, "crawl4ai")}
-        try:
-            result = response.json()
-        except (ValueError, UnicodeError):
-            return {"url": url, "success": False, "status": "invalid_response",
-                    "reason": "Crawl4AI returned unreadable JSON."}
+        if validated_spec is not None:
+            # This is the SAME approved /crawl endpoint, not a new requester.
+            # Stream only opted-in responses and stop at an explicit input
+            # limit before deserializing browser-generated HTML/metadata.
+            # Never retry ambiguous browser POST errors.
+            try:
+                with client.stream("POST", f"{CRAWL4AI_URL}/crawl",
+                                   json=payload, headers=headers) as response:
+                    if response.status_code >= 400:
+                        return {"url": url, **_upstream_error(response, "crawl4ai")}
+                    body = bytearray()
+                    for chunk in response.iter_bytes(chunk_size=64 * 1024):
+                        if len(body) + len(chunk) > 4 * 1024 * 1024:
+                            return {"url": url, "success": False,
+                                    "status": "document_too_large",
+                                    "reason": "Structured crawl response exceeds the bounded input budget."}
+                        body.extend(chunk)
+                result = json.loads(body)
+            except (httpx.HTTPError, ValueError, UnicodeError, RecursionError):
+                return {"url": url, "success": False, "status": "invalid_response",
+                        "reason": "Structured Crawl4AI response unavailable or invalid."}
+        else:
+            response = _retry_request(lambda: client.post(
+                f"{CRAWL4AI_URL}/crawl", json=payload, headers=headers), method="POST")
+            if response is None or response.status_code >= 400:
+                return {"url": url, **_upstream_error(response, "crawl4ai")}
+            try:
+                result = response.json()
+            except (ValueError, UnicodeError):
+                return {"url": url, "success": False, "status": "invalid_response",
+                        "reason": "Crawl4AI returned unreadable JSON."}
     if isinstance(result, dict) and "results" in result:
         results = result["results"]
         if not isinstance(results, list) or not results or not isinstance(results[0], dict):
@@ -1243,6 +1278,17 @@ def _run_fetch_network(url: str, mode: str, *,
     if len(markdown) > document_pages.MAX_DOCUMENT_CHARS:
         return {"url": final_url, "success": False, "status": "document_too_large",
                 "reason": "Document exceeds the bounded extraction limit; content was not silently truncated"}
+    structured_result = None
+    if validated_spec is not None:
+        # Fail closed on absent, malformed or oversized upstream extraction;
+        # do not release partial Markdown or metadata on schema failure.
+        try:
+            structured_result = structured_schema.normalize_extracted_content(
+                page.get("extracted_content"), validated_spec)
+        except structured_schema.StructuredSchemaRejected:
+            return {"url": final_url, "success": False,
+                    "status": "invalid_extraction",
+                    "reason": "Crawl4AI did not return valid bounded structured JSON."}
     # Invalid surrogate code points cannot safely be encoded as UTF-8 in MCP
     # JSON responses. Replace them deterministically before chunking.
     markdown = markdown.encode("utf-8", errors="replace").decode("utf-8")
@@ -1256,6 +1302,8 @@ def _run_fetch_network(url: str, mode: str, *,
     }
     if metadata:
         output["metadata"] = metadata
+    if structured_result is not None:
+        output["structured_extraction"] = structured_result
     if include_outline:
         output.update(document_pages.build_outline(
             markdown, first_page_chars=compact_chars))
@@ -1339,7 +1387,8 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
               include_retrieval_info: bool = False,
               include_alternatives: bool = False,
               retain_for_evidence: bool = False,
-              include_jsonld: bool = False) -> dict:
+              include_jsonld: bool = False,
+              structured_spec: dict | None = None) -> dict:
     """Fetch an approved page; bounded memory cache for public short pages.
 
     Authorization runs before every cache hit. Fresh skips both cache and
@@ -1361,6 +1410,10 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
         raise ValueError("retain_for_evidence must be a boolean")
     if type(include_jsonld) is not bool:
         raise ValueError("include_jsonld must be a boolean")
+    if structured_spec is not None:
+        if mode != "raw":
+            raise ValueError("structured_spec requires mode='raw'")
+        structured_spec = structured_schema.validate_spec(structured_spec)
     before = request_cache.policy_epoch()
     once_proof = None
     # Ordinary permanent grants take precedence: a one-use grant must not be
@@ -1396,13 +1449,13 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
     if once_proof is not None:
         # One-use access never reads, stores, refreshes or coalesces a reusable
         # fetch cache entry. Proof stays local to this invocation.
-        if include_links or include_tables or include_outline or include_alternatives or retain_for_evidence or include_jsonld or compact_chars != document_pages.PAGE_CHARS:
+        if include_links or include_tables or include_outline or include_alternatives or retain_for_evidence or include_jsonld or structured_spec is not None or compact_chars != document_pages.PAGE_CHARS:
             response = _run_fetch(
                 url, mode, once_proof=once_proof,
                 include_links=include_links, include_tables=include_tables,
                 include_outline=include_outline, include_alternatives=include_alternatives,
                 compact_chars=compact_chars, retain_for_evidence=retain_for_evidence,
-                include_jsonld=include_jsonld)
+                include_jsonld=include_jsonld, structured_spec=structured_spec)
         else:
             response = _run_fetch(url, mode, once_proof=once_proof)
         if include_retrieval_info:
@@ -1412,13 +1465,14 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
         # Opt-in structured data must not reuse the legacy Markdown-only
         # cache entry or populate it with mismatched response shape.
         opt_in = (include_links or include_tables or include_outline or include_alternatives or
-                  retain_for_evidence or include_jsonld or compact_chars != document_pages.PAGE_CHARS)
+                  retain_for_evidence or include_jsonld or structured_spec is not None
+                  or compact_chars != document_pages.PAGE_CHARS)
         key = None if opt_in else request_cache.fetch_key(url, mode)
         load = (lambda: _run_fetch(
             url, mode, include_links=include_links, include_tables=include_tables,
             include_outline=include_outline, include_alternatives=include_alternatives,
             compact_chars=compact_chars, retain_for_evidence=retain_for_evidence,
-            include_jsonld=include_jsonld)
+            include_jsonld=include_jsonld, structured_spec=structured_spec)
         ) if opt_in else (lambda: _run_fetch(url, mode))
         cached = request_cache.run(
             "fetch", key, load,
