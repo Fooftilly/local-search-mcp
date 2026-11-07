@@ -103,8 +103,9 @@ def run_isolated_selectors(html: object, spec: object) -> dict:
         except structured_schema.StructuredSchemaRejected as exc:
             raise StructuredWorkerUnavailable("Selector worker returned invalid records") from exc
         if parsed["source_capped"]:
+            # Only signal truncation; appending another metadata property
+            # after the 12 KiB normalized envelope could exceed its budget.
             normalized["truncated"] = True
-            normalized["input_scan_capped"] = True
         return normalized
     finally:
         _MAX_WORKERS.release()
