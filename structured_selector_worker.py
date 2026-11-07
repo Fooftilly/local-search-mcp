@@ -143,6 +143,28 @@ def _extract(payload: object) -> dict:
 def main() -> int:
     try:
         _lock_down()
+        if sys.argv[1:] == ["--check-isolation"]:
+            # Read-only local preflight. It never opens a connection or
+            # examines page input; the kernel must reject AF_INET socket().
+            import errno
+            import socket
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            except OSError as exc:
+                network_denied = exc.errno == errno.EPERM
+            else:
+                sock.close()
+                network_denied = False
+            data = {
+                "network_denied": network_denied,
+                "cpu_soft_seconds": resource.getrlimit(resource.RLIMIT_CPU)[0],
+                "max_address_space": resource.getrlimit(resource.RLIMIT_AS)[0],
+                "max_output_file": resource.getrlimit(resource.RLIMIT_FSIZE)[0],
+            }
+            os.write(1, json.dumps(data, separators=(",", ":")).encode())
+            return 0 if network_denied else 1
+        if len(sys.argv) != 1:
+            return 1
         # The supervisor bounds this pipe; worker applies a separate cap.
         request = sys.stdin.buffer.read(MAX_HTML_BYTES * 2 + 1)
         if len(request) > MAX_HTML_BYTES * 2:
