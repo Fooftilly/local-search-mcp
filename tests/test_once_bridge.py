@@ -28,6 +28,7 @@ class GuardedOnceFetchTests(unittest.TestCase):
         env = patch.dict(os.environ, {
             "XDG_STATE_HOME": tmp.name,
             "ALLOWED_CRAWL_DOMAINS": "example.com",
+            "LOCAL_SEARCH_STRUCTURED_EXTRACT_PILOT": "1",
         })
         env.start()
         self.addCleanup(env.stop)
@@ -60,6 +61,52 @@ class GuardedOnceFetchTests(unittest.TestCase):
         crawler.assert_called_once_with(url, "raw", once_proof=("docs.example.org", grant))
         self.assertEqual(request_cache.metrics_snapshot()["kinds"]["fetch"]["entries"], 0)
         self.assertFalse(policy.is_domain_currently_allowed("docs.example.org"))
+
+    def test_structured_one_use_proof_is_rechecked_before_data_release(self):
+        import structured_schema
+        url = "https://docs.example.org/approved-once"
+        schema = {"strategy": "css", "base_selector": "article",
+                  "fields": [{"name": "headline", "selector": "h2", "type": "text"}]}
+        grant = policy._stage_once_grant("docs.example.org", expires_minutes=60)
+        raw_result = {"url": url, "success": True, "markdown": "PRIVATE",
+                      "truncated": False, "structured_extraction": {
+                          "records": [{"headline": "PRIVATE"}],
+                          "authorization_verified": False}}
+        with (patch.object(bridge, "_run_fetch", return_value=raw_result) as fetch,
+              patch.object(policy, "_once_proof_current", return_value=False)):
+            result = bridge.web_fetch(url, structured_spec=schema)
+        self.assertEqual(result["status"], "blocked")
+        self.assertNotIn("PRIVATE", repr(result))
+        self.assertNotIn("structured_extraction", result)
+        args, kwargs = fetch.call_args
+        self.assertEqual(args, (url, "raw"))
+        self.assertEqual(kwargs["once_proof"], ("docs.example.org", grant))
+        self.assertEqual(kwargs["structured_spec"], structured_schema.validate_spec(schema))
+        self.assertEqual(request_cache.metrics_snapshot()["kinds"]["fetch"]["entries"], 0)
+
+    def test_structured_once_grant_expiry_during_inflight_fetch_blocks_release(self):
+        url = "https://docs.example.org/structured-expired"
+        schema = {"strategy": "css", "base_selector": "article",
+                  "fields": [{"name": "headline", "selector": "h2", "type": "text"}]}
+        now = ["2026-10-18T12:00:00Z"]
+        def expire_during_fetch(raw, mode, **kwargs):
+            self.assertEqual(raw, url)
+            self.assertIsNotNone(kwargs.get("once_proof"))
+            now[0] = "2026-10-18T13:01:00Z"
+            return {"url": url, "success": True, "markdown": "SECRET_PRIVATE",
+                    "truncated": False,
+                    "structured_extraction": {
+                        "records": [{"headline": "SECRET_PRIVATE"}],
+                        "authorization_verified": False}}
+        with patch.object(policy, "utcnow", side_effect=lambda: now[0]):
+            policy._stage_once_grant("docs.example.org", expires_minutes=60)
+            with patch.object(bridge, "_run_fetch",
+                              side_effect=expire_during_fetch) as crawler:
+                result = bridge.web_fetch(url, structured_spec=schema)
+        self.assertEqual(crawler.call_count, 1)
+        self.assertEqual(result["status"], "blocked")
+        self.assertNotIn("SECRET_PRIVATE", repr(result))
+        self.assertNotIn("structured_extraction", result)
 
     def test_restage_while_claiming_rebases_epoch_without_losing_once(self):
         url = "https://docs.example.org/just-approved"

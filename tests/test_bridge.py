@@ -23,6 +23,24 @@ import document_pages
 import request_cache
 import upstream_settings
 
+def _selector_fixture(name="structured_selector_test_page.html"):
+    # Web markup lives only in web/templates; Python tests read bytes as data.
+    return (Path(__file__).resolve().parents[1] / "web" / "templates" / name
+            ).read_text(encoding="utf-8")
+
+
+def _mock_streaming_response(*, data=None, content=None, headers=None):
+    """Return an unconsumed HTTPX byte stream for the guarded crawl tests.
+
+    HTTPX MockTransport responses built with json= or content= are already
+    buffered/consumed before Client.stream() reaches iter_raw().
+    """
+    body = (json.dumps(data, ensure_ascii=False).encode("utf-8")
+            if data is not None else content)
+    return httpx.Response(200, stream=httpx.ByteStream(body),
+                          headers=headers or {"Content-Type": "application/json"})
+
+
 class FakeFastMCP:
     def __init__(self, *_args, **_kwargs):pass
     def tool(self, **_kwargs):
@@ -49,6 +67,7 @@ class BridgeTests(unittest.TestCase):
         env = patch.dict(os.environ, {
             "XDG_STATE_HOME": state.name,
             "ALLOWED_CRAWL_DOMAINS": "example.com",
+            "LOCAL_SEARCH_STRUCTURED_EXTRACT_PILOT": "1",
         })
         env.start()
         self.addCleanup(env.stop)
@@ -233,6 +252,334 @@ class BridgeTests(unittest.TestCase):
         # probe extra links, or silently change default cached result shape.
         self.assertTrue(all(x["urls"] == ["https://example.com/articles/index"]
                             for x in posted))
+
+    def test_opt_in_css_xpath_uses_same_guarded_crawl_with_no_default_change(self):
+        import structured_schema
+        original_client = httpx.Client
+        posts = []
+        def handler(request):
+            if request.url.path == "/health":
+                return _mock_streaming_response(data={"status": "ok", "version": "0.9.5"})
+            self.assertEqual(request.url.path, "/crawl")
+            payload = json.loads(request.content)
+            posts.append(payload)
+            return _mock_streaming_response(data={"results": [{
+                "url": "https://example.com/items", "success": True,
+                "markdown": "Public items", "html": _selector_fixture(),
+            }]})
+        def client(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), trust_env=False)
+        css = {"strategy": "css", "base_selector": "article.card",
+               "fields": [{"name": "headline", "selector": "h2", "type": "text"}]}
+        xpath = {"strategy": "xpath", "base_selector": "//article",
+                 "fields": [{"name": "headline", "selector": ".//h2", "type": "text"}]}
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            default = self.module.web_fetch("https://example.com/items")
+            cached = self.module.web_fetch("https://example.com/items")
+            extracted = self.module.web_fetch("https://example.com/items",
+                                               structured_spec=css)
+            second = self.module.web_fetch("https://example.com/items",
+                                            structured_spec=xpath)
+        self.assertEqual(default, cached)
+        self.assertNotIn("structured_extraction", default)
+        self.assertEqual(extracted["structured_extraction"]["records"][0]["headline"],
+                         "Public headline")
+        self.assertFalse(extracted["structured_extraction"]["authorization_verified"])
+        self.assertEqual(second["structured_extraction"]["extraction_method"],
+                         "crawl4ai_json_xpath")
+        self.assertEqual(len(posts), 3)
+        self.assertNotIn("extraction_strategy", posts[0]["crawler_config"]["params"])
+        for payload in posts[1:]:
+            params = payload["crawler_config"]["params"]
+            # This is a guarded HTML fetch, never server-side extraction.
+            self.assertNotIn("extraction_strategy", params)
+            self.assertEqual(params["page_timeout"], 20_000)
+            self.assertEqual(params["stream"], False)
+            self.assertEqual(payload["urls"], ["https://example.com/items"])
+            self.assertNotIn("url", params)
+            self.assertEqual(structured_schema.MAX_OUTPUT_BYTES, 12 * 1024)
+
+    def test_structured_provenance_tracks_requested_and_authorized_final_url(self):
+        original_client = httpx.Client
+        source = "https://example.com/start"
+        target = "https://example.com/after-redirect"
+        def handler(request):
+            if request.url.path == "/health":
+                return _mock_streaming_response(
+                    data={"status": "ok", "version": "0.9.5"})
+            return _mock_streaming_response(data={"results": [{
+                "url": source, "redirected_url": target,
+                "success": True, "markdown": "Public headline",
+                "html": _selector_fixture(),
+            }]})
+        def client(**kwargs):
+            return original_client(
+                transport=httpx.MockTransport(handler), trust_env=False)
+        schema = {"strategy": "css", "base_selector": "article.card",
+                  "fields": [{"name": "headline", "selector": "h2",
+                              "type": "text"}]}
+        with (patch.object(self.module, "_check_public_target",
+                           return_value=None) as authorization,
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            response = self.module.web_fetch(source, structured_spec=schema)
+        self.assertTrue(response["success"])
+        self.assertEqual(response["url"], target)
+        provenance = response["structured_extraction"]["provenance"]
+        self.assertEqual(provenance["requested_url"], source)
+        self.assertEqual(provenance["final_url"], target)
+        self.assertEqual(provenance["base_selector"], "article.card")
+        self.assertEqual(provenance["fields"]["headline"],
+                         {"selector": "h2", "type": "text"})
+        self.assertEqual(provenance["fact_verification"], "not_verified")
+        self.assertFalse(response["structured_extraction"]["authorization_verified"])
+        self.assertGreaterEqual(authorization.call_count, 2)
+        # Ensure the destination, not merely the original URL, was subject
+        # to the existing public-target authorization before release.
+        authorization.assert_any_call(target)
+        self.assertLessEqual(
+            len(json.dumps(response["structured_extraction"],
+                           ensure_ascii=True).encode("utf-8")), 12 * 1024)
+
+    def test_structured_spec_fails_validation_before_policy_or_crawler(self):
+        invalid = {"strategy": "xpath", "base_selector": "//article[1]", "fields":
+                   [{"name": "headline", "selector": ".//h2", "type": "text"}]}
+        with (patch.object(self.module, "_check_public_target",
+                           side_effect=AssertionError("policy may not be touched")),
+              patch.object(self.module, "_run_fetch",
+                           side_effect=AssertionError("crawler must not run"))):
+            with self.assertRaises(ValueError):
+                self.module.web_fetch("https://example.com/items",
+                                      structured_spec=invalid)
+            with self.assertRaises(ValueError):
+                self.module.web_fetch("https://example.com/items", mode="fit",
+                                      structured_spec={"strategy": "css",
+                                          "base_selector": "article",
+                                          "fields": [{"name": "headline",
+                                              "selector": "h2", "type": "text"}]})
+
+    def test_structured_spec_denied_before_crawl(self):
+        schema = {"strategy": "css", "base_selector": "article",
+                  "fields": [{"name": "headline", "selector": "h2", "type": "text"}]}
+        with (patch.object(self.module, "_check_public_target", return_value={
+                    "url": "https://example.com/items", "success": False,
+                    "status": "denied", "reason": "Not approved"}),
+              patch.object(self.module, "_run_fetch",
+                           side_effect=AssertionError("crawler must not run"))):
+            result = self.module.web_fetch("https://example.com/items",
+                                           structured_spec=schema)
+        self.assertEqual(result["status"], "denied")
+        self.assertNotIn("structured_extraction", result)
+
+    def test_structured_bad_response_and_unapproved_redirect_return_no_content(self):
+        original_client = httpx.Client
+        schema = {"strategy": "css", "base_selector": "article",
+                  "fields": [{"name": "headline", "selector": "h2", "type": "text"}]}
+        variant = ["bad"]
+        def handler(request):
+            if request.url.path == "/health":
+                return _mock_streaming_response(data={"status": "ok", "version": "0.9.5"})
+            if variant[0] == "oversize":
+                # Valid JSON must be rejected by the streaming 4 MiB cap,
+                # not by the fallback malformed-JSON error.
+                return _mock_streaming_response(data={"results": [{
+                    "url": "https://example.com/items", "success": True,
+                    "markdown": "SENSITIVE_STRUCTURED_SENTINEL",
+                    "html": _selector_fixture()}],
+                    "padding": "x" * (4 * 1024 * 1024)})
+            page = {"url": "https://example.com/items", "success": True,
+                    "markdown": "SENSITIVE_STRUCTURED_SENTINEL",
+                    "html": _selector_fixture()}
+            if variant[0] == "bad":
+                page["html"] = {"unexpected": "SENSITIVE_STRUCTURED_SENTINEL"}
+            if variant[0] == "missing":
+                del page["html"]
+            if variant[0] == "html_oversize":
+                page["html"] = "X" * (self.module.structured_selector_host.MAX_HTML_BYTES + 1)
+            if variant[0] == "html_utf8_oversize":
+                page["html"] = "界" * (self.module.structured_selector_host.MAX_HTML_BYTES // 3 + 1)
+            if variant[0] == "redirect":
+                page["redirected_url"] = "https://unapproved.example/data"
+            return _mock_streaming_response(data={"results": [page]})
+        def client(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), trust_env=False)
+        def authorize(url):
+            if url == "https://example.com/items":
+                return None
+            return {"url": url, "success": False, "status": "blocked",
+                    "reason": "Unapproved destination"}
+        with (patch.object(self.module, "_check_public_target", side_effect=authorize),
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            for case, expected_status in (
+                ("bad", "invalid_extraction"),
+                ("missing", "invalid_extraction"),
+                ("oversize", "document_too_large"),
+                ("html_oversize", "document_too_large"),
+                ("html_utf8_oversize", "document_too_large"),
+                ("redirect", "blocked"),
+            ):
+                with self.subTest(case=case):
+                    variant[0] = case
+                    result = self.module.web_fetch("https://example.com/items",
+                                                  structured_spec=schema)
+                    self.assertFalse(result["success"])
+                    self.assertEqual(result["status"], expected_status)
+                    self.assertNotIn("structured_extraction", result)
+                    self.assertNotIn("markdown", result)
+                    self.assertNotIn("SENSITIVE_STRUCTURED_SENTINEL", str(result))
+
+    def test_structured_pilot_disabled_by_default_and_no_network(self):
+        schema = {"strategy": "css", "base_selector": "article",
+                  "fields": [{"name": "headline", "selector": "h2", "type": "text"}]}
+        with (patch.dict(os.environ, {"LOCAL_SEARCH_STRUCTURED_EXTRACT_PILOT": ""}),
+              patch.object(self.module, "_check_public_target",
+                           side_effect=AssertionError("no policy")),
+              patch.object(self.module, "_run_fetch",
+                           side_effect=AssertionError("no crawler"))):
+            with self.assertRaisesRegex(ValueError, "disabled by operator"):
+                self.module.web_fetch("https://example.com/items", structured_spec=schema)
+
+    def test_structured_valid_records_survive_blank_markdown(self):
+        original_client = httpx.Client
+        def handler(request):
+            if request.url.path == "/health":
+                return _mock_streaming_response(data={"status": "ok", "version": "0.9.5"})
+            return _mock_streaming_response(data={"results": [{
+                "url": "https://example.com/items", "success": True,
+                "markdown": "  ", "html": _selector_fixture()}]})
+        def client(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), trust_env=False)
+        schema = {"strategy": "css", "base_selector": "body",
+                  "fields": [{"name": "headline", "selector": "h1", "type": "text"}]}
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            result = self.module.web_fetch("https://example.com/items",
+                                           structured_spec=schema)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["structured_extraction"]["records"][0]["headline"], "Usable")
+
+    def test_structured_stream_fails_closed_on_encoding_deadline_and_timeout(self):
+        original_client = httpx.Client
+        scenario = ["encoding"]
+        requests = []
+        def handler(request):
+            if request.url.path == "/health":
+                return _mock_streaming_response(data={"status": "ok", "version": "0.9.5"})
+            requests.append(request)
+            if scenario[0] == "encoding":
+                return _mock_streaming_response(content=b"not decompressed",
+                                      headers={"Content-Encoding": "gzip"})
+            if scenario[0] == "timeout":
+                raise httpx.ReadTimeout("simulated backend timeout", request=request)
+            return _mock_streaming_response(data={"results": [{
+                "url": "https://example.com/items", "success": True,
+                "markdown": "text", "html": _selector_fixture()}]})
+        def client(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), trust_env=False)
+        schema = {"strategy": "css", "base_selector": "body",
+                  "fields": [{"name": "headline", "selector": "h1", "type": "text"}]}
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            for case, expected in (("encoding", "invalid_response"),
+                                   ("timeout", "upstream_unavailable"),
+                                   ("deadline", "upstream_unavailable")):
+                with self.subTest(case=case):
+                    scenario[0] = case
+                    before = len(requests)
+                    if case == "deadline":
+                        with patch.object(self.module, "_structured_deadline_expired",
+                                          return_value=True):
+                            result = self.module.web_fetch(
+                                "https://example.com/items", structured_spec=schema)
+                    else:
+                        result = self.module.web_fetch(
+                            "https://example.com/items", structured_spec=schema)
+                    self.assertEqual(result["status"], expected)
+                    self.assertFalse(result["success"])
+                    self.assertNotIn("structured_extraction", result)
+                    self.assertEqual(len(requests), before + 1)
+            self.assertEqual(requests[0].headers["accept-encoding"], "identity")
+
+    def test_structured_trickle_deadline_checks_every_transport_chunk(self):
+        # An upstream trickle may send tiny frames forever while staying
+        # below HTTPX's per-read inactivity timeout. A 64 KiB rechunk buffer
+        # would hide these frames from our wall-clock check.
+        original_client = httpx.Client
+        frames_read = []
+        class SmallRawFrames(httpx.SyncByteStream):
+            def __iter__(self):
+                for index in range(180):
+                    frames_read.append(index)
+                    yield b"x"
+
+            def close(self):
+                pass
+
+        def handler(request):
+            if request.url.path == "/health":
+                return _mock_streaming_response(
+                    data={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, stream=SmallRawFrames(),
+                                  headers={"Content-Type": "application/json"})
+
+        def client(**kwargs):
+            return original_client(
+                transport=httpx.MockTransport(handler), trust_env=False)
+
+        schema = {"strategy": "css", "base_selector": "article",
+                  "fields": [{"name": "heading", "selector": "h2", "type": "text"}]}
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client),
+              patch.object(self.module, "_structured_deadline_expired",
+                           side_effect=lambda started: len(frames_read) >= 3)):
+            result = self.module.web_fetch("https://example.com/stream",
+                                           structured_spec=schema)
+        self.assertEqual(result["status"], "upstream_unavailable")
+        self.assertFalse(result["success"])
+        self.assertLessEqual(len(frames_read), 3)
+        self.assertNotIn("structured_extraction", result)
+
+    def test_structured_bridge_enforces_output_budget_on_large_records(self):
+        import structured_schema
+        original_client = httpx.Client
+        def handler(request):
+            if request.url.path == "/health":
+                return _mock_streaming_response(data={"status": "ok", "version": "0.9.5"})
+            return _mock_streaming_response(data={"results": [{
+                "url": "https://example.com/items", "success": True,
+                "markdown": "text",
+                "html": _selector_fixture("structured_selector_test_many.html")}]})
+        def client(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), trust_env=False)
+        schema = {"strategy": "css", "base_selector": "article",
+                  "fields": [
+                      {"name": "headline", "selector": "h2", "type": "text"},
+                      {"name": "hint", "selector": "p", "type": "text"}]}
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            result = self.module.web_fetch("https://example.com/items",
+                                           structured_spec=schema)
+        self.assertTrue(result["success"])
+        extracted = result["structured_extraction"]
+        self.assertTrue(extracted["truncated"])
+        self.assertLess(extracted["rows_returned"], 24)
+        self.assertLessEqual(len(json.dumps(extracted, ensure_ascii=True).encode("utf-8")),
+                             structured_schema.MAX_OUTPUT_BYTES)
+
+    def test_structured_epoch_change_during_crawl_redacts_records(self):
+        schema = {"strategy": "css", "base_selector": "article",
+                  "fields": [{"name": "headline", "selector": "h2", "type": "text"}]}
+        def fake_crawler(url, mode, **kw):
+            self.module.request_cache.invalidate_fetch()
+            return {"url": url, "success": True, "markdown": "private",
+                    "structured_extraction": {"records": [{"headline": "private"}]}}
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module, "_run_fetch", side_effect=fake_crawler)):
+            result = self.module.web_fetch("https://example.com/items",
+                                           structured_spec=schema)
+        self.assertEqual(result["status"], "blocked")
+        self.assertNotIn("structured_extraction", result)
+        self.assertNotIn("markdown", result)
 
     def test_advertised_formats_opt_in_without_link_fetch(self):
         paths = []

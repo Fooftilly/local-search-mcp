@@ -128,6 +128,53 @@ class StructuredSchemaTests(unittest.TestCase):
                     subject.StructuredSchemaRejected):
                 subject.validate_spec({**spec(), "fields": fields})
 
+    def test_provenance_exact_field_selectors_and_requested_redirect_urls(self):
+        raw = '[{"headline":"Public headline","hint":"Public image"}]'
+        normalized = subject.normalize_extracted_content(raw, spec())
+        out = subject.attach_provenance(
+            normalized, spec(),
+            "https://example.com/requested", "https://example.com/final")
+        provenance = out["provenance"]
+        self.assertEqual(provenance["requested_url"], "https://example.com/requested")
+        self.assertEqual(provenance["final_url"], "https://example.com/final")
+        self.assertEqual(provenance["base_selector"], "article.card")
+        self.assertEqual(provenance["fields"]["headline"],
+                         {"selector": "h2.title", "type": "text"})
+        self.assertEqual(provenance["fields"]["hint"],
+                         {"selector": "img", "type": "attribute", "attribute": "alt"})
+        self.assertEqual(provenance["fact_verification"], "not_verified")
+        self.assertFalse(out["authorization_verified"])
+        self.assertLessEqual(len(json.dumps(out, ensure_ascii=True).encode()),
+                             subject.MAX_OUTPUT_BYTES)
+
+    def test_provenance_output_rejects_oversized_urls_and_truncates_rows(self):
+        names = [f"field{i}" for i in range(subject.MAX_FIELDS)]
+        schema = {"strategy": "css", "base_selector": "article",
+                  "fields": [{"name": name, "selector": "h2", "type": "text"}
+                             for name in names]}
+        rows = [{name: "a" * subject.MAX_CELL_CHARS for name in names}
+                for _ in range(20)]
+        normalized = subject.normalize_extracted_content(json.dumps(rows), schema)
+        out = subject.attach_provenance(normalized, schema,
+                      "https://example.com/" + "x" * 3000, "https://example.com/final")
+        self.assertTrue(out["truncated"])
+        self.assertLess(out["rows_returned"], normalized["rows_returned"])
+        self.assertEqual(out["rows_observed_in_response"], 20)
+        self.assertLessEqual(len(json.dumps(out, ensure_ascii=True).encode()),
+                             subject.MAX_OUTPUT_BYTES)
+        short = subject.normalize_extracted_content(
+            '[{"field0":"safe"}]', schema)
+        long_source = "https://example.com/?q=" + "x" * 4100
+        carried = subject.attach_provenance(
+            short, schema, long_source, "https://example.com/final")
+        self.assertEqual(carried["provenance"]["requested_url"], long_source)
+        self.assertEqual(carried["records"][0]["field0"], "safe")
+        self.assertLessEqual(len(json.dumps(carried, ensure_ascii=True).encode()),
+                             subject.MAX_OUTPUT_BYTES)
+        for invalid_url in (None, "x" * (subject.MAX_OUTPUT_BYTES + 1)):
+            with self.assertRaises(subject.StructuredSchemaRejected):
+                subject.attach_provenance(normalized, schema, invalid_url, "https://example.com")
+
     def test_no_automatic_network_side_effect(self):
         with (patch("socket.create_connection", side_effect=AssertionError("network")),
               patch("builtins.open", side_effect=AssertionError("filesystem")),

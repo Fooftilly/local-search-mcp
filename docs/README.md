@@ -29,6 +29,8 @@ Stable operator and feature guides live in this folder. Start with the [project 
 - [URL mapping feasibility and operator benchmark](URL-MAPPING-FEASIBILITY.md)
 - [Structured CSS/XPath extraction — installed-server compatibility preflight](STRUCTURED-EXTRACTION-PREFLIGHT.md)
 - [Bounded CSS/XPath extraction schema and offline result validation](STRUCTURED-SCHEMA-VALIDATION.md)
+- [Guarded opt-in CSS/XPath fetch pilot and host acceptance](GUARDED-STRUCTURED-FETCH-PILOT.md)
+- [Structured extraction three-layout quality comparison and operator evidence](STRUCTURED-LAYOUT-COMPARISON.md)
 - [Bounded sitemap XML parsing contract (parser-only; no network)](SITEMAP-XML-PARSER.md)
 - [Extraction and long documents](EXTRACTION.md)
 - [Temporary document comparison](DOCUMENT-COMPARISON.md)
