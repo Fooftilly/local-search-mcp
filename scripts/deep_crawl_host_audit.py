@@ -88,6 +88,9 @@ def report() -> dict:
         if state not in ("running", "exited", "created", "restarting",
                          "paused", "dead"):
             return result
+        flag = _flag_state(env)
+        if flag == "unverified":
+            return result
         result.update({
             "inspect": "verified",
             "state": state,
@@ -95,7 +98,7 @@ def report() -> dict:
             # Docker .Image is a LOCAL image ID, not a signed registry digest
             # or proof that the image contents match a published release.
             "local_image_id": image_id,
-            "deep_crawl_container_env": _flag_state(env),
+            "deep_crawl_container_env": flag,
         })
     except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError,
             ComposeSetupError, subprocess.TimeoutExpired):
