@@ -239,8 +239,13 @@ def attach_provenance(normalized: dict, validated_spec: dict,
     entire structured_extraction value within the existing 12 KiB budget.
     """
     canonical = validate_spec(validated_spec)
+    # An authorized URL can legitimately exceed 4096 characters. Reject
+    # only when the literal source cannot fit the 12 KiB extraction envelope,
+    # then enforce the *actual* JSON byte budget below. Do not truncate URLs,
+    # because that would make field provenance inaccurate.
     if (type(requested_url) is not str or type(final_url) is not str
-            or len(requested_url) > 4096 or len(final_url) > 4096):
+            or len(requested_url) > MAX_OUTPUT_BYTES
+            or len(final_url) > MAX_OUTPUT_BYTES):
         raise StructuredSchemaRejected("Invalid source provenance URL")
     if (type(normalized) is not dict or type(normalized.get("records")) is not list
             or normalized.get("extraction_method") !=
