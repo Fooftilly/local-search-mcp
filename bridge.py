@@ -1170,7 +1170,12 @@ def _run_fetch_network(url: str, mode: str, *,
                         return {"url": url, "success": False, "status": "invalid_response",
                                 "reason": "Structured crawl response encoding is unsupported."}
                     body = bytearray()
-                    for chunk in response.iter_raw(chunk_size=64 * 1024):
+                    # Do not ask HTTPX to coalesce network reads into a
+                    # fixed 64 KiB chunk: a trickle can keep that inner
+                    # buffer incomplete for arbitrarily long while our
+                    # wall-clock check never runs. Inspect each transport
+                    # chunk as it arrives and cap cumulative raw bytes.
+                    for chunk in response.iter_raw(chunk_size=None):
                         if _structured_deadline_expired(started):
                             return {"url": url, "success": False,
                                     "status": "upstream_unavailable",
