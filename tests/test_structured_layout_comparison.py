@@ -118,13 +118,14 @@ class LayoutComparisonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "manifest.json"
             p.write_text('{"cases":[],"cases":[]}', encoding="utf-8")
-            with self.assertRaises(ValueError):
-                subject._load_manifest(str(p))
-            p.write_bytes(b"x" * (subject._MAX_MANIFEST_BYTES + 1))
-            with self.assertRaises(ValueError):
-                subject._load_manifest(str(p))
-            p.write_text(json.dumps({"cases": CASES}), encoding="utf-8")
-            loaded = subject._load_manifest(str(p))
+            with patch.object(subject, "_MANIFEST", p):
+                with self.assertRaises(ValueError):
+                    subject._load_manifest()
+                p.write_bytes(b"x" * (subject._MAX_MANIFEST_BYTES + 1))
+                with self.assertRaises(ValueError):
+                    subject._load_manifest()
+                p.write_text(json.dumps({"cases": CASES}), encoding="utf-8")
+                loaded = subject._load_manifest()
         self.assertEqual(len(loaded), 3)
 
     def test_all_hosts_approved_before_crawls(self):
@@ -219,20 +220,37 @@ class LayoutComparisonTests(unittest.TestCase):
             p = Path(tmp) / "approved-layouts.json"
             p.write_text(json.dumps({"cases": CASES}), encoding="utf-8")
             output = io.StringIO()
-            with (patch("domain_policy.is_domain_currently_allowed", return_value=True),
+            with (patch.object(subject, "_MANIFEST", p),
+                  patch("domain_policy.is_domain_currently_allowed", return_value=True),
                   patch.object(subject, "_load_local_credentials",
                                side_effect=AssertionError("no credentials")),
                   patch.object(subject, "compare",
                                side_effect=AssertionError("no crawl")),
                   contextlib.redirect_stdout(output)):
-                code = subject.main(["--preview", "--manifest", str(p)])
+                code = subject.main(["--preview"])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output.getvalue())["fetches_if_live"], 6)
+
+    def test_cli_cannot_choose_arbitrary_manifest_path(self):
+        with (contextlib.redirect_stderr(io.StringIO()),
+              self.assertRaises(SystemExit) as err):
+            subject.main(["--preview", "--manifest", "/etc/shadow"])
+        self.assertEqual(err.exception.code, 2)
+
+    def test_symlinked_manifest_rejected_before_reading(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            secret = Path(tmp) / "secret.json"
+            secret.write_text(json.dumps({"cases": CASES}), encoding="utf-8")
+            link = Path(tmp) / "structured-layouts.json"
+            link.symlink_to(secret)
+            with patch.object(subject, "_MANIFEST", link):
+                with self.assertRaises(ValueError):
+                    subject._load_manifest()
 
     def test_requires_explicit_live_consent(self):
         with (contextlib.redirect_stderr(io.StringIO()),
               self.assertRaises(SystemExit) as err):
-            subject.main(["--manifest", "/some/file.json"])
+            subject.main([])
         self.assertEqual(err.exception.code, 2)
 
 
