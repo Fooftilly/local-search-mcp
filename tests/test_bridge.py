@@ -353,6 +353,10 @@ class BridgeTests(unittest.TestCase):
                 page["html"] = {"unexpected": "SENSITIVE_STRUCTURED_SENTINEL"}
             if variant[0] == "missing":
                 del page["html"]
+            if variant[0] == "html_oversize":
+                page["html"] = "X" * (self.module.structured_selector_host.MAX_HTML_BYTES + 1)
+            if variant[0] == "html_utf8_oversize":
+                page["html"] = "界" * (self.module.structured_selector_host.MAX_HTML_BYTES // 3 + 1)
             if variant[0] == "redirect":
                 page["redirected_url"] = "https://unapproved.example/data"
             return _mock_streaming_response(data={"results": [page]})
@@ -369,6 +373,8 @@ class BridgeTests(unittest.TestCase):
                 ("bad", "invalid_extraction"),
                 ("missing", "invalid_extraction"),
                 ("oversize", "document_too_large"),
+                ("html_oversize", "document_too_large"),
+                ("html_utf8_oversize", "document_too_large"),
                 ("redirect", "blocked"),
             ):
                 with self.subTest(case=case):
