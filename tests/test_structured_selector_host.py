@@ -41,6 +41,15 @@ class IsolatedSelectorWorkerTests(unittest.TestCase):
                 self.assertFalse(result["truncated"])
                 self.assertNotIn("url", result)
 
+    def test_worker_cell_clipping_is_explicit_and_result_stays_bounded(self):
+        page = (FIXTURES / "structured_selector_test_long_cell.html").read_text()
+        result = host.run_isolated_selectors(page, schema())
+        self.assertEqual(result["rows_returned"], 1)
+        self.assertEqual(len(result["records"][0]["headline"]), 240)
+        self.assertTrue(result["truncated"])
+        self.assertLessEqual(len(json.dumps(result, ensure_ascii=True).encode("utf-8")),
+                             structured_schema.MAX_OUTPUT_BYTES)
+
     def test_html_input_caps_before_any_process_or_network(self):
         page = "x" * (host.MAX_HTML_BYTES + 1)
         with patch.object(host.subprocess, "Popen",
