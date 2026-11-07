@@ -307,6 +307,17 @@ def compare(cases: list[dict]) -> dict:
                     or type(candidate.get("structured_extraction")) is not dict):
                 outcomes.append({"layout": case["kind"], "status": "fetch_failed"})
                 continue
+            # Two fresh guarded crawls can legitimately redirect to an
+            # approved target, but only the SAME final document can support
+            # a meaningful baseline-versus-selector comparison. The bridge
+            # reports its authorized final URL on every successful fetch.
+            # Do not print either URL when the target changes between runs.
+            if (type(baseline.get("url")) is not str
+                    or type(candidate.get("url")) is not str
+                    or baseline["url"] != candidate["url"]):
+                outcomes.append({"layout": case["kind"],
+                                 "status": "inconsistent_final_url"})
+                continue
             extra = candidate["structured_extraction"]
             actual = _field_counter(extra.get("records"))
             if (extra.get("authorization_verified") is not False
