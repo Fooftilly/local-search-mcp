@@ -11,8 +11,10 @@ from __future__ import annotations
 from collections import Counter
 import argparse
 import json
+import os
 from pathlib import Path
 import re
+import stat
 import sys
 import time
 from urllib.parse import urlsplit
@@ -109,12 +111,19 @@ def _validate_manifest(obj: object) -> list[dict]:
 
 
 def _load_manifest() -> list[dict]:
-    # The manifest path is NOT a CLI argument. Avoid traversing user-supplied
-    # paths, symlinked manifests and special devices. No network file reading.
-    if (_MANIFEST.is_symlink() or not _MANIFEST.is_file()
-            or _MANIFEST.stat().st_size > _MAX_MANIFEST_BYTES):
-        raise ValueError("Configured manifest unavailable or oversized")
-    with _MANIFEST.open("rb") as handle:
+    # No CLI-controlled file paths. Open the fixed operator config only as
+    # a regular file, without following its final symlink or a TOCTOU gap.
+    # O_NONBLOCK prevents a malicious named pipe from hanging the runner.
+    try:
+        fd = os.open(_MANIFEST, os.O_RDONLY | os.O_CLOEXEC |
+                     os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        raise ValueError("Configured manifest unavailable") from exc
+    with os.fdopen(fd, "rb") as handle:
+        details = os.fstat(handle.fileno())
+        if (not stat.S_ISREG(details.st_mode)
+                or details.st_size > _MAX_MANIFEST_BYTES):
+            raise ValueError("Configured manifest is not a bounded regular file")
         raw = handle.read(_MAX_MANIFEST_BYTES + 1)
     if len(raw) > _MAX_MANIFEST_BYTES:
         raise ValueError("Manifest exceeds input cap")
