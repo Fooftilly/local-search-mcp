@@ -23,6 +23,8 @@ _KINDS = frozenset({"table", "cards", "jsonld"})
 _MAX_MANIFEST_BYTES = 48 * 1024
 _MAX_ANNOTATIONS = 20
 _MAX_RECORDS = 20
+# Fixed per-user path: CLI input must never select arbitrary local files.
+_MANIFEST = Path.home() / ".config" / "local-search-mcp" / "structured-layouts.json"
 
 
 def _duplicate_keys(pairs):
@@ -106,11 +108,13 @@ def _validate_manifest(obj: object) -> list[dict]:
     return approved
 
 
-def _load_manifest(path: str) -> list[dict]:
-    local = Path(path)
-    if not local.is_file() or local.stat().st_size > _MAX_MANIFEST_BYTES:
-        raise ValueError("Manifest file unavailable or oversized")
-    with local.open("rb") as handle:
+def _load_manifest() -> list[dict]:
+    # The manifest path is NOT a CLI argument. Avoid traversing user-supplied
+    # paths, symlinked manifests and special devices. No network file reading.
+    if (_MANIFEST.is_symlink() or not _MANIFEST.is_file()
+            or _MANIFEST.stat().st_size > _MAX_MANIFEST_BYTES):
+        raise ValueError("Configured manifest unavailable or oversized")
+    with _MANIFEST.open("rb") as handle:
         raw = handle.read(_MAX_MANIFEST_BYTES + 1)
     if len(raw) > _MAX_MANIFEST_BYTES:
         raise ValueError("Manifest exceeds input cap")
@@ -333,8 +337,6 @@ def compare(cases: list[dict]) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", required=True,
-                        help="Local JSON manifest with three approved, annotated layouts")
     parser.add_argument("--preview", action="store_true",
                         help="Validate manifests and live approval state; no fetch")
     parser.add_argument("--live-approved", action="store_true",
@@ -343,7 +345,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.preview == args.live_approved:
         parser.error("Choose exactly one of --preview or --live-approved")
     try:
-        cases = _load_manifest(args.manifest)
+        cases = _load_manifest()
         _preflight_permissions(cases)
         if args.preview:
             result = {"status": "ready_for_attended_comparison",
