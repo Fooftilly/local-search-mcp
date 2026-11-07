@@ -317,6 +317,20 @@ def compare(cases: list[dict]) -> dict:
                 continue
             available_baseline_rows = _baseline_rows(
                 baseline, case["kind"], case.get("baseline_fields"))
+            # An operator's label alone cannot establish a table or JSON-LD
+            # layout. Missing typed rows are not a valid three-layout
+            # comparison, even if a heading happens to be extractable.
+            # Cards have no typed baseline; they rely on operator annotation
+            # and actual nonempty extracted records.
+            if (case["kind"] in {"table", "jsonld"}
+                    and not _field_counter(available_baseline_rows[:_MAX_RECORDS])):
+                outcomes.append({"layout": case["kind"],
+                                 "status": "typed_layout_not_observed"})
+                continue
+            if case["kind"] == "cards" and not extra.get("records"):
+                outcomes.append({"layout": case["kind"],
+                                 "status": "card_records_not_observed"})
+                continue
             baseline_rows = available_baseline_rows[:_MAX_RECORDS]
             baseline_limits = _limit_context(baseline)
             baseline_limits["comparison_rows_observed"] = len(available_baseline_rows)
