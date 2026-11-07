@@ -459,6 +459,45 @@ class BridgeTests(unittest.TestCase):
                     self.assertEqual(len(requests), before + 1)
             self.assertEqual(requests[0].headers["accept-encoding"], "identity")
 
+    def test_structured_trickle_deadline_checks_every_transport_chunk(self):
+        # An upstream trickle may send tiny frames forever while staying
+        # below HTTPX's per-read inactivity timeout. A 64 KiB rechunk buffer
+        # would hide these frames from our wall-clock check.
+        original_client = httpx.Client
+        frames_read = []
+        class SmallRawFrames(httpx.SyncByteStream):
+            def __iter__(self):
+                for index in range(180):
+                    frames_read.append(index)
+                    yield b"x"
+
+            def close(self):
+                pass
+
+        def handler(request):
+            if request.url.path == "/health":
+                return _mock_streaming_response(
+                    data={"status": "ok", "version": "0.9.5"})
+            return httpx.Response(200, stream=SmallRawFrames(),
+                                  headers={"Content-Type": "application/json"})
+
+        def client(**kwargs):
+            return original_client(
+                transport=httpx.MockTransport(handler), trust_env=False)
+
+        schema = {"strategy": "css", "base_selector": "article",
+                  "fields": [{"name": "heading", "selector": "h2", "type": "text"}]}
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client),
+              patch.object(self.module, "_structured_deadline_expired",
+                           side_effect=lambda started: len(frames_read) >= 3)):
+            result = self.module.web_fetch("https://example.com/stream",
+                                           structured_spec=schema)
+        self.assertEqual(result["status"], "upstream_unavailable")
+        self.assertFalse(result["success"])
+        self.assertLessEqual(len(frames_read), 3)
+        self.assertNotIn("structured_extraction", result)
+
     def test_structured_bridge_enforces_output_budget_on_large_records(self):
         import structured_schema
         original_client = httpx.Client
