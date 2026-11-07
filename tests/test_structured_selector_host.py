@@ -41,6 +41,19 @@ class IsolatedSelectorWorkerTests(unittest.TestCase):
                 self.assertFalse(result["truncated"])
                 self.assertNotIn("url", result)
 
+    def test_xpath_body_heading_matches_attended_spec(self):
+        # Exact selector pair used by the attended XPath smoke test; this
+        # must work independently of network access or page size.
+        page = (FIXTURES / "structured_selector_test_page.html").read_text()
+        spec = {
+            "strategy": "xpath", "base_selector": "//body",
+            "fields": [{"name": "heading", "selector": ".//h1", "type": "text"}],
+        }
+        result = host.run_isolated_selectors(page, spec)
+        self.assertEqual(result["records"], [{"heading": "Usable"}])
+        self.assertFalse(result["truncated"])
+        self.assertEqual(result["extraction_method"], "crawl4ai_json_xpath")
+
     def test_worker_cell_clipping_is_explicit_and_result_stays_bounded(self):
         page = (FIXTURES / "structured_selector_test_long_cell.html").read_text()
         result = host.run_isolated_selectors(page, schema())
