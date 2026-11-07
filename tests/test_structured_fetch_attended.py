@@ -13,7 +13,7 @@ from scripts import structured_fetch_attended as subject
 
 URLS = [
     "https://www.peroniko.xyz/",
-    "https://www.peroniko.xyz/bookmarks/",
+    "https://www.peroniko.xyz/bookmarks/art/",
     "https://www.peroniko.xyz/projects/",
 ]
 
