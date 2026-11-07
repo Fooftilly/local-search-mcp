@@ -81,7 +81,8 @@ class IsolatedSelectorWorkerTests(unittest.TestCase):
         record = out["records"][0]
         self.assertEqual(record["headline"], "Café résumé")
         self.assertEqual(record["alt_text"], "Crème brûlée")
-        self.assertIn("<script>never-execute</script>", record["source_text"])
+        self.assertIn("never-execute", record["source_text"])
+        self.assertNotIn("&lt;", record["source_text"])
         self.assertFalse(out["authorization_verified"])
         self.assertFalse(out["truncated"])
 
@@ -92,6 +93,12 @@ class IsolatedSelectorWorkerTests(unittest.TestCase):
             script = Path(temp, "slow_worker.py")
             script.write_text("import time\ntime.sleep(0.65)\n", encoding="utf-8")
             barrier = Barrier(5)
+            started = []
+            real_popen = host.subprocess.Popen
+            def recorded_spawn(*args, **kwargs):
+                process = real_popen(*args, **kwargs)
+                started.append(process.pid)
+                return process
             def run(_):
                 barrier.wait(timeout=5)
                 try:
@@ -100,9 +107,13 @@ class IsolatedSelectorWorkerTests(unittest.TestCase):
                     return str(exc)
                 return "unexpected-success"
             with (patch.object(host, "_WORKER_FILE", script),
+                  patch.object(host.subprocess, "Popen",
+                               side_effect=recorded_spawn),
                   ThreadPoolExecutor(max_workers=5) as executor):
                 results = list(executor.map(run, range(5)))
-        self.assertGreaterEqual(results.count("Selector worker capacity exhausted"), 2)
+        # The design guarantees exactly two concurrent child slots.
+        self.assertEqual(len(started), 2)
+        self.assertEqual(results.count("Selector worker capacity exhausted"), 3)
         self.assertNotIn("unexpected-success", results)
 
     def test_html_input_caps_before_any_process_or_network(self):
