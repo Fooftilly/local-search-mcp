@@ -162,7 +162,16 @@ class StructuredSchemaTests(unittest.TestCase):
         self.assertEqual(out["rows_observed_in_response"], 20)
         self.assertLessEqual(len(json.dumps(out, ensure_ascii=True).encode()),
                              subject.MAX_OUTPUT_BYTES)
-        for invalid_url in (None, "x" * 4097):
+        short = subject.normalize_extracted_content(
+            '[{"field0":"safe"}]', schema)
+        long_source = "https://example.com/?q=" + "x" * 4100
+        carried = subject.attach_provenance(
+            short, schema, long_source, "https://example.com/final")
+        self.assertEqual(carried["provenance"]["requested_url"], long_source)
+        self.assertEqual(carried["records"][0]["field0"], "safe")
+        self.assertLessEqual(len(json.dumps(carried, ensure_ascii=True).encode()),
+                             subject.MAX_OUTPUT_BYTES)
+        for invalid_url in (None, "x" * (subject.MAX_OUTPUT_BYTES + 1)):
             with self.assertRaises(subject.StructuredSchemaRejected):
                 subject.attach_provenance(normalized, schema, invalid_url, "https://example.com")
 
