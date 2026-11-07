@@ -334,6 +334,9 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(provenance["fact_verification"], "not_verified")
         self.assertFalse(response["structured_extraction"]["authorization_verified"])
         self.assertGreaterEqual(authorization.call_count, 2)
+        # Ensure the destination, not merely the original URL, was subject
+        # to the existing public-target authorization before release.
+        authorization.assert_any_call(target)
         self.assertLessEqual(
             len(json.dumps(response["structured_extraction"],
                            ensure_ascii=True).encode("utf-8")), 12 * 1024)
