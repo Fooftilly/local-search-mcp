@@ -148,9 +148,12 @@ class StructuredSchemaTests(unittest.TestCase):
                              subject.MAX_OUTPUT_BYTES)
 
     def test_provenance_output_rejects_oversized_urls_and_truncates_rows(self):
+        names = [f"field{i}" for i in range(subject.MAX_FIELDS)]
         schema = {"strategy": "css", "base_selector": "article",
-                  "fields": [{"name": "headline", "selector": "h2", "type": "text"}]}
-        rows = [{"headline": "a" * subject.MAX_CELL_CHARS} for _ in range(20)]
+                  "fields": [{"name": name, "selector": "h2", "type": "text"}
+                             for name in names]}
+        rows = [{name: "a" * subject.MAX_CELL_CHARS for name in names}
+                for _ in range(20)]
         normalized = subject.normalize_extracted_content(json.dumps(rows), schema)
         out = subject.attach_provenance(normalized, schema,
                       "https://example.com/" + "x" * 3000, "https://example.com/final")
