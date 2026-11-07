@@ -1147,26 +1147,45 @@ def _run_fetch_network(url: str, mode: str, *,
         if health_error:
             return {"url": url, "success": False, "status": "blocked", "reason": health_error}
         if validated_spec is not None:
-            # This is the SAME approved /crawl endpoint, not a new requester.
-            # Stream only opted-in responses and stop at an explicit input
-            # limit before deserializing browser-generated HTML/metadata.
-            # Never retry ambiguous browser POST errors.
+            # Same guarded /crawl endpoint; never retry ambiguous POST errors.
+            # Refuse content encodings and use iter_raw so no transparent
+            # decompression can allocate past the 4 MiB byte budget.
+            # An explicit wall-clock deadline bounds streams that trickle
+            # below HTTPX's per-read inactivity timeout. A read already in
+            # progress may add at most one 30-second inactivity interval.
+            started = time.monotonic()
             try:
-                with client.stream("POST", f"{CRAWL4AI_URL}/crawl",
-                                   json=payload, headers=headers) as response:
+                with client.stream(
+                    "POST", f"{CRAWL4AI_URL}/crawl", json=payload,
+                    headers={**headers, "Accept-Encoding": "identity"},
+                    timeout=httpx.Timeout(30.0, connect=5.0, write=10.0, pool=5.0),
+                ) as response:
                     if response.status_code >= 400:
                         return {"url": url, **_upstream_error(response, "crawl4ai")}
+                    if response.headers.get("content-encoding", "identity").strip().lower() != "identity":
+                        return {"url": url, "success": False, "status": "invalid_response",
+                                "reason": "Structured crawl response encoding is unsupported."}
                     body = bytearray()
-                    for chunk in response.iter_bytes(chunk_size=64 * 1024):
+                    for chunk in response.iter_raw(chunk_size=64 * 1024):
+                        if time.monotonic() - started > 90:
+                            return {"url": url, "success": False,
+                                    "status": "upstream_unavailable",
+                                    "reason": "Structured crawl response exceeded the time budget."}
                         if len(body) + len(chunk) > 4 * 1024 * 1024:
                             return {"url": url, "success": False,
                                     "status": "document_too_large",
                                     "reason": "Structured crawl response exceeds the bounded input budget."}
                         body.extend(chunk)
+                if time.monotonic() - started > 90:
+                    return {"url": url, "success": False, "status": "upstream_unavailable",
+                            "reason": "Structured crawl response exceeded the time budget."}
                 result = json.loads(body)
-            except (httpx.HTTPError, ValueError, UnicodeError, RecursionError):
+            except httpx.HTTPError:
+                return {"url": url, "success": False, "status": "upstream_unavailable",
+                        "reason": "Structured Crawl4AI request failed or timed out."}
+            except (ValueError, UnicodeError, RecursionError):
                 return {"url": url, "success": False, "status": "invalid_response",
-                        "reason": "Structured Crawl4AI response unavailable or invalid."}
+                        "reason": "Structured Crawl4AI returned unreadable JSON."}
         else:
             response = _retry_request(lambda: client.post(
                 f"{CRAWL4AI_URL}/crawl", json=payload, headers=headers), method="POST")
@@ -1273,7 +1292,7 @@ def _run_fetch_network(url: str, mode: str, *,
     if not isinstance(markdown, str):
         return {"url": final_url, "success": False, "status": "invalid_extraction",
                 "reason": "Crawl4AI returned an invalid Markdown representation"}
-    if not markdown.strip():
+    if not markdown.strip() and validated_spec is None:
         return _empty_extraction_diagnostic(page, final_url)
     if len(markdown) > document_pages.MAX_DOCUMENT_CHARS:
         return {"url": final_url, "success": False, "status": "document_too_large",
@@ -1289,6 +1308,8 @@ def _run_fetch_network(url: str, mode: str, *,
             return {"url": final_url, "success": False,
                     "status": "invalid_extraction",
                     "reason": "Crawl4AI did not return valid bounded structured JSON."}
+        if not markdown.strip() and not structured_result["rows_returned"]:
+            return _empty_extraction_diagnostic(page, final_url)
     # Invalid surrogate code points cannot safely be encoded as UTF-8 in MCP
     # JSON responses. Replace them deterministically before chunking.
     markdown = markdown.encode("utf-8", errors="replace").decode("utf-8")
