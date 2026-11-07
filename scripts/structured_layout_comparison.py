@@ -191,8 +191,20 @@ def _baseline_rows(response: dict, kind: str,
     # Card layouts have no typed baseline in the existing MCP API.
     # This returns only already-present typed values, never invented cards.
     mapping = field_mapping or {}
-    return [{mapping.get(key, key): value for key, value in row.items()}
-            for row in rows[:_MAX_RECORDS]]
+    converted = []
+    for row in rows:
+        selected = {}
+        for key, value in row.items():
+            field_name = mapping.get(key, key)
+            if field_name in selected:
+                # A JSON-LD object can contain both headline and name.
+                # Never silently replace a native field with an alias.
+                raise ValueError("Ambiguous typed baseline field mapping")
+            selected[field_name] = value
+        converted.append(selected)
+    # Preserve the bounded (at most 40) source rows until comparison
+    # explicitly measures the separate 20-row score cap.
+    return converted
 
 
 def _record_alignment(truth: list[dict], observed: list[dict]) -> dict:
@@ -303,8 +315,14 @@ def compare(cases: list[dict]) -> dict:
                     != "not_verified"):
                 outcomes.append({"layout": case["kind"], "status": "invalid_claim"})
                 continue
-            baseline_rows = _baseline_rows(baseline, case["kind"],
-                                           case.get("baseline_fields"))
+            available_baseline_rows = _baseline_rows(
+                baseline, case["kind"], case.get("baseline_fields"))
+            baseline_rows = available_baseline_rows[:_MAX_RECORDS]
+            baseline_limits = _limit_context(baseline)
+            baseline_limits["comparison_rows_observed"] = len(available_baseline_rows)
+            baseline_limits["comparison_rows_scored"] = len(baseline_rows)
+            baseline_limits["comparison_row_cap_applied"] = (
+                len(available_baseline_rows) > _MAX_RECORDS)
             outcomes.append({
                 "layout": case["kind"], "status": "evaluated",
                 "structured": _match(expected, actual),
@@ -315,7 +333,7 @@ def compare(cases: list[dict]) -> dict:
                 "baseline_record_alignment": _record_alignment(
                     case["expected"], baseline_rows)
                                          if case["kind"] != "cards" else None,
-                "baseline_limits": _limit_context(baseline),
+                "baseline_limits": baseline_limits,
                 "markdown_evidence": _markdown_coverage(baseline.get("markdown"), expected),
                 "baseline_seconds": base_latency,
                 "structured_seconds": extract_latency,
