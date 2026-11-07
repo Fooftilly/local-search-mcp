@@ -225,3 +225,53 @@ def normalize_extracted_content(raw: object, validated_spec: dict) -> dict:
         "site_completeness": "unknown",
         "authorization_verified": False,
     }
+
+
+
+def attach_provenance(normalized: dict, validated_spec: dict,
+                      requested_url: str, final_url: str) -> dict:
+    """Attach exact requested/final source and per-field selector provenance.
+
+    This is a pure serializer, NOT authorization. The bridge must check both
+    URL permissions and its one-use/epoch proofs at release. Field provenance
+    identifies the selectors used for each record, not independently verified
+    facts or the original browser DOM's absolute node positions. Keep the
+    entire structured_extraction value within the existing 12 KiB budget.
+    """
+    canonical = validate_spec(validated_spec)
+    if (type(requested_url) is not str or type(final_url) is not str
+            or len(requested_url) > 4096 or len(final_url) > 4096):
+        raise StructuredSchemaRejected("Invalid source provenance URL")
+    if (type(normalized) is not dict or type(normalized.get("records")) is not list
+            or normalized.get("extraction_method") !=
+            "crawl4ai_json_" + canonical["strategy"]):
+        raise StructuredSchemaRejected("Invalid normalized extraction")
+    provenance = {
+        "requested_url": requested_url,
+        "final_url": final_url,
+        "base_selector": canonical["base_selector"],
+        "fields": {
+            field["name"]: {
+                "selector": field["selector"],
+                "type": field["type"],
+                **({"attribute": field["attribute"]}
+                   if field["type"] == "attribute" else {}),
+            }
+            for field in canonical["fields"]
+        },
+        "row_order": "DOM traversal order; first matching field element",
+        "fact_verification": "not_verified",
+    }
+    result = {**normalized, "provenance": provenance}
+    # Admission is measured with default json.dumps spacing (conservative).
+    # Never silently discard records or metadata merely to fit the envelope:
+    # explicitly mark truncation, and fail closed if no record can remain.
+    while len(json.dumps(result, ensure_ascii=True).encode("utf-8")) > MAX_OUTPUT_BYTES:
+        if not result["records"]:
+            raise StructuredSchemaRejected("Provenance exceeds JSON output budget")
+        result["records"] = result["records"][:-1]
+        result["rows_returned"] = len(result["records"])
+        result["truncated"] = True
+    if normalized["records"] and not result["records"]:
+        raise StructuredSchemaRejected("No structured record fits with provenance")
+    return result
