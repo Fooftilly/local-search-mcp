@@ -53,7 +53,10 @@ def _validate_manifest(obj: object) -> list[dict]:
     approved: list[dict] = []
     urls: set[str] = set()
     for case in cases:
-        if type(case) is not dict or set(case) != {"kind", "url", "spec", "expected"}:
+        if (type(case) is not dict
+                or not {"kind", "url", "spec", "expected"}.issubset(case)
+                or len(case) not in (4, 5)
+                or set(case) - {"kind", "url", "spec", "expected", "baseline_fields"}):
             raise ValueError("Unexpected case fields")
         url, truth = case["url"], case["expected"]
         if type(url) is not str or not 1 <= len(url) <= 2048:
@@ -70,6 +73,22 @@ def _validate_manifest(obj: object) -> list[dict]:
                 or any(type(row) is not dict or not row for row in truth)):
             raise ValueError("Invalid annotated ground truth")
         field_names = {f["name"] for f in spec["fields"]}
+        mapping = case.get("baseline_fields", {})
+        if (type(mapping) is not dict or len(mapping) > len(field_names)
+                or not set(mapping).issubset(field_names)
+                or (mapping and case["kind"] == "cards")):
+            raise ValueError("Invalid typed baseline field mapping")
+        normalized_map = {}
+        for field_name, source_name in mapping.items():
+            if (type(source_name) is not str
+                    or re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}",
+                                    source_name, flags=re.ASCII) is None):
+                raise ValueError("Invalid baseline field name")
+            baseline_name = (source_name if case["kind"] == "jsonld"
+                             else source_name.casefold())
+            if baseline_name in normalized_map:
+                raise ValueError("Ambiguous baseline field mapping")
+            normalized_map[baseline_name] = field_name
         expected = []
         for row in truth:
             if not set(row).issubset(field_names):
@@ -83,7 +102,7 @@ def _validate_manifest(obj: object) -> list[dict]:
             expected.append(normalized)
         urls.add(url)
         approved.append({"kind": case["kind"], "url": url, "spec": spec,
-                         "expected": expected})
+                         "expected": expected, "baseline_fields": normalized_map})
     return approved
 
 
@@ -136,7 +155,8 @@ def _match(ground_truth: Counter, candidates: Counter) -> dict:
     }
 
 
-def _baseline_values(response: dict, kind: str) -> Counter[tuple[str, str]]:
+def _baseline_rows(response: dict, kind: str,
+                   field_mapping: dict[str, str] | None = None) -> list[dict]:
     rows: list[dict] = []
     if kind == "table":
         for table in response.get("tables", [])[:4]:
@@ -155,10 +175,75 @@ def _baseline_values(response: dict, kind: str) -> Counter[tuple[str, str]]:
         for record in response.get("jsonld", [])[:6]:
             if type(record) is dict and type(record.get("fields")) is dict:
                 rows.append(record["fields"])
-    # Card layouts have no typed card baseline in the current 12-tool API.
-    # Compare expected-value evidence in Markdown separately, not as
-    # invented card-row precision.
-    return _field_counter(rows[:_MAX_RECORDS])
+    # Card layouts have no typed baseline in the existing MCP API.
+    # This returns only already-present typed values, never invented cards.
+    mapping = field_mapping or {}
+    return [{mapping.get(key, key): value for key, value in row.items()}
+            for row in rows[:_MAX_RECORDS]]
+
+
+def _record_alignment(truth: list[dict], observed: list[dict]) -> dict:
+    """Maximum one-to-one row matching, preserving field associations.
+
+    A field can be present in both outputs but attached to the WRONG
+    record. Field-level precision cannot detect that. The small 20-row
+    cap permits an exact bipartite matching for annotated field subsets.
+    """
+    if (type(truth) is not list or type(observed) is not list
+            or len(truth) > _MAX_RECORDS or len(observed) > _MAX_RECORDS):
+        return {"matched": 0, "precision_pct": None,
+                "completeness_pct": None}
+    assigned = [-1] * len(observed)
+    def match(index: int, visited: set[int]) -> bool:
+        expected = truth[index]
+        for candidate_id, row in enumerate(observed):
+            if (candidate_id in visited or type(row) is not dict
+                    or any(type(row.get(name)) is not str
+                           or _clean(row[name]) != value
+                           for name, value in expected.items())):
+                continue
+            visited.add(candidate_id)
+            if assigned[candidate_id] == -1 or match(assigned[candidate_id], visited):
+                assigned[candidate_id] = index
+                return True
+        return False
+    matched = sum(match(i, set()) for i in range(len(truth)))
+    return {"matched": matched, "expected_records": len(truth),
+            "observed_records": len(observed),
+            "precision_pct": round(100 * matched / len(observed), 1)
+                             if observed else None,
+            "completeness_pct": round(100 * matched / len(truth), 1)
+                                if truth else None}
+
+
+def _limit_context(response: dict) -> dict:
+    info = response.get("structured_info")
+    table = info.get("tables", {}) if type(info) is dict else {}
+    if type(table) is not dict:
+        table = {}
+    jsonld = response.get("jsonld_info")
+    if type(jsonld) is not dict:
+        jsonld = {}
+    markdown = response.get("markdown")
+    return {
+        "markdown_truncated": response.get("truncated")
+                              if type(response.get("truncated")) is bool else None,
+        "markdown_preview_chars": len(markdown) if type(markdown) is str else None,
+        "table_candidates_truncated": table.get("truncated")
+                                      if type(table.get("truncated")) is bool else None,
+        "table_scan_capped": table.get("input_scan_capped")
+                             if type(table.get("input_scan_capped")) is bool else None,
+        "table_row_or_column_preview_capped": any(
+            x.get("rows_truncated") or x.get("columns_truncated")
+            for x in table.get("table_limits", [])
+            if type(x) is dict)
+            if type(table.get("table_limits")) is list else None,
+        "jsonld_html_scan_truncated": jsonld.get("source_html_scan_truncated")
+                                      if type(jsonld.get("source_html_scan_truncated")) is bool
+                                      else None,
+        "jsonld_limits_applied": jsonld.get("limits_applied")
+                                 if type(jsonld.get("limits_applied")) is bool else None,
+    }
 
 
 def _markdown_coverage(markdown: object, truth: Counter) -> dict:
@@ -205,11 +290,19 @@ def compare(cases: list[dict]) -> dict:
                     != "not_verified"):
                 outcomes.append({"layout": case["kind"], "status": "invalid_claim"})
                 continue
+            baseline_rows = _baseline_rows(baseline, case["kind"],
+                                           case.get("baseline_fields"))
             outcomes.append({
                 "layout": case["kind"], "status": "evaluated",
                 "structured": _match(expected, actual),
-                "baseline_typed_values": _match(expected, _baseline_values(baseline, case["kind"]))
+                "structured_record_alignment": _record_alignment(
+                    case["expected"], extra["records"]),
+                "baseline_typed_values": _match(expected, _field_counter(baseline_rows))
                                          if case["kind"] != "cards" else None,
+                "baseline_record_alignment": _record_alignment(
+                    case["expected"], baseline_rows)
+                                         if case["kind"] != "cards" else None,
+                "baseline_limits": _limit_context(baseline),
                 "markdown_evidence": _markdown_coverage(baseline.get("markdown"), expected),
                 "baseline_seconds": base_latency,
                 "structured_seconds": extract_latency,
