@@ -92,14 +92,14 @@ class GuardedOnceFetchTests(unittest.TestCase):
         def expire_during_fetch(raw, mode, **kwargs):
             self.assertEqual(raw, url)
             self.assertIsNotNone(kwargs.get("once_proof"))
-            now[0] = "2026-10-18T12:02:00Z"
+            now[0] = "2026-10-18T13:01:00Z"
             return {"url": url, "success": True, "markdown": "SECRET_PRIVATE",
                     "truncated": False,
                     "structured_extraction": {
                         "records": [{"headline": "SECRET_PRIVATE"}],
                         "authorization_verified": False}}
         with patch.object(policy, "utcnow", side_effect=lambda: now[0]):
-            policy._stage_once_grant("docs.example.org", expires_minutes=1)
+            policy._stage_once_grant("docs.example.org", expires_minutes=60)
             with patch.object(bridge, "_run_fetch",
                               side_effect=expire_during_fetch) as crawler:
                 result = bridge.web_fetch(url, structured_spec=schema)
