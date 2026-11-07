@@ -234,6 +234,139 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(all(x["urls"] == ["https://example.com/articles/index"]
                             for x in posted))
 
+    def test_opt_in_css_xpath_uses_same_guarded_crawl_with_no_default_change(self):
+        import structured_schema
+        original_client = httpx.Client
+        posts = []
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            self.assertEqual(request.url.path, "/crawl")
+            payload = json.loads(request.content)
+            posts.append(payload)
+            return httpx.Response(200, json={"results": [{
+                "url": "https://example.com/items", "success": True,
+                "markdown": "Public items", "extracted_content":
+                    json.dumps([{"headline": "Public headline"}]),
+            }]})
+        def client(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), trust_env=False)
+        css = {"strategy": "css", "base_selector": "article.card",
+               "fields": [{"name": "headline", "selector": "h2", "type": "text"}]}
+        xpath = {"strategy": "xpath", "base_selector": "//article",
+                 "fields": [{"name": "headline", "selector": ".//h2", "type": "text"}]}
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            default = self.module.web_fetch("https://example.com/items")
+            cached = self.module.web_fetch("https://example.com/items")
+            extracted = self.module.web_fetch("https://example.com/items",
+                                               structured_spec=css)
+            second = self.module.web_fetch("https://example.com/items",
+                                            structured_spec=xpath)
+        self.assertEqual(default, cached)
+        self.assertNotIn("structured_extraction", default)
+        self.assertEqual(extracted["structured_extraction"]["records"][0]["headline"],
+                         "Public headline")
+        self.assertFalse(extracted["structured_extraction"]["authorization_verified"])
+        self.assertEqual(second["structured_extraction"]["extraction_method"],
+                         "crawl4ai_json_xpath")
+        self.assertEqual(len(posts), 3)
+        self.assertNotIn("extraction_strategy", posts[0]["crawler_config"]["params"])
+        for payload, kind in zip(posts[1:],
+                                 ("JsonCssExtractionStrategy", "JsonXPathExtractionStrategy")):
+            params = payload["crawler_config"]["params"]
+            self.assertEqual(params["extraction_strategy"]["type"], kind)
+            self.assertEqual(params["page_timeout"], 20_000)
+            self.assertEqual(params["stream"], False)
+            self.assertEqual(payload["urls"], ["https://example.com/items"])
+            self.assertNotIn("url", params)
+            self.assertEqual(structured_schema.MAX_OUTPUT_BYTES, 12 * 1024)
+
+    def test_structured_spec_fails_validation_before_policy_or_crawler(self):
+        invalid = {"strategy": "xpath", "base_selector": "//article[1]", "fields":
+                   [{"name": "headline", "selector": ".//h2", "type": "text"}]}
+        with (patch.object(self.module, "_check_public_target",
+                           side_effect=AssertionError("policy may not be touched")),
+              patch.object(self.module, "_run_fetch",
+                           side_effect=AssertionError("crawler must not run"))):
+            with self.assertRaises(ValueError):
+                self.module.web_fetch("https://example.com/items",
+                                      structured_spec=invalid)
+            with self.assertRaises(ValueError):
+                self.module.web_fetch("https://example.com/items", mode="fit",
+                                      structured_spec={"strategy": "css",
+                                          "base_selector": "article",
+                                          "fields": [{"name": "headline",
+                                              "selector": "h2", "type": "text"}]})
+
+    def test_structured_spec_denied_before_crawl(self):
+        schema = {"strategy": "css", "base_selector": "article",
+                  "fields": [{"name": "headline", "selector": "h2", "type": "text"}]}
+        with (patch.object(self.module, "_check_public_target", return_value={
+                    "url": "https://example.com/items", "success": False,
+                    "status": "denied", "reason": "Not approved"}),
+              patch.object(self.module, "_run_fetch",
+                           side_effect=AssertionError("crawler must not run"))):
+            result = self.module.web_fetch("https://example.com/items",
+                                           structured_spec=schema)
+        self.assertEqual(result["status"], "denied")
+        self.assertNotIn("structured_extraction", result)
+
+    def test_structured_bad_response_and_unapproved_redirect_return_no_content(self):
+        original_client = httpx.Client
+        schema = {"strategy": "css", "base_selector": "article",
+                  "fields": [{"name": "headline", "selector": "h2", "type": "text"}]}
+        variant = ["bad", "missing", "oversize", "redirect"]
+        def handler(request):
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+            if variant[0] == "oversize":
+                return httpx.Response(200, content=b"X" * (4 * 1024 * 1024 + 1))
+            page = {"url": "https://example.com/items", "success": True,
+                    "markdown": "SENSITIVE_STRUCTURED_SENTINEL",
+                    "extracted_content": '[{"headline":"safe"}]'}
+            if variant[0] == "bad":
+                page["extracted_content"] = '[{"headline":{"private":"SENSITIVE_STRUCTURED_SENTINEL"}}]'
+            if variant[0] == "missing":
+                del page["extracted_content"]
+            if variant[0] == "redirect":
+                page["redirected_url"] = "https://unapproved.example/data"
+            return httpx.Response(200, json={"results": [page]})
+        def client(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), trust_env=False)
+        def authorize(url):
+            if url == "https://example.com/items":
+                return None
+            return {"url": url, "success": False, "status": "blocked",
+                    "reason": "Unapproved destination"}
+        with (patch.object(self.module, "_check_public_target", side_effect=authorize),
+              patch.object(self.module.httpx, "Client", side_effect=client)):
+            for case in variant:
+                with self.subTest(case=case):
+                    variant[0] = case
+                    result = self.module.web_fetch("https://example.com/items",
+                                                  structured_spec=schema)
+                    self.assertFalse(result["success"])
+                    self.assertNotIn("structured_extraction", result)
+                    self.assertNotIn("markdown", result)
+                    self.assertNotIn("SENSITIVE_STRUCTURED_SENTINEL", str(result))
+        self.assertEqual(variant[-1], "redirect")
+
+    def test_structured_epoch_change_during_crawl_redacts_records(self):
+        schema = {"strategy": "css", "base_selector": "article",
+                  "fields": [{"name": "headline", "selector": "h2", "type": "text"}]}
+        def fake_crawler(url, mode, **kw):
+            self.module.request_cache.bump_policy_epoch()
+            return {"url": url, "success": True, "markdown": "private",
+                    "structured_extraction": {"records": [{"headline": "private"}]}}
+        with (patch.object(self.module, "_check_public_target", return_value=None),
+              patch.object(self.module, "_run_fetch", side_effect=fake_crawler)):
+            result = self.module.web_fetch("https://example.com/items",
+                                           structured_spec=schema)
+        self.assertEqual(result["status"], "blocked")
+        self.assertNotIn("structured_extraction", result)
+        self.assertNotIn("markdown", result)
+
     def test_advertised_formats_opt_in_without_link_fetch(self):
         paths = []
         original = httpx.Client
