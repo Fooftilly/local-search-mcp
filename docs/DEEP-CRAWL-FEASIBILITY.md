@@ -40,6 +40,20 @@ Interpret `config_status` precisely:
 
 Every result always reports `deep_crawl_ready=false` and `discovered_url_authorization=not_verified`. A successful exit from this preflight **never** authorizes enabling the Docker flag.
 
+## Read-only installed container identity audit
+
+From a checkout including the follow-up research slice, on the operator's Docker host:
+
+```sh
+./.venv/bin/python -m scripts.deep_crawl_host_audit
+```
+
+The audit executes one fixed `docker inspect --type=container --format ... crawl4ai` read with an eight-second timeout. It never starts/stops Docker, accesses a source URL, enables deep crawling, or changes any approval. The Docker response contains an environment array that **may include credentials**, but the audit parses it only in memory, never prints environment values, Docker stderr, or raw inspect responses, and exposes only a recognized `CRAWL4AI_ALLOW_DEEP_CRAWL` flag state. Duplicate or malformed flag values are reported as ambiguous/unverified.
+
+The sanitized result identifies the configured image reference, Docker **local image ID** and container state. A local image ID is not a verified registry digest or proof of official image provenance. The report does **not** inspect the live crawler's effective server config, prove DNS/redirect containment, test root-owned egress rules, or verify any per-discovered-URL permission check: these remain explicitly `not_verified`, while `deep_crawl_ready=false` regardless of flag state. A reported flag enabled in the container configuration is a risk signal, **not** permission to initiate an upstream deep crawl.
+
+This is deliberately separate from the existing default-health and opt-in `/config/dump` preflight. Neither check should be used as a substitute for the attended guard and negative-navigation tests.
+
 ## Acceptance gate before a proposed implementation
 
 1. Record the installed immutable container image/digest, the opt-in flag's actual state, effective max pages/depth/wall-clock/queue settings, root-owned network egress probe and available navigation hooks. Verify specifically whether a discovered URL can be checked against the original bridge permissions *before* a browser request; assume no until proven.
