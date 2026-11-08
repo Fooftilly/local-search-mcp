@@ -100,8 +100,13 @@ networking, fork, executable loading and ptrace **before** optional
 MarkItDown initialization; the trusted native initializer may start
 CPU threads using clone in that pre-input phase. A second filter denies
 clone, new file opens and filesystem mutations **before** reading
-untrusted document data. It fails closed if the installed library
-requires new threads or filesystem resources during actual conversion.
+untrusted document data. The second filter requests libseccomp
+`SCMP_FLTATR_CTL_TSYNC` synchronization: if an already-running native
+thread cannot receive the same restrictions, the worker fails closed.
+An offline regression starts a thread before the final filter and verifies
+that the thread also loses file-open access. It fails closed if the
+installed library requires new threads or filesystem resources during
+actual conversion.
 Markdown is capped at 32 KiB, returned solely as **unauthorized research
 text**, and must not be released through a remote MCP endpoint.
 
