@@ -54,6 +54,21 @@ class OfflineDocxPilotTests(unittest.TestCase):
         self.assertLessEqual(answer["max_address_space"], worker.MAX_AS_BYTES)
         self.assertLessEqual(answer["max_output_file"], worker.MAX_OUTPUT_BYTES)
 
+    def test_final_seccomp_filter_synchronizes_existing_threads(self):
+        if sys.platform != "linux":
+            self.skipTest("Linux seccomp isolation only")
+        report = subprocess.run(
+            [sys.executable, "-I", "-B", str(pilot._WORKER_FILE),
+             "--check-thread-sync"],
+            capture_output=True, text=True, cwd="/",
+            env={"PYTHONDONTWRITEBYTECODE": "1"}, timeout=8,
+        )
+        self.assertEqual(report.returncode, 0, report.stderr)
+        self.assertEqual(
+            json.loads(report.stdout),
+            {"thread_file_open_denied": True},
+        )
+
     def test_only_offline_bounded_worker_envelope_is_accepted(self):
         # This fake worker emits a known envelope and does not parse DOCX.
         with tempfile.TemporaryDirectory() as directory:
