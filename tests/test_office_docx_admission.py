@@ -163,6 +163,69 @@ class DocxArchiveAdmissionTests(unittest.TestCase):
             with self.assertRaises(subject.DocxAdmissionRejected):
                 subject.inspect_docx_container(bytes(original))
 
+    def test_zip64_locator_cannot_override_preparsed_directory_limits(self):
+        # Insert a genuine ZIP64 end record + locator in front of an
+        # otherwise ordinary EOCD. Ordinary EOCD fields are made plausible
+        # by counting both new records as part of its directory byte size;
+        # zipfile would instead apply the ZIP64 metadata if reached.
+        original = archive()
+        index = original.rfind(b"PK\x05\x06")
+        self.assertGreater(index, 0)
+        central_size = struct.unpack_from("<I", original, index + 12)[0]
+        central_offset = struct.unpack_from("<I", original, index + 16)[0]
+        zip64_record = struct.pack(
+            "<4sQHHIIQQQQ", b"PK\x06\x06", 44, 45, 45, 0, 0,
+            10000, 10000, 499000, central_offset)
+        zip64_locator = struct.pack(
+            "<4sIQI", b"PK\x06\x07", 0,
+            central_offset + central_size, 1)
+        eocd = bytearray(original[index:])
+        struct.pack_into("<I", eocd, 12,
+                         central_size + len(zip64_record) + len(zip64_locator))
+        forged = original[:index] + zip64_record + zip64_locator + eocd
+        with patch.object(
+                zipfile, "ZipFile",
+                side_effect=AssertionError("ZIP64 must fail before allocation")):
+            with self.assertRaisesRegex(subject.DocxAdmissionRejected, "ZIP64"):
+                subject.inspect_docx_container(forged)
+
+    def test_forged_eocd_count_cannot_hide_more_raw_entries(self):
+        # A small directory can contain more actual records than EOCD claims.
+        # Reject before zipfile constructs even the first ZipInfo object.
+        entries = REQUIRED + [
+            (f"word/extra{i}.xml", b"x") for i in range(subject.MAX_MEMBERS)
+        ]
+        data = bytearray(archive(entries))
+        index = data.rfind(b"PK\x05\x06")
+        self.assertGreater(index, 0)
+        struct.pack_into("<H", data, index + 8, len(REQUIRED))
+        struct.pack_into("<H", data, index + 10, len(REQUIRED))
+        with patch.object(
+                zipfile, "ZipFile",
+                side_effect=AssertionError("Forged count must fail preparse")):
+            with self.assertRaises(subject.DocxAdmissionRejected):
+                subject.inspect_docx_container(bytes(data))
+
+    def test_zipfile_metadata_exceptions_are_normalized(self):
+        original = archive()
+        central = original.find(b"PK\x01\x02")
+        self.assertGreater(central, 0)
+        invalid_utf8 = bytearray(original)
+        # UTF-8 filename flag, with invalid encoded filename bytes in the
+        # central-directory entry (not a decompression or path access).
+        struct.pack_into("<H", invalid_utf8, central + 8,
+                         struct.unpack_from("<H", original, central + 8)[0] | 0x800)
+        invalid_utf8[central + 46] = 0xFF
+
+        unsupported_version = bytearray(original)
+        unsupported_version[central + 6] = 255
+
+        for data in (bytes(invalid_utf8), bytes(unsupported_version)):
+            with self.subTest(case=data[central + 6:central + 10]):
+                with self.assertRaisesRegex(
+                        subject.DocxAdmissionRejected, "Invalid DOCX ZIP container"):
+                    subject.inspect_docx_container(data)
+
     def test_encrypted_member_flag_fails_closed(self):
         # Modify metadata bits only; this does not decrypt or decompress data.
         data = bytearray(archive())
