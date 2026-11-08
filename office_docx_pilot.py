@@ -28,8 +28,9 @@ class DocxPilotUnavailable(RuntimeError):
 
 
 def _kill_group(child: subprocess.Popen) -> None:
-    if child.poll() is not None:
-        return
+    # The leader may have exited while a descendant remains alive.
+    # Kill the whole private session before reaping the leader. Avoid poll()
+    # here so its PID cannot be reaped/reused before killpg().
     try:
         os.killpg(child.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -50,7 +51,10 @@ def run_offline_docx_bytes(payload: object) -> dict:
     try:
         # Opaque kernel memory object, not a named disk/tempfile. No path or
         # document bytes appear in process args, environment, or exception text.
-        fd = os.memfd_create("docx-pilot-output", os.MFD_CLOEXEC)
+        try:
+            fd = os.memfd_create("docx-pilot-output", os.MFD_CLOEXEC)
+        except OSError as exc:
+            raise DocxPilotUnavailable("Offline DOCX output storage unavailable") from exc
         try:
             try:
                 child = subprocess.Popen(
@@ -88,9 +92,14 @@ def run_offline_docx_bytes(payload: object) -> dict:
         if (type(parsed) is not dict or set(parsed) != {"markdown", "truncated"}
                 or type(parsed["markdown"]) is not str
                 or type(parsed["truncated"]) is not bool
-                or not parsed["markdown"]
-                or len(parsed["markdown"].encode("utf-8")) > 32 * 1024):
+                or not parsed["markdown"]):
             raise DocxPilotUnavailable("Offline DOCX worker output invalid")
+        try:
+            encoded_length = len(parsed["markdown"].encode("utf-8", "strict"))
+        except UnicodeError as exc:
+            raise DocxPilotUnavailable("Offline DOCX worker output invalid") from exc
+        if encoded_length > 32 * 1024:
+            raise DocxPilotUnavailable("Offline DOCX worker output oversized")
         # Never mark content authorized or provide a URL/document handle.
         return {"markdown": parsed["markdown"],
                 "truncated": parsed["truncated"],
