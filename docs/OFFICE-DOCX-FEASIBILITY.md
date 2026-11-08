@@ -47,6 +47,7 @@ sizes. The deliberately conservative, tunable *study* ceilings are:
 | --- | ---: |
 | Total compressed DOCX bytes | 4 MiB |
 | ZIP central-directory entries | 128 |
+| ZIP central-directory bytes (pre-parse) | 96 KiB |
 | Maximum claimed uncompressed member | 4 MiB |
 | Maximum claimed cumulative expansion | 12 MiB |
 | Claimed per-member expansion ratio | 100:1 |
@@ -55,6 +56,7 @@ sizes. The deliberately conservative, tunable *study* ceilings are:
 It rejects missing/empty minimal DOCX parts, duplicate or
 casefold-colliding names, path traversal and noncanonical separators,
 encrypted members, special-file/symlink members, unsupported compression,
+oversized or split central directories before invoking `zipfile.ZipFile`,
 macro/ActiveX/embedded files and nested archives. This deliberately rejects
 some otherwise-valid Office documents. It never decodes or extracts a member,
 and *does not* claim to detect all malicious OOXML relationships or scripts.
