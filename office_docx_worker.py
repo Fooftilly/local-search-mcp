@@ -26,10 +26,12 @@ MAX_OUTPUT_BYTES = 48 * 1024
 MAX_TEXT_BYTES = 32 * 1024
 MAX_AS_BYTES = 1024 * 1024 * 1024
 CPU_SECONDS = 8
-_FORBIDDEN = (
+_NETWORK_AND_PROCESS = (
     "socket", "socketpair", "connect", "bind", "listen", "accept", "accept4",
     "sendto", "sendmsg", "sendmmsg", "recvfrom", "recvmsg", "recvmmsg",
     "fork", "vfork", "clone", "clone3", "execve", "execveat", "ptrace",
+)
+_FILE_MUTATION_AND_OPEN = (
     "open", "openat", "openat2", "creat", "mkdir", "mkdirat",
     "link", "linkat", "symlink", "symlinkat", "unlink", "unlinkat",
     "rename", "renameat", "renameat2", "mknod", "mknodat",
@@ -49,12 +51,12 @@ def _limits() -> None:
         resource.setrlimit(kind, (soft, hard))
 
 
-def _deny_io() -> None:
-    """Restrict untrusted conversion *after* trusted package initialization.
+def _deny_io(*, block_files: bool = True) -> None:
+    """Layer Linux seccomp: deny network/spawn before imports, files after.
 
-    No file-opening, outbound network or child process creation is available
-    after this gate. The loader itself is trusted and is bounded by _limits;
-    a separate venv and host trust boundary remain mandatory.
+    Trusted package imports can read their installed resource files but never
+    open sockets or spawn subprocesses. After initialization, add a second
+    filter that also forbids new file openings and filesystem mutations.
     """
     lib = ctypes.CDLL("libseccomp.so.2", use_errno=True)
     lib.seccomp_init.argtypes = [ctypes.c_uint32]
@@ -73,7 +75,9 @@ def _deny_io() -> None:
     if not context:
         raise RuntimeError("Seccomp unavailable")
     try:
-        for name in _FORBIDDEN:
+        operations = (_NETWORK_AND_PROCESS + _FILE_MUTATION_AND_OPEN
+                      if block_files else _NETWORK_AND_PROCESS)
+        for name in operations:
             nr = lib.seccomp_syscall_resolve_name(name.encode("ascii"))
             if nr < 0 or lib.seccomp_rule_add(context, 0x00050001, nr, 0) != 0:
                 raise RuntimeError("Seccomp rule unavailable")
@@ -131,10 +135,12 @@ def main() -> int:
                          evidence["file_open_denied"]) else 1
         if len(sys.argv) != 1:
             return 1
-        # Trusted dependencies are initialized before restricting file access.
-        # No document bytes have been received, parsed or converted yet.
+        # No network or child-process capability exists even while trusted
+        # MarkItDown modules load. Deny file openings once they are ready.
+        # No document bytes are received until both filters are installed.
+        _deny_io(block_files=False)
         converter, stream_info = _converter()
-        _deny_io()
+        _deny_io(block_files=True)
         payload = sys.stdin.buffer.read(office_docx_admission.MAX_DOCX_BYTES + 1)
         office_docx_admission.inspect_docx_container(payload)
         result = converter.convert_stream(
