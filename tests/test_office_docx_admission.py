@@ -8,6 +8,7 @@ from __future__ import annotations
 from io import BytesIO
 from unittest.mock import patch
 import stat
+import struct
 import unittest
 import warnings
 import zipfile
@@ -125,6 +126,42 @@ class DocxArchiveAdmissionTests(unittest.TestCase):
         with patch.object(subject, "MAX_MEMBERS", 3):
             with self.assertRaises(subject.DocxAdmissionRejected):
                 subject.inspect_docx_container(data)
+
+    def test_oversized_directory_rejected_before_zipfile_allocation(self):
+        original = bytearray(archive())
+        index = original.rfind(b"PK\x05\x06")
+        self.assertGreater(index, 0)
+
+        cases = []
+        too_many = bytearray(original)
+        struct.pack_into("<H", too_many, index + 8, subject.MAX_MEMBERS + 1)
+        struct.pack_into("<H", too_many, index + 10, subject.MAX_MEMBERS + 1)
+        cases.append(bytes(too_many))
+
+        too_large = bytearray(original)
+        struct.pack_into("<I", too_large, index + 12,
+                         subject.MAX_DIRECTORY_BYTES + 1)
+        cases.append(bytes(too_large))
+
+        wrong_offset = bytearray(original)
+        struct.pack_into("<I", wrong_offset, index + 16, 0)
+        cases.append(bytes(wrong_offset))
+
+        split_archive = bytearray(original)
+        struct.pack_into("<H", split_archive, index + 4, 1)
+        cases.append(bytes(split_archive))
+
+        for payload in cases:
+            with self.subTest(payload_size=len(payload)), patch.object(
+                    zipfile, "ZipFile",
+                    side_effect=AssertionError("Unbounded ZIP index allocated")):
+                with self.assertRaises(subject.DocxAdmissionRejected):
+                    subject.inspect_docx_container(payload)
+        with patch.object(subject, "MAX_DIRECTORY_BYTES", 40), patch.object(
+                zipfile, "ZipFile",
+                side_effect=AssertionError("Unbounded ZIP index allocated")):
+            with self.assertRaises(subject.DocxAdmissionRejected):
+                subject.inspect_docx_container(bytes(original))
 
     def test_encrypted_member_flag_fails_closed(self):
         # Modify metadata bits only; this does not decrypt or decompress data.
