@@ -75,7 +75,9 @@ def run_offline_docx_bytes(payload: object) -> dict:
                 _kill_group(child)
                 raise DocxPilotUnavailable("Offline DOCX worker exceeded wall time") from exc
             except BaseException:
-                _kill_group(child)
+                # Only signal a child that has not already been reaped.
+                if child.returncode is None:
+                    _kill_group(child)
                 raise
             # communicate() already waited/reaped on success. Do not send
             # killpg after reaping: the PID/PGID could have been reused.
