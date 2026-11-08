@@ -42,9 +42,59 @@ jobs:
             --disable-pip-version-check --only-binary=:all: \
             -r requirements-docx-pilot.txt
       - name: Convert generated DOCX inside real restricted worker
+        id: acceptance
         env:
           PYTHONDONTWRITEBYTECODE: '1'
           PYTHONNOUSERSITE: '1'
         run: |
           "$RUNNER_TEMP/docx-acceptance-venv/bin/python" \
             -m scripts.docx_pilot_offline_acceptance --run
+      - name: Diagnose synthetic conversion stage without document output
+        if: ${{ failure() && steps.acceptance.outcome == 'failure' }}
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          PYTHONNOUSERSITE: '1'
+        run: |
+          "$RUNNER_TEMP/docx-acceptance-venv/bin/python" -B - <<'PY'
+          from io import BytesIO
+          import os
+
+          import office_docx_worker as worker
+          from scripts.docx_pilot_offline_acceptance import (
+              sample_docx_bytes, score_conversion,
+          )
+
+          stage = "generate_synthetic_fixture"
+          try:
+              payload = sample_docx_bytes()
+              stage = "resource_limits"
+              worker._limits()
+              stage = "early_seccomp_network_lockdown"
+              worker._deny_io(block_files=False)
+              stage = "optional_converter_initialization"
+              converter, stream_info = worker._converter()
+              stage = "final_seccomp_file_lockdown"
+              worker._deny_io(block_files=True)
+              stage = "inspect_synthetic_archive"
+              worker.office_docx_admission.inspect_docx_container(payload)
+              stage = "convert_stream"
+              result = converter.convert_stream(
+                  BytesIO(payload),
+                  stream_info=stream_info(
+                      mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                      extension=".docx",
+                  ),
+              )
+              stage = "score_generated_fixture"
+              verdict = score_conversion(result.markdown, truncated=False)
+              os.write(1, (
+                  "diagnostic_stage=completed passed=" + str(verdict["passed"]) + "\n"
+              ).encode())
+          except (Exception, MemoryError) as exc:
+              # Synthetic DOCX only; neither exception text nor document
+              # content may be emitted. The first failed phase is sufficient.
+              os.write(1, (
+                  "diagnostic_stage=" + stage
+                  + " exception_type=" + type(exc).__name__ + "\n"
+              ).encode())
+          PY
