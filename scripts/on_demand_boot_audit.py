@@ -50,6 +50,9 @@ def _run(*args: str) -> str | None:
             and args[3] in user_guard_units
             and args[4] == "-p" and args[5] in ("LoadState", "ExecStart")
             and args[6] == "--value")
+        or (len(args) == 7 and args[:3] == ("systemctl", "--user", "show")
+            and args[3] in USER_SERVICES
+            and args[4:] == ("-p", "ExecStart", "--value"))
     )
     if not read_only and len(args) == 6 and args[:2] == ("loginctl", "show-user"):
         try:
@@ -160,6 +163,41 @@ def _user_guard_unit(unit: str, mode: str) -> bool:
             and fields.get("ignore_errors") == "no")
 
 
+def _user_effective_entrypoint(unit: str, role: str) -> bool:
+    """Check the effective command will restart from *this* checkout.
+
+    An already-running service can report active even if its installed
+    ExecStart points to a deleted/moved checkout. Compare the effective
+    manager command, not the source unit or a potentially stale unit file.
+    """
+    if (unit, role) not in (
+            (USER_SERVICES[0], "bridge"),
+            (USER_SERVICES[1], "tunnel")):
+        return False
+    raw = _run("systemctl", "--user", "show", unit,
+               "-p", "ExecStart", "--value")
+    if raw is None or len(raw) > 8192:
+        return False
+    commands = re.findall(r"\{([^{}]*)\}", raw)
+    if len(commands) != 1:
+        return False
+    fields = {}
+    for item in commands[0].split(";"):
+        key, sep, value = item.strip().partition("=")
+        if sep:
+            if key in fields:
+                return False
+            fields[key] = value.strip()
+    executable = fields.get("path", "")
+    launch = ROOT / "bootstrap.py"
+    return (bool(executable) and Path(executable).is_absolute()
+            and Path(executable).is_file()
+            and launch.is_file()
+            and fields.get("argv[]")
+            == f"{executable} {launch} --service {role}"
+            and fields.get("ignore_errors") == "no")
+
+
 def _is_enabled_and_active(service: str, *, user: bool) -> bool:
     prefix = ("systemctl", "--user") if user else ("systemctl",)
     return (_run(*prefix, "is-enabled", service) == "enabled"
@@ -178,6 +216,8 @@ def audit(*, inventory: dict | None = None, settings: dict | None = None) -> dic
         "root_firewall_service_enabled_active": False,
         "bridge_enabled_active": False,
         "tunnel_enabled_active": False,
+        "bridge_effective_entrypoint": False,
+        "tunnel_effective_entrypoint": False,
         "user_linger_enabled": False,
         "tunnel_effective_gate": False,
         "cold_wake_preflight_unit": False,
@@ -221,6 +261,10 @@ def audit(*, inventory: dict | None = None, settings: dict | None = None) -> dic
         USER_SERVICES[0], user=True)
     checks["tunnel_enabled_active"] = _is_enabled_and_active(
         USER_SERVICES[1], user=True)
+    checks["bridge_effective_entrypoint"] = _user_effective_entrypoint(
+        USER_SERVICES[0], "bridge")
+    checks["tunnel_effective_entrypoint"] = _user_effective_entrypoint(
+        USER_SERVICES[1], "tunnel")
     try:
         account = pwd.getpwuid(os.getuid()).pw_name
         checks["user_linger_enabled"] = (
