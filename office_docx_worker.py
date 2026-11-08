@@ -16,6 +16,7 @@ from pathlib import Path
 import resource
 import socket
 import sys
+import threading
 
 # -I deliberately omits script-directory imports. The module path here is
 # fixed by this trusted program, never from a document or user-supplied path.
@@ -71,6 +72,9 @@ def _deny_io(*, block_files: bool = True) -> None:
         ("seccomp_rule_add", (
             ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_uint,
         ), ctypes.c_int),
+        ("seccomp_attr_set", (
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_uint32,
+        ), ctypes.c_int),
         ("seccomp_load", (ctypes.c_void_p,), ctypes.c_int),
         ("seccomp_release", (ctypes.c_void_p,), None),
     )
@@ -82,6 +86,11 @@ def _deny_io(*, block_files: bool = True) -> None:
     if not context:
         raise RuntimeError("Seccomp unavailable")
     try:
+        # SCMP_FLTATR_CTL_TSYNC=4. A converter's native initializer may
+        # already have created threads; all of them must inherit the final
+        # filter before DOCX bytes enter the process. Failure is fatal.
+        if lib.seccomp_attr_set(context, 4, 1) != 0:
+            raise RuntimeError("Seccomp thread synchronization unavailable")
         operations = (_EARLY_DENIED + _LATE_DENIED + _FILE_MUTATION_AND_OPEN
                       if block_files else _EARLY_DENIED)
         for name in operations:
@@ -119,6 +128,38 @@ def _isolation_check() -> dict[str, object]:
     }
 
 
+def _thread_sync_check() -> dict[str, bool]:
+    """Prove that a thread created before the final gate loses file access."""
+    started = threading.Event()
+    proceed = threading.Event()
+    result: dict[str, bool] = {}
+
+    def other_thread() -> None:
+        started.set()
+        if not proceed.wait(timeout=3):
+            return
+        try:
+            handle = os.open("/dev/null", os.O_RDONLY)
+        except OSError as exc:
+            result["thread_file_open_denied"] = exc.errno == errno.EPERM
+        else:
+            os.close(handle)
+            result["thread_file_open_denied"] = False
+
+    thread = threading.Thread(target=other_thread, daemon=True)
+    thread.start()
+    try:
+        if not started.wait(timeout=3):
+            raise RuntimeError("Thread initialization unavailable")
+        _deny_io(block_files=True)
+    finally:
+        proceed.set()
+        thread.join(timeout=3)
+    if thread.is_alive():
+        raise RuntimeError("Thread synchronization check unavailable")
+    return result
+
+
 def _converter():
     """Register only the reviewed upstream DOCX converter, never ZIP fallback."""
     from importlib.metadata import version
@@ -140,6 +181,11 @@ def main() -> int:
             os.write(1, json.dumps(evidence, separators=(",", ":")).encode())
             return 0 if (evidence["network_denied"] and
                          evidence["file_open_denied"]) else 1
+        if sys.argv[1:] == ["--check-thread-sync"]:
+            _deny_io(block_files=False)
+            evidence = _thread_sync_check()
+            os.write(1, json.dumps(evidence, separators=(",", ":")).encode())
+            return 0 if evidence.get("thread_file_open_denied") else 1
         if len(sys.argv) != 1:
             return 1
         # No network or executable loading is allowed during trusted package
