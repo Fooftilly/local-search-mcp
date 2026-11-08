@@ -100,7 +100,12 @@ networking, fork, executable loading and ptrace **before** optional
 MarkItDown initialization; the trusted native initializer may start
 CPU threads using clone in that pre-input phase. A second filter denies
 clone, new file opens and filesystem mutations **before** reading
-untrusted document data. The second filter requests libseccomp
+untrusted document data. File restrictions explicitly include path-based
+`truncate`, permission/ownership/timestamp updates and extended-attribute
+changes, which need not open a new file descriptor. A Linux regression
+exercises `truncate`, `chmod` and `utime` against an existing fixture,
+checks their kernel denial, then verifies the bytes and metadata are intact.
+The second filter requests libseccomp
 `SCMP_FLTATR_CTL_TSYNC` synchronization: if an already-running native
 thread cannot receive the same restrictions, the worker fails closed.
 An offline regression starts a thread before the final filter and verifies
