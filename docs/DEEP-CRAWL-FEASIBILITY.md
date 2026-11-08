@@ -107,3 +107,33 @@ links. This guard does not control calls made directly to the Docker API,
 make a sleeping container provably safe, or provide per-link authorization.
 Do not enable native deep crawling; operator acceptance of a bounded
 coordinator, per-URL checks and real cancellation is still outstanding.
+
+## Runtime flag revalidation after container replacement
+
+The earlier import-time `CRAWLER_SECURITY_WARNING` check and on-demand
+cold-wake health gate do not cover an always-running bridge with on-demand
+mode disabled if the operator replaces the crawler container later.
+A bridge initialized while the flag was off must not silently trust that
+historical Docker configuration for subsequent fetches.
+
+A follow-up guard checks `local_container_warning()` **after** the
+existing version/health gate but **before** each real `/crawl` POST.
+Every uncached ordinary or structured fetch passes through that point.
+Short-page cache hits do not start a navigation and are unchanged.
+For an available **one-use grant**, the bridge also checks current flags
+before the irreversible SQLite grant claim; if flags are unsafe, no grant
+is consumed or browser navigation started. The pre-POST check remains for
+changes after that earlier check. These are independent observations, not
+an atomic transaction across Docker and the approval database. The guard
+never changes Docker configuration or approvals.
+
+Trade-off: for a Docker-backed bridge this adds two bounded local Docker
+queries per actual crawl; a one-use grant attempt performs another two
+before consuming the grant. Existing on-demand wake checks remain in place,
+since they additionally verify backend identity and live firewall
+containment before releasing a request. When Docker is absent or its
+query fails, the existing `local_container_warning()` helper returns
+`None`: this check is **not** proof of Docker ownership, external server
+safety, continuous egress enforcement, or a substitute for the root-owned
+firewall probe. An upstream replacement between the final check and
+navigation still needs host-side containment.

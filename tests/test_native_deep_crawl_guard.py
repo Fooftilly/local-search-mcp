@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import subprocess
 import unittest
+from contextlib import nullcontext
 from unittest.mock import patch
 
+import httpx
+import bridge
 import crawler_security
 from scripts import on_demand_supervisor
 
@@ -103,6 +106,74 @@ class NativeDeepCrawlGuardTests(unittest.TestCase):
               patch.object(on_demand_supervisor, "get_json",
                            side_effect=AssertionError("Health must not be queried"))):
             self.assertFalse(on_demand_supervisor._healthy("crawl4ai"))
+
+
+    def test_running_bridge_rechecks_flags_after_container_replacement(self):
+        """A once-safe container must not authorize a later unsafe one."""
+        url = "https://example.com/public"
+        inspected = {"warning": None}
+        requests = []
+        original_client = httpx.Client
+
+        def handler(request):
+            requests.append(request.url.path)
+            if request.url.path == "/health":
+                return httpx.Response(
+                    200, json={"status": "ok", "version": "0.9.5"})
+            if request.url.path == "/crawl":
+                return httpx.Response(200, json={"results": [{
+                    "url": url, "success": True, "markdown": "Approved page"
+                }]})
+            self.fail("Unexpected upstream route")
+
+        def client(**kwargs):
+            return original_client(
+                transport=httpx.MockTransport(handler), trust_env=False)
+
+        with (patch.object(bridge, "local_container_warning",
+                           side_effect=lambda: inspected["warning"]),
+              patch.object(bridge.httpx, "Client", side_effect=client)):
+            first = bridge._run_fetch_network(url, "raw")
+            inspected["warning"] = (
+                "Native Crawl4AI deep crawling is enabled; disable "
+                "CRAWL4AI_ALLOW_DEEP_CRAWL until issue #299 is resolved")
+            second = bridge._run_fetch_network(url, "raw")
+
+        self.assertTrue(first["success"])
+        self.assertEqual(first["markdown"], "Approved page")
+        self.assertFalse(second["success"])
+        self.assertEqual(second["status"], "blocked")
+        self.assertNotIn("markdown", second)
+        self.assertEqual(requests, ["/health", "/crawl", "/health"])
+
+    def test_public_web_fetch_blocks_runtime_flag_without_crawl_post(self):
+        """Bridge import and cache state cannot hide a newly unsafe flag."""
+        url = "https://example.com/articles"
+        requests = []
+        original_client = httpx.Client
+
+        def handler(request):
+            requests.append(request.url.path)
+            self.assertEqual(request.url.path, "/health")
+            return httpx.Response(200, json={"status": "ok", "version": "0.9.5"})
+
+        def client(**kwargs):
+            return original_client(
+                transport=httpx.MockTransport(handler), trust_env=False)
+
+        with (patch.object(bridge, "_check_public_target", return_value=None),
+              patch.object(bridge, "CRAWLER_SECURITY_WARNING", None),
+              patch.object(bridge, "local_container_warning",
+                           return_value="Native Crawl4AI deep crawling is enabled"),
+              patch.object(bridge.on_demand, "lease",
+                           side_effect=lambda service: nullcontext()),
+              patch.object(bridge.httpx, "Client", side_effect=client)):
+            result = bridge.web_fetch(url, fresh=True)
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertNotIn("markdown", result)
+        self.assertEqual(requests, ["/health"])
 
 
 if __name__ == "__main__":
