@@ -49,6 +49,37 @@ jobs:
         run: |
           "$RUNNER_TEMP/docx-acceptance-venv/bin/python" \
             -m scripts.docx_pilot_offline_acceptance --run
+      - name: Classify the isolated child failure without exposing content
+        if: ${{ failure() && steps.acceptance.outcome == 'failure' }}
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          PYTHONNOUSERSITE: '1'
+        run: |
+          "$RUNNER_TEMP/docx-acceptance-venv/bin/python" -B - <<'PY'
+          import os
+          from scripts.docx_pilot_offline_acceptance import sample_docx_bytes
+          from office_docx_pilot import run_offline_docx_bytes, DocxPilotUnavailable
+
+          try:
+              result = run_offline_docx_bytes(sample_docx_bytes())
+          except DocxPilotUnavailable as exc:
+              # Only a fixed, trusted error enum: never print exception text.
+              safe_errors = {
+                  "Offline DOCX worker failed closed": "child_exit_nonzero",
+                  "Offline DOCX worker exceeded wall time": "wall_timeout",
+                  "Offline DOCX worker output oversized": "oversized_output",
+                  "Offline DOCX worker output malformed": "invalid_output",
+                  "Offline DOCX worker output invalid": "invalid_envelope",
+                  "Offline DOCX worker output incomplete": "incomplete_output",
+              }
+              code = safe_errors.get(str(exc), "other_fail_closed")
+              os.write(1, ("child_failure_category=" + code + "\n").encode())
+          else:
+              os.write(1, (
+                  "child_failure_category=none "
+                  + "truncated=" + str(result["truncated"]) + "\n"
+              ).encode())
+          PY
       - name: Diagnose synthetic conversion stage without document output
         if: ${{ failure() && steps.acceptance.outcome == 'failure' }}
         env:
@@ -87,8 +118,14 @@ jobs:
               )
               stage = "score_generated_fixture"
               verdict = score_conversion(result.markdown, truncated=False)
+              # Boolean markers only. Do not emit converted text.
               os.write(1, (
-                  "diagnostic_stage=completed passed=" + str(verdict["passed"]) + "\n"
+                  "diagnostic_stage=completed "
+                  + " heading=" + str(verdict["heading_markdown"])
+                  + " table=" + str(verdict["table_markdown"])
+                  + " unicode=" + str(verdict["unicode_preserved"])
+                  + " truncated=" + str(verdict["truncated"])
+                  + "\n"
               ).encode())
           except (Exception, MemoryError) as exc:
               # Synthetic DOCX only; neither exception text nor document
