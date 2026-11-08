@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -32,6 +33,15 @@ GOOD_ROOT_EXEC = (
 )
 
 
+def user_exec(role: str, *, root: Path | None = None,
+              python: str | None = None) -> str:
+    interpreter = sys.executable if python is None else python
+    launch = (audit.ROOT if root is None else root) / "bootstrap.py"
+    return (f"{{ path={interpreter} ; argv[]={interpreter} "
+            f"{launch} --service {role} ; ignore_errors=no ; "
+            "start_time=[n/a] ; stop_time=[n/a] }")
+
+
 class ReadonlyBootAuditTests(unittest.TestCase):
     def _successful(self, *, docker=None, settings=None, responses=None,
                     tunnel_gate=True, root_file=True):
@@ -44,6 +54,10 @@ class ReadonlyBootAuditTests(unittest.TestCase):
             if args[:2] == ("systemctl", "show"):
                 return GOOD_ROOT_EXEC
             if args[:3] == ("systemctl", "--user", "show"):
+                if args[3] in audit.USER_SERVICES and args[-2] == "ExecStart":
+                    return user_exec(
+                        "bridge" if args[3] == audit.USER_SERVICES[0]
+                        else "tunnel")
                 if args[-2] == "LoadState":
                     return "loaded"
                 if args[-2] == "ExecStart":
@@ -79,7 +93,10 @@ class ReadonlyBootAuditTests(unittest.TestCase):
         result, calls, files = self._successful()
         self.assertEqual(result["state"], "ready_for_manual_reboot_test")
         self.assertFalse(result["safe_to_reboot_proven"])
-        self.assertEqual(len(result["checks"]), 13)
+        self.assertEqual(len(result["checks"]), 15)
+        for unit in audit.USER_SERVICES:
+            self.assertIn(("systemctl", "--user", "show", unit,
+                           "-p", "ExecStart", "--value"), calls)
         self.assertTrue(all(result["checks"].values()))
         self.assertEqual(files.call_count, 2)
         self.assertIn(("systemctl", "show", audit.ROOT_SERVICE,
@@ -155,6 +172,47 @@ class ReadonlyBootAuditTests(unittest.TestCase):
             with (self.subTest(output=effective[:40]),
                   patch.object(audit, "_run", return_value=effective)):
                 self.assertFalse(audit._root_effective_start())
+
+    def test_stale_or_swapped_bridge_and_tunnel_commands_block_reboot_audit(self):
+        """Active processes do not prove that systemd can restart the service."""
+        for unit in audit.USER_SERVICES:
+            role = "bridge" if unit == audit.USER_SERVICES[0] else "tunnel"
+            other = "tunnel" if role == "bridge" else "bridge"
+            original = user_exec(role)
+            wrong_commands = (
+                user_exec(role, root=Path("/home/old-checkout")),
+                user_exec(other),
+                user_exec(role, python="/nonexistent/python3"),
+                original.replace("ignore_errors=no", "ignore_errors=yes"),
+                original + original,
+                "",
+                None,
+            )
+            for wrong in wrong_commands:
+                with self.subTest(unit=unit, value=repr(wrong)[:120]):
+                    overrides = {("systemctl", "--user", "show",
+                                  unit, "-p", "ExecStart", "--value"): wrong}
+                    report, _, _ = self._successful(responses=overrides)
+                    gate = (f"{role}_effective_entrypoint")
+                    self.assertFalse(report["checks"][gate])
+                    self.assertEqual(report["state"], "blocked")
+                    # A process can still be active under a stale command.
+                    self.assertTrue(report["checks"][f"{role}_enabled_active"])
+        for unit, role in ((audit.USER_SERVICES[0], "tunnel"),
+                           ("untrusted.service", "bridge")):
+            with self.subTest(unit=unit, role=role), patch.object(
+                    audit, "_run", side_effect=AssertionError(
+                        "unsupported name must not be queried")):
+                self.assertFalse(audit._user_effective_entrypoint(unit, role))
+
+    def test_effective_user_entrypoint_accepts_only_current_checkout(self):
+        for unit, role in zip(audit.USER_SERVICES, ("bridge", "tunnel")):
+            with self.subTest(unit=unit):
+                with patch.object(audit, "_run", return_value=user_exec(role)) as query:
+                    self.assertTrue(audit._user_effective_entrypoint(unit, role))
+                query.assert_called_once_with(
+                    "systemctl", "--user", "show", unit,
+                    "-p", "ExecStart", "--value")
 
     def test_service_and_linger_states_are_exact_and_readonly(self):
         service = "local-search-mcp-crawler-egress.service"
@@ -232,6 +290,8 @@ class ReadonlyBootAuditTests(unittest.TestCase):
                 ("loginctl", "enable-linger", "root"),
                 ("systemctl", "--user", "show",
                  "untrusted.service", "-p", "ExecStart", "--value"),
+                ("systemctl", "--user", "show",
+                 audit.USER_SERVICES[0], "-p", "Environment", "--value"),
             ):
                 with self.subTest(command=command), self.assertRaises(ValueError):
                     audit._run(*command)
