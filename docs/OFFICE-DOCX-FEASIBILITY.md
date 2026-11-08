@@ -56,8 +56,11 @@ sizes. The deliberately conservative, tunable *study* ceilings are:
 It rejects missing/empty minimal DOCX parts, duplicate or
 casefold-colliding names, path traversal and noncanonical separators,
 encrypted members, special-file/symlink members, unsupported compression,
-oversized or split central directories before invoking `zipfile.ZipFile`,
-macro/ActiveX/embedded files and nested archives. This deliberately rejects
+oversized or split central directories, ZIP64 end-record overrides,
+and forged central-directory entry counts **before** invoking
+`zipfile.ZipFile`; macro/ActiveX/embedded files and nested archives.
+Malformed ZIP filename encodings and unsupported ZIP extraction versions are
+normalized to the single `DocxAdmissionRejected` error contract. This deliberately rejects
 some otherwise-valid Office documents. It never decodes or extracts a member,
 and *does not* claim to detect all malicious OOXML relationships or scripts.
 
