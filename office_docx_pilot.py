@@ -68,12 +68,17 @@ def run_offline_docx_bytes(payload: object) -> dict:
             except OSError as exc:
                 raise DocxPilotUnavailable("Offline DOCX worker could not start") from exc
             try:
-                try:
-                    child.communicate(input=payload, timeout=WALL_SECONDS)
-                except subprocess.TimeoutExpired as exc:
-                    raise DocxPilotUnavailable("Offline DOCX worker exceeded wall time") from exc
-            finally:
+                child.communicate(input=payload, timeout=WALL_SECONDS)
+            except subprocess.TimeoutExpired as exc:
+                # Timeout leaves the child unreaped. Kill the entire session
+                # while its PID still belongs to this process, then wait.
                 _kill_group(child)
+                raise DocxPilotUnavailable("Offline DOCX worker exceeded wall time") from exc
+            except BaseException:
+                _kill_group(child)
+                raise
+            # communicate() already waited/reaped on success. Do not send
+            # killpg after reaping: the PID/PGID could have been reused.
             if child.returncode != 0:
                 raise DocxPilotUnavailable("Offline DOCX worker failed closed")
             size = os.fstat(fd).st_size
