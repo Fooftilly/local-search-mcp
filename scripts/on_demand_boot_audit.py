@@ -198,6 +198,32 @@ def _user_effective_entrypoint(unit: str, role: str) -> bool:
             and fields.get("ignore_errors") == "no")
 
 
+def _required_runtime_files(role: str) -> bool:
+    """Prove that a service's next exec has its fixed local prerequisites.
+
+    An already-running Python bridge can retain imported modules after its
+    virtualenv disappears. An active tunnel likewise outlives a removed
+    binary. This is a file-presence/execute-bit preflight only, not an import,
+    configuration, certificate or live service health check.
+    """
+    if role == "bridge":
+        executable = ROOT / ".venv" / "bin" / "python"
+        script = ROOT / "bridge.py"
+    elif role == "tunnel":
+        executable = ROOT / "tunnel-client"
+        script = None
+    else:
+        return False
+    try:
+        if (role == "tunnel" and executable.is_symlink()
+                or not executable.is_file()
+                or not os.access(executable, os.X_OK)):
+            return False
+        return script is None or script.is_file()
+    except OSError:
+        return False
+
+
 def _is_enabled_and_active(service: str, *, user: bool) -> bool:
     prefix = ("systemctl", "--user") if user else ("systemctl",)
     return (_run(*prefix, "is-enabled", service) == "enabled"
@@ -218,6 +244,8 @@ def audit(*, inventory: dict | None = None, settings: dict | None = None) -> dic
         "tunnel_enabled_active": False,
         "bridge_effective_entrypoint": False,
         "tunnel_effective_entrypoint": False,
+        "bridge_runtime_files": False,
+        "tunnel_runtime_files": False,
         "user_linger_enabled": False,
         "tunnel_effective_gate": False,
         "cold_wake_preflight_unit": False,
@@ -265,6 +293,8 @@ def audit(*, inventory: dict | None = None, settings: dict | None = None) -> dic
         USER_SERVICES[0], "bridge")
     checks["tunnel_effective_entrypoint"] = _user_effective_entrypoint(
         USER_SERVICES[1], "tunnel")
+    checks["bridge_runtime_files"] = _required_runtime_files("bridge")
+    checks["tunnel_runtime_files"] = _required_runtime_files("tunnel")
     try:
         account = pwd.getpwuid(os.getuid()).pw_name
         checks["user_linger_enabled"] = (
