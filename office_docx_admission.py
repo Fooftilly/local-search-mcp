@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import stat
+import struct
 import unicodedata
 import zipfile
 
@@ -21,6 +22,7 @@ MAX_MEMBER_BYTES = 4 * 1024 * 1024
 MAX_EXPANDED_BYTES = 12 * 1024 * 1024
 MAX_MEMBER_RATIO = 100
 MAX_NAME_BYTES = 180
+MAX_DIRECTORY_BYTES = 96 * 1024
 _REQUIRED = frozenset({"[Content_Types].xml", "_rels/.rels",
                        "word/document.xml"})
 _ALLOWED_COMPRESSIONS = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED})
@@ -49,6 +51,33 @@ def _member_name(name: str) -> str:
     return unicodedata.normalize("NFC", name).casefold()
 
 
+def _bounded_directory_header(payload: bytes) -> None:
+    """Reject oversized ZIP indexes *before* zipfile materializes entries.
+
+    Read only the fixed end-of-central-directory record. ZIP64, split ZIPs,
+    trailing data and large archive comments are intentionally unsupported
+    in this limited DOCX pilot. This is not a ZIP parser or CRC validator.
+    """
+    minimum = max(0, len(payload) - (22 + 65535))
+    index = payload.rfind(b"PK\\x05\\x06", minimum)
+    while index >= minimum:
+        if index + 22 <= len(payload):
+            (_, disk, directory_disk, disk_count, total_count,
+             directory_bytes, directory_offset, comment_bytes) = (
+                struct.unpack_from("<4sHHHHIIH", payload, index))
+            if index + 22 + comment_bytes == len(payload):
+                if (disk or directory_disk or disk_count != total_count
+                        or not 1 <= total_count <= MAX_MEMBERS
+                        or comment_bytes > 1024
+                        or directory_bytes > MAX_DIRECTORY_BYTES
+                        or directory_offset + directory_bytes != index
+                        or directory_bytes < 46 * total_count):
+                    raise DocxAdmissionRejected("DOCX ZIP directory bounds rejected")
+                return
+        index = payload.rfind(b"PK\\x05\\x06", minimum, index)
+    raise DocxAdmissionRejected("DOCX ZIP directory missing")
+
+
 def inspect_docx_container(payload: object) -> dict[str, int]:
     """Examine bounded ZIP directory metadata; NEVER open/decompress a member.
 
@@ -60,6 +89,7 @@ def inspect_docx_container(payload: object) -> dict[str, int]:
             or not 4 <= len(payload) <= MAX_DOCX_BYTES
             or not payload.startswith(b"PK\x03\x04")):
         raise DocxAdmissionRejected("DOCX container header or size rejected")
+    _bounded_directory_header(payload)
     names: set[str] = set()
     required: set[str] = set()
     expanded = 0
