@@ -62,6 +62,39 @@ class GuardedOnceFetchTests(unittest.TestCase):
         self.assertEqual(request_cache.metrics_snapshot()["kinds"]["fetch"]["entries"], 0)
         self.assertFalse(policy.is_domain_currently_allowed("docs.example.org"))
 
+    def test_unsafe_native_crawler_does_not_consume_one_use_grant(self):
+        url = "https://docs.example.org/public-notice"
+        grant = policy._stage_once_grant("docs.example.org", expires_minutes=60)
+        # A replacement crawler has unsafe settings, although the global
+        # warning sampled when the long-running bridge started is still None.
+        with (patch.object(bridge, "local_container_warning",
+                           return_value="Native Crawl4AI deep crawling is enabled") as guard,
+              patch.object(bridge, "_run_fetch",
+                           side_effect=AssertionError("No crawler should be called"))):
+            blocked = bridge.web_fetch(url)
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertFalse(blocked["success"])
+        self.assertNotIn("markdown", blocked)
+        guard.assert_called_once()
+        self.assertTrue(policy._once_grant_available("docs.example.org"))
+        with policy._db() as conn:
+            entry = conn.execute(
+                "SELECT grant_id, consumed_at FROM once_grants WHERE domain=?",
+                ("docs.example.org",)).fetchone()
+        self.assertEqual(entry["grant_id"], grant)
+        self.assertEqual(entry["consumed_at"], "")
+        # Once the flags are repaired, that exact existing approval remains
+        # usable, with the normal one-use proof propagated to the fetch.
+        with (patch.object(bridge, "local_container_warning", return_value=None),
+              patch.object(bridge, "_run_fetch", return_value={
+                  "url": url, "success": True, "markdown": "Authorized content",
+                  "truncated": False}) as crawler):
+            allowed = bridge.web_fetch(url)
+        self.assertTrue(allowed["success"])
+        crawler.assert_called_once_with(
+            url, "raw", once_proof=("docs.example.org", grant))
+        self.assertFalse(policy._once_grant_available("docs.example.org"))
+
     def test_structured_one_use_proof_is_rechecked_before_data_release(self):
         import structured_schema
         url = "https://docs.example.org/approved-once"
