@@ -58,7 +58,14 @@ correct `--service` role and avoid `ignore_errors`. Being `active` is not
 enough: a Python bridge may continue running from a moved/deleted checkout
 while its stored systemd command would fail on the next restart or reboot.
 An obsolete path blocks the static audit rather than falsely reporting
-readiness. The audit never restarts either service or prints effective
+readiness. It also checks that the bridge's required
+`.venv/bin/python` and `bridge.py`, and the tunnel's required
+non-symlinked `tunnel-client` executable, still exist with executable
+permissions where needed. An already-running bridge can keep serving
+requests after its virtual environment has been removed, but would fail
+its next `os.execve`. This static check is deliberately not an import test,
+certificate-bundle validation, credential check or assurance of service
+health. The audit never restarts either service or prints effective
 command arguments, which can contain private local paths. Run it from
 the same reviewed checkout revision that was deployed to the root-owned paths.
 
