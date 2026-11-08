@@ -36,9 +36,20 @@ _EARLY_DENIED = (
 # CPU worker threads; they must finish before any untrusted bytes arrive.
 _LATE_DENIED = ("clone", "clone3")
 _FILE_MUTATION_AND_OPEN = (
-    "open", "openat", "openat2", "creat", "mkdir", "mkdirat",
+    # Opening/deleting/renaming a path is only one way to alter host files.
+    # In particular truncate(path) changes existing data without opening it.
+    "open", "openat", "openat2", "open_by_handle_at", "creat",
+    "mkdir", "mkdirat", "rmdir",
     "link", "linkat", "symlink", "symlinkat", "unlink", "unlinkat",
     "rename", "renameat", "renameat2", "mknod", "mknodat",
+    "truncate", "ftruncate",
+    "chmod", "fchmod", "fchmodat", "fchmodat2",
+    "chown", "lchown", "fchown", "fchownat",
+    "utime", "utimes", "futimesat", "utimensat",
+    "setxattr", "lsetxattr", "fsetxattr",
+    "removexattr", "lremovexattr", "fremovexattr",
+    "mount", "umount2", "pivot_root", "open_tree", "move_mount",
+    "fsopen", "fsconfig", "fsmount", "fspick",
 )
 
 
