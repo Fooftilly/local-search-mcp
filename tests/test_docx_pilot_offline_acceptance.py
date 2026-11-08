@@ -33,6 +33,26 @@ class DocxOfflineAcceptanceTests(unittest.TestCase):
         self.assertIn("relationships/styles", relationships)
         self.assertIn("styles.xml", relationships)
 
+    def test_fixture_bytes_stable_across_zip_clock_boundaries(self):
+        # When writestr() receives a plain filename it embeds localtime(),
+        # with two-second DOS timestamp precision. The fixture must not.
+        with patch.object(zipfile.time, "localtime",
+                          return_value=(2020, 1, 1, 0, 0, 0, 0, 1, -1)):
+            first = acceptance.sample_docx_bytes()
+        with patch.object(zipfile.time, "localtime",
+                          return_value=(2026, 11, 8, 20, 30, 16, 6, 312, -1)):
+            second = acceptance.sample_docx_bytes()
+        self.assertEqual(first, second)
+        with zipfile.ZipFile(BytesIO(first)) as doc:
+            self.assertEqual(
+                {item.date_time for item in doc.infolist()},
+                {(1980, 1, 1, 0, 0, 0)},
+            )
+            self.assertTrue(all(
+                item.compress_type == zipfile.ZIP_DEFLATED
+                for item in doc.infolist()
+            ))
+
     def test_scoring_requires_heading_table_unicode_and_complete_output(self):
         sample = (
             f"# {acceptance.HEADING}\n\n{acceptance.UNICODE}\n\n"
@@ -60,10 +80,49 @@ class DocxOfflineAcceptanceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             acceptance.score_conversion(None, truncated=False)
 
+    def test_table_scoring_requires_adjacent_markdown_structure(self):
+        intro = f"# {acceptance.HEADING}\n{acceptance.UNICODE}\n"
+        header = f"| {acceptance.CELL_A} | {acceptance.CELL_B} |"
+        separator = "| :--- | ---: |"
+        data = f"| {acceptance.CELL_C} | {acceptance.CELL_D} |"
+        valid = intro + "\n".join((header, separator, data))
+        self.assertTrue(acceptance.score_conversion(
+            valid, truncated=False)["table_markdown"])
+        # GFM tables also permit omitting exterior pipes.
+        without_outer = intro + (
+            f"{acceptance.CELL_A} | {acceptance.CELL_B}\n"
+            "--- | ---\n"
+            f"{acceptance.CELL_C} | {acceptance.CELL_D}"
+        )
+        self.assertTrue(acceptance.score_conversion(
+            without_outer, truncated=False)["table_markdown"])
+        invalid = {
+            "flattened-with-pipe": intro + (
+                f"{acceptance.CELL_A} | {acceptance.CELL_B}\n"
+                f"{acceptance.CELL_C}\n{acceptance.CELL_D}"
+            ),
+            "no-delimiter": intro + "\n".join((header, data)),
+            "missing-data-row": intro + "\n".join((
+                header, separator, acceptance.CELL_C, acceptance.CELL_D)),
+            "wrong-column-order": intro + "\n".join((
+                header, separator,
+                f"| {acceptance.CELL_D} | {acceptance.CELL_C} |")),
+            "nonadjacent-row": intro + "\n".join((
+                header, separator, "ordinary paragraph", data)),
+            "malformed-delimiter": intro + "\n".join((
+                header, "| - | -- |", data)),
+        }
+        for name, markdown in invalid.items():
+            with self.subTest(case=name):
+                score = acceptance.score_conversion(markdown, truncated=False)
+                self.assertFalse(score["table_markdown"])
+                self.assertFalse(score["passed"])
+
     def test_evaluate_passes_only_generated_bytes_to_offline_worker(self):
         markdown = (
             f"# {acceptance.HEADING}\n{acceptance.UNICODE}\n"
             f"| {acceptance.CELL_A} | {acceptance.CELL_B} |\n"
+            "| --- | --- |\n"
             f"| {acceptance.CELL_C} | {acceptance.CELL_D} |"
         )
         def fake_worker(value):
