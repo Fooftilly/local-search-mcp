@@ -1,0 +1,51 @@
+name: DOCX offline conversion acceptance
+
+# This runs only when the offline converter and its harness are changed,
+# or when explicitly requested by a maintainer. Not part of ordinary CI.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/docx-offline-acceptance.yml'
+      - 'office_docx_admission.py'
+      - 'office_docx_pilot.py'
+      - 'office_docx_worker.py'
+      - 'requirements-docx-pilot.txt'
+      - 'scripts/docx_pilot_offline_acceptance.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docx-acceptance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-docx-offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Ensure kernel seccomp library is installed
+        run: |
+          if ! ldconfig -p | grep -F 'libseccomp.so.2'; then
+            sudo apt-get update
+            sudo apt-get install -y libseccomp2
+          fi
+      - name: Install optional pinned DOCX dependency in a disposable environment
+        run: |
+          python -m venv "$RUNNER_TEMP/docx-acceptance-venv"
+          "$RUNNER_TEMP/docx-acceptance-venv/bin/python" -m pip install \
+            --disable-pip-version-check --only-binary=:all: \
+            -r requirements-docx-pilot.txt
+      - name: Convert generated DOCX inside real restricted worker
+        id: acceptance
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          PYTHONNOUSERSITE: '1'
+        run: |
+          "$RUNNER_TEMP/docx-acceptance-venv/bin/python" \
+            -m scripts.docx_pilot_offline_acceptance --run

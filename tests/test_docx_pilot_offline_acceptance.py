@@ -118,6 +118,31 @@ class DocxOfflineAcceptanceTests(unittest.TestCase):
                 self.assertFalse(score["table_markdown"])
                 self.assertFalse(score["passed"])
 
+    def test_word_table_with_empty_generated_header_is_preserved(self):
+        intro = f"# {acceptance.HEADING}\n{acceptance.UNICODE}\n"
+        raw_table = (
+            "|  |  |\n"
+            "| --- | --- |\n"
+            f"| {acceptance.CELL_A} | {acceptance.CELL_B} |\n"
+            f"| {acceptance.CELL_C} | {acceptance.CELL_D} |"
+        )
+        report = acceptance.score_conversion(intro + raw_table,
+                                              truncated=False)
+        self.assertTrue(report["table_markdown"])
+        self.assertTrue(report["passed"])
+        for corrupt in (
+            raw_table.replace("| --- | --- |\n", ""),
+            raw_table.replace(f"| {acceptance.CELL_C} | {acceptance.CELL_D} |",
+                              f"{acceptance.CELL_C}\n{acceptance.CELL_D}"),
+            raw_table.replace(f"| {acceptance.CELL_C} | {acceptance.CELL_D} |",
+                              f"| {acceptance.CELL_D} | {acceptance.CELL_C} |"),
+            raw_table.replace("|  |  |\n", "| not-empty | not-empty |\n"),
+            raw_table.replace("|  |  |\n", "flat text\n"),
+        ):
+            with self.subTest(case=corrupt[:60]):
+                self.assertFalse(acceptance.score_conversion(
+                    intro + corrupt, truncated=False)["table_markdown"])
+
     def test_evaluate_passes_only_generated_bytes_to_offline_worker(self):
         markdown = (
             f"# {acceptance.HEADING}\n{acceptance.UNICODE}\n"

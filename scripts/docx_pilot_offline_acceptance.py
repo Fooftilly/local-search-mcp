@@ -102,17 +102,25 @@ def _table_cells(line: str) -> list[str] | None:
 
 
 def _has_expected_table(lines: list[str]) -> bool:
-    """Require adjacent header, delimiter and correctly paired data rows."""
-    for header_line, divider_line, data_line in zip(
-            lines, lines[1:], lines[2:]):
-        header = _table_cells(header_line)
-        divider = _table_cells(divider_line)
-        data = _table_cells(data_line)
-        if not (header and divider and data):
+    """Require a real two-column Markdown table, not flattened pipe text.
+
+    Mammoth emits table rows as ordinary cells (not TH). MarkItDown can
+    therefore produce a valid GFM table with an empty header followed by
+    the two sample rows. Accept that *and* a promoted-first-row header,
+    but require the adjacent delimiter and complete ordered rows.
+    """
+    for i in range(len(lines) - 2):
+        header = _table_cells(lines[i])
+        delimiter = _table_cells(lines[i + 1])
+        first_data = _table_cells(lines[i + 2])
+        if (header is None or delimiter is None or first_data is None
+                or not all(re.fullmatch(r":?-{3,}:?", c) for c in delimiter)):
             continue
-        if (CELL_A in header[0] and CELL_B in header[1]
-                and all(re.fullmatch(r":?-{3,}:?", cell) for cell in divider)
-                and CELL_C in data[0] and CELL_D in data[1]):
+        if header == [CELL_A, CELL_B] and first_data == [CELL_C, CELL_D]:
+            return True
+        if (header == ["", ""] and first_data == [CELL_A, CELL_B]
+                and i + 3 < len(lines)
+                and _table_cells(lines[i + 3]) == [CELL_C, CELL_D]):
             return True
     return False
 
