@@ -44,7 +44,7 @@ def user_exec(role: str, *, root: Path | None = None,
 
 class ReadonlyBootAuditTests(unittest.TestCase):
     def _successful(self, *, docker=None, settings=None, responses=None,
-                    tunnel_gate=True, root_file=True):
+                    tunnel_gate=True, root_file=True, runtime_files=None):
         called = []
 
         def run(*args):
@@ -80,7 +80,10 @@ class ReadonlyBootAuditTests(unittest.TestCase):
                 raise install_secure_tunnel.InstallError("redacted")
 
         with (patch.object(audit, "_run", side_effect=run),
-              patch.object(audit, "_required_runtime_files", return_value=True),
+              patch.object(audit, "_required_runtime_files",
+                           side_effect=lambda role: (
+                               runtime_files.get(role, True)
+                               if runtime_files is not None else True)),
               patch.object(audit, "_reviewed_root_file",
                            return_value=root_file) as file_probe,
               patch.object(install_secure_tunnel,
@@ -254,23 +257,10 @@ class ReadonlyBootAuditTests(unittest.TestCase):
 
     def test_missing_runtime_files_block_reboot_audit(self):
         for role in ("bridge", "tunnel"):
-            def runtime(which):
-                return which != role
-
-            with self.subTest(role=role), patch.object(
-                    audit, "_required_runtime_files", side_effect=runtime
-            ), patch.object(audit, "_run") as run:
-                # Validate that runtime check errors cannot be masked by an
-                # already-running service in the audit's aggregate result.
-                self.assertFalse(audit._required_runtime_files(role))
-                run.assert_not_called()
-
-            # Full audit with a fake runtime probe. It must fail closed even
-            # when both user services are otherwise enabled and active.
-            original = audit._required_runtime_files
-            with patch.object(audit, "_required_runtime_files",
-                              side_effect=lambda r: r != role):
-                report, _, _ = self._successful()
+            # Full audit still reports both services active, but the
+            # statically missing exec-time dependency blocks boot readiness.
+            with self.subTest(role=role):
+                report, _, _ = self._successful(runtime_files={role: False})
             self.assertEqual(report["state"], "blocked")
             self.assertFalse(report["checks"][f"{role}_runtime_files"])
             self.assertTrue(report["checks"][f"{role}_enabled_active"])
