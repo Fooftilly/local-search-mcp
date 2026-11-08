@@ -66,6 +66,13 @@ def _bounded_directory_header(payload: bytes) -> None:
              directory_bytes, directory_offset, comment_bytes) = (
                 struct.unpack_from("<4sHHHHIIH", payload, index))
             if index + 22 + comment_bytes == len(payload):
+                # zipfile._EndRecData64 consults the ZIP64 locator 20 bytes
+                # immediately before the ordinary EOCD, then replaces its
+                # size/count/offset fields. Never trust the ordinary values
+                # when those override records are present.
+                if (index >= 20
+                        and payload[index - 20:index - 16] == b"PK\x06\x07"):
+                    raise DocxAdmissionRejected("DOCX ZIP64 directory rejected")
                 if (disk or directory_disk or disk_count != total_count
                         or not 1 <= total_count <= MAX_MEMBERS
                         or comment_bytes > 1024
@@ -73,6 +80,21 @@ def _bounded_directory_header(payload: bytes) -> None:
                         or directory_offset + directory_bytes != index
                         or directory_bytes < 46 * total_count):
                     raise DocxAdmissionRejected("DOCX ZIP directory bounds rejected")
+                # The EOCD entry count can be forged independently of its
+                # byte length. Count bounded raw headers *before* ZipFile
+                # constructs its list of ZipInfo objects.
+                cursor = directory_offset
+                for _ in range(total_count):
+                    if (cursor + 46 > index
+                            or payload[cursor:cursor + 4] != b"PK\x01\x02"):
+                        raise DocxAdmissionRejected("DOCX ZIP directory entries rejected")
+                    filename, extra, comment = struct.unpack_from(
+                        "<HHH", payload, cursor + 28)
+                    cursor += 46 + filename + extra + comment
+                    if cursor > index:
+                        raise DocxAdmissionRejected("DOCX ZIP directory entries rejected")
+                if cursor != index:
+                    raise DocxAdmissionRejected("DOCX ZIP directory count mismatch")
                 return
         index = payload.rfind(b"PK\x05\x06", minimum, index)
     raise DocxAdmissionRejected("DOCX ZIP directory missing")
@@ -131,7 +153,14 @@ def inspect_docx_container(payload: object) -> dict[str, int]:
                     if item.file_size == 0:
                         raise DocxAdmissionRejected("DOCX empty required member")
                     required.add(item.filename)
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, OSError) as exc:
+    except DocxAdmissionRejected:
+        raise
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, OSError,
+            ValueError, NotImplementedError, struct.error, OverflowError) as exc:
+        # zipfile may raise UnicodeDecodeError for invalid UTF-8 filenames or
+        # NotImplementedError for an unsupported extraction-version byte.
+        # Normalize attacker-controlled parser failures for the future caller;
+        # never include filenames or exception details in the result.
         raise DocxAdmissionRejected("Invalid DOCX ZIP container") from exc
     if required != _REQUIRED:
         raise DocxAdmissionRejected("DOCX required members missing")
