@@ -69,6 +69,56 @@ class OfflineDocxPilotTests(unittest.TestCase):
             {"thread_file_open_denied": True},
         )
 
+    def test_final_filter_preserves_existing_file_bytes_and_metadata(self):
+        """Reject truncation, chmod and timestamp writes without open()."""
+        if sys.platform != "linux":
+            self.skipTest("Linux seccomp isolation only")
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory, "operator-owned-existing-file")
+            target.write_bytes(b"critical-existing-file-content")
+            target.chmod(0o600)
+            target.touch()
+            before = target.stat()
+            script = """
+import errno
+import json
+import os
+import sys
+sys.path.insert(0, sys.argv[2])
+import office_docx_worker as worker
+worker._limits()
+worker._deny_io()
+filename = sys.argv[1]
+attempts = (
+    ("truncate", lambda: os.truncate(filename, 0)),
+    ("chmod", lambda: os.chmod(filename, 0)),
+    ("utime", lambda: os.utime(filename, ns=(0, 0))),
+)
+denied = {}
+for name, mutate in attempts:
+    try:
+        mutate()
+    except OSError as exc:
+        denied[name] = exc.errno == errno.EPERM
+    else:
+        denied[name] = False
+os.write(1, json.dumps(denied, separators=(",", ":")).encode())
+"""
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", script,
+                 str(target), str(pilot._WORKER_FILE.parent)],
+                capture_output=True, text=True, cwd="/",
+                env={"PYTHONDONTWRITEBYTECODE": "1"}, timeout=8,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {
+                "truncate": True, "chmod": True, "utime": True,
+            })
+            self.assertEqual(target.read_bytes(), b"critical-existing-file-content")
+            after = target.stat()
+            self.assertEqual(after.st_mode, before.st_mode)
+            self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+
     def test_only_offline_bounded_worker_envelope_is_accepted(self):
         # This fake worker emits a known envelope and does not parse DOCX.
         with tempfile.TemporaryDirectory() as directory:
