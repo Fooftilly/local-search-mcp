@@ -1,7 +1,7 @@
 """Offline acceptance harness tests; no optional MarkItDown dependency needed."""
 from __future__ import annotations
 
-from io import StringIO
+from io import BytesIO, StringIO
 import json
 import unittest
 from unittest.mock import patch
@@ -19,8 +19,7 @@ class DocxOfflineAcceptanceTests(unittest.TestCase):
         report = inspect_docx_container(docx)
         self.assertEqual(report["members"], 5)
         self.assertLess(len(docx), 16_384)
-        with zipfile.ZipFile(StringIO()) if False else zipfile.ZipFile(
-                __import__("io").BytesIO(docx)) as doc:
+        with zipfile.ZipFile(BytesIO(docx)) as doc:
             self.assertEqual(len(doc.namelist()), 5)
             self.assertTrue(all(not n.startswith("/") for n in doc.namelist()))
             for name in doc.namelist():
