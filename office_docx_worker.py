@@ -59,18 +59,21 @@ def _deny_io(*, block_files: bool = True) -> None:
     filter that also forbids new file openings and filesystem mutations.
     """
     lib = ctypes.CDLL("libseccomp.so.2", use_errno=True)
-    lib.seccomp_init.argtypes = [ctypes.c_uint32]
-    lib.seccomp_init.restype = ctypes.c_void_p
-    lib.seccomp_syscall_resolve_name.argtypes = [ctypes.c_char_p]
-    lib.seccomp_syscall_resolve_name.restype = ctypes.c_int
-    lib.seccomp_rule_add.argtypes = [
-        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_uint,
-    ]
-    lib.seccomp_rule_add.restype = ctypes.c_int
-    lib.seccomp_load.argtypes = [ctypes.c_void_p]
-    lib.seccomp_load.restype = ctypes.c_int
-    lib.seccomp_release.argtypes = [ctypes.c_void_p]
-    lib.seccomp_release.restype = None
+    # Define the C ABI declaratively rather than repeating the selector
+    # worker's assignments; both workers independently fail closed.
+    functions = (
+        ("seccomp_init", (ctypes.c_uint32,), ctypes.c_void_p),
+        ("seccomp_syscall_resolve_name", (ctypes.c_char_p,), ctypes.c_int),
+        ("seccomp_rule_add", (
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_uint,
+        ), ctypes.c_int),
+        ("seccomp_load", (ctypes.c_void_p,), ctypes.c_int),
+        ("seccomp_release", (ctypes.c_void_p,), None),
+    )
+    for name, arguments, result_type in functions:
+        symbol = getattr(lib, name)
+        symbol.argtypes = list(arguments)
+        symbol.restype = result_type
     context = lib.seccomp_init(0x7FFF0000)
     if not context:
         raise RuntimeError("Seccomp unavailable")
