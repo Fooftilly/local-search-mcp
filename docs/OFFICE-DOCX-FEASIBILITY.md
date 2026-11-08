@@ -71,6 +71,62 @@ function does not validate CRCs, document structure, XML external entities,
 logical page count, accessibility or output quality. Keep it offline until
 the guarded download and isolated converter are independently accepted.
 
+## Experimental DOCX-only offline worker (follow-up research)
+
+A separate, **not integrated** pilot is available in
+`office_docx_pilot.run_offline_docx_bytes(bytes)` and
+`office_docx_worker.py`. This is a developer/operator research interface,
+**not** a new MCP tool, public URL downloader, installed service, standalone
+CLI or production converter.
+
+The optional dependency is pinned to `markitdown[docx]==0.1.9` in
+`requirements-docx-pilot.txt` and is **never installed by default**.
+Evaluate it only in a separate reviewed Python virtual environment. It
+registers exactly `DocxConverter` with built-ins and plugins disabled,
+then calls the upstream `convert_stream(BytesIO(...))` with a fixed
+`.docx` MIME/extension. No URLs, local paths, LLMs, arbitrary plugins,
+archive recursion or OCR are accepted as input.
+
+The local-only host validates DOCX ZIP metadata **before** spawning, allows
+one worker at a time, uses `python -I -B` with a minimal environment and
+closed file descriptors, passes only the bounded DOCX bytes through stdin,
+and stores output in an anonymous Linux `memfd` (not a named disk file).
+On timeout it SIGKILLs the worker's isolated process group. It never
+provides a URL, document handle, authorization proof or MCP result.
+
+The child sets finite address space (**1 GiB**), CPU (**8 s**),
+output file size (**48 KiB**) and file-descriptor caps. Seccomp denies
+networking, fork, executable loading and ptrace **before** optional
+MarkItDown initialization; the trusted native initializer may start
+CPU threads using clone in that pre-input phase. A second filter denies
+clone, new file opens and filesystem mutations **before** reading
+untrusted document data. File restrictions explicitly include path-based
+`truncate`, permission/ownership/timestamp updates and extended-attribute
+changes, which need not open a new file descriptor. A Linux regression
+exercises `truncate`, `chmod` and `utime` against an existing fixture,
+checks their kernel denial, then verifies the bytes and metadata are intact.
+The second filter requests libseccomp
+`SCMP_FLTATR_CTL_TSYNC` synchronization: if an already-running native
+thread cannot receive the same restrictions, the worker fails closed.
+An offline regression starts a thread before the final filter and verifies
+that the thread also loses file-open access. It fails closed if the
+installed library requires new threads or filesystem resources during
+actual conversion.
+Markdown is capped at 32 KiB, returned solely as **unauthorized research
+text**, and must not be released through a remote MCP endpoint.
+
+Offline tests validate the real seccomp socket/open denial, process group
+timeout, output limits and redaction, without installing MarkItDown.
+They use fake fixed-output children and synthetic ZIP fixtures and
+**do not prove that any genuine DOCX converts successfully**.
+The pinned MarkItDown package may initialize resource files, native
+libraries or background threads; compatibility after the restrictions
+and actual peak memory still require attended testing. This is a local
+containment feasibility experiment, **not** a complete guarantee against
+a malicious native dependency or every kernel syscall attack.
+There is no automatic package installation or live conversion performed
+by this PR.
+
 ## Remaining gates before any hosted DOCX tool
 
 1. **Download trust boundary.** Build a separate authorization-preserving,

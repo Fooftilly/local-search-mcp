@@ -1,0 +1,6 @@
+# OPTIONAL isolated DOCX conversion spike ONLY; NOT default bridge dependencies.
+# Install separately for attended, local-only conversion acceptance after
+# reviewing the exact upstream tag, artifact supply chain, and worker contract.
+# Never install markitdown[all], enable plugins, OCR, cloud providers, or
+# expose an Office parsing tool to remote MCP clients.
+markitdown[docx]==0.1.9
