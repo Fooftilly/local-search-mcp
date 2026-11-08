@@ -78,7 +78,10 @@ class OfflineDocxPilotTests(unittest.TestCase):
                 "sys.stdin.buffer.read()\n"
                 "sys.stdout.write(json.dumps({'markdown':'text',"
                 "'truncated':False}))\n")
-            with patch.object(pilot, "_WORKER_FILE", script):
+            with (patch.object(pilot, "_WORKER_FILE", script),
+                  patch.object(pilot, "_kill_group",
+                               side_effect=AssertionError(
+                                   "A successfully reaped PID must not be signaled"))):
                 result = pilot.run_offline_docx_bytes(synthetic_docx())
         self.assertEqual(result, {
             "markdown": "text", "truncated": False,
