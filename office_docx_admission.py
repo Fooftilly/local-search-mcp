@@ -59,7 +59,7 @@ def _bounded_directory_header(payload: bytes) -> None:
     in this limited DOCX pilot. This is not a ZIP parser or CRC validator.
     """
     minimum = max(0, len(payload) - (22 + 65535))
-    index = payload.rfind(b"PK\\x05\\x06", minimum)
+    index = payload.rfind(b"PK\x05\x06", minimum)
     while index >= minimum:
         if index + 22 <= len(payload):
             (_, disk, directory_disk, disk_count, total_count,
@@ -74,7 +74,7 @@ def _bounded_directory_header(payload: bytes) -> None:
                         or directory_bytes < 46 * total_count):
                     raise DocxAdmissionRejected("DOCX ZIP directory bounds rejected")
                 return
-        index = payload.rfind(b"PK\\x05\\x06", minimum, index)
+        index = payload.rfind(b"PK\x05\x06", minimum, index)
     raise DocxAdmissionRejected("DOCX ZIP directory missing")
 
 
