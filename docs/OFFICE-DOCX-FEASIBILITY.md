@@ -127,6 +127,45 @@ a malicious native dependency or every kernel syscall attack.
 There is no automatic package installation or live conversion performed
 by this PR.
 
+## Opt-in genuine OOXML conversion acceptance harness
+
+`scripts/docx_pilot_offline_acceptance.py` generates a deterministic
+five-part, internally linked DOCX (heading, Markdown-sized table and
+Unicode text) entirely in memory. It is a structurally valid synthetic
+OOXML fixture, **not** an independently approved publicly hosted file.
+The harness calls the existing isolated worker with the already-admitted
+bytes; it does not take any URL or path arguments, persist a document, grant
+access, start a service or change Docker settings.
+
+The ordinary repository test suite covers the generated ZIP/XML structure,
+fidelity scoring, redacted reports and the explicit `--run` opt-in, but
+**does not install or execute the optional converter**. To assess genuine
+MarkItDown compatibility, use a separate, operator-reviewed Python
+environment on Linux:
+
+```bash
+cd ~/GitHub/local-search-mcp
+python3 -m venv /tmp/local-search-docx-acceptance
+/tmp/local-search-docx-acceptance/bin/python -m pip install -r requirements-docx-pilot.txt
+/tmp/local-search-docx-acceptance/bin/python -m scripts.docx_pilot_offline_acceptance --run
+```
+
+This installation may contact the package repository; **the conversion
+harness itself has no network/download operation**. Do not install these
+optional dependencies in the running bridge environment. The harness
+returns only `passed`, elapsed time, archive/output byte counts and
+booleans for heading, table, Unicode and truncation; it never prints
+document text. A nonzero exit or `offline_conversion_failed` means the
+optional dependency, OS containment, input or conversion did not meet the
+gate; do not weaken security limits just to force a pass.
+
+This local fixture is a **single compatibility smoke test**, not the issue's
+three independently approved public layout samples. Even a passing
+result neither validates hostile OOXML nor supplies source/final-URL
+authorization, peer-IP verification, cancellation under an active network
+download or production release permission. The remaining acceptance work
+below is unchanged.
+
 ## Remaining gates before any hosted DOCX tool
 
 1. **Download trust boundary.** Build a separate authorization-preserving,
