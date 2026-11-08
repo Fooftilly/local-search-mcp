@@ -51,8 +51,16 @@ the crawler before the root firewall rules are installed. It also verifies
 the root-owned installed helper and systemd unit match the reviewed checkout
 bytes, checks the **effective** systemd startup and tunnel gates, both
 owner-triggered cold-wake guard unit commands (`--preflight` and `--probe`),
-user service activation and linger. Run it from the same reviewed checkout
-revision that was deployed to the root-owned paths.
+user service activation and linger. It also checks the **effective**
+bridge and tunnel `ExecStart` commands: both must reference the current
+checkout's `bootstrap.py`, use an existing absolute interpreter, pass the
+correct `--service` role and avoid `ignore_errors`. Being `active` is not
+enough: a Python bridge may continue running from a moved/deleted checkout
+while its stored systemd command would fail on the next restart or reboot.
+An obsolete path blocks the static audit rather than falsely reporting
+readiness. The audit never restarts either service or prints effective
+command arguments, which can contain private local paths. Run it from
+the same reviewed checkout revision that was deployed to the root-owned paths.
 
 Even an all-green static report is only `ready_for_manual_reboot_test`,
 not proof of a safe reboot: the report deliberately says
