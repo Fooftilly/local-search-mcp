@@ -1496,6 +1496,15 @@ def web_fetch(url: str, mode: str = "raw", fresh: bool = False,
             hostname = urlsplit(url).hostname if isinstance(url, str) else None
             if (hostname and not is_domain_currently_allowed(hostname)
                     and domain_policy._once_grant_available(hostname)):
+                # A one-use claim is irreversible. Inspect the currently
+                # running container BEFORE consuming it, otherwise an
+                # already-unsafe native crawler flag wastes the operator's
+                # approval without ever submitting a crawl. Keep the later
+                # pre-POST recheck for container changes after this read.
+                preclaim_warning = local_container_warning()
+                if preclaim_warning:
+                    return {"url": url, "success": False, "status": "blocked",
+                            "reason": preclaim_warning}
                 once_proof = domain_policy._claim_once_for_public_url(url)
         except (TypeError, ValueError):
             once_proof = None
