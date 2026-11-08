@@ -96,10 +96,12 @@ provides a URL, document handle, authorization proof or MCP result.
 
 The child sets finite address space (**1 GiB**), CPU (**8 s**),
 output file size (**48 KiB**) and file-descriptor caps. Seccomp denies
-networking and new process creation **before** optional MarkItDown
-initialization; a second filter denies new file opens and filesystem
-mutations **before** reading untrusted document data. It fails closed if
-the installed library needs filesystem resources during actual conversion.
+networking, fork, executable loading and ptrace **before** optional
+MarkItDown initialization; the trusted native initializer may start
+CPU threads using clone in that pre-input phase. A second filter denies
+clone, new file opens and filesystem mutations **before** reading
+untrusted document data. It fails closed if the installed library
+requires new threads or filesystem resources during actual conversion.
 Markdown is capped at 32 KiB, returned solely as **unauthorized research
 text**, and must not be released through a remote MCP endpoint.
 
