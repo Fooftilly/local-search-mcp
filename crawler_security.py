@@ -40,6 +40,10 @@ def local_container_warning() -> str | None:
         ).stdout.splitlines()
         if not ids:
             return None
+        # Ambiguous publishing containers must never select the first
+        # inspect result as proof that native deep crawling is disabled.
+        if len(ids) != 1:
+            return "Ambiguous Crawl4AI port ownership; verify container identity"
         lines = subprocess.run(
             ["docker", "inspect", ids[0], "--format", "{{range .Config.Env}}{{println .}}{{end}}"],
             check=True, capture_output=True, text=True, timeout=4,
@@ -47,8 +51,20 @@ def local_container_warning() -> str | None:
     except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
         return None
     unsafe = {"CRAWL4AI_ALLOW_INTERNAL_URLS", "CRAWL4AI_ALLOW_INSECURE_TLS"}
+    deep_flag_seen = False
     for line in lines:
-        key, _, value = line.partition("=")
+        key, separator, value = line.partition("=")
         if key in unsafe and value.lower().strip() in ("true", "1", "yes", "on"):
             return f"Unsafe Crawl4AI container setting {key}=true; disable it before enabling remote MCP fetches"
+        if key == "CRAWL4AI_ALLOW_DEEP_CRAWL":
+            # Native Docker deep crawl currently validates only the seed
+            # against the bridge approval model. Reject unknown or duplicate
+            # flag values rather than allowing an unreviewed opt-in. Never
+            # echo any Docker environment values, which may be credentials.
+            if (deep_flag_seen or separator != "=" or
+                    value.lower().strip() not in ("", "false", "0", "no", "off")):
+                return ("Native Crawl4AI deep crawling is enabled or ambiguous; "
+                        "disable CRAWL4AI_ALLOW_DEEP_CRAWL until issue #299 "
+                        "per-discovered-URL authorization is verified")
+            deep_flag_seen = True
     return None

@@ -63,3 +63,47 @@ This is deliberately separate from the existing default-health and opt-in `/conf
 5. Operator must approve actual flag/config and host-level testing separately. Do not add a 13th MCP tool or alter existing fetch defaults merely because `/config/dump` accepts a strategy.
 
 Related tracking: [#298](https://github.com/Fooftilly/local-search-mcp/issues/298) (bounded URL discovery) and [#297](https://github.com/Fooftilly/local-search-mcp/issues/297) (capability roadmap). This research is an initial gate for [#299](https://github.com/Fooftilly/local-search-mcp/issues/299), **not issue completion**.
+
+## Operator-host evidence and bridge guard (2026-11-07)
+
+The operator's existing Arch Linux installation reported Crawl4AI health version
+`0.9.5`, Docker local image ID `sha256:065f475c90ac75fe388141597b0cdba118ebf7e03f59e2a37456c89e6b864c59`,
+and `CRAWL4AI_ALLOW_DEEP_CRAWL` **not set**. The fixed authenticated
+`/config/dump` probe returned HTTP 400 with **unknown reason**; this is not
+evidence that per-discovered-URL checks exist. The installed `/app/config.yml`
+reported max pages 100, depth 5, deadline 300 seconds, queue 1,000,
+four workers, and no per-principal queue cap. Docker had no CPU, memory or
+PID cap. These are an operator-observed configuration snapshot, not tested
+bounds for multi-page jobs.
+
+The root-owned nftables live probe passed blocked host-gateway and six reserved
+IPv4 destinations plus permitted public DNS/HTTPS. The static on-demand boot
+audit passed; the operator also observed ordinary idle sleep and an approved
+fresh `web_fetch` waking the crawler without manual Docker startup. This is
+**not** evidence of safe full reboot, crash recovery, continuous firewall
+enforcement or cancellation of active requests.
+
+As a baseline for a possible coordinator, two previously approved public
+homepages were fetched with `include_links=true, fresh=true`:
+
+| Site | Safe link candidates examined | Initially returned | Observation |
+| --- | ---: | ---: | --- |
+| www.djangoproject.com | 46 | 24 | More links available through existing continuation |
+| developer.mozilla.org | 118 | 24 | Input scan capped; not complete discovery |
+
+A separately authorized `web_fetch_batch` returned two child pages for
+each site successfully. Those were **explicit** caller-selected URLs; no
+autonomous navigation occurred. Single-run elapsed times and the returned
+candidate counts are not a quality/latency comparison against safe automatic
+deep crawling.
+
+While #299 remains unaccepted, `crawler_security.local_container_warning()`
+now rejects a running container with an enabled, malformed or duplicated
+`CRAWL4AI_ALLOW_DEEP_CRAWL` setting. An ambiguous set of containers
+publishing port 11235 is also refused. The on-demand crawler health gate
+rechecks this warning after wake, so normal MCP fetches fail closed rather
+than treating the native Docker flag as permission to traverse unknown
+links. This guard does not control calls made directly to the Docker API,
+make a sleeping container provably safe, or provide per-link authorization.
+Do not enable native deep crawling; operator acceptance of a bounded
+coordinator, per-URL checks and real cancellation is still outstanding.
