@@ -127,10 +127,10 @@ jobs:
               raw = dumps({"markdown": converted.markdown, "truncated": False},
                           ensure_ascii=False, separators=(",", ":")).encode("utf-8")
               stage = "report"
-              os.write(1, ("child_phase=completed bytes=" + str(len(raw)) + "\n").encode())
+              os.write(1, ("child_phase=completed bytes=" + str(len(raw)) + chr(10)).encode())
           except (Exception, MemoryError) as exc:
               os.write(1, ("child_phase=" + stage + " exception="
-                           + type(exc).__name__ + "\n").encode())
+                           + type(exc).__name__ + chr(10)).encode())
           '''
           child = subprocess.Popen(
               [sys.executable, "-I", "-B", "-c", script, str(Path.cwd())],
