@@ -7,6 +7,7 @@ does not authorize fetching documents or releasing content to an MCP client.
 """
 from __future__ import annotations
 
+import codecs
 import ctypes
 import errno
 from io import BytesIO
@@ -205,6 +206,12 @@ def main() -> int:
         # No document bytes are received until both filters are installed.
         _deny_io(block_files=False)
         converter, stream_info = _converter()
+        # ZIP central-directory entries without the UTF-8 flag use CP437.
+        # The codec may otherwise be imported lazily *after* file-open
+        # syscalls are blocked, turning a valid archive into a false
+        # admission failure. Prime only this fixed trusted codec; do not
+        # parse document bytes or grant file access after lockdown.
+        codecs.lookup("cp437")
         _deny_io(block_files=True)
         payload = sys.stdin.buffer.read(office_docx_admission.MAX_DOCX_BYTES + 1)
         office_docx_admission.inspect_docx_container(payload)
