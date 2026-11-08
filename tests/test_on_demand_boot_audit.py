@@ -80,6 +80,7 @@ class ReadonlyBootAuditTests(unittest.TestCase):
                 raise install_secure_tunnel.InstallError("redacted")
 
         with (patch.object(audit, "_run", side_effect=run),
+              patch.object(audit, "_required_runtime_files", return_value=True),
               patch.object(audit, "_reviewed_root_file",
                            return_value=root_file) as file_probe,
               patch.object(install_secure_tunnel,
@@ -93,7 +94,7 @@ class ReadonlyBootAuditTests(unittest.TestCase):
         result, calls, files = self._successful()
         self.assertEqual(result["state"], "ready_for_manual_reboot_test")
         self.assertFalse(result["safe_to_reboot_proven"])
-        self.assertEqual(len(result["checks"]), 15)
+        self.assertEqual(len(result["checks"]), 17)
         for unit in audit.USER_SERVICES:
             self.assertIn(("systemctl", "--user", "show", unit,
                            "-p", "ExecStart", "--value"), calls)
@@ -213,6 +214,66 @@ class ReadonlyBootAuditTests(unittest.TestCase):
                 query.assert_called_once_with(
                     "systemctl", "--user", "show", unit,
                     "-p", "ExecStart", "--value")
+
+    def test_runtime_files_are_required_even_when_services_are_active(self):
+        """Only filesystem checks: no module execution, Docker, or sudo."""
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            venv = root / ".venv" / "bin"
+            venv.mkdir(parents=True)
+            (root / "bridge.py").write_text("not executable\n")
+            python = venv / "python"
+            python.write_text("no runtime is executed\n")
+            python.chmod(0o755)
+            tunnel = root / "tunnel-client"
+            tunnel.write_text("not executed\n")
+            tunnel.chmod(0o755)
+            with patch.object(audit, "ROOT", root), patch.object(
+                    audit, "_run", side_effect=AssertionError(
+                        "Runtime check must not run subprocesses")):
+                self.assertTrue(audit._required_runtime_files("bridge"))
+                self.assertTrue(audit._required_runtime_files("tunnel"))
+                self.assertFalse(audit._required_runtime_files("invalid"))
+                python.unlink()
+                self.assertFalse(audit._required_runtime_files("bridge"))
+                python.write_text("not executed\n")
+                python.chmod(0o644)
+                self.assertFalse(audit._required_runtime_files("bridge"))
+                python.chmod(0o755)
+                (root / "bridge.py").unlink()
+                self.assertFalse(audit._required_runtime_files("bridge"))
+                (root / "bridge.py").write_text("not executed\n")
+                tunnel.unlink()
+                self.assertFalse(audit._required_runtime_files("tunnel"))
+                tunnel.write_text("not executed\n")
+                tunnel.chmod(0o644)
+                self.assertFalse(audit._required_runtime_files("tunnel"))
+                tunnel.unlink()
+                tunnel.symlink_to(python)
+                self.assertFalse(audit._required_runtime_files("tunnel"))
+
+    def test_missing_runtime_files_block_reboot_audit(self):
+        for role in ("bridge", "tunnel"):
+            def runtime(which):
+                return which != role
+
+            with self.subTest(role=role), patch.object(
+                    audit, "_required_runtime_files", side_effect=runtime
+            ), patch.object(audit, "_run") as run:
+                # Validate that runtime check errors cannot be masked by an
+                # already-running service in the audit's aggregate result.
+                self.assertFalse(audit._required_runtime_files(role))
+                run.assert_not_called()
+
+            # Full audit with a fake runtime probe. It must fail closed even
+            # when both user services are otherwise enabled and active.
+            original = audit._required_runtime_files
+            with patch.object(audit, "_required_runtime_files",
+                              side_effect=lambda r: r != role):
+                report, _, _ = self._successful()
+            self.assertEqual(report["state"], "blocked")
+            self.assertFalse(report["checks"][f"{role}_runtime_files"])
+            self.assertTrue(report["checks"][f"{role}_enabled_active"])
 
     def test_service_and_linger_states_are_exact_and_readonly(self):
         service = "local-search-mcp-crawler-egress.service"
