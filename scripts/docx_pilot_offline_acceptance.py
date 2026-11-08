@@ -42,6 +42,11 @@ _ROOT_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
 Target="word/document.xml"/>
 </Relationships>"""
+_DOC_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"
+Target="styles.xml"/>
+</Relationships>"""
 _STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
 <w:style w:type="paragraph" w:styleId="Normal" w:default="1">
@@ -65,13 +70,14 @@ _DOCUMENT = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 
 
 def sample_docx_bytes() -> bytes:
-    """Create a fixed four-part DOCX fixture without file or network access."""
+    """Create a fixed five-part DOCX fixture without file or network access."""
     stream = BytesIO()
     with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as docx:
         for name, part in (
             ("[Content_Types].xml", _CONTENT_TYPES),
             ("_rels/.rels", _ROOT_RELS),
             ("word/document.xml", _DOCUMENT),
+            ("word/_rels/document.xml.rels", _DOC_RELS),
             ("word/styles.xml", _STYLES),
         ):
             docx.writestr(name, part.encode("utf-8"))
