@@ -1150,6 +1150,16 @@ def _run_fetch_network(url: str, mode: str, *,
             return {"url": url, "success": False, "status": "blocked", "reason": f"Crawl4AI security check unavailable: {type(exc).__name__}"}
         if health_error:
             return {"url": url, "success": False, "status": "blocked", "reason": health_error}
+        # The startup warning is only a snapshot. A long-lived bridge may
+        # outlive a replaced Docker container, including when on-demand mode
+        # is disabled. Revalidate the native deep-crawl and unsafe-container
+        # flags immediately before any real /crawl POST. Cache hits do not
+        # reach this point, and a missing Docker client retains the existing
+        # remote-upstream behavior (not a claim of local containment).
+        current_warning = local_container_warning()
+        if current_warning:
+            return {"url": url, "success": False, "status": "blocked",
+                    "reason": current_warning}
         if validated_spec is not None:
             # Same guarded /crawl endpoint; never retry ambiguous POST errors.
             # Refuse content encodings and use iter_raw so no transparent
