@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 from io import BytesIO
 import json
+import re
 import sys
 import time
 import zipfile
@@ -80,10 +81,40 @@ def sample_docx_bytes() -> bytes:
             ("word/_rels/document.xml.rels", _DOC_RELS),
             ("word/styles.xml", _STYLES),
         ):
-            docx.writestr(name, part.encode("utf-8"))
+            # ZipFile.writestr(name, ...) otherwise records the current
+            # local time, so re-generating a fixture across a two-second
+            # ZIP timestamp boundary would change its bytes.
+            member = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            member.compress_type = zipfile.ZIP_DEFLATED
+            member.create_system = 3
+            docx.writestr(member, part.encode("utf-8"))
     payload = stream.getvalue()
     inspect_docx_container(payload)
     return payload
+
+
+def _table_cells(line: str) -> list[str] | None:
+    """Read exactly two Markdown table cells; outer pipes are optional."""
+    cells = line.strip().strip("|").split("|")
+    if len(cells) != 2:
+        return None
+    return [cell.strip() for cell in cells]
+
+
+def _has_expected_table(lines: list[str]) -> bool:
+    """Require adjacent header, delimiter and correctly paired data rows."""
+    for header_line, divider_line, data_line in zip(
+            lines, lines[1:], lines[2:]):
+        header = _table_cells(header_line)
+        divider = _table_cells(divider_line)
+        data = _table_cells(data_line)
+        if not (header and divider and data):
+            continue
+        if (CELL_A in header[0] and CELL_B in header[1]
+                and all(re.fullmatch(r":?-{3,}:?", cell) for cell in divider)
+                and CELL_C in data[0] and CELL_D in data[1]):
+            return True
+    return False
 
 
 def score_conversion(markdown: object, *, truncated: bool) -> dict[str, object]:
@@ -97,8 +128,7 @@ def score_conversion(markdown: object, *, truncated: bool) -> dict[str, object]:
         for line in lines
     )
     unicode_preserved = UNICODE in markdown
-    columns = all(text in markdown for text in (CELL_A, CELL_B, CELL_C, CELL_D))
-    table = columns and any("|" in line and CELL_A in line for line in lines)
+    table = _has_expected_table(lines)
     return {
         "heading_markdown": heading,
         "unicode_preserved": unicode_preserved,
