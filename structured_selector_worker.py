@@ -9,9 +9,11 @@ Failure to install either boundary fails closed. This code NEVER fetches URLs.
 from __future__ import annotations
 
 import ctypes
+import errno
 import json
 import os
 import resource
+import socket
 import sys
 
 from lxml import etree
@@ -27,11 +29,21 @@ MAX_AS_BYTES = 384 * 1024 * 1024
 CPU_SECONDS = 2
 
 # Linux seccomp syscall names (libseccomp resolves architecture numbers).
-# Network creation/communication and new child processes must fail with EPERM.
+# The worker receives untrusted page HTML after all its trusted imports.
+# Block filesystem opens/mutations as well as sockets and process creation:
+# no HTML parser or selector may read local files or rewrite host content.
 _FORBIDDEN = (
     "socket", "socketpair", "connect", "bind", "listen", "accept", "accept4",
     "sendto", "sendmsg", "sendmmsg", "recvfrom", "recvmsg", "recvmmsg",
     "fork", "vfork", "clone", "clone3", "execve", "execveat", "ptrace",
+    "open", "openat", "openat2", "open_by_handle_at", "creat",
+    "mkdir", "mkdirat", "rmdir", "unlink", "unlinkat",
+    "link", "linkat", "symlink", "symlinkat",
+    "rename", "renameat", "renameat2", "mknod", "mknodat",
+    "truncate", "ftruncate", "chmod", "fchmod", "fchmodat", "fchmodat2",
+    "chown", "lchown", "fchown", "fchownat", "utime", "utimes",
+    "futimesat", "utimensat", "setxattr", "lsetxattr", "fsetxattr",
+    "removexattr", "lremovexattr", "fremovexattr",
 )
 
 
@@ -47,8 +59,9 @@ def _lock_down() -> None:
     ):
         resource.setrlimit(limit, (soft, hard))
 
-    # No Python socket monkeypatches: the kernel must reject networking even
-    # if a native parser/library attempts a socket operation.
+    # Trusted lxml/CSS/JSON imports are complete before this function.
+    # Untrusted HTML must be processed with no new file/network access.
+    # No Python monkeypatches: the kernel must reject forbidden syscalls.
     lib = ctypes.CDLL("libseccomp.so.2", use_errno=True)
     lib.seccomp_init.argtypes = [ctypes.c_uint32]
     lib.seccomp_init.restype = ctypes.c_void_p
@@ -154,8 +167,6 @@ def main() -> int:
         if sys.argv[1:] == ["--check-isolation"]:
             # Read-only local preflight. It never opens a connection or
             # examines page input; the kernel must reject AF_INET socket().
-            import errno
-            import socket
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             except OSError as exc:
@@ -163,14 +174,22 @@ def main() -> int:
             else:
                 sock.close()
                 network_denied = False
+            try:
+                handle = os.open("/dev/null", os.O_RDONLY)
+            except OSError as exc:
+                file_open_denied = exc.errno == errno.EPERM
+            else:
+                os.close(handle)
+                file_open_denied = False
             data = {
                 "network_denied": network_denied,
+                "file_open_denied": file_open_denied,
                 "cpu_soft_seconds": resource.getrlimit(resource.RLIMIT_CPU)[0],
                 "max_address_space": resource.getrlimit(resource.RLIMIT_AS)[0],
                 "max_output_file": resource.getrlimit(resource.RLIMIT_FSIZE)[0],
             }
             os.write(1, json.dumps(data, separators=(",", ":")).encode())
-            return 0 if network_denied else 1
+            return 0 if (network_denied and file_open_denied) else 1
         if len(sys.argv) != 1:
             return 1
         # The supervisor bounds this pipe; worker applies a separate cap.

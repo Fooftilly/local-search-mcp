@@ -180,10 +180,59 @@ class IsolatedSelectorWorkerTests(unittest.TestCase):
         )
         result = json.loads(answer.stdout)
         self.assertTrue(result["network_denied"])
+        self.assertTrue(result["file_open_denied"])
         self.assertEqual(result["cpu_soft_seconds"], 2)
         self.assertLessEqual(result["max_address_space"], 384 * 1024 * 1024)
         self.assertLessEqual(result["max_output_file"], 64 * 1024)
         self.assertNotIn("url", result)
+
+    def test_child_cannot_open_or_modify_existing_host_file(self):
+        """Test with a disposable fixture, never a real operator file."""
+        with tempfile.TemporaryDirectory() as directory:
+            victim = Path(directory, "guarded-fixture")
+            victim.write_bytes(b"unchanged")
+            victim.chmod(0o600)
+            before = victim.stat()
+            script = """
+import errno, json, os, sys
+sys.path.insert(0, sys.argv[1])
+import structured_selector_worker as worker
+worker._lock_down()
+path = sys.argv[2]
+attempts = {
+    "read": lambda: os.open(path, os.O_RDONLY),
+    "truncate": lambda: os.truncate(path, 0),
+    "chmod": lambda: os.chmod(path, 0),
+    "utime": lambda: os.utime(path, ns=(0, 0)),
+}
+denied = {}
+for name, action in attempts.items():
+    try:
+        result = action()
+    except OSError as exc:
+        denied[name] = exc.errno == errno.EPERM
+    else:
+        if name == "read":
+            os.close(result)
+        denied[name] = False
+os.write(1, json.dumps(denied, separators=(",", ":")).encode())
+"""
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", script,
+                 str(host._WORKER_FILE.parent), str(victim)],
+                capture_output=True, text=True, cwd="/",
+                env={"PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1"},
+                timeout=6,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {
+                "read": True, "truncate": True,
+                "chmod": True, "utime": True,
+            })
+            after = victim.stat()
+            self.assertEqual(victim.read_bytes(), b"unchanged")
+            self.assertEqual(after.st_mode, before.st_mode)
+            self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
 
     def test_invalid_worker_output_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp:
